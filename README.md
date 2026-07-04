@@ -182,7 +182,6 @@ for deployment examples.
 - [Codex client compatibility](docs/codex-cli-compatibility.md)
 - [Tool approval policy](docs/tool-approval-policy.md)
 - [Live testing](docs/live-testing.md)
-- [Public release security plan](docs/public-release-security.md)
 - [Legal notices](docs/legal-notices.md)
 
 ## Current Scope
