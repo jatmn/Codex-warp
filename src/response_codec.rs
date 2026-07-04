@@ -1,0 +1,1258 @@
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
+use async_stream::stream;
+use bytes::Bytes;
+use futures_util::StreamExt;
+use serde::Serialize;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::config::ContinueGuardConfig;
+use crate::config::ContinueGuardMode;
+use crate::config::ToolPolicyConfig;
+use crate::debug_log::DebugLog;
+use crate::debug_log::text_fingerprint;
+use crate::ids::generated_id;
+use crate::tool_policy::apply_tool_policy_to_function_call;
+
+const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
+
+pub(crate) fn chat_stream_to_responses(
+    upstream: reqwest::Response,
+    response_id: String,
+    custom_tool_names: BTreeSet<String>,
+    tool_policy: ToolPolicyConfig,
+    debug_log: DebugLog,
+    request_log_id: String,
+    continue_guard: ContinueGuardState,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    stream! {
+        let created_event = sse("response.created", json!({
+            "type": "response.created",
+            "response": {"id": response_id, "object": "response", "status": "in_progress"}
+        }));
+        log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &created_event);
+        yield Ok(Bytes::from(created_event));
+
+        let mut state = ChatAccum::default();
+        let mut pending = Vec::new();
+        let mut bytes = upstream.bytes_stream();
+
+        while let Some(chunk) = bytes.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    yield Ok(Bytes::from(sse("response.failed", json!({
+                        "type": "response.failed",
+                        "response": {"id": response_id, "error": {"message": err.to_string()}}
+                    }))));
+                    return;
+                }
+            };
+            pending.extend_from_slice(&chunk);
+
+            while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(&pending) {
+                let frame = pending[..frame_end].to_vec();
+                pending.drain(..frame_end + delimiter_len);
+                let Ok(frame) = String::from_utf8(frame) else {
+                    yield Ok(Bytes::from(sse("response.failed", json!({
+                        "type": "response.failed",
+                        "response": {"id": response_id, "error": {"message": "upstream SSE frame was not valid UTF-8"}}
+                    }))));
+                    return;
+                };
+                debug_log.log_stream_frame(json!({
+                    "event": "upstream_stream_frame",
+                    "id": request_log_id,
+                    "backend": "open_ai_chat"
+                }), &frame);
+                let Some(data) = sse_data(&frame) else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    break;
+                }
+                let Ok(value) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                let payload = chat_completion_payload(&value);
+                if let Some(usage) = payload.get("usage")
+                    && !usage.is_null()
+                {
+                    debug_log.log(json!({
+                        "event": "upstream_response",
+                        "id": request_log_id,
+                        "status": 200,
+                        "success": true,
+                        "usage": usage,
+                        "normalized_usage": chat_usage_to_responses_usage(Some(usage))
+                    }));
+                }
+                let events = state.apply_chat_chunk(payload);
+                if let Some(summary) = chat_stream_debug_summary(payload, &events) {
+                    debug_log.log(json!({
+                        "event": "upstream_stream_delta",
+                        "id": request_log_id,
+                        "backend": "open_ai_chat",
+                        "summary": summary
+                    }));
+                }
+                for event in events {
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                    yield Ok(Bytes::from(event));
+                }
+            }
+        }
+
+        for event in state.finish(
+            &response_id,
+            &custom_tool_names,
+            &tool_policy,
+            Some((&debug_log, &request_log_id, &continue_guard)),
+        ) {
+            log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+            yield Ok(Bytes::from(event));
+        }
+    }
+}
+
+pub(crate) fn native_stream_to_responses(
+    upstream: reqwest::Response,
+    custom_tool_names: BTreeSet<String>,
+    tool_policy: ToolPolicyConfig,
+    debug_log: DebugLog,
+    request_log_id: String,
+    status: u16,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    stream! {
+        let mut pending = Vec::new();
+        let mut debug_pending = Vec::new();
+        let mut bytes = upstream.bytes_stream();
+
+        while let Some(chunk) = bytes.next().await {
+            let chunk = chunk.map_err(std::io::Error::other)?;
+            if custom_tool_names.is_empty() && !tool_policy.enabled {
+                log_native_usage_from_sse_chunk(
+                    &chunk,
+                    &mut debug_pending,
+                    &debug_log,
+                    &request_log_id,
+                    status,
+                );
+                if debug_log.include_stream_bodies {
+                    log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
+                }
+                yield Ok(chunk);
+                continue;
+            }
+
+            pending.extend_from_slice(&chunk);
+            while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(&pending) {
+                let frame = pending[..frame_end].to_vec();
+                pending.drain(..frame_end + delimiter_len);
+                let frame = match String::from_utf8(frame) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
+                        return;
+                    }
+                };
+                log_native_usage_from_sse_frame(&frame, &debug_log, &request_log_id, status);
+                debug_log.log_stream_frame(json!({
+                    "event": "upstream_stream_frame",
+                    "id": request_log_id,
+                    "backend": "responses",
+                    "status": status
+                }), &frame);
+                let morphed = morph_native_sse_frame(&frame, &custom_tool_names, &tool_policy);
+                log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
+                yield Ok(Bytes::from(morphed));
+            }
+        }
+
+        if !pending.is_empty() {
+            let chunk = Bytes::from(pending);
+            if debug_log.include_stream_bodies {
+                log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
+            }
+            yield Ok(chunk);
+        }
+    }
+}
+
+pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("usage")
+                .or_else(|| {
+                    value
+                        .get("response")
+                        .and_then(|response| response.get("usage"))
+                })
+                .cloned()
+        })
+        .unwrap_or(Value::Null)
+}
+
+pub(crate) fn log_native_usage_from_sse_chunk(
+    chunk: &Bytes,
+    pending: &mut Vec<u8>,
+    debug_log: &DebugLog,
+    request_log_id: &str,
+    status: u16,
+) {
+    pending.extend_from_slice(chunk);
+    while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(pending) {
+        let frame = pending[..frame_end].to_vec();
+        pending.drain(..frame_end + delimiter_len);
+        let Ok(frame) = String::from_utf8(frame) else {
+            continue;
+        };
+        log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status);
+    }
+}
+
+pub(crate) fn log_native_usage_from_sse_frame(
+    frame: &str,
+    debug_log: &DebugLog,
+    request_log_id: &str,
+    status: u16,
+) {
+    let Some(data) = sse_data(frame) else {
+        return;
+    };
+    if data == "[DONE]" {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&data) else {
+        return;
+    };
+    if let Some(summary) = native_stream_debug_summary(&value) {
+        debug_log.log(json!({
+            "event": "upstream_stream_delta",
+            "id": request_log_id,
+            "backend": "responses",
+            "status": status,
+            "summary": summary
+        }));
+    }
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("usage"))
+    });
+    if let Some(usage) = usage
+        && !usage.is_null()
+    {
+        debug_log.log(json!({
+            "event": "upstream_response",
+            "id": request_log_id,
+            "status": status,
+            "success": true,
+            "usage": usage
+        }));
+    }
+}
+
+fn log_downstream_sse_frame(
+    debug_log: &DebugLog,
+    request_log_id: &str,
+    backend: &str,
+    frame: &str,
+) {
+    let mut event = json!({
+        "event": "downstream_stream_frame",
+        "id": request_log_id,
+        "backend": backend,
+        "summary": downstream_stream_debug_summary(frame)
+    });
+    if event["summary"].is_null() && !debug_log.include_stream_bodies {
+        return;
+    }
+    debug_log.log_stream_frame(event.take(), frame);
+}
+
+fn log_raw_sse_chunk(debug_log: &DebugLog, request_log_id: &str, backend: &str, chunk: &Bytes) {
+    let frame = String::from_utf8_lossy(chunk);
+    debug_log.log_stream_frame(
+        json!({
+            "event": "upstream_stream_frame",
+            "id": request_log_id,
+            "backend": backend,
+            "raw_chunk": true
+        }),
+        &frame,
+    );
+    debug_log.log_stream_frame(
+        json!({
+            "event": "downstream_stream_frame",
+            "id": request_log_id,
+            "backend": backend,
+            "raw_chunk": true
+        }),
+        &frame,
+    );
+}
+
+pub(crate) fn downstream_stream_debug_summary(frame: &str) -> Value {
+    let Some(data) = sse_data(frame) else {
+        return Value::Null;
+    };
+    if data == "[DONE]" {
+        return json!({"done": true});
+    }
+    let Ok(value) = serde_json::from_str::<Value>(&data) else {
+        return Value::Null;
+    };
+    let event_type = value.get("type").and_then(Value::as_str);
+    let item_type = value
+        .get("item")
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str);
+    let part_type = value
+        .get("part")
+        .and_then(|part| part.get("type"))
+        .and_then(Value::as_str);
+    let delta = value.get("delta").and_then(Value::as_str).unwrap_or("");
+    let part_text = value
+        .get("part")
+        .and_then(|part| part.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    json!({
+        "event_type": event_type,
+        "item_type": item_type,
+        "part_type": part_type,
+        "summary_index": value.get("summary_index").cloned().unwrap_or(Value::Null),
+        "delta_chars": delta.chars().count(),
+        "part_text_chars": part_text.chars().count()
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct ChatAccum {
+    pub(crate) message_item_id: Option<String>,
+    reasoning_item_id: Option<String>,
+    reasoning_display_header_emitted: bool,
+    text: String,
+    reasoning_text: String,
+    tool_calls: Vec<ToolCallAccum>,
+    usage: Option<Value>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Default, Clone)]
+pub(crate) struct ToolCallAccum {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ChatAccum {
+    pub(crate) fn apply_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
+        let mut events = Vec::new();
+        if let Some(usage) = chunk.get("usage") {
+            self.usage = Some(chat_usage_to_responses_usage(Some(usage)));
+        }
+        let choices = chunk
+            .get("choices")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for choice in choices {
+            let delta = choice.get("delta").unwrap_or(&Value::Null);
+            if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+                self.finish_reason = Some(finish_reason.to_string());
+            }
+            if let Some(reasoning) = chat_reasoning_text(delta)
+                && !reasoning.is_empty()
+            {
+                if self.reasoning_item_id.is_none() {
+                    let item_id = generated_id("rsn");
+                    self.reasoning_item_id = Some(item_id.clone());
+                    events.push(sse(
+                        "response.output_item.added",
+                        json!({
+                            "type": "response.output_item.added",
+                            "item": {
+                                "id": item_id,
+                                "type": "reasoning",
+                                "summary": [{"type": "summary_text", "text": ""}]
+                            }
+                        }),
+                    ));
+                    events.push(sse(
+                        "response.reasoning_summary_part.added",
+                        json!({
+                            "type": "response.reasoning_summary_part.added",
+                            "item_id": item_id,
+                            "summary_index": 0,
+                            "part": {"type": "summary_text", "text": ""}
+                        }),
+                    ));
+                }
+                if !self.reasoning_display_header_emitted {
+                    self.reasoning_display_header_emitted = true;
+                    if !reasoning.trim_start().starts_with("**") {
+                        events.push(sse(
+                            "response.reasoning_summary_text.delta",
+                            json!({
+                                "type": "response.reasoning_summary_text.delta",
+                                "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
+                                "summary_index": 0,
+                                "delta": REASONING_DISPLAY_HEADER
+                            }),
+                        ));
+                    }
+                }
+                self.reasoning_text.push_str(reasoning);
+                events.push(sse(
+                    "response.reasoning_summary_text.delta",
+                    json!({
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
+                        "summary_index": 0,
+                        "delta": reasoning
+                    }),
+                ));
+            }
+
+            if let Some(content) = delta.get("content").and_then(Value::as_str)
+                && !content.is_empty()
+            {
+                if self.message_item_id.is_none() {
+                    let item_id = generated_id("msg");
+                    self.message_item_id = Some(item_id.clone());
+                    events.push(sse(
+                        "response.output_item.added",
+                        json!({
+                            "type": "response.output_item.added",
+                            "item": {
+                                "id": item_id,
+                                "type": "message",
+                                "role": "assistant",
+                                "content": []
+                            }
+                        }),
+                    ));
+                }
+                self.text.push_str(content);
+                events.push(sse(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "delta": content
+                    }),
+                ));
+            }
+
+            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                for call in calls {
+                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    if self.tool_calls.len() <= index {
+                        self.tool_calls
+                            .resize_with(index + 1, ToolCallAccum::default);
+                    }
+                    let acc = &mut self.tool_calls[index];
+                    if let Some(id) = call.get("id").and_then(Value::as_str) {
+                        acc.id = id.to_string();
+                    }
+                    if let Some(name) = call
+                        .get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                    {
+                        acc.name = name.to_string();
+                    }
+                    if let Some(arguments) = call
+                        .get("function")
+                        .and_then(|function| function.get("arguments"))
+                        .and_then(Value::as_str)
+                    {
+                        acc.arguments.push_str(arguments);
+                    }
+                }
+            }
+        }
+        events
+    }
+
+    pub(crate) fn finish(
+        &self,
+        response_id: &str,
+        custom_tool_names: &BTreeSet<String>,
+        tool_policy: &ToolPolicyConfig,
+        continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
+    ) -> Vec<String> {
+        let mut events = Vec::new();
+        if !self.reasoning_text.is_empty() {
+            events.push(sse(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "id": self
+                            .reasoning_item_id
+                            .clone()
+                            .unwrap_or_else(|| generated_id("rsn")),
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": self.reasoning_text}]
+                    }
+                }),
+            ));
+        }
+        if !self.text.is_empty() {
+            events.push(sse(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "id": self
+                            .message_item_id
+                            .clone()
+                            .unwrap_or_else(|| generated_id("msg")),
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": self.text}]
+                    }
+                }),
+            ));
+        }
+
+        for call in &self.tool_calls {
+            if call.name.is_empty() {
+                continue;
+            }
+            let call_id = if call.id.is_empty() {
+                generated_id("call")
+            } else {
+                call.id.clone()
+            };
+            let item = tool_call_item(
+                &call.name,
+                &call.arguments,
+                &call_id,
+                custom_tool_names,
+                tool_policy,
+            );
+            events.push(sse(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": item
+                }),
+            ));
+        }
+
+        let end_turn = self.end_turn(continue_guard);
+        let mut response = json!({
+            "id": response_id,
+            "object": "response",
+            "status": "completed",
+            "end_turn": end_turn
+        });
+        if let Some(usage) = &self.usage
+            && let Some(response) = response.as_object_mut()
+        {
+            response.insert("usage".to_string(), usage.clone());
+        }
+        events.push(sse(
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": response
+            }),
+        ));
+        events.push("data: [DONE]\n\n".to_string());
+        events
+    }
+
+    fn end_turn(&self, continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>) -> bool {
+        let Some((debug_log, request_log_id, state)) = continue_guard else {
+            return true;
+        };
+        let decision = state.decision(self);
+        if decision.suspected {
+            debug_log.log(json!({
+                "event": "continue_guard",
+                "id": request_log_id,
+                "action": decision.action,
+                "reason": decision.reason,
+                "finish_reason": self.finish_reason,
+                "tool_call_count": self.tool_calls.iter().filter(|call| !call.name.is_empty()).count(),
+                "active_plan": state.active_plan,
+                "text_chars": self.text.chars().count(),
+                "text_fingerprint": text_fingerprint(&self.text)
+            }));
+        }
+        !decision.force_follow_up
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ContinueGuardState {
+    config: ContinueGuardConfig,
+    guard_key: Option<String>,
+    active_plan: ActivePlanSummary,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct ActivePlanSummary {
+    pending: usize,
+    in_progress: usize,
+}
+
+struct ContinueGuardDecision {
+    suspected: bool,
+    force_follow_up: bool,
+    action: &'static str,
+    reason: &'static str,
+}
+
+impl ContinueGuardState {
+    pub(crate) fn from_request(config: ContinueGuardConfig, request: &Value) -> Self {
+        Self {
+            guard_key: request
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            active_plan: latest_active_plan(request).unwrap_or_default(),
+            config,
+        }
+    }
+
+    fn decision(&self, accum: &ChatAccum) -> ContinueGuardDecision {
+        if !self.config.enabled {
+            return ContinueGuardDecision::none("disabled");
+        }
+        if accum.finish_reason.as_deref() != Some("stop") {
+            return ContinueGuardDecision::none("finish_reason_not_stop");
+        }
+        if accum.tool_calls.iter().any(|call| !call.name.is_empty()) {
+            return ContinueGuardDecision::none("tool_call_emitted");
+        }
+        if !self.active_plan.has_open_items() {
+            return ContinueGuardDecision::none("no_active_plan");
+        }
+        if !looks_like_mid_task_stop(&accum.text) {
+            return ContinueGuardDecision::none("assistant_text_not_continuation");
+        }
+
+        match self.config.mode {
+            ContinueGuardMode::Observe => ContinueGuardDecision {
+                suspected: true,
+                force_follow_up: false,
+                action: "observe",
+                reason: "suspected_premature_stop",
+            },
+            ContinueGuardMode::EndTurnFalse => {
+                if self.consume_followup_budget() {
+                    ContinueGuardDecision {
+                        suspected: true,
+                        force_follow_up: true,
+                        action: "end_turn_false",
+                        reason: "suspected_premature_stop",
+                    }
+                } else {
+                    ContinueGuardDecision {
+                        suspected: true,
+                        force_follow_up: false,
+                        action: "max_followups_reached",
+                        reason: "suspected_premature_stop",
+                    }
+                }
+            }
+        }
+    }
+
+    fn consume_followup_budget(&self) -> bool {
+        if self.config.max_followups == 0 {
+            return false;
+        }
+        let Some(key) = &self.guard_key else {
+            return false;
+        };
+        let Ok(mut budgets) = continue_guard_budgets().lock() else {
+            return false;
+        };
+        let used = budgets.entry(key.clone()).or_insert(0);
+        if *used >= self.config.max_followups {
+            return false;
+        }
+        *used += 1;
+        true
+    }
+}
+
+impl ContinueGuardDecision {
+    fn none(reason: &'static str) -> Self {
+        Self {
+            suspected: false,
+            force_follow_up: false,
+            action: "none",
+            reason,
+        }
+    }
+}
+
+impl ActivePlanSummary {
+    fn has_open_items(&self) -> bool {
+        self.pending > 0 || self.in_progress > 0
+    }
+}
+
+fn continue_guard_budgets() -> &'static Mutex<BTreeMap<String, u8>> {
+    static BUDGETS: OnceLock<Mutex<BTreeMap<String, u8>>> = OnceLock::new();
+    BUDGETS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn latest_active_plan(request: &Value) -> Option<ActivePlanSummary> {
+    let mut plans = Vec::new();
+    collect_update_plan_arguments(request, &mut plans);
+    plans.into_iter().filter_map(parse_plan_summary).last()
+}
+
+fn collect_update_plan_arguments(value: &Value, plans: &mut Vec<Value>) {
+    match value {
+        Value::Object(object) => {
+            if object.get("name").and_then(Value::as_str) == Some("update_plan")
+                && let Some(arguments) = object.get("arguments")
+            {
+                plans.push(arguments.clone());
+            }
+            if object
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                == Some("update_plan")
+                && let Some(arguments) = object
+                    .get("function")
+                    .and_then(|function| function.get("arguments"))
+            {
+                plans.push(arguments.clone());
+            }
+            for child in object.values() {
+                collect_update_plan_arguments(child, plans);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_update_plan_arguments(item, plans);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
+    let value = match arguments {
+        Value::String(arguments) => serde_json::from_str::<Value>(&arguments).ok()?,
+        value => value,
+    };
+    let plan = value.get("plan").and_then(Value::as_array)?;
+    let mut summary = ActivePlanSummary::default();
+    for item in plan {
+        match item.get("status").and_then(Value::as_str) {
+            Some("pending") => summary.pending += 1,
+            Some("in_progress") => summary.in_progress += 1,
+            _ => {}
+        }
+    }
+    Some(summary)
+}
+
+fn looks_like_mid_task_stop(text: &str) -> bool {
+    let normalized = text
+        .trim()
+        .to_ascii_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return false;
+    }
+    [
+        "let me ",
+        "let me also ",
+        "now let me ",
+        "i'll ",
+        "i will ",
+        "next i'll ",
+        "next i will ",
+        "i need to ",
+        "i'm going to ",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+        && ![
+            "done",
+            "complete",
+            "completed",
+            "finished",
+            "no actionable issues",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {
+    chat_json_to_responses_with_policy(value, custom_tool_names, &ToolPolicyConfig::default())
+}
+
+pub(crate) fn chat_json_to_responses_with_policy(
+    value: Value,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) -> Value {
+    let value = chat_completion_payload(&value);
+    let response_id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| generated_id("resp"));
+
+    let mut output = Vec::new();
+    if let Some(choice) = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        && let Some(message) = choice.get("message")
+    {
+        let reasoning = chat_reasoning_text(message);
+        let content = message.get("content").and_then(Value::as_str);
+        let mut message_parts = Vec::new();
+        if let Some(reasoning) = reasoning
+            && !reasoning.is_empty()
+        {
+            message_parts.push(json!({"type": "reasoning_summary_text", "text": reasoning}));
+        }
+        if let Some(content) = message.get("content").and_then(Value::as_str)
+            && !content.is_empty()
+        {
+            message_parts.push(json!({"type": "output_text", "text": content}));
+        }
+        if !message_parts.is_empty() {
+            output.push(json!({
+                "type": "message",
+                "role": "assistant",
+                "content": message_parts
+            }));
+        } else if content.is_some() {
+            output.push(json!({
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }));
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let name = call
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let arguments = call
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let call_id = call.get("id").and_then(Value::as_str).unwrap_or("call");
+                output.push(tool_call_item(
+                    name,
+                    arguments,
+                    call_id,
+                    custom_tool_names,
+                    tool_policy,
+                ));
+            }
+        }
+    }
+
+    json!({
+        "id": response_id,
+        "object": "response",
+        "status": "completed",
+        "output": output,
+        "usage": chat_usage_to_responses_usage(value.get("usage"))
+    })
+}
+
+fn chat_reasoning_text(value: &Value) -> Option<&str> {
+    value
+        .get("reasoning_content")
+        .or_else(|| value.get("reasoning"))
+        .and_then(Value::as_str)
+}
+
+pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
+    let Some(usage) = usage else {
+        return Value::Null;
+    };
+    if usage.is_null() {
+        return Value::Null;
+    }
+
+    let input_tokens =
+        token_count(usage, &["input_tokens"]).or_else(|| token_count(usage, &["prompt_tokens"]));
+    let output_tokens = token_count(usage, &["output_tokens"])
+        .or_else(|| token_count(usage, &["completion_tokens"]));
+    let total_tokens = token_count(usage, &["total_tokens"])
+        .or_else(|| Some(input_tokens.unwrap_or_default() + output_tokens.unwrap_or_default()));
+    let cached_tokens = token_count(usage, &["input_tokens_details", "cached_tokens"])
+        .or_else(|| token_count(usage, &["prompt_tokens_details", "cached_tokens"]))
+        .or_else(|| token_count(usage, &["cached_tokens"]))
+        .or_else(|| token_count(usage, &["prompt_cache_hit_tokens"]))
+        .unwrap_or_default();
+    let reasoning_tokens = token_count(usage, &["output_tokens_details", "reasoning_tokens"])
+        .or_else(|| token_count(usage, &["completion_tokens_details", "reasoning_tokens"]))
+        .unwrap_or_default();
+
+    json!({
+        "input_tokens": input_tokens.unwrap_or_default(),
+        "input_tokens_details": if cached_tokens > 0 {
+            json!({"cached_tokens": cached_tokens})
+        } else {
+            Value::Null
+        },
+        "output_tokens": output_tokens.unwrap_or_default(),
+        "output_tokens_details": if reasoning_tokens > 0 {
+            json!({"reasoning_tokens": reasoning_tokens})
+        } else {
+            Value::Null
+        },
+        "total_tokens": total_tokens.unwrap_or_default()
+    })
+}
+
+fn token_count(value: &Value, path: &[&str]) -> Option<i64> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current
+        .as_i64()
+        .or_else(|| current.as_u64().and_then(|value| i64::try_from(value).ok()))
+}
+
+pub(crate) fn chat_completion_payload(value: &Value) -> &Value {
+    value.get("data").unwrap_or(value)
+}
+
+pub(crate) fn chat_stream_debug_summary(payload: &Value, events: &[String]) -> Option<Value> {
+    let choices = payload
+        .get("choices")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut reasoning_content_chars = 0;
+    let mut reasoning_chars = 0;
+    let mut reasoning_details_count = 0;
+    let mut reasoning_details_shapes = BTreeSet::new();
+    let mut content_chars = 0;
+    let mut tool_call_delta_count = 0;
+    let mut fields = BTreeSet::new();
+
+    for choice in choices {
+        let delta = choice.get("delta").unwrap_or(&Value::Null);
+        if let Some(text) = delta.get("reasoning_content").and_then(Value::as_str) {
+            reasoning_content_chars += text.chars().count();
+            fields.insert("reasoning_content");
+        }
+        if let Some(text) = delta.get("reasoning").and_then(Value::as_str) {
+            reasoning_chars += text.chars().count();
+            fields.insert("reasoning");
+        }
+        if let Some(details) = delta.get("reasoning_details") {
+            fields.insert("reasoning_details");
+            match details {
+                Value::Array(items) => {
+                    reasoning_details_count += items.len();
+                    for item in items {
+                        reasoning_details_shapes.insert(value_shape(item));
+                    }
+                }
+                value => {
+                    reasoning_details_count += 1;
+                    reasoning_details_shapes.insert(value_shape(value));
+                }
+            }
+        }
+        if let Some(text) = delta.get("content").and_then(Value::as_str) {
+            content_chars += text.chars().count();
+            fields.insert("content");
+        }
+        if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+            tool_call_delta_count += calls.len();
+            fields.insert("tool_calls");
+        }
+    }
+
+    let emitted_reasoning_events = events
+        .iter()
+        .filter(|event| event.contains("response.reasoning_summary_text.delta"))
+        .count();
+    let emitted_text_events = events
+        .iter()
+        .filter(|event| event.contains("response.output_text.delta"))
+        .count();
+
+    let has_signal = reasoning_content_chars > 0
+        || reasoning_chars > 0
+        || reasoning_details_count > 0
+        || content_chars > 0
+        || tool_call_delta_count > 0
+        || emitted_reasoning_events > 0
+        || emitted_text_events > 0;
+    has_signal.then(|| {
+        json!({
+            "upstream_fields": fields.into_iter().collect::<Vec<_>>(),
+            "reasoning_content_chars": reasoning_content_chars,
+            "reasoning_chars": reasoning_chars,
+            "reasoning_details_count": reasoning_details_count,
+            "reasoning_details_shapes": reasoning_details_shapes.into_iter().collect::<Vec<_>>(),
+            "content_chars": content_chars,
+            "tool_call_delta_count": tool_call_delta_count,
+            "emitted_reasoning_delta_events": emitted_reasoning_events,
+            "emitted_output_text_delta_events": emitted_text_events
+        })
+    })
+}
+
+fn value_shape(value: &Value) -> String {
+    match value {
+        Value::Object(object) => {
+            let keys = object.keys().cloned().collect::<Vec<_>>().join(",");
+            format!("object:{keys}")
+        }
+        Value::Array(items) => format!("array:{}", items.len()),
+        Value::String(_) => "string".to_string(),
+        Value::Number(_) => "number".to_string(),
+        Value::Bool(_) => "bool".to_string(),
+        Value::Null => "null".to_string(),
+    }
+}
+
+pub(crate) fn native_stream_debug_summary(value: &Value) -> Option<Value> {
+    let event_type = value.get("type").and_then(Value::as_str);
+    let delta = value.get("delta").and_then(Value::as_str).unwrap_or("");
+    let item_type = value
+        .get("item")
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str);
+    let has_reasoning_delta = matches!(
+        event_type,
+        Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta")
+    );
+    let has_output_delta = matches!(event_type, Some("response.output_text.delta"));
+    let has_tool_item = matches!(
+        item_type,
+        Some("function_call" | "custom_tool_call" | "tool_call")
+    );
+
+    (has_reasoning_delta || has_output_delta || has_tool_item).then(|| {
+        json!({
+            "event_type": event_type,
+            "item_type": item_type,
+            "reasoning_delta_chars": if has_reasoning_delta { delta.chars().count() } else { 0 },
+            "output_text_delta_chars": if has_output_delta { delta.chars().count() } else { 0 },
+            "has_tool_item": has_tool_item
+        })
+    })
+}
+
+fn custom_tool_input(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("input")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| arguments.to_string())
+}
+
+pub(crate) fn morph_native_sse_frame(
+    frame: &str,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) -> String {
+    let mut event_lines = Vec::new();
+    let mut data_lines = Vec::new();
+
+    for line in frame.lines() {
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start());
+        } else {
+            event_lines.push(line);
+        }
+    }
+
+    if data_lines.is_empty() {
+        return format!("{frame}\n\n");
+    }
+
+    let data = data_lines.join("\n");
+    if data == "[DONE]" {
+        return format!("{frame}\n\n");
+    }
+
+    let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
+        return format!("{frame}\n\n");
+    };
+    morph_native_response_value(&mut value, custom_tool_names, tool_policy);
+
+    let mut out = String::new();
+    for line in event_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("data: ");
+    out.push_str(&value.to_string());
+    out.push_str("\n\n");
+    out
+}
+
+pub(crate) fn morph_native_response_value(
+    value: &mut Value,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) {
+    if custom_tool_names.is_empty() && !tool_policy.enabled {
+        return;
+    }
+
+    if let Some(item) = value.get_mut("item") {
+        morph_native_item(item, custom_tool_names, tool_policy);
+    }
+    if let Some(response) = value.get_mut("response")
+        && let Some(output) = response.get_mut("output").and_then(Value::as_array_mut)
+    {
+        for item in output {
+            morph_native_item(item, custom_tool_names, tool_policy);
+        }
+    }
+    if let Some(output) = value.get_mut("output").and_then(Value::as_array_mut) {
+        for item in output {
+            morph_native_item(item, custom_tool_names, tool_policy);
+        }
+    }
+}
+
+fn morph_native_item(
+    item: &mut Value,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) {
+    let Some(name) = item.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+        return;
+    }
+    let arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let call_id = item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .unwrap_or("call")
+        .to_string();
+    if !custom_tool_names.contains(name) {
+        let rewritten = tool_call_item(name, arguments, &call_id, custom_tool_names, tool_policy);
+        if rewritten.get("type").and_then(Value::as_str) != Some("function_call") {
+            *item = rewritten;
+        } else if let Some(arguments) = rewritten.get("arguments").cloned()
+            && let Some(map) = item.as_object_mut()
+        {
+            map.insert("arguments".to_string(), arguments);
+        }
+        return;
+    }
+
+    let input = custom_tool_input(arguments);
+    if let Some(map) = item.as_object_mut() {
+        map.insert(
+            "type".to_string(),
+            Value::String("custom_tool_call".to_string()),
+        );
+        map.remove("arguments");
+        map.insert("input".to_string(), Value::String(input));
+    }
+}
+
+fn tool_call_item(
+    name: &str,
+    arguments: &str,
+    call_id: &str,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) -> Value {
+    if custom_tool_names.contains(name) {
+        return json!({
+            "id": generated_id("ctc"),
+            "type": "custom_tool_call",
+            "name": name,
+            "input": custom_tool_input(arguments),
+            "call_id": call_id
+        });
+    }
+    match apply_tool_policy_to_function_call(name, arguments, tool_policy) {
+        Ok((arguments, _decision)) => json!({
+            "id": generated_id("fc"),
+            "type": "function_call",
+            "name": name,
+            "arguments": arguments,
+            "call_id": call_id
+        }),
+        Err(decision) => json!({
+            "id": generated_id("msg"),
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": format!("Codex Warp blocked tool call `{name}`: {}", decision.reason)
+            }]
+        }),
+    }
+}
+
+fn sse(event: &str, data: Value) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
+}
+
+pub(crate) fn sse_data(frame: &str) -> Option<String> {
+    let data = frame
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!data.is_empty()).then_some(data)
+}
+
+pub(crate) fn next_sse_frame_bytes(buffer: &[u8]) -> Option<(usize, usize)> {
+    fn find_bytes(buffer: &[u8], needle: &[u8]) -> Option<usize> {
+        buffer
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }
+
+    match (find_bytes(buffer, b"\n\n"), find_bytes(buffer, b"\r\n\r\n")) {
+        (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
+        (Some(lf), Some(_)) => Some((lf, 2)),
+        (Some(lf), None) => Some((lf, 2)),
+        (None, Some(crlf)) => Some((crlf, 4)),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "response_codec_tests.rs"]
+mod tests;

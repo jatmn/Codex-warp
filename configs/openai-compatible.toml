@@ -1,0 +1,48 @@
+# Generic OpenAI-compatible provider profile.
+# Copy or edit this file for providers that do not have a dedicated profile yet.
+# It is safe to include as-is because base_url is empty by default.
+# Rename `manual` when you create multiple generic provider profiles.
+
+[providers.manual]
+# Friendly gateway label shown in Codex model display names.
+# name = "Manual"
+
+# Required: set this to the provider API root, usually ending in /v1.
+# base_url = "https://provider.example/v1"
+
+# Use either api_key_env or api_key. Prefer api_key_env so secrets stay out of
+# config files.
+# api_key_env = "PROVIDER_API_KEY"
+# api_key = "..."
+
+auth_header = "authorization"
+auth_scheme = "Bearer"
+responses_path = "/responses"
+chat_completions_path = "/chat/completions"
+models_path = "/models"
+
+[providers.manual.headers]
+# Add provider-required headers here.
+# "HTTP-Referer" = "https://example.local"
+# "X-Title" = "Codex Warp"
+
+[providers.manual.model_metadata.defaults]
+# Fill these only when the provider's /models response is sparse or wrong.
+# context_window = 128000
+# input_modalities = ["text"]
+# default_reasoning_level = "medium"
+# supported_reasoning_levels = ["low", "medium", "high"]
+
+# Add per-model corrections here.
+# [providers.manual.model_metadata.overrides."provider-model-id"]
+# context_window = 200000
+# input_modalities = ["text", "image"]
+# supports_image_detail_original = true
+
+# Most OpenAI-compatible chat providers should inherit the baseline transform
+# from codex-warp.toml. Uncomment this section only if this provider needs a
+# provider-specific transform.
+# [providers.manual.transform]
+# backend = "open_ai_chat"
+# unsupported_tool_types = ["custom"]
+# unsupported_tool_strategy = "as_function"

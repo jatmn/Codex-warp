@@ -1,0 +1,29 @@
+# Xiaomi Mimo v2.5 model-family compatibility.
+# Loaded by the baseline config and applied to matching model ids from any
+# configured provider.
+
+[model_families.mimo_v2_5]
+priority = 10
+patterns = ["mimo-v2.5"]
+
+[model_families.mimo_v2_5.model_metadata]
+context_window = 1000000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text", "image"]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+auto_review_model_override = "mimo-v2.5"
+
+[model_families.mimo_v2_5_pro]
+priority = 10
+patterns = ["mimo-v2.5-pro"]
+
+[model_families.mimo_v2_5_pro.model_metadata]
+context_window = 1000000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text"]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+auto_review_model_override = "mimo-v2.5"

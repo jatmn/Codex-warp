@@ -1,0 +1,142 @@
+[[tool_policy.rules]]
+id = "github_auth_token"
+tool_name = "shell_command"
+match_kind = "github_auth_token"
+shell = "any"
+outcome = "deny"
+reason = "github_token_disclosure"
+
+[[tool_policy.rules]]
+id = "compound_github_command"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh"]
+shell = "complex"
+outcome = "force_manual"
+reason = "complex_shell"
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_auth_login"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "auth", "login"]
+shell = "simple"
+outcome = "force_manual"
+reason = "github_interactive_auth"
+justification = "GitHub authentication needs user interaction. Do you want to allow this command? If it prints a browser/device code, check the pending command output while it is still running."
+
+[[tool_policy.rules]]
+id = "github_auth_status"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "auth", "status"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "auth", "status"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_auth_setup_git"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "auth", "setup-git"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "auth", "setup-git"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_pr_read"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "pr", "view"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "pr"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_pr_diff"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "pr", "diff"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "pr"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_pr_list"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "pr", "list"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "pr"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_issue_view"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "issue", "view"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "issue"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_issue_list"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "issue", "list"]
+shell = "simple"
+outcome = "allow_hint"
+reason = "github_read_or_auth"
+prefix_rule = ["gh", "issue"]
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_api"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "api"]
+shell = "simple"
+outcome = "manual"
+reason = "github_api_requires_review"
+
+[[tool_policy.rules]]
+id = "github_pr_checkout"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "pr", "checkout"]
+shell = "simple"
+outcome = "force_manual"
+reason = "github_checkout_or_clone"
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_repo_clone"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh", "repo", "clone"]
+shell = "simple"
+outcome = "force_manual"
+reason = "github_checkout_or_clone"
+justification = "GitHub access is needed for the requested Codex task. Do you want to allow this command?"
+
+[[tool_policy.rules]]
+id = "github_unclassified"
+tool_name = "shell_command"
+match_kind = "command_prefix"
+command_prefix = ["gh"]
+shell = "simple"
+outcome = "manual"
+reason = "unclassified_github_command"

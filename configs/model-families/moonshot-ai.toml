@@ -1,0 +1,236 @@
+# Moonshot AI Kimi model-family compatibility.
+# Broad entries keep shared tool behavior. Exact/variant entries carry context,
+# modality, tool, and thinking differences.
+
+[model_families.kimi_k2]
+priority = 0
+patterns = [
+  "kimi-k2*",
+  "kimi_k2*",
+  "moonshot/kimi-k2*",
+  "moonshotai/kimi-k2*",
+]
+
+[model_families.kimi_k2.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+
+[model_families.kimi_k2.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+force_parallel_tool_calls = false
+
+[model_families.kimi_k2_instruct]
+priority = 10
+patterns = [
+  "kimi-k2",
+  "kimi_k2",
+  "kimi-k2-instruct",
+  "kimi-k2-0711",
+  "moonshot/kimi-k2",
+  "moonshotai/kimi-k2",
+  "moonshot/kimi-k2-instruct",
+  "moonshotai/kimi-k2-instruct",
+]
+
+[model_families.kimi_k2_instruct.model_metadata]
+context_window = 128000
+default_reasoning_level = "none"
+supported_reasoning_levels = ["none"]
+input_modalities = ["text"]
+supports_parallel_tool_calls = false
+auto_review_model_override = "kimi-k2"
+
+[model_families.kimi_k2_0905]
+priority = 10
+patterns = [
+  "kimi-k2-0905",
+  "kimi_k2_0905",
+  "moonshot/kimi-k2-0905",
+  "moonshotai/kimi-k2-0905",
+]
+
+[model_families.kimi_k2_0905.model_metadata]
+context_window = 256000
+default_reasoning_level = "none"
+supported_reasoning_levels = ["none"]
+input_modalities = ["text"]
+supports_parallel_tool_calls = false
+
+[model_families.kimi_k2_5]
+priority = 10
+patterns = [
+  "kimi-k2.5",
+  "kimi_k2.5",
+  "kimi-k2-5",
+  "kimi_k2_5",
+  "moonshot/kimi-k2.5",
+  "moonshotai/kimi-k2.5",
+]
+
+[model_families.kimi_k2_5.model_metadata]
+context_window = 220000
+max_context_window = 262144
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["none", "low", "medium", "high"]
+input_modalities = ["text", "image", "video"]
+supports_parallel_tool_calls = false
+supports_search_tool = true
+auto_review_model_override = "kimi-k2.5"
+
+[model_families.kimi_k2_5.transform]
+force_parallel_tool_calls = false
+
+[[model_families.kimi_k2_5.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.kimi_k2_5.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
+
+[model_families.kimi_k2_6]
+priority = 10
+patterns = [
+  "kimi-k2.6",
+  "kimi_k2.6",
+  "kimi-k2-6",
+  "kimi_k2_6",
+  "moonshot/kimi-k2.6",
+  "moonshotai/kimi-k2.6",
+]
+
+[model_families.kimi_k2_6.model_metadata]
+context_window = 220000
+max_context_window = 262144
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["none", "low", "medium", "high"]
+input_modalities = ["text", "image", "video"]
+supports_parallel_tool_calls = false
+supports_search_tool = true
+auto_review_model_override = "kimi-k2.6"
+
+[model_families.kimi_k2_6.transform]
+force_parallel_tool_calls = false
+
+[[model_families.kimi_k2_6.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.kimi_k2_6.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
+
+[model_families.kimi_k2_6_code]
+priority = 10
+patterns = [
+  "kimi-k2.6-code",
+  "kimi_k2.6_code",
+  "kimi-k2-6-code",
+  "kimi_k2_6_code",
+  "moonshot/kimi-k2.6-code",
+  "moonshotai/kimi-k2.6-code",
+]
+
+[model_families.kimi_k2_6_code.model_metadata]
+context_window = 220000
+max_context_window = 262144
+default_reasoning_level = "high"
+supported_reasoning_levels = ["high"]
+input_modalities = ["text", "image"]
+supports_parallel_tool_calls = false
+auto_review_model_override = "kimi-k2.6-code"
+
+[model_families.kimi_k2_6_code.transform]
+force_parallel_tool_calls = false
+preserve_reasoning_content_history = true
+
+[[model_families.kimi_k2_6_code.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.kimi_k2_6_code.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.type"
+value = "enabled"
+kind = "static_string"
+
+[[model_families.kimi_k2_6_code.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.keep"
+value = "all"
+kind = "static_string"
+
+[model_families.kimi_k2_7_code]
+priority = 10
+patterns = [
+  "kimi-k2.7-code",
+  "kimi-k2.7-code-highspeed",
+  "kimi_k2.7_code",
+  "kimi_k2.7_code_highspeed",
+  "kimi-k2-7-code",
+  "kimi-k2-7-code-highspeed",
+  "kimi_k2_7_code",
+  "kimi_k2_7_code_highspeed",
+  "kimi-for-coding",
+  "moonshot/kimi-k2.7-code",
+  "moonshot/kimi-k2.7-code-highspeed",
+  "moonshotai/kimi-k2.7-code",
+  "moonshotai/kimi-k2.7-code-highspeed",
+]
+
+[model_families.kimi_k2_7_code.model_metadata]
+context_window = 220000
+max_context_window = 262144
+default_reasoning_level = "high"
+supported_reasoning_levels = ["high"]
+input_modalities = ["text", "image"]
+supports_parallel_tool_calls = false
+auto_review_model_override = "kimi-k2.7-code"
+
+[model_families.kimi_k2_7_code.transform]
+force_parallel_tool_calls = false
+preserve_reasoning_content_history = true
+
+[[model_families.kimi_k2_7_code.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.type"
+value = "enabled"
+kind = "static_string"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.keep"
+value = "all"
+kind = "static_string"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = "temperature"
+kind = "drop"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = "top_p"
+kind = "drop"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = "n"
+kind = "drop"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = "presence_penalty"
+kind = "drop"
+
+[[model_families.kimi_k2_7_code.transform.append_chat_request_morphs]]
+from = "frequency_penalty"
+kind = "drop"

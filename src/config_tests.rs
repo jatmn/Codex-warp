@@ -1,0 +1,541 @@
+use super::*;
+use std::fs;
+use std::path::Path;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+#[test]
+fn example_configs_parse_request_morphs() {
+    let default_config = load_config_layers(&[]).expect("default parses");
+    let xiaomi_config = load_config_layers(&[PathBuf::from("configs/xiaomi-token-plan.toml")])
+        .expect("xiaomi layered config parses");
+    let clinepass_config = load_config_layers(&[PathBuf::from("configs/clinepass.toml")])
+        .expect("clinepass layered config parses");
+    let kimicode_config = load_config_layers(&[PathBuf::from("configs/moonshot-kimicode.toml")])
+        .expect("moonshot kimicode layered config parses");
+    let opencode_go_config = load_config_layers(&[PathBuf::from("configs/opencode-go.toml")])
+        .expect("opencode go layered config parses");
+    let generic_config = load_config_layers(&[PathBuf::from("configs/openai-compatible.toml")])
+        .expect("generic openai-compatible profile parses");
+
+    assert!(
+        default_config
+            .transform
+            .chat_request_morphs
+            .iter()
+            .any(|morph| morph.kind == RequestMorphKind::TextFormat)
+    );
+    assert!(default_config.model_families.contains_key("deepseek"));
+    assert!(default_config.model_families.contains_key("deepseek_v3_2"));
+    assert!(
+        default_config
+            .model_families
+            .contains_key("deepseek_v4_pro")
+    );
+    assert!(default_config.model_families.contains_key("kimi_k2"));
+    assert!(default_config.model_families.contains_key("kimi_k2_5"));
+    assert!(default_config.model_families.contains_key("kimi_k2_6"));
+    assert!(default_config.model_families.contains_key("kimi_k2_6_code"));
+    assert!(default_config.model_families.contains_key("minimax_m"));
+    assert!(default_config.model_families.contains_key("minimax_m2_5"));
+    assert!(default_config.model_families.contains_key("minimax_m2_7"));
+    assert!(default_config.model_families.contains_key("minimax_m3"));
+    assert!(default_config.model_families.contains_key("qwen3_6"));
+    assert!(
+        default_config
+            .model_families
+            .contains_key("qwen3_6_35b_a3b")
+    );
+    assert!(default_config.model_families.contains_key("qwen3_7"));
+    assert!(default_config.model_families.contains_key("mimo_v2_5"));
+    assert!(default_config.model_families.contains_key("mimo_v2_5_pro"));
+    assert!(default_config.model_families.contains_key("x_ai_grok"));
+    assert!(default_config.model_families.contains_key("x_ai_grok_4_3"));
+    assert!(
+        default_config
+            .model_families
+            .contains_key("x_ai_grok_build_0_1")
+    );
+    assert!(default_config.model_families.contains_key("z_ai_glm_5"));
+    assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
+    assert!(provider_entries(&default_config).is_empty());
+    assert!(provider_entries(&generic_config).is_empty());
+    assert!(!generic_config.provider.is_enabled());
+    assert!(
+        generic_config
+            .providers
+            .get("manual")
+            .expect("generic manual provider exists")
+            .base_url
+            .is_empty()
+    );
+    assert!(
+        xiaomi_config
+            .transform
+            .chat_request_morphs
+            .iter()
+            .any(|morph| morph.from == "reasoning.effort")
+    );
+    let clinepass = clinepass_config
+        .providers
+        .get("cline_pass")
+        .expect("clinepass provider exists");
+    assert_eq!(clinepass.name.as_deref(), Some("ClinePass"));
+    assert_eq!(clinepass.base_url, "https://api.cline.bot/api/v1");
+    assert_eq!(clinepass.model_catalog.len(), 10);
+    assert!(
+        clinepass
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "cline-pass/qwen3.7-max")
+    );
+    assert_eq!(
+        provider_id_for_config_model(&clinepass_config, "cline-pass/qwen3.7-max").as_deref(),
+        Some("cline_pass")
+    );
+    let opencode_go = opencode_go_config
+        .providers
+        .get("opencode_go")
+        .expect("opencode go provider exists");
+    assert_eq!(opencode_go.name.as_deref(), Some("OpenCode Go"));
+    assert_eq!(opencode_go.base_url, "https://opencode.ai/zen/go/v1");
+    assert_eq!(
+        opencode_go.api_key_env.as_deref(),
+        Some("OPENCODE_GO_API_KEY")
+    );
+    assert!(opencode_go.model_catalog_only);
+    assert_eq!(opencode_go.model_catalog.len(), 8);
+    assert!(
+        opencode_go
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "opencode-go/kimi-k2.7-code"
+                && entry.upstream_id.as_deref() == Some("kimi-k2.7-code"))
+    );
+    assert_eq!(
+        provider_id_for_config_model(&opencode_go_config, "opencode-go/kimi-k2.7-code").as_deref(),
+        Some("opencode_go")
+    );
+    let kimicode = kimicode_config
+        .providers
+        .get("moonshot_kimicode")
+        .expect("moonshot kimicode provider exists");
+    assert_eq!(kimicode.name.as_deref(), Some("Kimi Code"));
+    assert_eq!(kimicode.base_url, "https://api.kimi.com/coding/v1");
+    assert_eq!(kimicode.api_key_env.as_deref(), Some("KIMICODE_API_KEY"));
+    assert_eq!(kimicode.model_catalog.len(), 5);
+    assert!(
+        kimicode
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "kimi-k2.7-code-highspeed")
+    );
+    assert_eq!(
+        xiaomi_config.provider.base_url,
+        "https://token-plan-sgp.xiaomimimo.com/v1"
+    );
+    assert_eq!(xiaomi_config.provider.name.as_deref(), Some("Xiaomi"));
+    assert!(xiaomi_config.provider.model_catalog_only);
+    assert_eq!(xiaomi_config.provider.model_catalog.len(), 2);
+    assert!(
+        xiaomi_config
+            .provider
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "mimo-v2.5-pro")
+    );
+    assert!(xiaomi_config.provider.model_metadata.overrides.is_empty());
+    assert_eq!(
+        matching_model_families(&xiaomi_config, "mimo-v2.5")
+            .first()
+            .and_then(|family| family.model_metadata.context_window),
+        Some(1_000_000)
+    );
+}
+
+#[test]
+fn reusable_provider_profiles_leave_auto_review_to_model_families() {
+    for config_path in [
+        "configs/clinepass.toml",
+        "configs/moonshot-kimicode.toml",
+        "configs/opencode-go.toml",
+        "configs/xiaomi-token-plan.toml",
+    ] {
+        let config = load_config_layers(&[PathBuf::from(config_path)])
+            .unwrap_or_else(|error| panic!("{config_path} config loads: {error}"));
+
+        assert_eq!(
+            provider_id_for_config_model(&config, "codex-auto-review"),
+            None,
+            "{config_path} should not route literal codex-auto-review as a provider model"
+        );
+    }
+}
+
+#[test]
+fn layered_config_keeps_default_morphs_when_profile_omits_them() {
+    let config = load_config_layers(&[PathBuf::from("configs/xiaomi-token-plan.toml")])
+        .expect("config layers load");
+
+    assert_eq!(
+        config.transform.chat_request_morphs,
+        default_chat_request_morphs()
+    );
+    assert_eq!(
+        config.transform.unsupported_tool_strategy,
+        UnsupportedToolStrategy::AsFunction
+    );
+}
+
+#[test]
+fn named_providers_parse_with_model_routes_and_provider_transforms() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.other]
+            base_url = "https://other.example/v1"
+            api_key_env = "OTHER_API_KEY"
+
+            [providers.other.model_metadata.overrides.other-model]
+            context_window = 200000
+
+            [providers.other.transform]
+            backend = "responses"
+            unsupported_tool_strategy = "passthrough"
+            "#,
+    )
+    .expect("named providers parse");
+
+    assert_eq!(provider_entries(&config).len(), 1);
+    assert_eq!(
+        provider_id_for_config_model(&config, "other-model").as_deref(),
+        Some("other")
+    );
+    assert_eq!(
+        provider_by_id(&config, "other")
+            .expect("provider exists")
+            .transform
+            .as_ref()
+            .expect("provider-specific transform exists")
+            .backend,
+        Backend::Responses
+    );
+}
+
+#[test]
+fn named_providers_can_omit_provider_specific_transform() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.other]
+            base_url = "https://other.example/v1"
+            "#,
+    )
+    .expect("named provider without transform parses");
+
+    assert!(provider_by_id(&config, "other").is_some());
+    assert!(
+        provider_by_id(&config, "other")
+            .expect("provider exists")
+            .transform
+            .is_none()
+    );
+}
+
+#[test]
+fn debug_config_parses_log_options() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [debug]
+            enabled = true
+            log_path = "/tmp/codex-warp-debug.jsonl"
+            include_bodies = true
+            include_stream_bodies = true
+            "#,
+    )
+    .expect("debug config parses");
+
+    assert!(config.debug.enabled);
+    assert_eq!(
+        config.debug.log_path.as_deref(),
+        Some(Path::new("/tmp/codex-warp-debug.jsonl"))
+    );
+    assert!(config.debug.include_bodies);
+    assert!(config.debug.include_stream_bodies);
+}
+
+#[test]
+fn continue_guard_config_parses_options() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [continue_guard]
+            enabled = true
+            mode = "end_turn_false"
+            max_followups = 2
+            "#,
+    )
+    .expect("continue guard config parses");
+
+    assert!(config.continue_guard.enabled);
+    assert_eq!(
+        config.continue_guard.mode,
+        crate::config::ContinueGuardMode::EndTurnFalse
+    );
+    assert_eq!(config.continue_guard.max_followups, 2);
+}
+
+#[test]
+fn tool_policy_config_parses_options() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [tool_policy]
+            enabled = true
+            mode = "enforce"
+
+            [[tool_policy.rules]]
+            id = "test_rule"
+            tool_name = "shell_command"
+            match_kind = "command_prefix"
+            command_prefix = ["test"]
+            outcome = "allow_hint"
+            reason = "test_reason"
+            prefix_rule = ["test"]
+        "#,
+    )
+    .expect("tool policy config parses");
+
+    assert!(config.tool_policy.enabled);
+    assert_eq!(config.tool_policy.mode, ToolPolicyMode::Enforce);
+    assert_eq!(config.tool_policy.rules.len(), 1);
+    assert_eq!(config.tool_policy.rules[0].id, "test_rule");
+}
+
+#[test]
+fn default_config_loads_github_tool_policy_rules() {
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    assert!(!config.tool_policy.enabled);
+    assert!(
+        config
+            .tool_policy
+            .rules
+            .iter()
+            .any(|rule| rule.id == "github_auth_token")
+    );
+}
+
+#[test]
+fn tool_policy_replace_clears_default_rules_before_custom_includes() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-policy-test-{suffix}"));
+    fs::create_dir_all(dir.join("policies")).expect("policy dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            tool_policy_replace = true
+            tool_policy_include = ["policies/custom.toml"]
+        "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("policies/custom.toml"),
+        r#"
+            [[tool_policy.rules]]
+            id = "custom_only"
+            tool_name = "shell_command"
+            match_kind = "command_prefix"
+            command_prefix = ["custom"]
+            outcome = "manual"
+        "#,
+    )
+    .expect("custom policy written");
+
+    let config = load_config_layers(&[dir.join("base.toml")]).expect("config loads");
+
+    assert_eq!(config.tool_policy.rules.len(), 1);
+    assert_eq!(config.tool_policy.rules[0].id, "custom_only");
+}
+
+#[test]
+fn codex_auto_review_literal_model_does_not_route_to_provider_overrides() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.kimi]
+            base_url = "https://kimi.example/v1"
+
+            [providers.kimi.model_metadata.overrides.codex-auto-review]
+            auto_review_model_override = "kimi-small"
+        "#,
+    )
+    .expect("config parses");
+
+    assert_eq!(
+        provider_id_for_config_model(&config, "codex-auto-review"),
+        None
+    );
+}
+
+#[test]
+fn config_include_loads_provider_profile_relative_to_declaring_file() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-config-test-{suffix}"));
+    fs::create_dir_all(dir.join("profiles")).expect("temp profile dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            listen = "127.0.0.1:9999"
+
+            [config]
+            include = ["profiles/provider.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("profiles/provider.toml"),
+        r#"
+            [provider]
+            base_url = "https://included.example/v1"
+
+            [provider.model_metadata.overrides.included-model]
+            context_window = 333000
+            "#,
+    )
+    .expect("included config written");
+
+    let config = load_config_layers(&[dir.join("base.toml")]).expect("included config loads");
+
+    assert_eq!(config.listen, "127.0.0.1:9999");
+    assert_eq!(config.provider.base_url, "https://included.example/v1");
+    assert_eq!(
+        provider_id_for_config_model(&config, "included-model").as_deref(),
+        Some(PRIMARY_PROVIDER_ID)
+    );
+}
+
+#[test]
+fn model_family_includes_load_relative_to_declaring_file() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-family-test-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/provider-family.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/provider-family.toml"),
+        r#"
+            [model_families.provider_family]
+            priority = 5
+            patterns = ["provider-*"]
+
+            [model_families.provider_family.model_metadata]
+            context_window = 222000
+            "#,
+    )
+    .expect("family config written");
+
+    let config = load_config_layers(&[dir.join("base.toml")]).expect("family config loads");
+
+    assert_eq!(
+        matching_model_families(&config, "provider-model")
+            .first()
+            .and_then(|family| family.model_metadata.context_window),
+        Some(222000)
+    );
+}
+
+#[test]
+fn model_family_patterns_support_wildcards() {
+    let mut config = AppConfig::default();
+    config.model_families.insert(
+        "glm".to_string(),
+        ModelFamilyConfig {
+            patterns: vec![
+                "z-ai/glm-5*".to_string(),
+                "glm-5*".to_string(),
+                "glm_5*".to_string(),
+            ],
+            ..ModelFamilyConfig::default()
+        },
+    );
+
+    assert_eq!(matching_model_families(&config, "z-ai/glm-5.2").len(), 1);
+    assert_eq!(
+        matching_model_families(&config, "cline-pass/glm-5.2").len(),
+        1
+    );
+    assert_eq!(matching_model_families(&config, "GLM_5_AIR").len(), 1);
+    assert!(matching_model_families(&config, "glm-4.5").is_empty());
+}
+
+#[test]
+fn model_family_matches_are_sorted_by_priority() {
+    let mut config = AppConfig::default();
+    config.model_families.insert(
+        "specific".to_string(),
+        ModelFamilyConfig {
+            priority: 10,
+            patterns: vec!["model-v1".to_string()],
+            ..ModelFamilyConfig::default()
+        },
+    );
+    config.model_families.insert(
+        "broad".to_string(),
+        ModelFamilyConfig {
+            priority: 0,
+            patterns: vec!["model-*".to_string()],
+            ..ModelFamilyConfig::default()
+        },
+    );
+
+    let matches = matching_model_families(&config, "model-v1");
+
+    assert_eq!(matches[0].priority, 0);
+    assert_eq!(matches[1].priority, 10);
+}
+
+#[test]
+fn transform_patch_can_remove_inherited_morphs_before_appending() {
+    let mut transform = TransformConfig::default();
+    let patch = TransformConfigPatch {
+        remove_chat_request_morphs: vec![MorphSelector {
+            from: "reasoning.effort".to_string(),
+            to: Some("reasoning_effort".to_string()),
+            kind: Some(RequestMorphKind::Rename),
+        }],
+        append_chat_request_morphs: vec![RequestMorph {
+            from: "reasoning.effort".to_string(),
+            to: Some("thinking.type".to_string()),
+            value: None,
+            kind: RequestMorphKind::ThinkingType,
+        }],
+        ..TransformConfigPatch::default()
+    };
+
+    patch.apply_to(&mut transform);
+
+    assert!(
+        !transform
+            .chat_request_morphs
+            .iter()
+            .any(|morph| morph.to.as_deref() == Some("reasoning_effort"))
+    );
+    assert!(
+        transform
+            .chat_request_morphs
+            .iter()
+            .any(|morph| morph.kind == RequestMorphKind::ThinkingType)
+    );
+}

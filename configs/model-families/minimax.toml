@@ -1,0 +1,111 @@
+# MiniMax model-family compatibility.
+# Broad entries keep shared tool behavior. Current M-series variants carry
+# model-specific context, tool/search, modality, and thinking differences.
+
+[model_families.minimax_m]
+priority = 0
+patterns = [
+  "minimax-m*",
+  "minimax_m*",
+  "minimax/minimax-m*",
+  "minimaxai/minimax-m*",
+]
+
+[model_families.minimax_m.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+
+[model_families.minimax_m.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+force_parallel_tool_calls = false
+
+[model_families.minimax_m2_5]
+priority = 10
+patterns = [
+  "minimax-m2.5",
+  "minimax_m2.5",
+  "minimax-m2-5",
+  "minimax_m2_5",
+  "minimax/minimax-m2.5",
+  "minimaxai/minimax-m2.5",
+]
+
+[model_families.minimax_m2_5.model_metadata]
+context_window = 192000
+default_reasoning_level = "none"
+supported_reasoning_levels = ["none"]
+input_modalities = ["text"]
+supports_parallel_tool_calls = false
+supports_search_tool = true
+auto_review_model_override = "minimax-m2.5"
+
+[model_families.minimax_m2_5.transform]
+force_parallel_tool_calls = false
+
+[model_families.minimax_m2_7]
+priority = 10
+patterns = [
+  "minimax-m2.7",
+  "minimax_m2.7",
+  "minimax-m2-7",
+  "minimax_m2_7",
+  "minimax/minimax-m2.7",
+  "minimaxai/minimax-m2.7",
+]
+
+[model_families.minimax_m2_7.model_metadata]
+context_window = 200000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text"]
+supports_parallel_tool_calls = false
+supports_search_tool = true
+auto_review_model_override = "minimax-m2.7"
+
+[model_families.minimax_m2_7.transform]
+force_parallel_tool_calls = false
+
+[[model_families.minimax_m2_7.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.minimax_m2_7.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
+
+[model_families.minimax_m3]
+priority = 10
+patterns = [
+  "minimax-m3",
+  "minimax_m3",
+  "minimax-m3-latest",
+  "minimax_m3_latest",
+  "minimax/minimax-m3",
+  "minimaxai/minimax-m3",
+]
+
+[model_families.minimax_m3.model_metadata]
+context_window = 1000000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text", "image"]
+supports_parallel_tool_calls = false
+supports_search_tool = false
+auto_review_model_override = "minimax-m3"
+
+[model_families.minimax_m3.transform]
+force_parallel_tool_calls = false
+
+[[model_families.minimax_m3.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.minimax_m3.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"

@@ -1,0 +1,116 @@
+# Codex Client Compatibility Notes
+
+Codex Warp serves the `/v1/models` metadata that Codex Desktop, Codex CLI, and
+other Codex clients use to decide how a model should be driven. Slash-command
+UI behavior is local to the Codex client, but some commands depend on model
+metadata and request compatibility once they start a model turn.
+
+## Table Of Contents
+
+- [Checked Source Paths](#checked-source-paths)
+- [What Codex Warp Must Preserve](#what-codex-warp-must-preserve)
+- [Codex App Server Model Refresh](#codex-app-server-model-refresh)
+- [Configurable Codex Model Metadata](#configurable-codex-model-metadata)
+
+## Checked Source Paths
+
+These notes were checked on 2026-07-02 against the public
+[`openai/codex`](https://github.com/openai/codex) source tree at commit
+[`020828170fb2224f0d7a7a243a1f7d21cc3df5ee`](https://github.com/openai/codex/commit/020828170fb2224f0d7a7a243a1f7d21cc3df5ee):
+
+- [`codex-rs/tui/src/slash_command.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/tui/src/slash_command.rs)
+  lists built-in slash commands such as `/model`, `/skills`, `/plugins`,
+  `/goal`, and `/compact`.
+- [`codex-rs/protocol/src/openai_models.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/protocol/src/openai_models.rs)
+  defines the `ModelInfo` fields Codex expects from `/models`.
+- [`codex-rs/core/src/context/available_skills_instructions.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/core/src/context/available_skills_instructions.rs)
+  shows that `include_skills_usage_instructions` controls whether skill usage
+  instructions are included in model context.
+- [`codex-rs/core/src/compact_remote.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/core/src/compact_remote.rs)
+  shows that `/compact` sends a compaction request through the normal model
+  client.
+- [`codex-rs/features/src/lib.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/features/src/lib.rs)
+  shows that plugins, goals, and remote compaction are Codex feature flags
+  rather than provider-advertised slash commands.
+- [`codex-rs/models-manager/src/manager.rs`](https://github.com/openai/codex/blob/020828170fb2224f0d7a7a243a1f7d21cc3df5ee/codex-rs/models-manager/src/manager.rs)
+  seeds custom providers from bundled models and merges refreshed `/models`
+  entries into that catalog for API/command-auth providers.
+
+## What Codex Warp Must Preserve
+
+`/skills` and user-created skills are discovered by Codex locally, but the model
+still needs the skills context. Synthetic model entries default
+`include_skills_usage_instructions = true`, and provider/model-family catalogs
+can override it when needed.
+
+`/plugins` is also local Codex functionality. Plugins may contribute skills, MCP
+servers, app connectors, and hooks. Codex Warp does not install or list plugins,
+but it must avoid breaking the model turn that follows plugin or skill
+injection.
+
+`/goal` is persisted and managed by Codex. It does not require special provider
+routes, but goal continuations still use the selected model through Codex Warp.
+
+`/compact` uses the model client, so the provider must handle the translated
+Responses request. Context and compaction metadata are configurable through
+`context_window`, `max_context_window`, `auto_compact_token_limit`,
+`effective_context_window_percent`, and `comp_hash`.
+
+`/model` uses the normalized model catalog. Codex Warp merges provider `/models`
+results with provider and model-family metadata so models from multiple
+providers can appear in one catalog.
+
+## Codex App Server Model Refresh
+
+When using Codex Warp as a Codex provider, do not set `model_catalog_json` in
+Codex's `config.toml`. That option makes Codex build a static model manager from
+the JSON file and prevents the app server from auto-populating models from the
+provider's `/v1/models` endpoint.
+
+For Codex Warp, Codex should instead be configured with a normal provider entry
+whose `base_url` points at the local proxy, for example
+`http://127.0.0.1:8787/v1`.
+
+Current Codex CLI only refreshes a custom provider's remote model catalog when
+the provider uses Codex backend auth or has command-backed provider auth
+configured. Because Codex Warp owns the upstream credentials in its gateway
+configs, use a harmless local auth command on the Codex provider entry:
+
+```toml
+[model_providers.codex-warp.auth]
+command = "printf"
+args = ["codex-warp-local"]
+refresh_interval_ms = 0
+```
+
+After removing `model_catalog_json` and adding the auth shim, restart the Codex
+app-server daemon so it rebuilds its model manager and fetches the merged Codex
+Warp catalog from the live proxy. The shim is only a local catalog-refresh
+trigger; upstream provider API keys still belong in Codex Warp gateway configs.
+
+Codex's command-auth refresh path merges remote models into the bundled Codex
+catalog rather than replacing it. The bundled GPT models use low priorities, so
+they can appear interleaved with gateway models unless Codex Warp overrides
+them. `hide_codex_builtin_models = true` is enabled by default under Warp's
+`[config]` section; it appends hidden replacements for Codex's bundled GPT
+slugs so the picker only shows the live gateway catalog. Set it to `false` only
+when intentionally testing Codex's bundled models alongside Warp gateways.
+
+## Configurable Codex Model Metadata
+
+Catalogs can set the Codex-facing fields below without recompiling:
+
+- `include_skills_usage_instructions`
+- `experimental_supported_tools`
+- `tool_mode`
+- `multi_agent_version`
+- `auto_review_model_override`
+- `comp_hash`
+- `effective_context_window_percent`
+- `auto_compact_token_limit`
+- `context_window` and `max_context_window`
+- tool/search fields such as `shell_type`, `apply_patch_tool_type`, and
+  `web_search_tool_type`
+
+When a provider returns these fields directly from `/models`, Codex Warp now
+passes them through before applying model-family and provider overrides.

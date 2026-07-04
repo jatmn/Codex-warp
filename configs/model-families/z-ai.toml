@@ -1,0 +1,71 @@
+# Z.ai GLM-5 model-family compatibility.
+# Broad entries keep shared tool/reasoning behavior. Variant entries carry
+# model-specific context and modality differences.
+
+[model_families.z_ai_glm_5]
+priority = 0
+patterns = [
+  "glm-5*",
+  "glm_5*",
+  "z-ai/glm-5*",
+  "z.ai/glm-5*",
+  "zai/glm-5*",
+]
+
+[model_families.z_ai_glm_5.model_metadata]
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+supports_parallel_tool_calls = false
+
+[model_families.z_ai_glm_5.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+force_parallel_tool_calls = false
+
+[[model_families.z_ai_glm_5.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.z_ai_glm_5.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
+
+[model_families.z_ai_glm_5_base]
+priority = 10
+patterns = [
+  "glm-5",
+  "glm_5",
+  "glm-5.1",
+  "glm_5.1",
+  "z-ai/glm-5",
+  "z.ai/glm-5",
+  "zai/glm-5",
+  "z-ai/glm-5.1",
+  "z.ai/glm-5.1",
+  "zai/glm-5.1",
+]
+
+[model_families.z_ai_glm_5_base.model_metadata]
+context_window = 200000
+input_modalities = ["text"]
+auto_review_model_override = "glm-5.1"
+
+[model_families.z_ai_glm_5_2]
+priority = 10
+patterns = [
+  "glm-5.2",
+  "glm_5.2",
+  "z-ai/glm-5.2",
+  "z.ai/glm-5.2",
+  "zai/glm-5.2",
+]
+
+[model_families.z_ai_glm_5_2.model_metadata]
+context_window = 1000000
+input_modalities = ["text"]
+auto_review_model_override = "glm-5.2"

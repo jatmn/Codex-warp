@@ -1,0 +1,94 @@
+use super::*;
+
+use serde_json::json;
+
+#[test]
+fn request_debug_summary_keeps_cache_fields_without_prompt_text() {
+    let summary = request_debug_summary(&json!({
+        "model": "kimi-k2.7-code",
+        "prompt_cache_key": "session-1",
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "metadata": {"volatile": "turn-1"},
+        "messages": [
+            {"role": "system", "content": "secret system prompt"},
+            {"role": "user", "content": "secret user prompt"}
+        ],
+        "tools": [{"type": "function", "function": {"name": "search"}}]
+    }));
+
+    assert_eq!(summary["model"], "kimi-k2.7-code");
+    assert_eq!(summary["prompt_cache_key"], "session-1");
+    assert_eq!(summary["stream_options"]["include_usage"], true);
+    assert_eq!(summary["has_metadata"], true);
+    assert_eq!(summary["has_client_metadata"], false);
+    assert_eq!(summary["messages"][0]["role"], "system");
+    assert!(summary["messages"][0]["content_chars"].as_u64().unwrap() > 0);
+    assert!(summary["messages"][0].get("content").is_none());
+    assert_eq!(summary["tools"]["count"], 1);
+    assert!(summary["body_fingerprint"].as_str().is_some());
+}
+
+#[test]
+fn text_fingerprint_identifies_error_without_exposing_text() {
+    let long_error = format!("{} secret prompt\nsecond line", "x".repeat(200));
+    let fingerprint = text_fingerprint(&long_error);
+
+    assert_eq!(fingerprint.len(), 16);
+    assert!(!fingerprint.contains("secret prompt"));
+    assert!(!fingerprint.contains("second line"));
+}
+
+#[test]
+fn redaction_removes_keys_from_verbose_debug_values() {
+    let fake_openai_key = format!("{}{}", "sk_", "TEST_ONLY_PLACEHOLDER_DO_NOT_USE");
+    let fake_token_plan_key = format!("{}{}", "tp-", "TEST_ONLY_PLACEHOLDER_DO_NOT_USE");
+    let redacted = redact_debug_value(&json!({
+        "api_key": fake_openai_key,
+        "authorization": format!("Bearer {fake_token_plan_key}"),
+        "nested": {
+            "content": format!("TOKENPLAN_API_KEY={fake_token_plan_key}\nnext line")
+        }
+    }));
+
+    let text = redacted.to_string();
+    assert!(!text.contains(&fake_openai_key));
+    assert!(!text.contains(&fake_token_plan_key));
+    assert!(text.contains("[REDACTED]"));
+    assert!(text.contains("next line"));
+}
+
+#[test]
+fn redaction_preserves_stream_frame_shape() {
+    let fake_bearer_token = format!("{}{}", "sk-", "TEST_ONLY_PLACEHOLDER_DO_NOT_USE");
+    let frame = format!(
+        "event: response.output_text.delta\ndata: {{\"delta\":\"Bearer {fake_bearer_token}\"}}\n\n"
+    );
+    let redacted = redact_debug_text(&frame);
+
+    assert!(redacted.starts_with("event: response.output_text.delta\n"));
+    assert!(redacted.ends_with("\n\n"));
+    assert!(!redacted.contains(&fake_bearer_token));
+    assert!(redacted.contains("Bearer [REDACTED]"));
+}
+
+#[test]
+fn bearer_redaction_keeps_json_after_token() {
+    let fake_bearer_token = format!("{}{}", "sk-", "TEST_ONLY_PLACEHOLDER_DO_NOT_USE");
+    let frame = format!(r#"data: {{"delta":"Bearer {fake_bearer_token}","next":"kept"}}"#);
+    let redacted = redact_debug_text(&frame);
+
+    assert!(!redacted.contains(&fake_bearer_token));
+    assert!(redacted.contains(r#""delta":"Bearer [REDACTED]""#));
+    assert!(redacted.contains(r#","next":"kept""#));
+}
+
+#[test]
+fn bearer_redaction_handles_unicode_before_token() {
+    let fake_bearer_token = format!("{}{}", "sk-", "TEST_ONLY_PLACEHOLDER_DO_NOT_USE");
+    let frame = format!("data: {{\"delta\":\"résumé — Bearer {fake_bearer_token}\"}}");
+    let redacted = redact_debug_text(&frame);
+
+    assert!(redacted.contains("résumé — Bearer [REDACTED]"));
+    assert!(!redacted.contains(&fake_bearer_token));
+}

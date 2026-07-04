@@ -1,0 +1,87 @@
+# Alibaba Qwen model-family compatibility.
+# Broad entries keep shared tool behavior. Exact entries carry documented
+# context, modality, and thinking differences.
+
+[model_families.qwen3_6]
+priority = 0
+patterns = [
+  "qwen3.6*",
+  "qwen3-6*",
+  "qwen3_6*",
+  "qwen/qwen3.6*",
+  "qwen/qwen3-6*",
+  "alibaba/qwen3.6*",
+  "alibaba/qwen3-6*",
+]
+
+[model_families.qwen3_6.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+
+[model_families.qwen3_6.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+force_parallel_tool_calls = false
+
+[[model_families.qwen3_6.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[model_families.qwen3_6_35b_a3b]
+priority = 10
+patterns = [
+  "qwen3.6-35b-a3b",
+  "qwen3_6_35b_a3b",
+  "qwen3-6-35b-a3b",
+  "qwen/qwen3.6-35b-a3b",
+  "qwen/qwen3-6-35b-a3b",
+  "qwen/qwen3_6_35b_a3b",
+  "alibaba/qwen3.6-35b-a3b",
+  "alibaba/qwen3-6-35b-a3b",
+  "alibaba/qwen3_6_35b_a3b",
+]
+
+[model_families.qwen3_6_35b_a3b.model_metadata]
+context_window = 262144
+max_context_window = 1010000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["high"]
+input_modalities = ["text", "image", "video"]
+supports_parallel_tool_calls = false
+supports_search_tool = false
+auto_review_model_override = "qwen3.6-35b-a3b"
+
+[[model_families.qwen3_6_35b_a3b.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[model_families.qwen3_7]
+priority = 0
+patterns = [
+  "qwen3.7*",
+  "qwen3-7*",
+  "qwen3_7*",
+  "qwen/qwen3.7*",
+  "qwen/qwen3-7*",
+  "alibaba/qwen3.7*",
+  "alibaba/qwen3-7*",
+]
+
+[model_families.qwen3_7.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+auto_review_model_override = "qwen3.7-plus"
+
+[model_families.qwen3_7.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+force_parallel_tool_calls = false
+
+[[model_families.qwen3_7.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"

@@ -1,0 +1,23 @@
+listen = "127.0.0.1:8787"
+
+[provider]
+name = "Xiaomi"
+base_url = "https://token-plan-sgp.xiaomimimo.com/v1"
+api_key_env = "XIAOMI_TOKEN_PLAN_API_KEY"
+auth_header = "authorization"
+auth_scheme = "Bearer"
+responses_path = "/responses"
+chat_completions_path = "/chat/completions"
+models_path = "/models"
+model_catalog_only = true
+
+[provider.headers]
+# Add any provider-specific required headers here.
+
+[[provider.model_catalog]]
+id = "mimo-v2.5"
+display_name = "MiMo-V2.5"
+
+[[provider.model_catalog]]
+id = "mimo-v2.5-pro"
+display_name = "MiMo-V2.5-Pro"

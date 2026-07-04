@@ -1,0 +1,68 @@
+# xAI Grok model-family compatibility.
+# Broad entries keep shared tool behavior. Exact/variant entries carry context,
+# modality, search, and reasoning differences.
+
+[model_families.x_ai_grok]
+priority = 0
+patterns = [
+  "grok*",
+  "grok-*",
+  "xai/grok*",
+  "x-ai/grok*",
+]
+
+[model_families.x_ai_grok.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+web_search_tool_type = "text"
+
+[model_families.x_ai_grok.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+
+[model_families.x_ai_grok_4_3]
+priority = 10
+patterns = [
+  "grok-4.3",
+  "grok_4.3",
+  "grok-4.3-latest",
+  "xai/grok-4.3",
+  "x-ai/grok-4.3",
+]
+
+[model_families.x_ai_grok_4_3.model_metadata]
+context_window = 1000000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text", "image"]
+supports_parallel_tool_calls = true
+supports_search_tool = true
+
+[model_families.x_ai_grok_4_3.transform]
+force_parallel_tool_calls = false
+
+[[model_families.x_ai_grok_4_3.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[model_families.x_ai_grok_build_0_1]
+priority = 10
+patterns = [
+  "grok-build-0.1",
+  "grok_build_0.1",
+  "xai/grok-build-0.1",
+  "x-ai/grok-build-0.1",
+]
+
+[model_families.x_ai_grok_build_0_1.model_metadata]
+context_window = 256000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text"]
+supports_parallel_tool_calls = true
+supports_search_tool = true
+
+[model_families.x_ai_grok_build_0_1.transform]
+force_parallel_tool_calls = false

@@ -1,0 +1,39 @@
+# Moonshot KimiCode subscription provider profile.
+#
+# KimiCode subscription keys use the Moonshot OpenAI-compatible API shape.
+# Docs: https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart
+
+[providers.moonshot_kimicode]
+name = "Kimi Code"
+base_url = "https://api.kimi.com/coding/v1"
+api_key_env = "KIMICODE_API_KEY"
+auth_header = "authorization"
+auth_scheme = "Bearer"
+responses_path = "/responses"
+chat_completions_path = "/chat/completions"
+models_path = "/models"
+
+# KimiCode subscription gateways may not expose /models for every account. The
+# local catalog keeps Codex model selection usable while still allowing
+# upstream /models entries to merge when available. Do not add discontinued
+# Kimi K2 series models here; Kimi docs mark them unsupported as of 2026-05-25.
+
+[[providers.moonshot_kimicode.model_catalog]]
+id = "kimi-k2.5"
+display_name = "Kimi K2.5"
+
+[[providers.moonshot_kimicode.model_catalog]]
+id = "kimi-k2.6"
+display_name = "Kimi K2.6"
+
+[[providers.moonshot_kimicode.model_catalog]]
+id = "kimi-k2.6-code"
+display_name = "Kimi K2.6 Code"
+
+[[providers.moonshot_kimicode.model_catalog]]
+id = "kimi-k2.7-code"
+display_name = "Kimi K2.7 Code"
+
+[[providers.moonshot_kimicode.model_catalog]]
+id = "kimi-k2.7-code-highspeed"
+display_name = "Kimi K2.7 Code Highspeed"

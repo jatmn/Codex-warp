@@ -1,0 +1,105 @@
+# Default OpenAI-compatible baseline config.
+# This file is loaded first; every --config file is merged on top of it.
+# Override the target quickly with:
+#   codex-warp --destination https://provider.example/v1
+
+listen = "127.0.0.1:8787"
+
+[continue_guard]
+# Detects chat-completions providers that finish with plain assistant text like
+# "Now let me check..." while Codex still has an active plan. Keep observe mode
+# unless you want Warp to send response.completed end_turn=false and let Codex
+# automatically sample a follow-up turn.
+enabled = false
+mode = "observe"
+max_followups = 1
+
+[config]
+# Current Codex custom-provider refresh merges remote `/models` rows into its
+# bundled GPT catalog. Keep the bundled GPT rows hidden so Codex Warp's live
+# gateway catalog is the picker surface.
+hide_codex_builtin_models = true
+
+# Optional provider profile files to load automatically after this baseline.
+# Paths are relative to the config file that declares them.
+# include = [
+#   "configs/clinepass.toml",
+#   "configs/moonshot-kimicode.toml",
+#   "configs/opencode-go.toml",
+#   "configs/xiaomi-token-plan.toml",
+#   "configs/openai-compatible.toml",
+# ]
+model_family_include = [
+  "configs/model-families/deepseek.toml",
+  "configs/model-families/minimax.toml",
+  "configs/model-families/moonshot-ai.toml",
+  "configs/model-families/qwen.toml",
+  "configs/model-families/x-ai.toml",
+  "configs/model-families/xiaomi.toml",
+  "configs/model-families/z-ai.toml",
+]
+tool_policy_include = [
+  "configs/tool-policies/github.toml",
+]
+
+# For a manually configured third-party provider, copy or edit:
+#   configs/openai-compatible.toml
+#
+# Auto-review model choices belong in model-family metadata. When a family target
+# is unprefixed, Codex Warp resolves it to the matching model in the selected
+# provider catalog so review turns stay on the same gateway.
+
+[transform]
+# open_ai_chat translates Codex /responses requests to /chat/completions.
+# responses keeps /responses but still applies editable request/tool morphs.
+backend = "open_ai_chat"
+
+# This is the important fix point for errors like:
+#   tool type 'custom' is not supported by this gateway phase.
+unsupported_tool_types = ["custom"]
+
+# drop: remove unsupported tools before forwarding.
+# as_function: coerce unsupported tools into ordinary function tools with a string input.
+# passthrough: leave them untouched.
+unsupported_tool_strategy = "as_function"
+
+drop_empty_tool_choice = true
+
+# Chat request morphs translate Codex Responses fields into chat-completions provider fields.
+# `drop` is reserved for fields that have no chat-completions equivalent.
+[[transform.chat_request_morphs]]
+from = "include"
+kind = "drop"
+
+[[transform.chat_request_morphs]]
+from = "prompt_cache_key"
+to = "prompt_cache_key"
+kind = "copy"
+
+[[transform.chat_request_morphs]]
+from = "client_metadata"
+kind = "drop"
+
+[[transform.chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[transform.chat_request_morphs]]
+from = "service_tier"
+to = "service_tier"
+kind = "copy"
+
+[[transform.chat_request_morphs]]
+from = "store"
+to = "store"
+kind = "copy"
+
+[[transform.chat_request_morphs]]
+from = "text.format"
+to = "response_format"
+kind = "text_format"
+
+# Native Responses forwarding has no default request-field morphs. Add
+# [[transform.responses_request_morphs]] entries only for provider-specific
+# deviations from the Responses API shape.

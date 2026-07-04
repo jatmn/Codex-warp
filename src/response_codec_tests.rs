@@ -1,0 +1,660 @@
+use super::*;
+use std::collections::BTreeSet;
+
+use bytes::Bytes;
+use serde_json::Value;
+use serde_json::json;
+
+use crate::config::load_config_layers;
+use crate::debug_log::DebugLog;
+
+fn completed_end_turn(events: &[String]) -> bool {
+    let completed = events
+        .iter()
+        .find(|event| event.contains("response.completed"))
+        .expect("response.completed event is emitted");
+    let data = sse_data(completed).expect("response.completed has data");
+    let value: Value = serde_json::from_str(&data).expect("completed event is JSON");
+    value["response"]["end_turn"]
+        .as_bool()
+        .expect("end_turn is a bool")
+}
+
+#[test]
+fn next_sse_frame_accepts_lf_and_crlf() {
+    assert_eq!(next_sse_frame_bytes(b"data: one\n\nrest"), Some((9, 2)));
+    assert_eq!(next_sse_frame_bytes(b"data: one\r\n\r\nrest"), Some((9, 4)));
+}
+
+#[test]
+fn continue_guard_forces_followup_for_mid_plan_stop() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Now let me write the review draft."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        crate::config::ContinueGuardConfig {
+            enabled: true,
+            mode: crate::config::ContinueGuardMode::EndTurnFalse,
+            max_followups: 1,
+        },
+        &json!({
+            "prompt_cache_key": "continue-guard-test-mid-plan",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"completed\"},{\"step\":\"Write draft\",\"status\":\"in_progress\"}]}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_leaves_completed_summary_as_end_turn() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "All review tasks are complete."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        crate::config::ContinueGuardConfig {
+            enabled: true,
+            mode: crate::config::ContinueGuardMode::EndTurnFalse,
+            max_followups: 1,
+        },
+        &json!({
+            "prompt_cache_key": "continue-guard-test-complete",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Report\",\"status\":\"in_progress\"}]}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_observe_mode_does_not_force_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Let me also check CONTRIBUTING.md."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        crate::config::ContinueGuardConfig {
+            enabled: true,
+            mode: crate::config::ContinueGuardMode::Observe,
+            max_followups: 1,
+        },
+        &json!({
+            "prompt_cache_key": "continue-guard-test-observe",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": {"plan":[{"step":"Check docs","status":"pending"}]}
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn chat_text_delta_starts_with_output_item_added() {
+    let mut accum = ChatAccum::default();
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "hello"}
+        }]
+    }));
+
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("response.output_item.added"));
+    assert!(events[1].contains("response.output_text.delta"));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    assert!(done[0].contains(accum.message_item_id.as_deref().unwrap()));
+}
+
+#[test]
+fn chat_stream_completion_includes_normalized_usage() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_tokens_details": {"cached_tokens": 64},
+            "completion_tokens_details": {"reasoning_tokens": 7}
+        }
+    }));
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let completed = events
+        .iter()
+        .find(|event| event.contains("response.completed"))
+        .expect("response.completed event is emitted");
+    let data = sse_data(completed).expect("response.completed has data");
+    let value: Value = serde_json::from_str(&data).expect("completed event is JSON");
+
+    assert_eq!(value["response"]["usage"]["input_tokens"], 100);
+    assert_eq!(
+        value["response"]["usage"]["input_tokens_details"]["cached_tokens"],
+        64
+    );
+    assert_eq!(
+        value["response"]["usage"]["output_tokens_details"]["reasoning_tokens"],
+        7
+    );
+}
+
+#[test]
+fn chat_stream_reasoning_content_emits_reasoning_deltas() {
+    let mut accum = ChatAccum::default();
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_content": "Plan first. ",
+                "content": ""
+            }
+        }]
+    }));
+    assert_eq!(events.len(), 4);
+
+    let added_data = sse_data(&events[0]).expect("added event has data");
+    let added: Value = serde_json::from_str(&added_data).expect("added event is JSON");
+    assert_eq!(added["type"], "response.output_item.added");
+    assert_eq!(added["item"]["type"], "reasoning");
+    assert_eq!(added["item"]["summary"][0]["type"], "summary_text");
+    assert_eq!(added["item"]["summary"][0]["text"], "");
+
+    let part_data = sse_data(&events[1]).expect("part event has data");
+    let part: Value = serde_json::from_str(&part_data).expect("part event is JSON");
+    assert_eq!(part["type"], "response.reasoning_summary_part.added");
+    assert_eq!(part["summary_index"], 0);
+    assert_eq!(part["part"]["type"], "summary_text");
+
+    let header_data = sse_data(&events[2]).expect("header delta event has data");
+    let header: Value = serde_json::from_str(&header_data).expect("header event is JSON");
+    assert_eq!(header["type"], "response.reasoning_summary_text.delta");
+    assert_eq!(header["summary_index"], 0);
+    assert_eq!(header["delta"], "**Reasoning**\n\n");
+
+    let delta_data = sse_data(&events[3]).expect("delta event has data");
+    let delta: Value = serde_json::from_str(&delta_data).expect("delta event is JSON");
+    assert_eq!(delta["type"], "response.reasoning_summary_text.delta");
+    assert_eq!(delta["summary_index"], 0);
+    assert_eq!(delta["delta"], "Plan first. ");
+
+    let events = events
+        .into_iter()
+        .chain(accum.finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+        ))
+        .collect::<Vec<_>>();
+
+    let done_data = events
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "Plan first. ");
+
+    assert!(events.iter().any(
+        |event| event.contains("response.reasoning_summary_text.delta")
+            && event.contains("Plan first. ")
+    ));
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("response.reasoning_summary_part.added"))
+    );
+    assert!(events.iter().any(
+            |event| event.contains("\"type\":\"reasoning\"") && event.contains("summary_text")
+        ));
+}
+
+#[test]
+fn chat_stream_reasoning_does_not_duplicate_existing_bold_header() {
+    let mut accum = ChatAccum::default();
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_content": "**Inspecting logs**\n\nReading entries."
+            }
+        }]
+    }));
+
+    let reasoning_deltas = events
+        .iter()
+        .filter(|event| event.contains("response.reasoning_summary_text.delta"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(reasoning_deltas.len(), 1);
+    assert!(reasoning_deltas[0].contains("**Inspecting logs**"));
+    assert!(!reasoning_deltas[0].contains("**Reasoning**"));
+}
+
+#[test]
+fn chat_stream_reasoning_field_emits_reasoning_deltas() {
+    let mut accum = ChatAccum::default();
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning": "Cline reasoning. "
+            }
+        }]
+    }));
+
+    assert!(events.iter().any(
+        |event| event.contains("response.reasoning_summary_text.delta")
+            && event.contains("Cline reasoning. ")
+    ));
+}
+
+#[test]
+fn chat_stream_debug_summary_counts_reasoning_without_text() {
+    let mut accum = ChatAccum::default();
+    let chunk = json!({
+        "choices": [{
+            "delta": {
+                "reasoning_content": "Plan first.",
+                "content": "Answer."
+            }
+        }]
+    });
+    let events = accum.apply_chat_chunk(&chunk);
+    let summary = chat_stream_debug_summary(&chunk, &events).expect("summary is emitted");
+
+    assert_eq!(summary["reasoning_content_chars"], 11);
+    assert_eq!(summary["content_chars"], 7);
+    assert_eq!(summary["emitted_reasoning_delta_events"], 2);
+    assert_eq!(summary["emitted_output_text_delta_events"], 1);
+    assert_eq!(summary["upstream_fields"][0], "content");
+    assert_eq!(summary["upstream_fields"][1], "reasoning_content");
+    assert!(!summary.to_string().contains("Plan first."));
+}
+
+#[test]
+fn chat_stream_debug_summary_counts_reasoning_details_without_payload() {
+    let chunk = json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [
+                    {"type": "encrypted", "data": "secret-payload"},
+                    {"type": "summary", "text": "hidden text"}
+                ]
+            }
+        }]
+    });
+
+    let summary = chat_stream_debug_summary(&chunk, &[]).expect("summary is emitted");
+
+    assert_eq!(summary["reasoning_details_count"], 2);
+    assert!(
+        summary["upstream_fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .any(|field| field == "reasoning_details")
+    );
+    assert!(!summary.to_string().contains("secret-payload"));
+    assert!(!summary.to_string().contains("hidden text"));
+}
+
+#[test]
+fn native_stream_debug_summary_counts_reasoning_without_text() {
+    let value = json!({
+        "type": "response.reasoning_text.delta",
+        "delta": "Native thinking."
+    });
+
+    let summary = native_stream_debug_summary(&value).expect("summary is emitted");
+
+    assert_eq!(summary["event_type"], "response.reasoning_text.delta");
+    assert_eq!(summary["reasoning_delta_chars"], 16);
+    assert!(!summary.to_string().contains("Native thinking."));
+}
+
+#[test]
+fn chat_usage_normalizes_provider_cache_hit_fields() {
+    let kimi = chat_usage_to_responses_usage(Some(&json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cached_tokens": 40
+    })));
+    let deepseek = chat_usage_to_responses_usage(Some(&json!({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_cache_hit_tokens": 55,
+        "prompt_cache_miss_tokens": 45
+    })));
+
+    assert_eq!(kimi["input_tokens_details"]["cached_tokens"], 40);
+    assert_eq!(deepseek["input_tokens_details"]["cached_tokens"], 55);
+}
+
+#[test]
+fn wrapped_chat_completion_preserves_reasoning_content() {
+    let value = chat_json_to_responses(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "Need to reason.",
+                    "content": "Final answer."
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+    );
+
+    assert_eq!(
+        value["output"][0]["content"][0]["type"],
+        "reasoning_summary_text"
+    );
+    assert_eq!(value["output"][0]["content"][0]["text"], "Need to reason.");
+    assert_eq!(value["output"][0]["content"][1]["text"], "Final answer.");
+}
+
+#[test]
+fn chat_completion_tool_policy_decorates_github_pr_call() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.tool_policy.enabled = true;
+    config.tool_policy.mode = crate::config::ToolPolicyMode::Assist;
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": "{\"command\":\"gh pr view 1806 --repo Gitlawb/openclaude\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &config.tool_policy,
+    );
+
+    let arguments = value["output"][0]["arguments"]
+        .as_str()
+        .expect("function_call arguments are present");
+    let arguments: Value = serde_json::from_str(arguments).expect("arguments are JSON");
+
+    assert_eq!(value["output"][0]["type"], "function_call");
+    assert_eq!(arguments["sandbox_permissions"], "require_escalated");
+    assert_eq!(arguments["prefix_rule"], json!(["gh", "pr"]));
+}
+
+#[test]
+fn chat_completion_tool_policy_blocks_github_token_call_in_enforce_mode() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.tool_policy.enabled = true;
+    config.tool_policy.mode = crate::config::ToolPolicyMode::Enforce;
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": "{\"command\":\"gh auth token\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &config.tool_policy,
+    );
+
+    assert_eq!(value["output"][0]["type"], "message");
+    assert!(
+        value["output"][0]["content"][0]["text"]
+            .as_str()
+            .expect("message text")
+            .contains("github_token_disclosure")
+    );
+}
+
+#[test]
+fn chat_completion_tool_policy_blocks_github_token_call_in_assist_mode() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.tool_policy.enabled = true;
+    config.tool_policy.mode = crate::config::ToolPolicyMode::Assist;
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "shell_command",
+                            "arguments": "{\"command\":\"gh auth token\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &config.tool_policy,
+    );
+
+    assert_eq!(value["output"][0]["type"], "message");
+    assert!(
+        value["output"][0]["content"][0]["text"]
+            .as_str()
+            .expect("message text")
+            .contains("github_token_disclosure")
+    );
+}
+
+#[test]
+fn native_usage_logging_buffers_split_sse_frames() {
+    let mut pending = Vec::new();
+    let debug_log = DebugLog::disabled();
+    let chunk_a = Bytes::from_static(
+        b"data: {\"response\":{\"usage\":{\"input_tokens\":10,\"input_tokens_details\"",
+    );
+    let chunk_b = Bytes::from_static(b":{\"cached_tokens\":5}}}}\n\n");
+
+    log_native_usage_from_sse_chunk(&chunk_a, &mut pending, &debug_log, "dbg_test", 200);
+    assert!(!pending.is_empty());
+    log_native_usage_from_sse_chunk(&chunk_b, &mut pending, &debug_log, "dbg_test", 200);
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn downstream_stream_debug_summary_reports_reasoning_part_event() {
+    let frame = sse(
+        "response.reasoning_summary_part.added",
+        json!({
+            "type": "response.reasoning_summary_part.added",
+            "item_id": "rsn_test",
+            "summary_index": 0,
+            "part": {"type": "summary_text", "text": ""}
+        }),
+    );
+
+    let summary = downstream_stream_debug_summary(&frame);
+
+    assert_eq!(
+        summary["event_type"],
+        "response.reasoning_summary_part.added"
+    );
+    assert_eq!(summary["part_type"], "summary_text");
+    assert_eq!(summary["summary_index"], 0);
+}
+
+#[test]
+fn wrapped_chat_text_delta_starts_with_output_item_added() {
+    let mut accum = ChatAccum::default();
+    let chunk = json!({
+        "data": {
+            "choices": [{
+                "delta": {"content": "hello"}
+            }]
+        }
+    });
+    let events = accum.apply_chat_chunk(chat_completion_payload(&chunk));
+
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("response.output_item.added"));
+    assert!(events[1].contains("response.output_text.delta"));
+}
+
+#[test]
+fn native_function_calls_for_morphed_custom_tools_are_restored() {
+    let mut value = json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": "apply_patch",
+            "call_id": "call_1",
+            "arguments": "{\"input\":\"*** Begin Patch\\n*** End Patch\\n\"}"
+        }
+    });
+    let custom_tool_names = BTreeSet::from(["apply_patch".to_string()]);
+
+    morph_native_response_value(
+        &mut value,
+        &custom_tool_names,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(value["item"]["type"], "custom_tool_call");
+    assert_eq!(value["item"]["name"], "apply_patch");
+    assert_eq!(value["item"]["input"], "*** Begin Patch\n*** End Patch\n");
+    assert!(value["item"].get("arguments").is_none());
+}
+
+#[test]
+fn complete_sse_frame_decodes_split_utf8_without_loss() {
+    let frame = "data: {\"text\":\"hello 🌊\"}\n\n";
+    let split = frame.find('🌊').expect("emoji is present") + 1;
+    let mut pending = Vec::new();
+    pending.extend_from_slice(&frame.as_bytes()[..split]);
+    assert_eq!(next_sse_frame_bytes(&pending), None);
+
+    pending.extend_from_slice(&frame.as_bytes()[split..]);
+    let (frame_end, delimiter_len) =
+        next_sse_frame_bytes(&pending).expect("complete frame is detected");
+    let decoded = String::from_utf8(pending[..frame_end].to_vec()).expect("frame is UTF-8");
+
+    assert_eq!(delimiter_len, 2);
+    assert_eq!(
+        sse_data(&decoded).as_deref(),
+        Some("{\"text\":\"hello 🌊\"}")
+    );
+}
+
+#[test]
+fn wrapped_chat_completion_converts_to_responses_output() {
+    let value = chat_json_to_responses(
+        json!({
+            "success": true,
+            "data": {
+                "id": "gen_test",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello"
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                    "prompt_tokens_details": {"cached_tokens": 8}
+                }
+            }
+        }),
+        &BTreeSet::new(),
+    );
+
+    assert_eq!(value["id"], "gen_test");
+    assert_eq!(value["output"][0]["content"][0]["text"], "hello");
+    assert_eq!(value["usage"]["input_tokens"], 10);
+    assert_eq!(value["usage"]["input_tokens_details"]["cached_tokens"], 8);
+    assert_eq!(value["usage"]["output_tokens"], 2);
+    assert_eq!(value["usage"]["total_tokens"], 12);
+}

@@ -1,0 +1,112 @@
+# DeepSeek model-family compatibility.
+# Broad entries keep only shared Codex/tool defaults. Variant entries below
+# carry context/reasoning differences.
+
+[model_families.deepseek]
+priority = 0
+patterns = [
+  "deepseek*",
+  "deepseek-*",
+  "deepseek_*",
+]
+
+[model_families.deepseek.model_metadata]
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+
+[model_families.deepseek.transform]
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+drop_empty_tool_choice = true
+
+[model_families.deepseek_v3_2]
+priority = 10
+patterns = [
+  "deepseek-v3.2",
+  "deepseek_v3.2",
+  "deepseek-ai/deepseek-v3.2",
+]
+
+[model_families.deepseek_v3_2.model_metadata]
+context_window = 128000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+supports_parallel_tool_calls = true
+auto_review_model_override = "deepseek-v3.2"
+
+[model_families.deepseek_v3_2.transform]
+force_parallel_tool_calls = false
+
+[model_families.deepseek_v3_2_speciale]
+priority = 10
+patterns = [
+  "deepseek-v3.2-speciale",
+  "deepseek_v3.2_speciale",
+  "deepseek-ai/deepseek-v3.2-speciale",
+]
+
+[model_families.deepseek_v3_2_speciale.model_metadata]
+context_window = 128000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "medium", "high"]
+supports_parallel_tool_calls = false
+auto_review_model_override = "deepseek-v3.2-speciale"
+
+[model_families.deepseek_v3_2_speciale.transform]
+force_parallel_tool_calls = false
+
+[model_families.deepseek_v4_flash]
+priority = 10
+patterns = [
+  "deepseek-v4-flash",
+  "deepseek_v4_flash",
+  "deepseek-ai/deepseek-v4-flash",
+]
+
+[model_families.deepseek_v4_flash.model_metadata]
+context_window = 256000
+default_reasoning_level = "medium"
+supported_reasoning_levels = ["low", "medium", "high"]
+supports_parallel_tool_calls = false
+auto_review_model_override = "deepseek-v4-flash"
+
+[model_families.deepseek_v4_flash.transform]
+force_parallel_tool_calls = false
+
+[[model_families.deepseek_v4_flash.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.deepseek_v4_flash.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
+
+[model_families.deepseek_v4_pro]
+priority = 10
+patterns = [
+  "deepseek-v4-pro",
+  "deepseek_v4_pro",
+  "deepseek-ai/deepseek-v4-pro",
+]
+
+[model_families.deepseek_v4_pro.model_metadata]
+context_window = 1000000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "medium", "high"]
+supports_parallel_tool_calls = true
+auto_review_model_override = "deepseek-v4-flash"
+
+[model_families.deepseek_v4_pro.transform]
+force_parallel_tool_calls = false
+
+[[model_families.deepseek_v4_pro.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.deepseek_v4_pro.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
