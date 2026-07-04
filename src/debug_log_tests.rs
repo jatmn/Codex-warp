@@ -92,3 +92,34 @@ fn bearer_redaction_handles_unicode_before_token() {
     assert!(redacted.contains("résumé — Bearer [REDACTED]"));
     assert!(!redacted.contains(&fake_bearer_token));
 }
+
+#[test]
+fn redaction_covers_private_key_and_signing_key() {
+    let fake_private_key = format!("{}{}", "sk-", "TEST_ONLY_PRIVATE_KEY_DO_NOT_USE");
+    let fake_signing_key = format!("{}{}", "sk-", "TEST_ONLY_SIGNING_KEY_DO_NOT_USE");
+    let redacted = redact_debug_value(&json!({
+        "private_key": fake_private_key,
+        "signing_key": fake_signing_key,
+        "safe_field": "not redacted"
+    }));
+    let text = redacted.to_string();
+    assert!(text.contains("[REDACTED]"));
+    assert!(!text.contains(&fake_private_key));
+    assert!(!text.contains(&fake_signing_key));
+    assert!(text.contains("not redacted"));
+}
+
+#[test]
+fn is_secret_key_matches_private_key_and_signing_key() {
+    assert!(super::is_secret_key("private_key"));
+    assert!(super::is_secret_key("signing_key"));
+    assert!(super::is_secret_key("PRIVATE_KEY"));
+    assert!(super::is_secret_key("SIGNING_KEY"));
+    // Existing coverage still works.
+    assert!(super::is_secret_key("api_key"));
+    assert!(super::is_secret_key("authorization"));
+    assert!(super::is_secret_key("client_secret"));
+    // Non-secret keys are not matched.
+    assert!(!super::is_secret_key("name"));
+    assert!(!super::is_secret_key("model"));
+}

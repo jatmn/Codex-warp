@@ -2,6 +2,7 @@ use super::*;
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use serde_json::Value;
 use serde_json::json;
 
@@ -18,6 +19,15 @@ fn completed_end_turn(events: &[String]) -> bool {
     value["response"]["end_turn"]
         .as_bool()
         .expect("end_turn is a bool")
+}
+
+fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
+    axum::http::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .body(reqwest::Body::from(body))
+        .expect("test response builds")
+        .into()
 }
 
 #[test]
@@ -657,4 +667,115 @@ fn wrapped_chat_completion_converts_to_responses_output() {
     assert_eq!(value["usage"]["input_tokens_details"]["cached_tokens"], 8);
     assert_eq!(value["usage"]["output_tokens"], 2);
     assert_eq!(value["usage"]["total_tokens"], 12);
+}
+
+#[test]
+fn continue_guard_budget_eviction_removes_entries_when_over_cap() {
+    // Simulate a map that exceeds the cap.
+    let mut budgets = BTreeMap::new();
+    for i in 0..CONTINUE_GUARD_BUDGET_MAX_ENTRIES + 100 {
+        budgets.insert(format!("key-{i:06}"), 1);
+    }
+    assert_eq!(budgets.len(), CONTINUE_GUARD_BUDGET_MAX_ENTRIES + 100);
+
+    evict_continue_guard_budgets_if_needed(&mut budgets);
+
+    // After eviction the map should be at ~90% of the original size.
+    let expected = (CONTINUE_GUARD_BUDGET_MAX_ENTRIES + 100) * 9 / 10;
+    assert_eq!(budgets.len(), expected);
+    // The smallest keys should have been removed first.
+    assert!(budgets.contains_key(&format!("key-{:06}", expected)));
+    assert!(!budgets.contains_key("key-000000"));
+}
+
+#[test]
+fn continue_guard_budget_eviction_is_noop_under_cap() {
+    let mut budgets = BTreeMap::new();
+    for i in 0..100 {
+        budgets.insert(format!("key-{i}"), 1);
+    }
+    evict_continue_guard_budgets_if_needed(&mut budgets);
+    assert_eq!(budgets.len(), 100);
+}
+
+#[test]
+fn sse_frame_buffer_max_bytes_is_reasonable() {
+    // Sanity-check the constant is in a sensible range (8 MB – 64 MB).
+    assert!(SSE_FRAME_BUFFER_MAX_BYTES >= 8 * 1024 * 1024);
+    assert!(SSE_FRAME_BUFFER_MAX_BYTES <= 64 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
+    let upstream = upstream_response_with_body(vec![b'a'; SSE_FRAME_BUFFER_MAX_BYTES + 1]);
+    let events = chat_stream_to_responses(
+        upstream,
+        "resp_overflow".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_overflow".to_string(),
+        ContinueGuardState::default(),
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let failed = events
+        .into_iter()
+        .map(|event| String::from_utf8(event.expect("stream item succeeds").to_vec()).unwrap())
+        .find(|event| event.contains("response.failed"))
+        .expect("overflow emits response.failed");
+    assert!(failed.contains("upstream SSE frame buffer exceeded maximum size"));
+}
+
+#[tokio::test]
+async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
+    let upstream = upstream_response_with_body(vec![b'a'; SSE_FRAME_BUFFER_MAX_BYTES + 1]);
+    let mut tool_policy = crate::config::ToolPolicyConfig::default();
+    tool_policy.enabled = true;
+    let events = native_stream_to_responses(
+        upstream,
+        BTreeSet::new(),
+        tool_policy,
+        DebugLog::disabled(),
+        "dbg_overflow".to_string(),
+        200,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let err = events
+        .into_iter()
+        .find_map(Result::err)
+        .expect("overflow returns an error");
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert_eq!(
+        err.to_string(),
+        "upstream SSE frame buffer exceeded maximum size"
+    );
+}
+
+#[tokio::test]
+async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
+    let upstream = upstream_response_with_body(vec![b'a'; SSE_FRAME_BUFFER_MAX_BYTES + 1]);
+    let events = native_stream_to_responses(
+        upstream,
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_overflow".to_string(),
+        200,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let err = events
+        .into_iter()
+        .find_map(Result::err)
+        .expect("overflow returns an error");
+    assert_eq!(err.kind(), std::io::ErrorKind::Other);
+    assert_eq!(
+        err.to_string(),
+        "upstream SSE frame buffer exceeded maximum size"
+    );
 }

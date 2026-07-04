@@ -20,6 +20,15 @@ use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
 
+/// Maximum number of entries allowed in the continue-guard budget map to prevent
+/// unbounded memory growth during long-running proxy sessions.
+const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
+
+/// Maximum number of bytes allowed in the SSE frame buffer before treating the
+/// upstream as misbehaving and returning an error.
+const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
+const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
+
 pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
     response_id: String,
@@ -53,6 +62,13 @@ pub(crate) fn chat_stream_to_responses(
                 }
             };
             pending.extend_from_slice(&chunk);
+            if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
+                yield Ok(Bytes::from(sse("response.failed", json!({
+                    "type": "response.failed",
+                    "response": {"id": response_id, "error": {"message": "upstream SSE frame buffer exceeded maximum size"}}
+                }))));
+                return;
+            }
 
             while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(&pending) {
                 let frame = pending[..frame_end].to_vec();
@@ -142,6 +158,13 @@ pub(crate) fn native_stream_to_responses(
                     &request_log_id,
                     status,
                 );
+                if debug_pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        SSE_FRAME_BUFFER_EXCEEDED_MESSAGE,
+                    ));
+                    return;
+                }
                 if debug_log.include_stream_bodies {
                     log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
                 }
@@ -150,6 +173,13 @@ pub(crate) fn native_stream_to_responses(
             }
 
             pending.extend_from_slice(&chunk);
+            if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
+                yield Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    SSE_FRAME_BUFFER_EXCEEDED_MESSAGE,
+                ));
+                return;
+            }
             while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(&pending) {
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
@@ -680,6 +710,7 @@ impl ContinueGuardState {
         let Ok(mut budgets) = continue_guard_budgets().lock() else {
             return false;
         };
+        evict_continue_guard_budgets_if_needed(&mut budgets);
         let used = budgets.entry(key.clone()).or_insert(0);
         if *used >= self.config.max_followups {
             return false;
@@ -709,6 +740,19 @@ impl ActivePlanSummary {
 fn continue_guard_budgets() -> &'static Mutex<BTreeMap<String, u8>> {
     static BUDGETS: OnceLock<Mutex<BTreeMap<String, u8>>> = OnceLock::new();
     BUDGETS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Evict oldest entries from the budget map when it exceeds the size cap to
+/// prevent unbounded memory growth during long-running proxy sessions.
+fn evict_continue_guard_budgets_if_needed(budgets: &mut BTreeMap<String, u8>) {
+    if budgets.len() <= CONTINUE_GUARD_BUDGET_MAX_ENTRIES {
+        return;
+    }
+    // Remove approximately 10% of entries to amortize eviction cost.
+    let target = budgets.len() * 9 / 10;
+    while budgets.len() > target {
+        budgets.pop_first();
+    }
 }
 
 fn latest_active_plan(request: &Value) -> Option<ActivePlanSummary> {

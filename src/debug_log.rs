@@ -167,6 +167,8 @@ fn is_secret_key(key: &str) -> bool {
         || key == "access_token"
         || key == "refresh_token"
         || key == "password"
+        || key == "private_key"
+        || key == "signing_key"
         || key.contains("secret")
         || key.ends_with("_token")
         || key.ends_with("_api_key")
@@ -361,6 +363,9 @@ fn json_char_len(value: &Value) -> usize {
     }
 }
 
+/// NOTE: `DefaultHasher` fingerprints are NOT stable across process restarts or platforms.
+/// These fingerprints are used for debug-log-only purposes and should not be used
+/// for cross-session correlation or deduplication.
 fn stable_fingerprint(value: &Value) -> String {
     let mut hasher = DefaultHasher::new();
     value.to_string().hash(&mut hasher);
@@ -368,6 +373,8 @@ fn stable_fingerprint(value: &Value) -> String {
 }
 
 pub(crate) fn text_fingerprint(value: &str) -> String {
+    // `DefaultHasher` fingerprints are debug-only and are not stable across
+    // process restarts or platforms.
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     format!("{:016x}", hasher.finish())

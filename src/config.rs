@@ -546,7 +546,7 @@ pub enum UnsupportedToolStrategy {
 
 impl Default for UnsupportedToolStrategy {
     fn default() -> Self {
-        Self::Drop
+        Self::AsFunction
     }
 }
 

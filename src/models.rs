@@ -1,3 +1,4 @@
+use futures_util::future::join_all;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -35,47 +36,63 @@ pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
 ];
 
 pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let provider_list: Vec<_> = provider_entries(&state.config).into_iter().collect();
+
+    // Fetch model catalogs from all providers concurrently to reduce cold-start
+    // latency when multiple providers are configured.
+    let fetch_results = join_all(provider_list.into_iter().map(|(provider_id, provider)| {
+        let state = state.clone();
+        let headers = headers.clone();
+        async move {
+            let mut provider_models = Vec::new();
+            let mut provider_failures = Vec::new();
+
+            if !provider.model_catalog_only {
+                let url = endpoint_url(provider, &provider.models_path);
+                let mut request = state.client.get(url);
+                request =
+                    apply_headers_with_accept(request, provider, &headers, "application/json");
+                request = request.timeout(MODEL_CATALOG_TIMEOUT);
+
+                match request.send().await {
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.bytes().await.unwrap_or_default();
+                        if !status.is_success() {
+                            provider_failures.push(format!("{provider_id}: HTTP {status}"));
+                        } else if let Some(models) =
+                            normalize_models(&body, provider, &state.config)
+                        {
+                            provider_models.extend(models);
+                        } else {
+                            provider_failures
+                                .push(format!("{provider_id}: unrecognized model catalog"));
+                        }
+                    }
+                    Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
+                }
+            }
+
+            if !provider.model_catalog.is_empty() {
+                provider_models.extend(manual_catalog_models(provider, &state.config));
+            }
+
+            (provider_id, provider, provider_models, provider_failures)
+        }
+    }))
+    .await;
+
     let mut merged_models = Vec::new();
     let mut routes = BTreeMap::new();
     let mut failures = Vec::new();
 
-    for (provider_id, provider) in provider_entries(&state.config) {
-        let mut provider_models = Vec::new();
-        let mut provider_failures = Vec::new();
-
-        if !provider.model_catalog_only {
-            let url = endpoint_url(provider, &provider.models_path);
-            let mut request = state.client.get(url);
-            request = apply_headers_with_accept(request, provider, &headers, "application/json");
-            request = request.timeout(MODEL_CATALOG_TIMEOUT);
-
-            match request.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.bytes().await.unwrap_or_default();
-                    if !status.is_success() {
-                        provider_failures.push(format!("{provider_id}: HTTP {status}"));
-                    } else if let Some(models) = normalize_models(&body, provider, &state.config) {
-                        provider_models.extend(models);
-                    } else {
-                        provider_failures
-                            .push(format!("{provider_id}: unrecognized model catalog"));
-                    }
-                }
-                Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
-            }
-        }
-
-        if !provider.model_catalog.is_empty() {
-            provider_models.extend(manual_catalog_models(provider, &state.config));
-        }
-
+    for (provider_id, provider, provider_models, provider_failures) in fetch_results {
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,
             &state.config,
             provider_id,
-            provider,
+            &provider,
             provider_models,
         ) > 0;
 
