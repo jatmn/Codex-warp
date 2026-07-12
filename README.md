@@ -162,8 +162,7 @@ for deployment examples.
 
 ## OpenRouter App Attribution
 
-When Codex Warp proxies requests to an OpenRouter endpoint (any provider whose
-`base_url` contains `openrouter.ai`, including the [`configs/openrouter.toml`](configs/openrouter.toml)
+When Codex Warp proxies requests to an OpenRouter endpoint (any provider whose `base_url` host is `openrouter.ai` (or a `*.openrouter.ai` subdomain), including the [`configs/openrouter.toml`](configs/openrouter.toml)
 profile), it automatically attaches [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution)
 headers so the proxy's usage appears in OpenRouter's public rankings and analytics:
 
@@ -174,6 +173,8 @@ headers so the proxy's usage appears in OpenRouter's public rankings and analyti
 These are Codex Warp's own identity values. To override any of them for a
 specific provider, set the header under that provider's `[providers.<id>.headers]`
 section — user-supplied headers always take precedence over the automatic ones.
+
+Note: `HTTP-Referer` is Codex Warp's public GitHub URL, so all deployments report usage under that identity in OpenRouter's public rankings. To attribute traffic to your own project instead, override `HTTP-Referer` (and the other headers) under `[providers.<id>.headers]`.
 
 ## Supported Model Families
 
