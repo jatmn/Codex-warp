@@ -157,7 +157,23 @@ for deployment examples.
 | Moonshot KimiCode | [`configs/moonshot-kimicode.toml`](configs/moonshot-kimicode.toml) | Ready profile for Moonshot KimiCode subscription keys with a local Kimi model catalog fallback. | No |
 | OpenCode Go | [`configs/opencode-go.toml`](configs/opencode-go.toml) | Ready profile for OpenCode Go subscription keys, limited to its OpenAI-compatible chat-completions models. | No |
 | Xiaomi Token Plan | [`configs/xiaomi-token-plan.toml`](configs/xiaomi-token-plan.toml) | Ready profile for `https://token-plan-sgp.xiaomimimo.com/v1`. | No |
+| OpenRouter | [`configs/openrouter.toml`](configs/openrouter.toml) | Ready profile for OpenRouter; app attribution headers are attached automatically. | No |
 | Destination override | `--destination https://provider.example/v1` | Quick one-off target without editing provider config. | Only when passed |
+
+## OpenRouter App Attribution
+
+When Codex Warp proxies requests to an OpenRouter endpoint (any provider whose
+`base_url` contains `openrouter.ai`, including the [`configs/openrouter.toml`](configs/openrouter.toml)
+profile), it automatically attaches [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution)
+headers so the proxy's usage appears in OpenRouter's public rankings and analytics:
+
+- `HTTP-Referer`: `https://github.com/jatmn/Codex-warp`
+- `X-OpenRouter-Title`: `Codex Warp`
+- `X-OpenRouter-Categories`: `cli-agent,programming-app`
+
+These are Codex Warp's own identity values. To override any of them for a
+specific provider, set the header under that provider's `[providers.<id>.headers]`
+section — user-supplied headers always take precedence over the automatic ones.
 
 ## Supported Model Families
 

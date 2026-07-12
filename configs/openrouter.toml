@@ -1,0 +1,18 @@
+# OpenRouter provider profile.
+# Docs: https://openrouter.ai/docs/app-attribution
+#
+# OpenRouter exposes a large live /models catalog, so no local model_catalog is
+# needed here. Codex Warp automatically attaches the OpenRouter app attribution
+# headers (HTTP-Referer, X-OpenRouter-Title, X-OpenRouter-Categories) whenever
+# the upstream base_url points at openrouter.ai. To override any of them, set
+# the header under [providers.openrouter.headers].
+
+[providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+auth_header = "authorization"
+auth_scheme = "Bearer"
+responses_path = "/responses"
+chat_completions_path = "/chat/completions"
+models_path = "/models"

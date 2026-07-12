@@ -8,6 +8,50 @@ use serde_json::json;
 use crate::config::ProviderConfig;
 use crate::version::user_agent;
 
+// OpenRouter app attribution (https://openrouter.ai/docs/app-attribution).
+// When Codex Warp proxies to OpenRouter it identifies itself so usage shows up
+// in OpenRouter's public rankings and analytics. These are the project's own
+// identity values; they can be overridden per provider via
+// [providers.<id>.headers] in config.
+const OPENROUTER_REFERER: &str = "https://github.com/jatmn/Codex-warp";
+const OPENROUTER_TITLE: &str = "Codex Warp";
+const OPENROUTER_CATEGORIES: &str = "cli-agent,programming-app";
+
+const OPENROUTER_HOST: &str = "openrouter.ai";
+
+fn is_openrouter(provider: &ProviderConfig) -> bool {
+    provider
+        .base_url
+        .to_ascii_lowercase()
+        .contains(OPENROUTER_HOST)
+}
+
+fn apply_openrouter_attribution(
+    request: reqwest::RequestBuilder,
+    provider: &ProviderConfig,
+) -> reqwest::RequestBuilder {
+    if !is_openrouter(provider) {
+        return request;
+    }
+    let has_header = |name: &str| {
+        provider
+            .headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case(name))
+    };
+    let mut request = request;
+    if !has_header("HTTP-Referer") {
+        request = request.header("HTTP-Referer", OPENROUTER_REFERER);
+    }
+    if !has_header("X-OpenRouter-Title") && !has_header("X-Title") {
+        request = request.header("X-OpenRouter-Title", OPENROUTER_TITLE);
+    }
+    if !has_header("X-OpenRouter-Categories") {
+        request = request.header("X-OpenRouter-Categories", OPENROUTER_CATEGORIES);
+    }
+    request
+}
+
 pub(crate) fn endpoint_url(provider: &ProviderConfig, path: &str) -> String {
     format!(
         "{}/{}",
@@ -47,6 +91,8 @@ pub(crate) fn apply_headers_with_accept(
         }
         request = request.header(name, value);
     }
+
+    let request = apply_openrouter_attribution(request, provider);
 
     request
         .header(axum::http::header::USER_AGENT, user_agent())
