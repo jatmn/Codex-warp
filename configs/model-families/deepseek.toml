@@ -64,7 +64,7 @@ patterns = [
 ]
 
 [model_families.deepseek_v4_flash.model_metadata]
-context_window = 256000
+context_window = 1000000
 default_reasoning_level = "medium"
 supported_reasoning_levels = ["low", "medium", "high"]
 supports_parallel_tool_calls = false
@@ -72,8 +72,14 @@ auto_review_model_override = "deepseek-v4-flash"
 
 [model_families.deepseek_v4_flash.transform]
 force_parallel_tool_calls = false
+preserve_reasoning_content_history = true
 
 [[model_families.deepseek_v4_flash.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.deepseek_v4_flash.transform.append_chat_request_morphs]]
 from = "reasoning.effort"
 to = "reasoning_effort"
 kind = "rename"
@@ -100,8 +106,14 @@ auto_review_model_override = "deepseek-v4-flash"
 
 [model_families.deepseek_v4_pro.transform]
 force_parallel_tool_calls = false
+preserve_reasoning_content_history = true
 
 [[model_families.deepseek_v4_pro.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
+[[model_families.deepseek_v4_pro.transform.append_chat_request_morphs]]
 from = "reasoning.effort"
 to = "reasoning_effort"
 kind = "rename"

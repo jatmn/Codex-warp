@@ -59,6 +59,24 @@ pub(crate) fn apply_request_morphs(
     }
 }
 
+pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &TransformConfig) {
+    let Some(none_value) = &transform.reasoning_effort_none_value else {
+        return;
+    };
+    if let Some(Value::String(effort)) = body.get_mut("reasoning_effort") {
+        if effort.eq_ignore_ascii_case("none") {
+            *effort = none_value.clone();
+        }
+    }
+    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
+        if let Some(Value::String(effort)) = reasoning.get_mut("effort") {
+            if effort.eq_ignore_ascii_case("none") {
+                *effort = none_value.clone();
+            }
+        }
+    }
+}
+
 pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &TransformConfig) {
     let original = request.clone();
     for morph in &transform.responses_request_morphs {

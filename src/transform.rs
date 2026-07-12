@@ -9,6 +9,7 @@ use crate::config::TransformConfig;
 use crate::config::UnsupportedToolStrategy;
 use crate::ids::generated_id;
 use crate::transform_morph::apply_native_request_morphs;
+use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
 
 #[derive(Debug, Clone)]
@@ -138,7 +139,8 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
     }
     apply_request_morphs(&request, &mut out, transform);
 
-    let body = Value::Object(out);
+    let mut body = Value::Object(out);
+    apply_reasoning_effort_none_value(&mut body, transform);
     let diagnostics = transform_diagnostics(&request, &body, input_tools.len(), tool_diagnostics);
 
     ChatTransform {

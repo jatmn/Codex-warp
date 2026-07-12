@@ -411,7 +411,7 @@ fn deepseek_family_metadata_is_variant_specific() {
 
     assert_eq!(models[0]["context_window"], 128_000);
     assert_eq!(models[0]["supports_parallel_tool_calls"], true);
-    assert_eq!(models[1]["context_window"], 256_000);
+    assert_eq!(models[1]["context_window"], 1_000_000);
     assert_eq!(models[1]["supports_parallel_tool_calls"], false);
     assert_eq!(models[2]["context_window"], 1_000_000);
     assert_eq!(models[2]["default_reasoning_level"], "high");

@@ -66,3 +66,30 @@ supports_search_tool = true
 
 [model_families.x_ai_grok_build_0_1.transform]
 force_parallel_tool_calls = false
+
+[model_families.x_ai_grok_4_5]
+priority = 10
+patterns = [
+  "grok-4.5",
+  "grok_4.5",
+  "grok-4.5-latest",
+  "xai/grok-4.5",
+  "x-ai/grok-4.5",
+]
+
+[model_families.x_ai_grok_4_5.model_metadata]
+context_window = 500000
+default_reasoning_level = "high"
+supported_reasoning_levels = ["low", "medium", "high"]
+input_modalities = ["text", "image"]
+supports_parallel_tool_calls = true
+supports_search_tool = true
+
+[model_families.x_ai_grok_4_5.transform]
+force_parallel_tool_calls = false
+reasoning_effort_none_value = "low"
+
+[[model_families.x_ai_grok_4_5.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"

@@ -35,6 +35,11 @@ from = "reasoning.effort"
 to = "thinking.type"
 kind = "thinking_type"
 
+[[model_families.z_ai_glm_5.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"
+
 [model_families.z_ai_glm_5_base]
 priority = 10
 patterns = [

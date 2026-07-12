@@ -343,6 +343,7 @@ pub struct TransformConfig {
     pub responses_request_morphs: Vec<RequestMorph>,
     pub unsupported_tool_types: Vec<String>,
     pub unsupported_tool_strategy: UnsupportedToolStrategy,
+    pub reasoning_effort_none_value: Option<String>,
     pub drop_empty_tool_choice: bool,
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: bool,
@@ -357,6 +358,7 @@ impl Default for TransformConfig {
             responses_request_morphs: Vec::new(),
             unsupported_tool_types: vec!["custom".to_string()],
             unsupported_tool_strategy: UnsupportedToolStrategy::AsFunction,
+            reasoning_effort_none_value: None,
             drop_empty_tool_choice: true,
             force_parallel_tool_calls: None,
             request_stream_options_include_usage: false,
@@ -377,6 +379,7 @@ pub struct TransformConfigPatch {
     pub append_responses_request_morphs: Vec<RequestMorph>,
     pub unsupported_tool_types: Option<Vec<String>>,
     pub unsupported_tool_strategy: Option<UnsupportedToolStrategy>,
+    pub reasoning_effort_none_value: Option<String>,
     pub drop_empty_tool_choice: Option<bool>,
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: Option<bool>,
@@ -413,6 +416,9 @@ impl TransformConfigPatch {
         }
         if let Some(strategy) = self.unsupported_tool_strategy {
             transform.unsupported_tool_strategy = strategy;
+        }
+        if let Some(value) = &self.reasoning_effort_none_value {
+            transform.reasoning_effort_none_value = Some(value.clone());
         }
         if let Some(drop_empty_tool_choice) = self.drop_empty_tool_choice {
             transform.drop_empty_tool_choice = drop_empty_tool_choice;
