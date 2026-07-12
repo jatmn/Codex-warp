@@ -5,9 +5,14 @@
 # supports hybrid thinking (reasoning) and native function/tool calling.
 #
 # Reasoning modes are `no_think` (direct), `low`, and `high`. Codex expresses
-# effort as `none`/`low`/`medium`/`high`, so this catalog drops `medium` from
-# the advertised levels and maps `none` -> `no_think` via
+# effort as `none`/`low`/`medium`/`high`. This catalog advertises only
+# `none`/`low`/`high` (it drops `medium`; Hy3 has no medium mode), so Codex
+# selects from the advertised levels and will not normally request `medium`.
+# If a client still sends `medium`, it is forwarded unchanged (no remap) since
+# Hy3 has no medium mode to map to. `none` is mapped to `no_think` via
 # `reasoning_effort_none_value` so the provider receives a valid mode.
+# NOTE: `no_think` is the assumed Hy3 value and is not yet verified against the
+# live gateway; confirm with a smoke test (see docs/live-testing.md).
 #
 # Hy3 understands standard function tools but not Codex's `custom` (apply_patch
 # freeform) tool type, so those are coerced with `as_function` and reconstructed
@@ -20,7 +25,7 @@ patterns = [
   "hy3:*",
   "hicap/hy3*",
   "tencent/hy3*",
-  "hunyuan*3*",
+  "hunyuan3*",
   "hunyuan-3*",
 ]
 
@@ -46,6 +51,12 @@ force_parallel_tool_calls = false
 drop_empty_tool_choice = true
 reasoning_effort_none_value = "no_think"
 
+# Exact override entry. It intentionally omits [transform] and most
+# [model_metadata] fields: family transforms/metadata merge cumulatively
+# (see provider.rs / config.rs `apply_to`), so exact ids inherit everything
+# from the broad `hy3` family above and this entry only pins an exact
+# context_window. Keep it minimal; add distinct behavior here only when a
+# specific exact id needs to diverge from the broad family.
 [model_families.hy3_exact]
 priority = 10
 patterns = [

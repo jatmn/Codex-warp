@@ -771,3 +771,52 @@ fn transform_patch_can_remove_inherited_morphs_before_appending() {
             .any(|morph| morph.kind == RequestMorphKind::ThinkingType)
     );
 }
+
+#[test]
+fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
+    let config = load_config_layers(&[]).expect("default parses");
+    // These should NOT match the hy3 family, which would otherwise inherit the
+    // none->no_think remap and as_function coercion.
+    for id in ["hunyuan-13b", "hunyuan-turbo-3b"] {
+        assert!(
+            !matching_model_families(&config, id)
+                .iter()
+                .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+            "{id} should not match the hy3 family"
+        );
+    }
+    // Real Hy3 Hunyuan ids should still match.
+    for id in ["hunyuan-3", "hunyuan3", "hunyuan-3b"] {
+        assert!(
+            matching_model_families(&config, id)
+                .iter()
+                .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+            "{id} should match the hy3 family"
+        );
+    }
+}
+
+#[test]
+fn hy3_exact_ids_inherit_broad_family_transform() {
+    // Exact ids match both the broad `hy3` family (priority 0) and the exact
+    // `hy3_exact` family (priority 10). Because transforms merge cumulatively
+    // (provider.rs / config.rs `apply_to`), an exact id must still carry the
+    // broad family's `reasoning_effort_none_value` and `as_function` coercion.
+    let config = load_config_layers(&[]).expect("default parses");
+    for id in ["hy3", "hy3:free", "hicap/hy3:free", "tencent/hy3"] {
+        let mut transform = TransformConfig::default();
+        for family in matching_model_families(&config, id) {
+            family.transform.apply_to(&mut transform);
+        }
+        assert_eq!(
+            transform.reasoning_effort_none_value.as_deref(),
+            Some("no_think"),
+            "exact id {id} should inherit none->no_think from the broad hy3 family"
+        );
+        assert_eq!(
+            transform.unsupported_tool_strategy,
+            UnsupportedToolStrategy::AsFunction,
+            "exact id {id} should inherit the as_function coercion"
+        );
+    }
+}

@@ -936,15 +936,38 @@ fn chat_reasoning_text(value: &Value) -> Option<String> {
     }
     // OpenRouter and some gateways return reasoning as a `reasoning_details`
     // array of objects such as {"type": "text", "text": "..."} or plain strings.
-    // Flatten the contiguous text so hybrid-thinking models (e.g. Hy3) surface
-    // their chain-of-thought to Codex.
-    let details = value.get("reasoning_details").and_then(Value::as_array)?;
+    // Some providers also emit `reasoning_details` as a single string or object,
+    // or use object shapes like {"type": "reasoning.summary", "text": "..."} /
+    // {"summary": "..."}. Flatten the contiguous text so hybrid-thinking models
+    // (e.g. Hy3) surface their chain-of-thought to Codex, and never silently
+    // discard all reasoning when the field is not an array.
+    let details: Vec<&Value> = match value.get("reasoning_details") {
+        Some(Value::Array(arr)) => arr.iter().collect(),
+        Some(Value::String(s)) => return Some(s.clone()),
+        Some(Value::Object(obj)) => {
+            if let Some(text) = obj
+                .get("text")
+                .or_else(|| obj.get("summary"))
+                .or_else(|| obj.get("reasoning"))
+                .and_then(Value::as_str)
+            {
+                return Some(text.to_string());
+            }
+            return None;
+        }
+        _ => return None,
+    };
     let mut combined = String::new();
     for item in details {
         match item {
             Value::String(text) => combined.push_str(text),
-            Value::Object(_) => {
-                if let Some(text) = item.get("text").and_then(Value::as_str) {
+            Value::Object(obj) => {
+                if let Some(text) = obj
+                    .get("text")
+                    .or_else(|| obj.get("summary"))
+                    .or_else(|| obj.get("reasoning"))
+                    .and_then(Value::as_str)
+                {
                     combined.push_str(text);
                 }
             }
@@ -1135,15 +1158,26 @@ pub(crate) fn native_stream_debug_summary(value: &Value) -> Option<Value> {
 }
 
 fn custom_tool_input(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| arguments.to_string())
+    match serde_json::from_str::<Value>(arguments) {
+        // The model returned a JSON-encoded string for the patch input.
+        Ok(Value::String(s)) => s,
+        Ok(Value::Object(obj)) => {
+            if let Some(input) = obj.get("input").and_then(Value::as_str) {
+                return input.to_string();
+            }
+            // No `input` key: if there is exactly one string field, treat it as
+            // the patch input rather than forwarding the whole JSON object
+            // (which would be an invalid apply_patch payload).
+            let string_values: Vec<&str> = obj.values().filter_map(Value::as_str).collect();
+            if string_values.len() == 1 {
+                return string_values[0].to_string();
+            }
+            arguments.to_string()
+        }
+        // Non-JSON or an unexpected JSON shape: pass the raw arguments through
+        // as the input so the failure is visible rather than silently dropped.
+        _ => arguments.to_string(),
+    }
 }
 
 pub(crate) fn morph_native_sse_frame(

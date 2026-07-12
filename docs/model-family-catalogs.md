@@ -32,7 +32,7 @@ Provider/gateway behavior belongs in
 | xAI | [`x-ai.toml`](../configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-build-0.1` |
 | Xiaomi | [`xiaomi.toml`](../configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
 | Z.ai | [`z-ai.toml`](../configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2` |
-| Tencent Hunyuan 3 (Hy3) | [`hy3.toml`](../configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
+| Tencent Hunyuan 3 (Hy3) | [`hy3.toml`](../configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
 
 The default catalogs live in
 [`configs/model-families`](../configs/model-families) and are loaded by

@@ -801,3 +801,45 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
         "upstream SSE frame buffer exceeded maximum size"
     );
 }
+
+#[test]
+fn custom_tool_input_extracts_input_field() {
+    assert_eq!(custom_tool_input(r#"{"input":"patch text"}"#), "patch text");
+}
+
+#[test]
+fn custom_tool_input_unwraps_json_string() {
+    // The model returned a JSON-encoded string as the arguments.
+    assert_eq!(custom_tool_input(r#""bare patch text""#), "bare patch text");
+}
+
+#[test]
+fn custom_tool_input_falls_back_to_raw_on_unknown_shape() {
+    // No `input` and more than one string field: preserve the raw arguments so
+    // the failure is visible rather than forwarding a malformed patch.
+    assert_eq!(
+        custom_tool_input(r#"{"a":"x","b":"y"}"#),
+        r#"{"a":"x","b":"y"}"#
+    );
+}
+
+#[test]
+fn chat_reasoning_text_handles_non_array_reasoning_details() {
+    // A single string `reasoning_details` should still surface reasoning.
+    assert_eq!(
+        chat_reasoning_text(&json!({ "reasoning_details": "direct string" })),
+        Some("direct string".to_string())
+    );
+    // A single object `reasoning_details` with a `summary` key should surface it.
+    assert_eq!(
+        chat_reasoning_text(
+            &json!({ "reasoning_details": { "type": "reasoning.summary", "summary": "via summary" } })
+        ),
+        Some("via summary".to_string())
+    );
+    // A non-reasoning object without a text/summary/reasoning key yields nothing.
+    assert_eq!(
+        chat_reasoning_text(&json!({ "reasoning_details": { "type": "other" } })),
+        None
+    );
+}
