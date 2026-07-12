@@ -61,6 +61,8 @@ fn example_configs_parse_request_morphs() {
     );
     assert!(default_config.model_families.contains_key("z_ai_glm_5"));
     assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
+    assert!(default_config.model_families.contains_key("hy3"));
+    assert!(default_config.model_families.contains_key("hy3_exact"));
     assert!(provider_entries(&default_config).is_empty());
     assert!(provider_entries(&generic_config).is_empty());
     assert!(!generic_config.provider.is_enabled());
@@ -171,6 +173,44 @@ fn example_configs_parse_request_morphs() {
             .first()
             .and_then(|family| family.model_metadata.context_window),
         Some(1_000_000)
+    );
+}
+
+#[test]
+fn hy3_family_advertises_context_reasoning_and_tool_transforms() {
+    let config = load_config_layers(&[]).expect("default parses");
+    let hy3_matches = matching_model_families(&config, "hicap/hy3:free");
+    let family = hy3_matches
+        .first()
+        .expect("hy3 family matches hicap/hy3:free");
+
+    assert_eq!(family.model_metadata.context_window, Some(256000));
+    assert_eq!(
+        family.model_metadata.default_reasoning_level.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        family.model_metadata.supports_parallel_tool_calls,
+        Some(false)
+    );
+
+    let levels = family
+        .model_metadata
+        .supported_reasoning_levels
+        .as_ref()
+        .expect("supported reasoning levels present");
+    assert!(levels.iter().any(|level| level == "none"));
+    assert!(levels.iter().any(|level| level == "low"));
+    assert!(levels.iter().any(|level| level == "high"));
+    assert!(!levels.iter().any(|level| level == "medium"));
+
+    assert_eq!(
+        family.transform.reasoning_effort_none_value.as_deref(),
+        Some("no_think")
+    );
+    assert_eq!(
+        family.transform.unsupported_tool_strategy,
+        Some(UnsupportedToolStrategy::AsFunction)
     );
 }
 

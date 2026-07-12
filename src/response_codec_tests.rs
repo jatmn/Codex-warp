@@ -325,6 +325,28 @@ fn chat_stream_reasoning_field_emits_reasoning_deltas() {
 }
 
 #[test]
+fn chat_reasoning_text_flattens_reasoning_details_array() {
+    let text = chat_reasoning_text(&json!({
+        "reasoning_details": [
+            {"type": "text", "text": "Step one. "},
+            {"type": "text", "text": "Step two."},
+            "loose string"
+        ]
+    }));
+    assert_eq!(text.as_deref(), Some("Step one. Step two.loose string"));
+
+    // reasoning_content / reasoning take precedence over reasoning_details
+    let text = chat_reasoning_text(&json!({
+        "reasoning": "direct",
+        "reasoning_details": [{"type": "text", "text": "ignored"}]
+    }));
+    assert_eq!(text.as_deref(), Some("direct"));
+
+    // empty details yield no reasoning text
+    assert_eq!(chat_reasoning_text(&json!({"reasoning_details": []})), None);
+}
+
+#[test]
 fn chat_stream_debug_summary_counts_reasoning_without_text() {
     let mut accum = ChatAccum::default();
     let chunk = json!({

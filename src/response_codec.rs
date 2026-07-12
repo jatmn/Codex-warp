@@ -440,7 +440,7 @@ impl ChatAccum {
                         ));
                     }
                 }
-                self.reasoning_text.push_str(reasoning);
+                self.reasoning_text.push_str(&reasoning);
                 events.push(sse(
                     "response.reasoning_summary_text.delta",
                     json!({
@@ -926,11 +926,36 @@ pub(crate) fn chat_json_to_responses_with_policy(
     })
 }
 
-fn chat_reasoning_text(value: &Value) -> Option<&str> {
-    value
+fn chat_reasoning_text(value: &Value) -> Option<String> {
+    if let Some(text) = value
         .get("reasoning_content")
         .or_else(|| value.get("reasoning"))
         .and_then(Value::as_str)
+    {
+        return Some(text.to_string());
+    }
+    // OpenRouter and some gateways return reasoning as a `reasoning_details`
+    // array of objects such as {"type": "text", "text": "..."} or plain strings.
+    // Flatten the contiguous text so hybrid-thinking models (e.g. Hy3) surface
+    // their chain-of-thought to Codex.
+    let details = value.get("reasoning_details").and_then(Value::as_array)?;
+    let mut combined = String::new();
+    for item in details {
+        match item {
+            Value::String(text) => combined.push_str(text),
+            Value::Object(_) => {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    combined.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    if combined.is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
 }
 
 pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {

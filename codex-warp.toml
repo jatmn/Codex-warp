@@ -38,6 +38,7 @@ model_family_include = [
   "configs/model-families/x-ai.toml",
   "configs/model-families/xiaomi.toml",
   "configs/model-families/z-ai.toml",
+  "configs/model-families/hy3.toml",
 ]
 tool_policy_include = [
   "configs/tool-policies/github.toml",
