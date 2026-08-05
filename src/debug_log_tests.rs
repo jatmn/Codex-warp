@@ -1,6 +1,8 @@
 use super::*;
 
 use serde_json::json;
+use std::fs;
+use std::time::Duration;
 
 #[test]
 fn request_debug_summary_keeps_cache_fields_without_prompt_text() {
@@ -122,4 +124,63 @@ fn is_secret_key_matches_private_key_and_signing_key() {
     // Non-secret keys are not matched.
     assert!(!super::is_secret_key("name"));
     assert!(!super::is_secret_key("model"));
+}
+
+#[test]
+fn should_rotate_log_when_size_limit_exceeded() {
+    let now = SystemTime::now();
+    let modified = now - Duration::from_secs(60);
+    assert!(should_rotate_log(
+        1024,
+        modified,
+        now,
+        512,
+        Duration::from_secs(3600)
+    ));
+}
+
+#[test]
+fn should_rotate_log_when_age_limit_exceeded() {
+    let now = SystemTime::now();
+    let modified = now - Duration::from_secs(31 * 24 * 60 * 60);
+    assert!(should_rotate_log(
+        10,
+        modified,
+        now,
+        DEFAULT_MAX_LOG_BYTES,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+}
+
+#[test]
+fn should_not_rotate_log_when_within_limits() {
+    let now = SystemTime::now();
+    let modified = now - Duration::from_secs(60);
+    assert!(!should_rotate_log(
+        10,
+        modified,
+        now,
+        512,
+        Duration::from_secs(3600)
+    ));
+}
+
+#[test]
+fn rotates_debug_log_file_when_size_limit_exceeded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "x".repeat(1024)).expect("write debug log");
+
+    maybe_rotate_log(&path, 512, Duration::from_secs(3600)).expect("rotate debug log");
+
+    assert!(!path.exists());
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
+    assert_eq!(fs::metadata(&backup).expect("backup metadata").len(), 1024);
+
+    let _ = fs::remove_dir_all(dir);
 }

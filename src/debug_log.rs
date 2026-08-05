@@ -1,11 +1,15 @@
 use std::collections::hash_map::DefaultHasher;
+use std::fs;
 use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use serde_json::Value;
 use serde_json::json;
@@ -14,13 +18,60 @@ use tracing::warn;
 use crate::config::DebugConfig;
 
 const REDACTED: &str = "[REDACTED]";
+pub(crate) const DEFAULT_MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_LOG_AGE_DAYS: u64 = 30;
 
 #[derive(Clone)]
 pub(crate) struct DebugLog {
     pub(crate) path: Option<Arc<PathBuf>>,
     pub(crate) include_bodies: bool,
     pub(crate) include_stream_bodies: bool,
+    max_log_bytes: u64,
+    max_log_age: Duration,
     writer_lock: Arc<Mutex<()>>,
+}
+
+fn max_log_bytes_from_config(config: &DebugConfig) -> u64 {
+    config.max_log_bytes.unwrap_or(DEFAULT_MAX_LOG_BYTES)
+}
+
+fn max_log_age_from_config(config: &DebugConfig) -> Duration {
+    let days = config.max_log_age_days.unwrap_or(DEFAULT_MAX_LOG_AGE_DAYS);
+    Duration::from_secs(days.saturating_mul(24 * 60 * 60))
+}
+
+pub(crate) fn should_rotate_log(
+    file_len: u64,
+    modified_at: SystemTime,
+    now: SystemTime,
+    max_bytes: u64,
+    max_age: Duration,
+) -> bool {
+    let too_large = file_len >= max_bytes;
+    let too_old = now
+        .duration_since(modified_at)
+        .is_ok_and(|age| age >= max_age);
+    too_large || too_old
+}
+
+fn rotation_backup_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.1", path.display()))
+}
+
+fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let modified_at = metadata.modified()?;
+    if !should_rotate_log(metadata.len(), modified_at, SystemTime::now(), max_bytes, max_age) {
+        return Ok(());
+    }
+    let backup = rotation_backup_path(path);
+    let _ = fs::remove_file(&backup);
+    fs::rename(path, backup)?;
+    Ok(())
 }
 
 impl DebugLog {
@@ -30,11 +81,15 @@ impl DebugLog {
             path: None,
             include_bodies: false,
             include_stream_bodies: false,
+            max_log_bytes: DEFAULT_MAX_LOG_BYTES,
+            max_log_age: max_log_age_from_config(&DebugConfig::default()),
             writer_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub(crate) fn new(config: &DebugConfig) -> Self {
+        let max_log_bytes = max_log_bytes_from_config(config);
+        let max_log_age = max_log_age_from_config(config);
         let path = config
             .enabled
             .then(|| config.log_path.clone())
@@ -43,10 +98,17 @@ impl DebugLog {
         if config.enabled && path.is_none() {
             warn!("debug logging is enabled but debug.log_path is not set");
         }
+        if let Some(path) = path.as_ref() {
+            if let Err(err) = maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age) {
+                warn!("failed to rotate debug log {}: {err}", path.display());
+            }
+        }
         Self {
             path,
             include_bodies: config.include_bodies,
             include_stream_bodies: config.include_stream_bodies,
+            max_log_bytes,
+            max_log_age,
             writer_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -114,6 +176,9 @@ impl DebugLog {
             warn!("failed to lock debug log writer {}", path.display());
             return;
         };
+        if let Err(err) = maybe_rotate_log(path.as_path(), self.max_log_bytes, self.max_log_age) {
+            warn!("failed to rotate debug log {}: {err}", path.display());
+        }
         match OpenOptions::new()
             .create(true)
             .append(true)
