@@ -53,3 +53,37 @@ fn rewrite_model_for_upstream_uses_catalog_alias_for_review_model() {
 
     assert_eq!(body["model"], "kimi-k2.6");
 }
+
+#[test]
+fn rewrite_model_for_upstream_preserves_prefixed_catalog_id_without_upstream_id() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "cline-pass/kimi-k2.7-code".to_string(),
+            upstream_id: None,
+            display_name: None,
+            description: None,
+        }],
+        ..ProviderConfig::default()
+    };
+    let mut body = json!({
+        "model": "cline-pass/kimi-k2.7-code",
+        "input": "hello"
+    });
+
+    rewrite_model_for_upstream(&provider, &mut body);
+
+    assert_eq!(body["model"], "cline-pass/kimi-k2.7-code");
+}
+
+#[test]
+fn rewrite_model_for_upstream_strips_provider_prefix_for_unknown_catalog_models() {
+    let provider = ProviderConfig::default();
+    let mut body = json!({
+        "model": "hicap/grok-4.3",
+        "input": "hello"
+    });
+
+    rewrite_model_for_upstream(&provider, &mut body);
+
+    assert_eq!(body["model"], "grok-4.3");
+}

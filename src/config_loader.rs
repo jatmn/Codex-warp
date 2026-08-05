@@ -178,13 +178,42 @@ pub fn provider_id_for_config_model(config: &AppConfig, model: &str) -> Option<S
     if model == "codex-auto-review" {
         return None;
     }
+    provider_id_from_model_prefix(config, model).or_else(|| {
+        provider_entries(config)
+            .into_iter()
+            .find(|(_, provider)| provider_matches_model(provider, model))
+            .map(|(id, _)| id.to_string())
+    })
+}
+
+pub fn provider_id_from_model_prefix(config: &AppConfig, model: &str) -> Option<String> {
+    let (prefix, suffix) = model.rsplit_once('/')?;
+    if prefix.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    resolve_provider_alias(config, prefix)
+}
+
+pub(crate) fn resolve_provider_alias(config: &AppConfig, alias: &str) -> Option<String> {
+    if provider_by_id(config, alias).is_some() {
+        return Some(alias.to_string());
+    }
+    let underscored = alias.replace('-', "_");
+    if underscored != alias && provider_by_id(config, &underscored).is_some() {
+        return Some(underscored);
+    }
     provider_entries(config)
         .into_iter()
-        .find(|(_, provider)| {
-            provider.model_metadata.overrides.contains_key(model)
-                || provider.model_catalog.iter().any(|entry| entry.id == model)
-        })
+        .find(|(id, _)| id.replace('_', "-") == alias)
         .map(|(id, _)| id.to_string())
+}
+
+pub(crate) fn provider_matches_model(provider: &ProviderConfig, model: &str) -> bool {
+    provider.model_metadata.overrides.contains_key(model)
+        || provider
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == model || entry.upstream_id.as_deref() == Some(model))
 }
 
 pub fn matching_model_families<'a>(

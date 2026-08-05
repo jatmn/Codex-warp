@@ -13,8 +13,7 @@ use serde_json::json;
 
 use crate::config::ProviderConfig;
 use crate::debug_log::request_debug_summary;
-use crate::http::apply_headers;
-use crate::http::apply_headers_with_accept;
+use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
 use crate::http::endpoint_url;
 use crate::http::error_response;
@@ -98,10 +97,30 @@ pub(crate) async fn proxy_chat_responses(
         }),
         &chat_transform.body,
     );
-    let mut request = state.client.post(url).json(&chat_transform.body);
-    request = apply_headers(request, &selected.provider, &headers);
+    let request = match build_upstream_json_request(
+        &state.client,
+        url,
+        &chat_transform.body,
+        &selected.provider,
+        &headers,
+        "text/event-stream",
+    ) {
+        Ok(request) => request,
+        Err(err) => {
+            state.debug_log.log_error(
+                json!({
+                    "event": "upstream_response",
+                    "id": request_log_id,
+                    "status": StatusCode::BAD_GATEWAY.as_u16(),
+                    "success": false
+                }),
+                &err,
+            );
+            return error_response(StatusCode::BAD_GATEWAY, err);
+        }
+    };
 
-    let upstream = match request.send().await {
+    let upstream = match state.client.execute(request).await {
         Ok(response) => response,
         Err(err) => {
             state.debug_log.log_error(
@@ -190,13 +209,14 @@ pub(crate) fn rewrite_model_for_upstream(provider: &ProviderConfig, body: &mut V
     let Some(model) = body.get("model").and_then(Value::as_str) else {
         return;
     };
-    if let Some(upstream_id) = provider
-        .model_catalog
-        .iter()
-        .find(|entry| entry.id == model)
-        .and_then(|entry| entry.upstream_id.as_deref())
-    {
-        body["model"] = json!(upstream_id);
+    if let Some(entry) = provider.model_catalog.iter().find(|entry| entry.id == model) {
+        if let Some(upstream_id) = entry.upstream_id.as_deref() {
+            body["model"] = json!(upstream_id);
+        }
+        return;
+    }
+    if let Some((_, suffix)) = model.rsplit_once('/') {
+        body["model"] = json!(suffix);
     }
 }
 
@@ -210,9 +230,29 @@ async fn send_native_responses(
     custom_tool_names: BTreeSet<String>,
     request_log_id: String,
 ) -> Response {
-    let mut request = state.client.post(url).json(&body);
-    request = apply_headers_with_accept(request, provider, &headers, "text/event-stream");
-    let upstream = match request.send().await {
+    let request = match build_upstream_json_request(
+        &state.client,
+        url,
+        &body,
+        provider,
+        &headers,
+        "text/event-stream",
+    ) {
+        Ok(request) => request,
+        Err(err) => {
+            state.debug_log.log_error(
+                json!({
+                    "event": "upstream_response",
+                    "id": request_log_id,
+                    "status": StatusCode::BAD_GATEWAY.as_u16(),
+                    "success": false
+                }),
+                &err,
+            );
+            return error_response(StatusCode::BAD_GATEWAY, err);
+        }
+    };
+    let upstream = match state.client.execute(request).await {
         Ok(response) => response,
         Err(err) => {
             state.debug_log.log_error(

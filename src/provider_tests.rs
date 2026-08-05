@@ -176,6 +176,58 @@ async fn codex_auto_review_does_not_fall_back_to_default_provider() {
     assert!(select_provider(&state, &body).await.is_none());
 }
 
+#[tokio::test]
+async fn prefixed_models_route_to_named_provider_without_catalog_entry() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+            api_key = "default-key"
+
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+            api_key = "hicap-key"
+
+            [[providers.hicap.model_catalog]]
+            id = "hicap/grok-4.5"
+            upstream_id = "grok-4.5"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "hicap/grok-4.3",
+        "input": "hello"
+    });
+
+    let selected = select_provider(&state, &body)
+        .await
+        .expect("prefixed model should route to named provider");
+
+    assert_eq!(selected.id, "hicap");
+}
+
+#[tokio::test]
+async fn unknown_models_do_not_fall_back_to_default_provider() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "grok-4.3",
+        "input": "hello"
+    });
+
+    assert!(select_provider(&state, &body).await.is_none());
+}
+
 #[test]
 fn qwen3_7_family_drops_openai_reasoning_effort_morph() {
     let mut config = load_config_layers(&[]).expect("default config loads");

@@ -554,3 +554,55 @@ fn provider_overrides_win_over_model_family_metadata() {
 
     assert_eq!(value["models"][0]["context_window"], 123_456);
 }
+
+#[test]
+fn register_catalog_routes_for_provider_adds_upstream_id_aliases() {
+    let mut routes = BTreeMap::new();
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(crate::config::ModelCatalogEntry {
+        id: "hicap/gpt-5.4".to_string(),
+        upstream_id: Some("gpt-5.4".to_string()),
+        ..crate::config::ModelCatalogEntry::default()
+    });
+
+    register_catalog_routes_for_provider(&mut routes, "hicap", &provider);
+
+    assert_eq!(routes.get("hicap/gpt-5.4").map(String::as_str), Some("hicap"));
+    assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
+}
+
+#[test]
+fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
+    let mut routes = BTreeMap::new();
+    let mut hicap = ProviderConfig::default();
+    hicap
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "hicap/gpt-5.4".to_string(),
+            upstream_id: Some("gpt-5.4".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+
+    let mut merged_models = Vec::new();
+    let mut default_provider = ProviderConfig::default();
+    default_provider.base_url = "https://default.example/v1".to_string();
+    let live_models = vec![json!({
+        "slug": "gpt-5.4",
+        "display_name": "GPT-5.4",
+        "object": "model"
+    })];
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    add_models_for_provider(
+        &mut merged_models,
+        &mut routes,
+        &config,
+        "provider",
+        &default_provider,
+        live_models,
+    );
+
+    assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
+    assert!(merged_models.is_empty());
+}

@@ -13,6 +13,9 @@ use crate::state::SelectedProvider;
 pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<SelectedProvider> {
     let model = body.get("model").and_then(Value::as_str);
     if let Some(model) = model {
+        if model == "codex-auto-review" {
+            return None;
+        }
         if let Some(provider_id) = state.model_routes.read().await.get(model)
             && let Some(provider) = provider_by_id(&state.config, provider_id)
         {
@@ -33,9 +36,7 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
                 Some(model),
             ));
         }
-        if model == "codex-auto-review" {
-            return None;
-        }
+        return None;
     }
     provider_entries(&state.config)
         .into_iter()

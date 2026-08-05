@@ -1,6 +1,12 @@
 use super::*;
 
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use axum::Router;
+use axum::extract::Request;
 use axum::http::HeaderMap;
+use axum::routing::post;
 use reqwest::Client;
 
 use crate::config::ProviderConfig;
@@ -133,7 +139,6 @@ fn user_headers_override_openrouter_attribution() {
         headers.get("X-Title").and_then(|v| v.to_str().ok()),
         Some("Codex Warp")
     );
-    // The user override is the sole value — no duplicate auto header is appended.
     assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 1);
     assert_eq!(headers.get_all("X-OpenRouter-Title").iter().count(), 1);
 }
@@ -178,13 +183,11 @@ fn x_title_alias_suppresses_openrouter_title() {
             .expect("request builds");
     let headers = request.headers();
 
-    // User's X-Title wins; the automatic X-OpenRouter-Title must not be added.
     assert_eq!(
         headers.get("X-Title").and_then(|v| v.to_str().ok()),
         Some("My App")
     );
     assert!(headers.get("X-OpenRouter-Title").is_none());
-    // The other attribution headers are still applied.
     assert_eq!(
         headers.get("HTTP-Referer").and_then(|v| v.to_str().ok()),
         Some("https://github.com/jatmn/Codex-warp")
@@ -209,7 +212,6 @@ fn user_categories_override_openrouter_attribution() {
             .expect("request builds");
     let headers = request.headers();
 
-    // Exactly one X-OpenRouter-Categories value: the user's override.
     assert_eq!(
         headers
             .get("X-OpenRouter-Categories")
@@ -217,7 +219,6 @@ fn user_categories_override_openrouter_attribution() {
         Some("my-category")
     );
     assert_eq!(headers.get_all("X-OpenRouter-Categories").iter().count(), 1);
-    // Title still auto-applied (not overridden here).
     assert_eq!(
         headers
             .get("X-OpenRouter-Title")
@@ -272,4 +273,128 @@ fn responses_and_models_paths_get_attribution_headers() {
         assert_eq!(headers.get_all("X-OpenRouter-Title").iter().count(), 1);
         assert_eq!(headers.get_all("X-OpenRouter-Categories").iter().count(), 1);
     }
+}
+
+#[test]
+fn upstream_headers_supports_custom_api_key_header() {
+    let mut provider = ProviderConfig::default();
+    provider.auth_header = "api-key".to_string();
+    provider.auth_scheme = String::new();
+    provider.api_key = Some("test-hicap-key".to_string());
+    provider
+        .headers
+        .insert("x-hicap-tag".to_string(), "codex-warp-jatmn".to_string());
+
+    let headers = upstream_headers(&provider, &HeaderMap::new(), "text/event-stream");
+
+    assert_eq!(
+        headers.get("api-key").and_then(|value| value.to_str().ok()),
+        Some("test-hicap-key")
+    );
+    assert_eq!(
+        headers
+            .get("x-hicap-tag")
+            .and_then(|value| value.to_str().ok()),
+        Some("codex-warp-jatmn")
+    );
+}
+
+#[test]
+fn build_upstream_json_request_sets_single_content_type() {
+    let mut provider = ProviderConfig::default();
+    provider.auth_header = "authorization".to_string();
+    provider.auth_scheme = "Bearer".to_string();
+    provider.api_key = Some("test-key".to_string());
+    provider
+        .headers
+        .insert("content-type".to_string(), "application/json".to_string());
+
+    let request = build_upstream_json_request(
+        &Client::new(),
+        "https://provider.example/v1/chat/completions".to_string(),
+        &serde_json::json!({"model": "deepseek-v4-flash"}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request builds");
+
+    let values: Vec<_> = request
+        .headers()
+        .get_all(axum::http::header::CONTENT_TYPE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    assert_eq!(values, vec!["application/json"]);
+}
+
+#[tokio::test]
+async fn build_upstream_json_request_sends_single_content_type_on_wire() {
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let capture = captured.clone();
+    let app = Router::new().route(
+        "/",
+        post(move |request: Request| {
+            let values = request
+                .headers()
+                .get_all(axum::http::header::CONTENT_TYPE)
+                .iter()
+                .filter_map(|value| value.to_str().ok().map(str::to_owned))
+                .collect::<Vec<_>>();
+            capture
+                .lock()
+                .expect("capture lock")
+                .push(values.join(", "));
+            async { "ok" }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+
+    let mut provider = ProviderConfig::default();
+    provider.auth_header = "authorization".to_string();
+    provider.auth_scheme = "Bearer".to_string();
+    provider.api_key = Some("test-key".to_string());
+    provider
+        .headers
+        .insert("content-type".to_string(), "application/json".to_string());
+
+    let client = Client::new();
+    let request = build_upstream_json_request(
+        &client,
+        format!("http://{addr}/"),
+        &serde_json::json!({"model": "deepseek-v4-flash", "stream": true}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request builds");
+
+    let prepared: Vec<_> = request
+        .headers()
+        .get_all(axum::http::header::CONTENT_TYPE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    assert_eq!(prepared, vec!["application/json"]);
+
+    client
+        .execute(request)
+        .await
+        .expect("request should succeed on wire");
+
+    let wire = captured
+        .lock()
+        .expect("capture lock")
+        .pop()
+        .expect("wire capture");
+    assert_eq!(wire, "application/json");
 }

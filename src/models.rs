@@ -86,12 +86,16 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     let mut routes = BTreeMap::new();
     let mut failures = Vec::new();
 
+    for (provider_id, provider) in provider_entries(&state.config) {
+        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    }
+
     for (provider_id, provider, provider_models, provider_failures) in fetch_results {
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,
             &state.config,
-            provider_id,
+            &provider_id,
             &provider,
             provider_models,
         ) > 0;
@@ -117,6 +121,24 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 
     *state.model_routes.write().await = routes;
     Json(json!({ "models": merged_models })).into_response()
+}
+
+pub(crate) fn register_catalog_routes_for_provider(
+    routes: &mut BTreeMap<String, String>,
+    provider_id: &str,
+    provider: &ProviderConfig,
+) {
+    for entry in &provider.model_catalog {
+        if !routes.contains_key(&entry.id) {
+            routes.insert(entry.id.clone(), provider_id.to_string());
+        }
+        if let Some(upstream_id) = entry.upstream_id.as_deref()
+            && !upstream_id.is_empty()
+            && !routes.contains_key(upstream_id)
+        {
+            routes.insert(upstream_id.to_string(), provider_id.to_string());
+        }
+    }
 }
 
 pub(crate) fn add_models_for_provider(
