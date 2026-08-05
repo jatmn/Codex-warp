@@ -250,6 +250,41 @@ fn separate_reasoning_item_becomes_next_assistant_tool_call_reasoning_content() 
 }
 
 #[test]
+fn orphan_reasoning_before_user_message_is_not_attached_to_later_assistant() {
+    let request = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "stale reasoning"}]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "question"}]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "answer"}]
+            }
+        ]
+    });
+    let mut transform = TransformConfig::default();
+    transform.preserve_reasoning_content_history = true;
+
+    let transformed = responses_to_chat(request, &transform);
+
+    assert_eq!(transformed.body["messages"][0]["role"], "user");
+    assert_eq!(transformed.body["messages"][1]["role"], "assistant");
+    assert!(
+        transformed.body["messages"][1]
+            .get("reasoning_content")
+            .is_none()
+    );
+}
+
+#[test]
 fn consecutive_tool_calls_are_grouped_before_tool_outputs() {
     let request = json!({
         "model": "test-model",

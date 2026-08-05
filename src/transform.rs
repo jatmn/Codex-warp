@@ -11,6 +11,7 @@ use crate::ids::generated_id;
 use crate::transform_morph::apply_native_request_morphs;
 use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
+use crate::transform_morph::strip_disabled_reasoning_effort;
 
 #[derive(Debug, Clone)]
 pub struct ChatTransform {
@@ -58,7 +59,7 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                 let prior_reasoning = pending_reasoning.take();
                 let (item_messages, consumed_reasoning) =
                     response_item_to_messages(item, transform, prior_reasoning.as_deref());
-                if !consumed_reasoning {
+                if !consumed_reasoning && should_retain_pending_reasoning(item) {
                     pending_reasoning = prior_reasoning;
                 }
                 if is_assistant_tool_call_message(item_messages.first()) {
@@ -141,6 +142,7 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
     let mut body = Value::Object(out);
     apply_reasoning_effort_none_value(&mut body, transform);
+    strip_disabled_reasoning_effort(&mut body);
     let diagnostics = transform_diagnostics(&request, &body, input_tools.len(), tool_diagnostics);
 
     ChatTransform {
@@ -391,6 +393,14 @@ fn reasoning_item_to_text(item: &Value) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+fn should_retain_pending_reasoning(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") | Some("custom_tool_call") => true,
+        Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
+        _ => false,
+    }
 }
 
 fn append_reasoning_text(target: &mut Option<String>, text: Option<String>) {

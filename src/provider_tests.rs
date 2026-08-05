@@ -221,3 +221,121 @@ fn broad_qwen3_6_family_drops_openai_reasoning_effort_morph() {
     assert!(transformed.body.get("thinking").is_none());
     assert_eq!(transformed.body["parallel_tool_calls"], false);
 }
+
+#[test]
+fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.provider.base_url = "https://provider.example/v1".to_string();
+
+    let deepseek = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("deepseek-v4-flash"),
+    );
+    let deepseek_none = responses_to_chat(
+        json!({
+            "model": "deepseek-v4-flash",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &deepseek.transform,
+    );
+    assert!(deepseek_none.body.get("reasoning_effort").is_none());
+    assert_eq!(deepseek_none.body["thinking"]["type"], "disabled");
+
+    let deepseek_high = responses_to_chat(
+        json!({
+            "model": "deepseek-v4-flash",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "high"},
+            "stream": true
+        }),
+        &deepseek.transform,
+    );
+    assert_eq!(deepseek_high.body["reasoning_effort"], "high");
+    assert_eq!(deepseek_high.body["thinking"]["type"], "enabled");
+
+    let glm51 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.1"),
+    );
+    let glm_none = responses_to_chat(
+        json!({
+            "model": "glm-5.1",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &glm51.transform,
+    );
+    assert!(glm_none.body.get("reasoning_effort").is_none());
+    assert_eq!(glm_none.body["thinking"]["type"], "disabled");
+
+    let glm52 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.2"),
+    );
+    let glm_high = responses_to_chat(
+        json!({
+            "model": "glm-5.2",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "high"},
+            "stream": true
+        }),
+        &glm52.transform,
+    );
+    assert_eq!(glm_high.body["reasoning_effort"], "high");
+    assert_eq!(glm_high.body["thinking"]["type"], "enabled");
+
+    let grok45 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("grok-4.5"),
+    );
+    let grok_none = responses_to_chat(
+        json!({
+            "model": "grok-4.5",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &grok45.transform,
+    );
+    assert_eq!(grok_none.body["reasoning_effort"], "low");
+    assert!(grok_none.body.get("thinking").is_none());
+
+    let grok_off = responses_to_chat(
+        json!({
+            "model": "grok-4.5",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "off"},
+            "stream": true
+        }),
+        &grok45.transform,
+    );
+    assert_eq!(grok_off.body["reasoning_effort"], "low");
+
+    let grok_alias = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("grok4.5"),
+    );
+    let grok_alias_none = responses_to_chat(
+        json!({
+            "model": "grok4.5",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &grok_alias.transform,
+    );
+    assert_eq!(grok_alias_none.body["reasoning_effort"], "low");
+}

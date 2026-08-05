@@ -566,6 +566,11 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .iter()
             .any(|family| family.priority == 10)
     );
+    assert!(
+        matching_model_families(&config, "grok4.5")
+            .iter()
+            .any(|family| family.priority == 10)
+    );
 
     // DeepSeek V4: 1M context + reasoning-history preservation + effort forwarding.
     let ds_flash = config
@@ -601,13 +606,25 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
     );
 
-    // GLM-5.2: broad family forwards reasoning_effort alongside thinking.type.
+    // GLM-5.2: exact family forwards reasoning_effort alongside thinking.type.
+    let glm52 = config
+        .model_families
+        .get("z_ai_glm_5_2")
+        .expect("glm-5.2 exact family exists");
+    assert!(
+        glm52
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
     let glm5 = config
         .model_families
         .get("z_ai_glm_5")
         .expect("glm-5 broad family exists");
     assert!(
-        glm5.transform
+        !glm5
+            .transform
             .append_chat_request_morphs
             .iter()
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))

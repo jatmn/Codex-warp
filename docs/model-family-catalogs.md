@@ -177,6 +177,8 @@ Transforms let a model entry override or adjust request translation.
 | `drop_empty_tool_choice` | Whether to avoid forwarding empty/default tool choice. |
 | `force_parallel_tool_calls` | Force `parallel_tool_calls` to a boolean value. |
 | `request_stream_options_include_usage` | Add `stream_options.include_usage = true` for streamed chat requests when the provider documents support and the caller did not set `stream_options`. |
+| `reasoning_effort_none_value` | Remap disable-effort synonyms (`none`, `off`, `disabled`) on `reasoning_effort` to a provider-valid fallback (for example `low` on grok-4.5). |
+| `preserve_reasoning_content_history` | Replay prior reasoning text into outbound assistant/tool-call `reasoning_content` fields for multi-turn tool use. |
 
 Supported morph kinds:
 
