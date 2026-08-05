@@ -17,6 +17,8 @@ fn example_configs_parse_request_morphs() {
         .expect("opencode go layered config parses");
     let generic_config = load_config_layers(&[PathBuf::from("configs/openai-compatible.toml")])
         .expect("generic openai-compatible profile parses");
+    let openrouter_config = load_config_layers(&[PathBuf::from("configs/openrouter.toml")])
+        .expect("openrouter layered config parses");
 
     assert!(
         default_config
@@ -131,6 +133,24 @@ fn example_configs_parse_request_morphs() {
             .any(|entry| entry.id == "kimi-k2.7-code-highspeed")
     );
     assert_eq!(
+        provider_id_for_config_model(&kimicode_config, "kimi-k2.7-code-highspeed").as_deref(),
+        Some("moonshot_kimicode")
+    );
+    let openrouter = openrouter_config
+        .providers
+        .get("openrouter")
+        .expect("openrouter provider exists");
+    assert_eq!(openrouter.name.as_deref(), Some("OpenRouter"));
+    assert_eq!(openrouter.base_url, "https://openrouter.ai/api/v1");
+    assert_eq!(
+        openrouter.api_key_env.as_deref(),
+        Some("OPENROUTER_API_KEY")
+    );
+    assert_eq!(
+        provider_id_for_config_model(&openrouter_config, "openrouter").as_deref(),
+        None
+    );
+    assert_eq!(
         xiaomi_config.provider.base_url,
         "https://token-plan-sgp.xiaomimimo.com/v1"
     );
@@ -159,6 +179,7 @@ fn reusable_provider_profiles_leave_auto_review_to_model_families() {
         "configs/clinepass.toml",
         "configs/moonshot-kimicode.toml",
         "configs/opencode-go.toml",
+        "configs/openrouter.toml",
         "configs/xiaomi-token-plan.toml",
     ] {
         let config = load_config_layers(&[PathBuf::from(config_path)])

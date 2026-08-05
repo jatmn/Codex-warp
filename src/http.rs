@@ -13,7 +13,8 @@ use crate::version::user_agent;
 // attribute usage across all of its API routes and models (chat completions,
 // native /responses, /models, and any other outbound call) regardless of which
 // gateway profile or model is selected. These are the project's own identity
-// values; they can be overridden per provider via [providers.<id>.headers].
+// values; they can be overridden per provider via [provider.headers] or
+// [providers.<id>.headers].
 //
 // The values are hardcoded in Rust (rather than in configs/openrouter.toml) on
 // purpose: attribution must not depend on loading the shipped `openrouter`
@@ -33,7 +34,7 @@ fn apply_openrouter_attribution(
             .keys()
             .any(|key| key.eq_ignore_ascii_case(name))
     };
-    if !has_header("HTTP-Referer") {
+    if !has_header("HTTP-Referer") && !has_header("Referer") {
         request = request.header("HTTP-Referer", OPENROUTER_REFERER);
     }
     if !has_header("X-OpenRouter-Title") && !has_header("X-Title") {

@@ -176,10 +176,14 @@ combination can skip them.
 - `X-OpenRouter-Categories`: `cli-agent,programming-app`
 
 These are Codex Warp's own identity values. To override any of them for a
-specific provider, set the header under that provider's `[providers.<id>.headers]`
-section — user-supplied headers always take precedence over the automatic ones.
+specific provider, set the header under that provider's `[provider.headers]` or
+`[providers.<id>.headers]` section — user-supplied headers always take
+precedence over the automatic ones.
 
-Note: `HTTP-Referer` is Codex Warp's public GitHub URL, so all deployments report usage under that identity in OpenRouter's public rankings. To attribute traffic to your own project instead, override `HTTP-Referer` (and the other headers) under `[providers.<id>.headers]`.
+Note: `HTTP-Referer` is Codex Warp's public GitHub URL, so traffic sent through
+OpenRouter is attributed under that identity in OpenRouter's public rankings.
+To attribute traffic to your own project instead, override `HTTP-Referer` (and
+the other headers) under `[provider.headers]` or `[providers.<id>.headers]`.
 
 ## Supported Model Families
 

@@ -139,6 +139,31 @@ fn user_headers_override_openrouter_attribution() {
 }
 
 #[test]
+fn referer_alias_suppresses_http_referer() {
+    let mut provider = ProviderConfig::default();
+    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    provider.headers.insert(
+        "Referer".to_string(),
+        "https://my-custom-app.example".to_string(),
+    );
+
+    let request = Client::new().post("https://openrouter.ai/api/v1/chat/completions");
+    let request =
+        apply_headers_with_accept(request, &provider, &HeaderMap::new(), "text/event-stream")
+            .build()
+            .expect("request builds");
+    let headers = request.headers();
+
+    assert_eq!(
+        headers.get("Referer").and_then(|v| v.to_str().ok()),
+        Some("https://my-custom-app.example")
+    );
+    assert!(headers.get("HTTP-Referer").is_none());
+    assert_eq!(headers.get_all("Referer").iter().count(), 1);
+    assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 0);
+}
+
+#[test]
 fn x_title_alias_suppresses_openrouter_title() {
     let mut provider = ProviderConfig::default();
     provider.base_url = "https://openrouter.ai/api/v1".to_string();
@@ -231,5 +256,20 @@ fn responses_and_models_paths_get_attribution_headers() {
             Some("Codex Warp"),
             "missing title on {path}"
         );
+        assert_eq!(
+            headers.get("X-Title").and_then(|v| v.to_str().ok()),
+            Some("Codex Warp"),
+            "missing X-Title on {path}"
+        );
+        assert_eq!(
+            headers
+                .get("X-OpenRouter-Categories")
+                .and_then(|v| v.to_str().ok()),
+            Some("cli-agent,programming-app"),
+            "missing categories on {path}"
+        );
+        assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 1);
+        assert_eq!(headers.get_all("X-OpenRouter-Title").iter().count(), 1);
+        assert_eq!(headers.get_all("X-OpenRouter-Categories").iter().count(), 1);
     }
 }
