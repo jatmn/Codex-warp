@@ -18,7 +18,7 @@ use tracing::warn;
 use crate::config::DebugConfig;
 
 const REDACTED: &str = "[REDACTED]";
-pub(crate) const DEFAULT_MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_LOG_MB: u64 = 128;
 pub(crate) const DEFAULT_MAX_LOG_AGE_DAYS: u64 = 30;
 
 #[derive(Clone)]
@@ -32,7 +32,8 @@ pub(crate) struct DebugLog {
 }
 
 fn max_log_bytes_from_config(config: &DebugConfig) -> u64 {
-    config.max_log_bytes.unwrap_or(DEFAULT_MAX_LOG_BYTES)
+    let mb = config.max_log_mb.unwrap_or(DEFAULT_MAX_LOG_MB);
+    mb.saturating_mul(1024 * 1024)
 }
 
 fn max_log_age_from_config(config: &DebugConfig) -> Duration {
@@ -81,7 +82,7 @@ impl DebugLog {
             path: None,
             include_bodies: false,
             include_stream_bodies: false,
-            max_log_bytes: DEFAULT_MAX_LOG_BYTES,
+            max_log_bytes: max_log_bytes_from_config(&DebugConfig::default()),
             max_log_age: max_log_age_from_config(&DebugConfig::default()),
             writer_lock: Arc::new(Mutex::new(())),
         }

@@ -147,7 +147,7 @@ fn should_rotate_log_when_age_limit_exceeded() {
         10,
         modified,
         now,
-        DEFAULT_MAX_LOG_BYTES,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
         Duration::from_secs(30 * 24 * 60 * 60)
     ));
 }

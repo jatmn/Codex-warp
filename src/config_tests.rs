@@ -330,7 +330,7 @@ fn debug_config_parses_log_options() {
     );
     assert!(config.debug.include_bodies);
     assert!(config.debug.include_stream_bodies);
-    assert_eq!(config.debug.max_log_bytes, None);
+    assert_eq!(config.debug.max_log_mb, None);
     assert_eq!(config.debug.max_log_age_days, None);
 }
 
@@ -341,13 +341,13 @@ fn debug_config_parses_rotation_options() {
             [debug]
             enabled = true
             log_path = "/tmp/codex-warp-debug.jsonl"
-            max_log_bytes = 1048576
+            max_log_mb = 64
             max_log_age_days = 7
             "#,
     )
     .expect("debug rotation config parses");
 
-    assert_eq!(config.debug.max_log_bytes, Some(1_048_576));
+    assert_eq!(config.debug.max_log_mb, Some(64));
     assert_eq!(config.debug.max_log_age_days, Some(7));
 }
 

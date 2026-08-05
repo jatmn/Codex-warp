@@ -213,7 +213,7 @@ pub struct DebugConfig {
     pub log_path: Option<PathBuf>,
     pub include_bodies: bool,
     pub include_stream_bodies: bool,
-    pub max_log_bytes: Option<u64>,
+    pub max_log_mb: Option<u64>,
     pub max_log_age_days: Option<u64>,
 }
 
@@ -224,7 +224,7 @@ impl Default for DebugConfig {
             log_path: None,
             include_bodies: false,
             include_stream_bodies: false,
-            max_log_bytes: None,
+            max_log_mb: None,
             max_log_age_days: None,
         }
     }
