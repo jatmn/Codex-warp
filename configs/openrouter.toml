@@ -3,9 +3,9 @@
 #
 # OpenRouter exposes a large live /models catalog, so no local model_catalog is
 # needed here. Codex Warp automatically attaches the OpenRouter app attribution
-# headers (HTTP-Referer, X-OpenRouter-Title, X-OpenRouter-Categories) whenever
-# the upstream base_url host is openrouter.ai (or a *.openrouter.ai subdomain). To override any of them, set
-# the header under [providers.openrouter.headers].
+# headers (HTTP-Referer, X-OpenRouter-Title, X-OpenRouter-Categories) on every
+# upstream request across all gateways and models. To override any of them, set
+# the header under [providers.<id>.headers].
 
 [providers.openrouter]
 name = "OpenRouter"
