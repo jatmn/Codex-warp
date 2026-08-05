@@ -66,7 +66,13 @@ fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::
         Err(err) => return Err(err),
     };
     let modified_at = metadata.modified()?;
-    if !should_rotate_log(metadata.len(), modified_at, SystemTime::now(), max_bytes, max_age) {
+    if !should_rotate_log(
+        metadata.len(),
+        modified_at,
+        SystemTime::now(),
+        max_bytes,
+        max_age,
+    ) {
         return Ok(());
     }
     let backup = rotation_backup_path(path);
