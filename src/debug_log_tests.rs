@@ -2,7 +2,25 @@ use super::*;
 
 use serde_json::json;
 use std::fs;
+use std::path::PathBuf;
 use std::time::Duration;
+use std::time::SystemTime;
+
+/// RAII guard that removes a temp directory even if a test panics.
+struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> Self {
+        fs::create_dir_all(&path).expect("create temp dir");
+        Self(path)
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 #[test]
 fn request_debug_summary_keeps_cache_fields_without_prompt_text() {
@@ -171,7 +189,7 @@ fn rotates_debug_log_file_when_size_limit_exceeded() {
         "codex-warp-debug-log-rotate-{}",
         std::process::id()
     ));
-    fs::create_dir_all(&dir).expect("create temp dir");
+    let _guard = TempDirGuard::new(dir.clone());
     let path = dir.join("debug.jsonl");
     fs::write(&path, "x".repeat(1024)).expect("write debug log");
 
@@ -181,6 +199,35 @@ fn rotates_debug_log_file_when_size_limit_exceeded() {
     let backup = rotation_backup_path(&path);
     assert!(backup.exists());
     assert_eq!(fs::metadata(&backup).expect("backup metadata").len(), 1024);
+}
 
-    let _ = fs::remove_dir_all(dir);
+#[test]
+fn rotates_debug_log_file_when_age_limit_exceeded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-age-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "old log content").expect("write debug log");
+
+    let old_time = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
+    let file_times = fs::FileTimes::new().set_modified(old_time);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open for set_times")
+        .set_times(file_times)
+        .expect("set old mtime");
+
+    maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect("rotate debug log by age");
+
+    assert!(!path.exists());
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
 }

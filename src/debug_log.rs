@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
 use std::hash::Hash;
@@ -33,11 +34,29 @@ pub(crate) struct DebugLog {
 
 fn max_log_bytes_from_config(config: &DebugConfig) -> u64 {
     let mb = config.max_log_mb.unwrap_or(DEFAULT_MAX_LOG_MB);
+    let mb = if mb == 0 {
+        warn!(
+            "debug.max_log_mb must be greater than 0, using default {}",
+            DEFAULT_MAX_LOG_MB
+        );
+        DEFAULT_MAX_LOG_MB
+    } else {
+        mb
+    };
     mb.saturating_mul(1024 * 1024)
 }
 
 fn max_log_age_from_config(config: &DebugConfig) -> Duration {
     let days = config.max_log_age_days.unwrap_or(DEFAULT_MAX_LOG_AGE_DAYS);
+    let days = if days == 0 {
+        warn!(
+            "debug.max_log_age_days must be greater than 0, using default {}",
+            DEFAULT_MAX_LOG_AGE_DAYS
+        );
+        DEFAULT_MAX_LOG_AGE_DAYS
+    } else {
+        days
+    };
     Duration::from_secs(days.saturating_mul(24 * 60 * 60))
 }
 
@@ -56,9 +75,17 @@ pub(crate) fn should_rotate_log(
 }
 
 fn rotation_backup_path(path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.1", path.display()))
+    let mut backup: OsString = path.as_os_str().to_owned();
+    backup.push(".1");
+    PathBuf::from(backup)
 }
 
+/// Rotate `path` to `{path}.1` when it exceeds size or age limits.
+///
+/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`,
+/// but multiple Warp processes sharing the same `log_path` can still race. In
+/// that situation the backup may be overwritten or removed unexpectedly; use a
+/// distinct `log_path` per instance.
 fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -106,9 +133,9 @@ impl DebugLog {
             warn!("debug logging is enabled but debug.log_path is not set");
         }
         if let Some(path) = path.as_ref() {
-            if let Err(err) = maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age) {
-                warn!("failed to rotate debug log {}: {err}", path.display());
-            }
+            maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age).unwrap_or_else(|err| {
+                warn!("failed to rotate debug log {}: {err}", path.display())
+            });
         }
         Self {
             path,
