@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
 
 #[test]
@@ -38,9 +39,26 @@ fn apply_reasoning_effort_none_value_remaps_disable_synonyms() {
 }
 
 #[test]
-fn strip_disabled_reasoning_effort_removes_disable_values() {
+fn strip_disabled_reasoning_effort_removes_disable_values_for_thinking_type_families() {
+    let mut transform = TransformConfig::default();
+    transform
+        .chat_request_morphs
+        .push(crate::config::RequestMorph {
+            from: "reasoning.effort".to_string(),
+            to: Some("thinking.type".to_string()),
+            value: None,
+            kind: RequestMorphKind::ThinkingType,
+        });
     let mut body = json!({"reasoning_effort": "none", "thinking": {"type": "disabled"}});
-    strip_disabled_reasoning_effort(&mut body);
+    strip_disabled_reasoning_effort(&mut body, &transform);
     assert!(body.get("reasoning_effort").is_none());
     assert_eq!(body["thinking"]["type"], "disabled");
+}
+
+#[test]
+fn strip_disabled_reasoning_effort_preserves_disable_values_for_rename_only_families() {
+    let transform = TransformConfig::default();
+    let mut body = json!({"reasoning_effort": "none"});
+    strip_disabled_reasoning_effort(&mut body, &transform);
+    assert_eq!(body["reasoning_effort"], "none");
 }

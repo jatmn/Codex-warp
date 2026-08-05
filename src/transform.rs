@@ -63,7 +63,14 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                     pending_reasoning = prior_reasoning;
                 }
                 if is_assistant_tool_call_message(item_messages.first()) {
-                    if let Some(message) = item_messages.into_iter().next() {
+                    if let Some(mut message) = item_messages.into_iter().next() {
+                        if transform.preserve_reasoning_content_history
+                            && message.get("reasoning_content").is_none()
+                            && let Some(reasoning) =
+                                take_reasoning_from_preceding_assistant_text(&mut messages)
+                        {
+                            message["reasoning_content"] = Value::String(reasoning);
+                        }
                         merge_pending_tool_call_message(&mut pending_tool_calls, message);
                     }
                 } else {
@@ -142,7 +149,7 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
     let mut body = Value::Object(out);
     apply_reasoning_effort_none_value(&mut body, transform);
-    strip_disabled_reasoning_effort(&mut body);
+    strip_disabled_reasoning_effort(&mut body, transform);
     let diagnostics = transform_diagnostics(&request, &body, input_tools.len(), tool_diagnostics);
 
     ChatTransform {
@@ -398,8 +405,28 @@ fn reasoning_item_to_text(item: &Value) -> Option<String> {
 fn should_retain_pending_reasoning(item: &Value) -> bool {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call") | Some("custom_tool_call") => true,
+        Some("function_call_output") | Some("custom_tool_call_output") => true,
         Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
         _ => false,
+    }
+}
+
+fn take_reasoning_from_preceding_assistant_text(messages: &mut Vec<Value>) -> Option<String> {
+    let last = messages.last_mut()?;
+    let obj = last.as_object_mut()?;
+    if obj.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    if obj
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|tool_calls| !tool_calls.is_empty())
+    {
+        return None;
+    }
+    match obj.remove("reasoning_content") {
+        Some(Value::String(text)) if !text.is_empty() => Some(text),
+        _ => None,
     }
 }
 

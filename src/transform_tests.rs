@@ -250,6 +250,85 @@ fn separate_reasoning_item_becomes_next_assistant_tool_call_reasoning_content() 
 }
 
 #[test]
+fn codec_split_assistant_reasoning_moves_to_following_tool_call() {
+    let request = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "reasoning_summary_text", "text": "Need the tool."},
+                    {"type": "output_text", "text": "calling"}
+                ]
+            },
+            {
+                "type": "function_call",
+                "name": "lookup",
+                "arguments": "{\"query\":\"value\"}",
+                "call_id": "call_1"
+            }
+        ]
+    });
+    let mut transform = TransformConfig::default();
+    transform.preserve_reasoning_content_history = true;
+
+    let transformed = responses_to_chat(request, &transform);
+
+    assert_eq!(transformed.body["messages"][0]["role"], "assistant");
+    assert_eq!(transformed.body["messages"][0]["content"], "calling");
+    assert!(
+        transformed.body["messages"][0]
+            .get("reasoning_content")
+            .is_none()
+    );
+    assert_eq!(transformed.body["messages"][1]["role"], "assistant");
+    assert_eq!(
+        transformed.body["messages"][1]["reasoning_content"],
+        "Need the tool."
+    );
+    assert_eq!(
+        transformed.body["messages"][1]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+}
+
+#[test]
+fn pending_reasoning_is_retained_across_tool_outputs() {
+    let request = json!({
+        "model": "deepseek-v4-flash",
+        "input": [
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "mid reasoning"}]
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_0",
+                "output": "ok"
+            },
+            {
+                "type": "function_call",
+                "name": "lookup",
+                "arguments": "{}",
+                "call_id": "call_1"
+            }
+        ]
+    });
+    let mut transform = TransformConfig::default();
+    transform.preserve_reasoning_content_history = true;
+
+    let transformed = responses_to_chat(request, &transform);
+
+    assert_eq!(transformed.body["messages"][0]["role"], "tool");
+    assert_eq!(transformed.body["messages"][1]["role"], "assistant");
+    assert_eq!(
+        transformed.body["messages"][1]["reasoning_content"],
+        "mid reasoning"
+    );
+}
+
+#[test]
 fn orphan_reasoning_before_user_message_is_not_attached_to_later_assistant() {
     let request = json!({
         "model": "deepseek-v4-flash",

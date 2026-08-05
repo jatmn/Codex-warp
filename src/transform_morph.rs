@@ -86,7 +86,14 @@ pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &Tr
     }
 }
 
-pub(crate) fn strip_disabled_reasoning_effort(body: &mut Value) {
+pub(crate) fn strip_disabled_reasoning_effort(body: &mut Value, transform: &TransformConfig) {
+    let strips_disable_effort = transform
+        .chat_request_morphs
+        .iter()
+        .any(|morph| morph.kind == RequestMorphKind::ThinkingType);
+    if !strips_disable_effort {
+        return;
+    }
     let Value::Object(map) = body else {
         return;
     };

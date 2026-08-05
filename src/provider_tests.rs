@@ -338,4 +338,22 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
         &grok_alias.transform,
     );
     assert_eq!(grok_alias_none.body["reasoning_effort"], "low");
+
+    let grok43 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("grok-4.3"),
+    );
+    let grok43_none = responses_to_chat(
+        json!({
+            "model": "grok-4.3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &grok43.transform,
+    );
+    assert_eq!(grok43_none.body["reasoning_effort"], "none");
+    assert!(grok43_none.body.get("thinking").is_none());
 }
