@@ -163,12 +163,16 @@ for deployment examples.
 ## OpenRouter App Attribution
 
 Codex Warp automatically attaches [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution)
-headers on every upstream request — for all configured gateways and models, not
-only when the [`configs/openrouter.toml`](configs/openrouter.toml) profile is
-active — so the proxy's OpenRouter usage appears in public rankings and analytics:
+headers on **every upstream request** — for all configured gateways, models, and
+API paths (`/chat/completions`, native `/responses`, `/models`, and any other
+outbound call) — not only when the [`configs/openrouter.toml`](configs/openrouter.toml)
+profile is the default gateway. OpenRouter documents attribution across all of
+its API routes and models; Warp always sends the headers so no gateway/model
+combination can skip them.
 
 - `HTTP-Referer`: `https://github.com/jatmn/Codex-warp`
 - `X-OpenRouter-Title`: `Codex Warp`
+- `X-Title`: `Codex Warp` (backwards-compatible alias)
 - `X-OpenRouter-Categories`: `cli-agent,programming-app`
 
 These are Codex Warp's own identity values. To override any of them for a

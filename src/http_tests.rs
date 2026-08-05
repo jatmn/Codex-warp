@@ -52,6 +52,10 @@ fn all_providers_get_attribution_headers() {
         Some("Codex Warp")
     );
     assert_eq!(
+        headers.get("X-Title").and_then(|v| v.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
         headers
             .get("X-OpenRouter-Categories")
             .and_then(|v| v.to_str().ok()),
@@ -82,6 +86,10 @@ fn openrouter_provider_gets_attribution_headers() {
         headers
             .get("X-OpenRouter-Title")
             .and_then(|v| v.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers.get("X-Title").and_then(|v| v.to_str().ok()),
         Some("Codex Warp")
     );
     assert_eq!(
@@ -119,6 +127,10 @@ fn user_headers_override_openrouter_attribution() {
         headers
             .get("X-OpenRouter-Title")
             .and_then(|v| v.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers.get("X-Title").and_then(|v| v.to_str().ok()),
         Some("Codex Warp")
     );
     // The user override is the sole value — no duplicate auto header is appended.
@@ -185,6 +197,10 @@ fn user_categories_override_openrouter_attribution() {
         headers
             .get("X-OpenRouter-Title")
             .and_then(|v| v.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers.get("X-Title").and_then(|v| v.to_str().ok()),
         Some("Codex Warp")
     );
 }
