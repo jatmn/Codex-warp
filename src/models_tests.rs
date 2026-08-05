@@ -559,15 +559,20 @@ fn provider_overrides_win_over_model_family_metadata() {
 fn register_catalog_routes_for_provider_adds_upstream_id_aliases() {
     let mut routes = BTreeMap::new();
     let mut provider = ProviderConfig::default();
-    provider.model_catalog.push(crate::config::ModelCatalogEntry {
-        id: "hicap/gpt-5.4".to_string(),
-        upstream_id: Some("gpt-5.4".to_string()),
-        ..crate::config::ModelCatalogEntry::default()
-    });
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "hicap/gpt-5.4".to_string(),
+            upstream_id: Some("gpt-5.4".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
 
     register_catalog_routes_for_provider(&mut routes, "hicap", &provider);
 
-    assert_eq!(routes.get("hicap/gpt-5.4").map(String::as_str), Some("hicap"));
+    assert_eq!(
+        routes.get("hicap/gpt-5.4").map(String::as_str),
+        Some("hicap")
+    );
     assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
 }
 
