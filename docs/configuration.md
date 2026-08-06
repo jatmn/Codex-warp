@@ -320,7 +320,10 @@ before each write once it reaches `max_log_mb` megabytes (default `128`) or the
 current log file is `max_log_age_days` days old (default `30`), whichever comes
 first. Age is measured from the log file's creation time when the platform
 provides it (the start of the current log segment after the last rotation),
-otherwise from its last modification time. The current log is renamed to
+otherwise from its last modification time. On filesystems without birth time,
+each append refreshes the modification time, so age-based rotation only
+applies while the log is idle; actively written logs on those hosts rely on
+the size limit until they stop receiving events. The current log is renamed to
 `{log_path}.1` and a fresh log file is started. Only one backup is kept, so a
 second rotation overwrites the previous backup.
 

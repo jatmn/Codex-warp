@@ -102,11 +102,42 @@ fn restore_staged_log(path: &Path, staging: &Path) {
     }
 }
 
+/// Recover from a crash or kill that interrupted staging rename.
+pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
+    let backup = rotation_backup_path(path);
+    let staging = rotation_staging_path(path);
+    if !staging.exists() {
+        return Ok(());
+    }
+
+    if path.exists() {
+        if backup.exists() {
+            fs::remove_file(&backup)?;
+        }
+        fs::rename(&staging, &backup)?;
+        return Ok(());
+    }
+
+    if backup.exists() {
+        restore_staged_log(path, &staging);
+        return Ok(());
+    }
+
+    fs::rename(&staging, &backup)
+}
+
 /// Move `path` to `{path}.1` via a staging file so the active log is not lost
 /// if backup removal or the final rename fails.
 fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::Result<()> {
+    recover_interrupted_rotation(path)?;
     if staging.exists() {
-        fs::remove_file(staging)?;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "debug log staging file {} still exists after recovery",
+                staging.display()
+            ),
+        ));
     }
     fs::rename(path, staging)?;
     if backup.exists() {
@@ -134,6 +165,7 @@ fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::
 /// that situation the backup may be overwritten or removed unexpectedly; use a
 /// distinct `log_path` per instance.
 fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
+    recover_interrupted_rotation(path)?;
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),

@@ -337,3 +337,83 @@ fn log_age_anchor_prefers_created_over_modified() {
         "append should refresh mtime for this test"
     );
 }
+
+#[test]
+fn recovers_orphaned_staging_to_active_log_when_backup_exists() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-active-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "staged segment").expect("write staging");
+    assert!(!path.exists());
+
+    recover_interrupted_rotation(&path).expect("recover staging to active log");
+
+    assert!(path.exists());
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "staged segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "previous backup"
+    );
+}
+
+#[test]
+fn completes_interrupted_rotation_when_backup_is_missing() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-backup-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&staging, "staged segment").expect("write staging");
+    assert!(!path.exists());
+    assert!(!backup.exists());
+
+    recover_interrupted_rotation(&path).expect("complete interrupted rotation");
+
+    assert!(!path.exists());
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "staged segment"
+    );
+}
+
+#[test]
+fn preserves_staged_segment_when_active_log_was_recreated() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-promote-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&path, "new segment").expect("write active log");
+    fs::write(&staging, "old staged segment").expect("write staging");
+
+    recover_interrupted_rotation(&path).expect("promote staged segment to backup");
+
+    assert!(path.exists());
+    assert!(!staging.exists());
+    assert!(backup.exists());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "new segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "old staged segment"
+    );
+}
