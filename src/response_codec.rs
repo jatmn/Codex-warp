@@ -931,6 +931,7 @@ fn chat_reasoning_text(value: &Value) -> Option<String> {
         .get("reasoning_content")
         .or_else(|| value.get("reasoning"))
         .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
     {
         return Some(text.to_string());
     }
@@ -1164,13 +1165,6 @@ fn custom_tool_input(arguments: &str) -> String {
         Ok(Value::Object(obj)) => {
             if let Some(input) = obj.get("input").and_then(Value::as_str) {
                 return input.to_string();
-            }
-            // No `input` key: if there is exactly one string field, treat it as
-            // the patch input rather than forwarding the whole JSON object
-            // (which would be an invalid apply_patch payload).
-            let string_values: Vec<&str> = obj.values().filter_map(Value::as_str).collect();
-            if string_values.len() == 1 {
-                return string_values[0].to_string();
             }
             arguments.to_string()
         }

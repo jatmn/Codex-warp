@@ -212,6 +212,10 @@ fn hy3_family_advertises_context_reasoning_and_tool_transforms() {
         family.transform.unsupported_tool_strategy,
         Some(UnsupportedToolStrategy::AsFunction)
     );
+    assert_eq!(
+        family.transform.preserve_reasoning_content_history,
+        Some(true)
+    );
 }
 
 #[test]
@@ -586,6 +590,44 @@ fn model_family_includes_load_relative_to_declaring_file() {
 }
 
 #[test]
+fn model_family_overlay_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-family-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+            unknown_family_field = "oops"
+
+            [model_families.bad_family.model_metadata]
+            context_window = 1000
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("unknown_family_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn model_family_patterns_support_wildcards() {
     let mut config = AppConfig::default();
     config.model_families.insert(
@@ -777,7 +819,12 @@ fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
     let config = load_config_layers(&[]).expect("default parses");
     // These should NOT match the hy3 family, which would otherwise inherit the
     // none->no_think remap and as_function coercion.
-    for id in ["hunyuan-13b", "hunyuan-turbo-3b"] {
+    for id in [
+        "hunyuan-13b",
+        "hunyuan-turbo-3b",
+        "hunyuan-30b",
+        "hunyuan-35b",
+    ] {
         assert!(
             !matching_model_families(&config, id)
                 .iter()

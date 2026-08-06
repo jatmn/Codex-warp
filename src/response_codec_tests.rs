@@ -821,6 +821,29 @@ fn custom_tool_input_falls_back_to_raw_on_unknown_shape() {
         custom_tool_input(r#"{"a":"x","b":"y"}"#),
         r#"{"a":"x","b":"y"}"#
     );
+    // Single non-`input` string field: also preserve raw JSON rather than guessing.
+    assert_eq!(
+        custom_tool_input(r#"{"patch":"diff text"}"#),
+        r#"{"patch":"diff text"}"#
+    );
+}
+
+#[test]
+fn chat_reasoning_text_falls_through_empty_reasoning_to_reasoning_details() {
+    assert_eq!(
+        chat_reasoning_text(&json!({
+            "reasoning_content": "",
+            "reasoning_details": [{"type": "text", "text": "real thought"}]
+        })),
+        Some("real thought".to_string())
+    );
+    assert_eq!(
+        chat_reasoning_text(&json!({
+            "reasoning": "",
+            "reasoning_details": "direct string"
+        })),
+        Some("direct string".to_string())
+    );
 }
 
 #[test]
