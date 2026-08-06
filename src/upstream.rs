@@ -209,7 +209,11 @@ pub(crate) fn rewrite_model_for_upstream(provider: &ProviderConfig, body: &mut V
     let Some(model) = body.get("model").and_then(Value::as_str) else {
         return;
     };
-    if let Some(entry) = provider.model_catalog.iter().find(|entry| entry.id == model) {
+    if let Some(entry) = provider
+        .model_catalog
+        .iter()
+        .find(|entry| entry.id == model)
+    {
         if let Some(upstream_id) = entry.upstream_id.as_deref() {
             body["model"] = json!(upstream_id);
         }

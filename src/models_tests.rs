@@ -580,13 +580,11 @@ fn register_catalog_routes_for_provider_adds_upstream_id_aliases() {
 fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
     let mut routes = BTreeMap::new();
     let mut hicap = ProviderConfig::default();
-    hicap
-        .model_catalog
-        .push(crate::config::ModelCatalogEntry {
-            id: "hicap/gpt-5.4".to_string(),
-            upstream_id: Some("gpt-5.4".to_string()),
-            ..crate::config::ModelCatalogEntry::default()
-        });
+    hicap.model_catalog.push(crate::config::ModelCatalogEntry {
+        id: "hicap/gpt-5.4".to_string(),
+        upstream_id: Some("gpt-5.4".to_string()),
+        ..crate::config::ModelCatalogEntry::default()
+    });
     register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
 
     let mut merged_models = Vec::new();
