@@ -1,8 +1,12 @@
 use axum::Json;
 use axum::http::HeaderMap;
+use axum::http::HeaderName;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
+use reqwest::Client;
+use serde_json::Value;
 use serde_json::json;
 
 use crate::config::ProviderConfig;
@@ -24,27 +28,47 @@ const OPENROUTER_REFERER: &str = "https://github.com/jatmn/Codex-warp";
 const OPENROUTER_TITLE: &str = "Codex Warp";
 const OPENROUTER_CATEGORIES: &str = "cli-agent,programming-app";
 
-fn apply_openrouter_attribution(
-    mut request: reqwest::RequestBuilder,
-    provider: &ProviderConfig,
-) -> reqwest::RequestBuilder {
-    let has_header = |name: &str| {
-        provider
-            .headers
-            .keys()
-            .any(|key| key.eq_ignore_ascii_case(name))
-    };
-    if !has_header("HTTP-Referer") && !has_header("Referer") {
-        request = request.header("HTTP-Referer", OPENROUTER_REFERER);
+fn provider_defines_header(provider: &ProviderConfig, name: &str) -> bool {
+    provider
+        .headers
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case(name))
+}
+
+fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
+    if !provider_defines_header(provider, "HTTP-Referer")
+        && !provider_defines_header(provider, "Referer")
+        && let (Ok(name), Ok(value)) = (
+            HeaderName::try_from("HTTP-Referer"),
+            HeaderValue::from_str(OPENROUTER_REFERER),
+        )
+    {
+        headers.insert(name, value);
     }
-    if !has_header("X-OpenRouter-Title") && !has_header("X-Title") {
-        request = request.header("X-OpenRouter-Title", OPENROUTER_TITLE);
-        request = request.header("X-Title", OPENROUTER_TITLE);
+    if !provider_defines_header(provider, "X-OpenRouter-Title")
+        && !provider_defines_header(provider, "X-Title")
+    {
+        if let (Ok(title_name), Ok(title_value)) = (
+            HeaderName::try_from("X-OpenRouter-Title"),
+            HeaderValue::from_str(OPENROUTER_TITLE),
+        ) {
+            headers.insert(title_name, title_value);
+        }
+        if let (Ok(alias_name), Ok(alias_value)) = (
+            HeaderName::try_from("X-Title"),
+            HeaderValue::from_str(OPENROUTER_TITLE),
+        ) {
+            headers.insert(alias_name, alias_value);
+        }
     }
-    if !has_header("X-OpenRouter-Categories") {
-        request = request.header("X-OpenRouter-Categories", OPENROUTER_CATEGORIES);
+    if !provider_defines_header(provider, "X-OpenRouter-Categories")
+        && let (Ok(name), Ok(value)) = (
+            HeaderName::try_from("X-OpenRouter-Categories"),
+            HeaderValue::from_str(OPENROUTER_CATEGORIES),
+        )
+    {
+        headers.insert(name, value);
     }
-    request
 }
 
 pub(crate) fn endpoint_url(provider: &ProviderConfig, path: &str) -> String {
@@ -64,35 +88,80 @@ pub(crate) fn apply_headers(
 }
 
 pub(crate) fn apply_headers_with_accept(
-    mut request: reqwest::RequestBuilder,
+    request: reqwest::RequestBuilder,
     provider: &ProviderConfig,
     incoming: &HeaderMap,
     accept: &'static str,
 ) -> reqwest::RequestBuilder {
+    request.headers(upstream_headers(provider, incoming, accept))
+}
+
+pub(crate) fn upstream_headers(
+    provider: &ProviderConfig,
+    incoming: &HeaderMap,
+    accept: &'static str,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+
     if let Some(api_key) = provider.api_key() {
         let value = if provider.auth_scheme.is_empty() {
             api_key
         } else {
             format!("{} {}", provider.auth_scheme, api_key)
         };
-        request = request.header(&provider.auth_header, value);
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::try_from(provider.auth_header.as_str()),
+            HeaderValue::from_str(&value),
+        ) {
+            headers.insert(name, value);
+        }
     } else if let Some(auth) = incoming.get(axum::http::header::AUTHORIZATION) {
-        request = request.header(axum::http::header::AUTHORIZATION, auth.clone());
+        headers.insert(axum::http::header::AUTHORIZATION, auth.clone());
     }
 
     for (name, value) in &provider.headers {
-        if name.eq_ignore_ascii_case("user-agent") {
+        if name.eq_ignore_ascii_case("user-agent") || name.eq_ignore_ascii_case("content-type") {
             continue;
         }
-        request = request.header(name, value);
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::try_from(name.as_str()),
+            HeaderValue::from_str(value),
+        ) {
+            headers.insert(name, value);
+        }
     }
 
-    let request = apply_openrouter_attribution(request, provider);
+    insert_openrouter_attribution(&mut headers, provider);
 
-    request
-        .header(axum::http::header::USER_AGENT, user_agent())
-        .header(axum::http::header::ACCEPT, accept)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
+    headers.insert(
+        axum::http::header::USER_AGENT,
+        HeaderValue::from_str(&user_agent())
+            .unwrap_or_else(|_| HeaderValue::from_static("codex-warp/0.0.1")),
+    );
+    headers.insert(axum::http::header::ACCEPT, HeaderValue::from_static(accept));
+    headers
+}
+
+pub(crate) fn build_upstream_json_request(
+    client: &Client,
+    url: String,
+    body: &Value,
+    provider: &ProviderConfig,
+    incoming: &HeaderMap,
+    accept: &'static str,
+) -> Result<reqwest::Request, String> {
+    let body = serde_json::to_vec(body).map_err(|err| err.to_string())?;
+    let mut headers = upstream_headers(provider, incoming, accept);
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    client
+        .post(url)
+        .headers(headers)
+        .body(body)
+        .build()
+        .map_err(|err| err.to_string())
 }
 
 pub(crate) fn copy_content_type(from: &HeaderMap, to: &mut HeaderMap) {
@@ -117,6 +186,15 @@ pub(crate) fn no_provider_response() -> Response {
     error_response(
         StatusCode::BAD_GATEWAY,
         "no upstream provider is configured; set [provider].base_url, add [config].include entries, or configure [providers.<id>]".to_string(),
+    )
+}
+
+pub(crate) fn unknown_model_response(model: &str) -> Response {
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        format!(
+            "no upstream provider is configured for model `{model}`; use /models to list routable models or add a provider catalog entry"
+        ),
     )
 }
 

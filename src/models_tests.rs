@@ -239,7 +239,12 @@ fn assert_auto_review_overrides(
         })
         .collect::<BTreeMap<_, _>>();
 
-    assert_eq!(actual.len(), expected.len());
+    assert!(
+        actual.len() >= expected.len(),
+        "{config_path} should list at least {} catalog models, got {}",
+        expected.len(),
+        actual.len()
+    );
     for (slug, review_model) in expected {
         assert_eq!(
             actual.get(*slug).map(String::as_str),
@@ -553,4 +558,112 @@ fn provider_overrides_win_over_model_family_metadata() {
     });
 
     assert_eq!(value["models"][0]["context_window"], 123_456);
+}
+
+#[test]
+fn register_catalog_routes_for_provider_adds_upstream_id_aliases() {
+    let mut routes = BTreeMap::new();
+    let mut provider = ProviderConfig::default();
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "hicap/gpt-5.4".to_string(),
+            upstream_id: Some("gpt-5.4".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+
+    register_catalog_routes_for_provider(&mut routes, "hicap", &provider);
+
+    assert_eq!(
+        routes.get("hicap/gpt-5.4").map(String::as_str),
+        Some("hicap")
+    );
+    assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
+}
+
+#[test]
+fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
+    let mut routes = BTreeMap::new();
+    let mut hicap = ProviderConfig::default();
+    hicap.model_catalog.push(crate::config::ModelCatalogEntry {
+        id: "hicap/gpt-5.4".to_string(),
+        upstream_id: Some("gpt-5.4".to_string()),
+        ..crate::config::ModelCatalogEntry::default()
+    });
+    register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+
+    let mut merged_models = Vec::new();
+    let mut default_provider = ProviderConfig::default();
+    default_provider.base_url = "https://default.example/v1".to_string();
+    let live_models = vec![json!({
+        "slug": "gpt-5.4",
+        "display_name": "GPT-5.4",
+        "object": "model"
+    })];
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    add_models_for_provider(
+        &mut merged_models,
+        &mut routes,
+        &config,
+        "provider",
+        &default_provider,
+        live_models,
+    );
+
+    assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
+    assert!(merged_models.is_empty());
+}
+
+#[test]
+fn manual_catalog_models_include_upstream_id_aliases() {
+    let mut provider = ProviderConfig::default();
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "hicap/gpt-5.4".to_string(),
+            upstream_id: Some("gpt-5.4".to_string()),
+            display_name: Some("GPT-5.4".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = manual_catalog_models(&provider, &config);
+
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
+    assert_eq!(models[1]["slug"].as_str(), Some("gpt-5.4"));
+}
+
+#[test]
+fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
+    let mut routes = BTreeMap::new();
+    let mut hicap = ProviderConfig::default();
+    hicap.model_catalog.push(crate::config::ModelCatalogEntry {
+        id: "hicap/gpt-5.4".to_string(),
+        upstream_id: Some("gpt-5.4".to_string()),
+        display_name: Some("GPT-5.4".to_string()),
+        ..crate::config::ModelCatalogEntry::default()
+    });
+    register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+
+    let mut merged_models = Vec::new();
+    let config = load_config_layers(&[]).expect("default config loads");
+    let catalog_models = manual_catalog_models(&hicap, &config);
+
+    let added = add_models_for_provider(
+        &mut merged_models,
+        &mut routes,
+        &config,
+        "hicap",
+        &hicap,
+        catalog_models,
+    );
+
+    assert_eq!(added, 2);
+    assert_eq!(merged_models.len(), 2);
+    assert!(
+        merged_models
+            .iter()
+            .any(|model| model["slug"].as_str() == Some("gpt-5.4"))
+    );
 }

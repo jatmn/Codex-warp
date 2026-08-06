@@ -210,6 +210,54 @@ fn layered_config_keeps_default_morphs_when_profile_omits_them() {
 }
 
 #[test]
+fn provider_id_for_config_model_matches_prefixed_provider_models() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+
+            [[providers.hicap.model_catalog]]
+            id = "hicap/grok-4.5"
+            upstream_id = "grok-4.5"
+            "#,
+    )
+    .expect("provider config parses");
+
+    assert_eq!(
+        provider_id_for_config_model(&config, "hicap/grok-4.3").as_deref(),
+        Some("hicap")
+    );
+    assert_eq!(
+        provider_id_for_config_model(&config, "opencode-go/deepseek-v4-flash").as_deref(),
+        None
+    );
+}
+
+#[test]
+fn provider_id_for_config_model_matches_upstream_id_aliases() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+
+            [[providers.hicap.model_catalog]]
+            id = "hicap/gpt-5.4"
+            upstream_id = "gpt-5.4"
+            "#,
+    )
+    .expect("provider config parses");
+
+    assert_eq!(
+        provider_id_for_config_model(&config, "gpt-5.4").as_deref(),
+        Some("hicap")
+    );
+    assert_eq!(
+        provider_id_for_config_model(&config, "hicap/gpt-5.4").as_deref(),
+        Some("hicap")
+    );
+}
+
+#[test]
 fn named_providers_parse_with_model_routes_and_provider_transforms() {
     let config: AppConfig = toml::from_str(
         r#"

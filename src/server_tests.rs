@@ -1,7 +1,52 @@
 use super::*;
 
 use clap::Parser;
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
+
+use reqwest::Client;
+use serde_json::json;
+use tokio::sync::RwLock;
+
+use crate::config::AppConfig;
+use crate::debug_log::DebugLog;
+use crate::state::AppState;
+
+fn test_state(config: AppConfig) -> AppState {
+    AppState {
+        config: Arc::new(config),
+        client: Client::new(),
+        model_routes: Arc::new(RwLock::new(BTreeMap::new())),
+        debug_log: DebugLog::disabled(),
+    }
+}
+
+#[tokio::test]
+async fn provider_not_selected_response_uses_generic_error_for_codex_auto_review() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "codex-auto-review",
+        "input": "hello"
+    });
+
+    let response = provider_not_selected_response(&state, &body);
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    let message = value["error"]["message"].as_str().expect("error message");
+    assert!(message.contains("no upstream provider is configured"));
+    assert!(!message.contains("codex-auto-review"));
+}
 
 #[test]
 fn args_parse_config_overrides_and_debug_flags() {
