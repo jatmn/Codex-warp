@@ -411,23 +411,54 @@ fn should_retain_pending_reasoning(item: &Value) -> bool {
     }
 }
 
-fn take_reasoning_from_preceding_assistant_text(messages: &mut Vec<Value>) -> Option<String> {
-    let last = messages.last_mut()?;
-    let obj = last.as_object_mut()?;
-    if obj.get("role").and_then(Value::as_str) != Some("assistant") {
-        return None;
+fn is_empty_assistant_shell(message: &Map<String, Value>) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
     }
-    if obj
+    if message
         .get("tool_calls")
         .and_then(Value::as_array)
         .is_some_and(|tool_calls| !tool_calls.is_empty())
     {
-        return None;
+        return false;
     }
-    match obj.remove("reasoning_content") {
-        Some(Value::String(text)) if !text.is_empty() => Some(text),
-        _ => None,
+    if message.get("reasoning_content").is_some() {
+        return false;
     }
+    match message.get("content") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.is_empty(),
+        _ => false,
+    }
+}
+
+fn take_reasoning_from_preceding_assistant_text(messages: &mut Vec<Value>) -> Option<String> {
+    let reasoning = {
+        let last = messages.last_mut()?;
+        let obj = last.as_object_mut()?;
+        if obj.get("role").and_then(Value::as_str) != Some("assistant") {
+            return None;
+        }
+        if obj
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|tool_calls| !tool_calls.is_empty())
+        {
+            return None;
+        }
+        match obj.remove("reasoning_content") {
+            Some(Value::String(text)) if !text.is_empty() => text,
+            _ => return None,
+        }
+    };
+    if messages
+        .last()
+        .and_then(Value::as_object)
+        .is_some_and(is_empty_assistant_shell)
+    {
+        messages.pop();
+    }
+    Some(reasoning)
 }
 
 fn append_reasoning_text(target: &mut Option<String>, text: Option<String>) {
