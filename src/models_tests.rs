@@ -513,7 +513,7 @@ fn qwen_family_metadata_applies_to_documented_qwen3_6_variant() {
 #[test]
 fn x_ai_grok_family_metadata_is_variant_specific() {
     let body = Bytes::from_static(
-            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
+            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-4.5","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
         );
     let provider = ProviderConfig::default();
     let config = load_config_layers(&[]).expect("default config loads");
@@ -524,9 +524,14 @@ fn x_ai_grok_family_metadata_is_variant_specific() {
     assert_eq!(models[0]["input_modalities"], json!(["text", "image"]));
     assert_eq!(models[0]["supports_search_tool"], true);
     assert_eq!(models[0]["web_search_tool_type"], "text");
-    assert_eq!(models[1]["context_window"], 256_000);
-    assert_eq!(models[1]["input_modalities"], json!(["text"]));
+    assert_eq!(models[1]["context_window"], 500_000);
+    assert_eq!(models[1]["default_reasoning_level"], "high");
+    assert_eq!(models[1]["input_modalities"], json!(["text", "image"]));
+    assert_eq!(models[1]["supports_search_tool"], true);
     assert_eq!(models[1]["supports_parallel_tool_calls"], true);
+    assert_eq!(models[2]["context_window"], 256_000);
+    assert_eq!(models[2]["input_modalities"], json!(["text"]));
+    assert_eq!(models[2]["supports_parallel_tool_calls"], true);
 }
 
 #[test]
