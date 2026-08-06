@@ -139,6 +139,36 @@ fn rollback_failed_backup_promotion(backup: &Path, retired: &Path, staging: &Pat
     restore_pending_to_staging(staging, pending);
 }
 
+/// Finish or roll back a promotion interrupted after `staging → .1.new` and/or
+/// `backup → .1.old`.
+fn recover_pending_backup_promotion(path: &Path) -> std::io::Result<()> {
+    let backup = rotation_backup_path(path);
+    let pending = rotation_pending_backup_path(path);
+    let retired = rotation_retired_backup_path(path);
+
+    if pending.exists() {
+        if backup.exists() && !retired.exists() {
+            fs::rename(&backup, &retired)?;
+            fs::rename(&pending, &backup)?;
+            let _ = fs::remove_file(&retired);
+        } else if !backup.exists() && retired.exists() {
+            fs::rename(&pending, &backup)?;
+            let _ = fs::remove_file(&retired);
+        } else if !backup.exists() {
+            fs::rename(&pending, &backup)?;
+        } else {
+            let _ = fs::remove_file(&retired);
+            fs::rename(&pending, &backup)?;
+        }
+    } else if retired.exists() && !backup.exists() {
+        fs::rename(&retired, &backup)?;
+    } else if retired.exists() {
+        let _ = fs::remove_file(&retired);
+    }
+
+    Ok(())
+}
+
 /// Move `staging` into `{path}.1` without deleting the prior backup until the
 /// staged segment is committed at the backup path.
 pub(crate) fn promote_staging_to_backup(
@@ -149,12 +179,7 @@ pub(crate) fn promote_staging_to_backup(
     let pending = rotation_pending_backup_path(path);
     let retired = rotation_retired_backup_path(path);
 
-    if pending.exists() {
-        fs::remove_file(&pending)?;
-    }
-    if retired.exists() {
-        fs::remove_file(&retired)?;
-    }
+    recover_pending_backup_promotion(path)?;
 
     fs::rename(staging, &pending)?;
 
@@ -184,6 +209,8 @@ pub(crate) fn promote_staging_to_backup(
 
 /// Recover from a crash or kill that interrupted staging rename.
 pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
+    recover_pending_backup_promotion(path)?;
+
     let backup = rotation_backup_path(path);
     let staging = rotation_staging_path(path);
     if !staging.exists() {

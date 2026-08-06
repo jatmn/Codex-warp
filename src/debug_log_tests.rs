@@ -471,3 +471,83 @@ fn promote_staging_to_backup_preserves_existing_backup_on_failure() {
         "rotated segment"
     );
 }
+
+#[test]
+fn recovers_orphaned_pending_to_backup_after_staging_promotion_crash() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&backup, "previous backup").expect("write backup");
+    assert!(!path.exists());
+
+    recover_interrupted_rotation(&path).expect("recover pending promotion");
+
+    assert!(!pending.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn recovers_orphaned_pending_and_retired_after_backup_retirement_crash() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-retired-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    let retired = {
+        let mut retired: std::ffi::OsString = path.as_os_str().to_owned();
+        retired.push(".1.old");
+        PathBuf::from(retired)
+    };
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&retired, "previous backup").expect("write retired");
+    assert!(!path.exists());
+    assert!(!backup.exists());
+
+    recover_interrupted_rotation(&path).expect("recover pending and retired");
+
+    assert!(!pending.exists());
+    assert!(!retired.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn recover_pending_orphans_during_rotate_check_without_rotating() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-check-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&path, "active").expect("write active log");
+
+    maybe_rotate_log(&path, 512, Duration::from_secs(3600)).expect("rotation check");
+
+    assert!(!pending.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "active"
+    );
+}
