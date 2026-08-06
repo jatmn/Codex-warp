@@ -8,6 +8,45 @@ use serde_json::json;
 use crate::config::ProviderConfig;
 use crate::version::user_agent;
 
+// OpenRouter app attribution (https://openrouter.ai/docs/app-attribution).
+// Codex Warp identifies itself on every upstream request so OpenRouter can
+// attribute usage across all of its API routes and models (chat completions,
+// native /responses, /models, and any other outbound call) regardless of which
+// gateway profile or model is selected. These are the project's own identity
+// values; they can be overridden per provider via [provider.headers] or
+// [providers.<id>.headers].
+//
+// The values are hardcoded in Rust (rather than in configs/openrouter.toml) on
+// purpose: attribution must not depend on loading the shipped `openrouter`
+// profile or on which gateway happens to be the default in a multi-provider
+// setup.
+const OPENROUTER_REFERER: &str = "https://github.com/jatmn/Codex-warp";
+const OPENROUTER_TITLE: &str = "Codex Warp";
+const OPENROUTER_CATEGORIES: &str = "cli-agent,programming-app";
+
+fn apply_openrouter_attribution(
+    mut request: reqwest::RequestBuilder,
+    provider: &ProviderConfig,
+) -> reqwest::RequestBuilder {
+    let has_header = |name: &str| {
+        provider
+            .headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case(name))
+    };
+    if !has_header("HTTP-Referer") && !has_header("Referer") {
+        request = request.header("HTTP-Referer", OPENROUTER_REFERER);
+    }
+    if !has_header("X-OpenRouter-Title") && !has_header("X-Title") {
+        request = request.header("X-OpenRouter-Title", OPENROUTER_TITLE);
+        request = request.header("X-Title", OPENROUTER_TITLE);
+    }
+    if !has_header("X-OpenRouter-Categories") {
+        request = request.header("X-OpenRouter-Categories", OPENROUTER_CATEGORIES);
+    }
+    request
+}
+
 pub(crate) fn endpoint_url(provider: &ProviderConfig, path: &str) -> String {
     format!(
         "{}/{}",
@@ -47,6 +86,8 @@ pub(crate) fn apply_headers_with_accept(
         }
         request = request.header(name, value);
     }
+
+    let request = apply_openrouter_attribution(request, provider);
 
     request
         .header(axum::http::header::USER_AGENT, user_agent())

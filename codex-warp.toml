@@ -28,6 +28,7 @@ hide_codex_builtin_models = true
 #   "configs/opencode-go.toml",
 #   "configs/xiaomi-token-plan.toml",
 #   "configs/openai-compatible.toml",
+#   "configs/openrouter.toml",
 # ]
 model_family_include = [
   "configs/model-families/deepseek.toml",
