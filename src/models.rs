@@ -156,7 +156,13 @@ pub(crate) fn add_models_for_provider(
     for model in models {
         let mut model = model;
         if let Some(slug) = model.get("slug").and_then(Value::as_str) {
-            if routes.contains_key(slug) {
+            if let Some(owner) = routes.get(slug).map(String::as_str) {
+                if owner == provider_id {
+                    prefix_model_display_name(&mut model, &gateway_name);
+                    model["priority"] = json!(merged_models.len() as i32);
+                    merged_models.push(model);
+                    added += 1;
+                }
                 continue;
             }
             routes.insert(slug.to_string(), provider_id.to_string());
@@ -255,23 +261,44 @@ pub(crate) fn normalize_models(
 }
 
 pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
-    provider
-        .model_catalog
-        .iter()
-        .filter_map(|entry| {
-            let mut model = json!({
-                "id": entry.id,
+    let mut models = Vec::new();
+    for entry in &provider.model_catalog {
+        let mut model = json!({
+            "id": entry.id,
+            "object": "model"
+        });
+        if let Some(display_name) = &entry.display_name {
+            model["display_name"] = json!(display_name);
+        }
+        if let Some(description) = &entry.description {
+            model["description"] = json!(description);
+        }
+        if let Some(info) = codex_model_info(&model, provider, config) {
+            models.push(info);
+        }
+
+        if let Some(upstream_id) = entry.upstream_id.as_deref()
+            && !upstream_id.is_empty()
+            && upstream_id != entry.id
+        {
+            let mut alias = json!({
+                "id": upstream_id,
                 "object": "model"
             });
             if let Some(display_name) = &entry.display_name {
-                model["display_name"] = json!(display_name);
+                alias["display_name"] = json!(format!("{display_name} ({upstream_id})"));
+            } else {
+                alias["display_name"] = json!(upstream_id);
             }
             if let Some(description) = &entry.description {
-                model["description"] = json!(description);
+                alias["description"] = json!(description);
             }
-            codex_model_info(&model, provider, config)
-        })
-        .collect()
+            if let Some(info) = codex_model_info(&alias, provider, config) {
+                models.push(info);
+            }
+        }
+    }
+    models
 }
 
 pub(crate) fn codex_model_info(

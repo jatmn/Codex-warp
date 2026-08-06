@@ -228,6 +228,51 @@ async fn unknown_models_do_not_fall_back_to_default_provider() {
     assert!(select_provider(&state, &body).await.is_none());
 }
 
+#[tokio::test]
+async fn sole_configured_provider_passes_through_unlisted_model_slugs() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.openrouter]
+            base_url = "https://openrouter.ai/api/v1"
+            api_key = "test-key"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "anthropic/claude-3.5-sonnet",
+        "input": "hello"
+    });
+
+    let selected = select_provider(&state, &body)
+        .await
+        .expect("sole provider should accept live-catalog model slugs");
+
+    assert_eq!(selected.id, "openrouter");
+}
+
+#[tokio::test]
+async fn empty_model_falls_back_to_default_provider() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "",
+        "input": "hello"
+    });
+
+    let selected = select_provider(&state, &body)
+        .await
+        .expect("empty model should fall back like a missing model");
+
+    assert_eq!(selected.id, PRIMARY_PROVIDER_ID);
+}
+
 #[test]
 fn qwen3_7_family_drops_openai_reasoning_effort_morph() {
     let mut config = load_config_layers(&[]).expect("default config loads");

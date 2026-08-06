@@ -11,7 +11,10 @@ use crate::state::AppState;
 use crate::state::SelectedProvider;
 
 pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<SelectedProvider> {
-    let model = body.get("model").and_then(Value::as_str);
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty());
     if let Some(model) = model {
         if model == "codex-auto-review" {
             return None;
@@ -35,6 +38,11 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
                 provider,
                 Some(model),
             ));
+        }
+        let providers = provider_entries(&state.config);
+        if providers.len() == 1 {
+            let (id, provider) = providers[0];
+            return Some(selected_provider(&state.config, id, provider, Some(model)));
         }
         return None;
     }

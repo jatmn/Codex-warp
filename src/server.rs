@@ -149,6 +149,23 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {
+    if provider_entries(&state.config).is_empty() {
+        return no_provider_response();
+    }
+    if let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty())
+    {
+        if model == "codex-auto-review" {
+            return no_provider_response();
+        }
+        return unknown_model_response(model);
+    }
+    no_provider_response()
+}
+
 async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -156,15 +173,7 @@ async fn responses(
 ) -> Response {
     let selected = match select_provider(&state, &body).await {
         Some(selected) => selected,
-        None => {
-            if provider_entries(&state.config).is_empty() {
-                return no_provider_response();
-            }
-            if let Some(model) = body.get("model").and_then(Value::as_str) {
-                return unknown_model_response(model);
-            }
-            return no_provider_response();
-        }
+        None => return provider_not_selected_response(&state, &body),
     };
     match selected.transform.backend {
         Backend::OpenAiChat => proxy_chat_responses(state, selected, headers, body).await,
