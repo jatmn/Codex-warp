@@ -301,6 +301,8 @@ enabled = true
 log_path = "/tmp/codex-warp-debug.jsonl"
 include_bodies = false
 include_stream_bodies = false
+max_log_mb = 128
+max_log_age_days = 30
 ```
 
 You can also enable it from the command line:
@@ -310,6 +312,36 @@ target/debug/codex-warp \
   --config configs/moonshot-kimicode.toml \
   --debug-log /tmp/codex-warp-debug.jsonl
 ```
+
+### Rotation
+
+When `log_path` points to an existing file, Warp rotates it before startup and
+before each write once it reaches `max_log_mb` megabytes (default `128`) or the
+current log file is `max_log_age_days` days old (default `30`), whichever comes
+first. Age is measured from the log file's creation time when the platform
+provides it (the start of the current log segment after the last rotation),
+otherwise from its last modification time. On filesystems without birth time,
+each append refreshes the modification time, so age-based rotation only
+applies while the log is idle; actively written logs on those hosts rely on
+the size limit until they stop receiving events. The current log is renamed to
+`{log_path}.1` and a fresh log file is started. Only one backup is kept, so a
+second rotation overwrites the previous backup.
+
+Set `max_log_mb` and `max_log_age_days` in TOML:
+
+```toml
+[debug]
+enabled = true
+log_path = "/tmp/codex-warp-debug.jsonl"
+max_log_mb = 64
+max_log_age_days = 7
+```
+
+Values of `0` are treated as invalid and fall back to the defaults. Rotation is
+performed by the individual Warp process; if multiple Warp instances share the
+same `log_path`, concurrent rotations can race and the backup may be overwritten
+or removed unexpectedly. Use a distinct `log_path` per instance when running
+more than one Warp process.
 
 Each request writes an `upstream_request` event with the selected provider,
 backend, model, `prompt_cache_key`, `stream_options`, metadata presence flags,
@@ -349,6 +381,8 @@ enabled = true
 log_path = "/tmp/codex-warp-debug.jsonl"
 include_bodies = true
 include_stream_bodies = true
+max_log_mb = 128
+max_log_age_days = 30
 ```
 
 or pass:

@@ -1,6 +1,26 @@
 use super::*;
 
 use serde_json::json;
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::SystemTime;
+
+/// RAII guard that removes a temp directory even if a test panics.
+struct TempDirGuard(PathBuf);
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> Self {
+        fs::create_dir_all(&path).expect("create temp dir");
+        Self(path)
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 #[test]
 fn request_debug_summary_keeps_cache_fields_without_prompt_text() {
@@ -122,4 +142,412 @@ fn is_secret_key_matches_private_key_and_signing_key() {
     // Non-secret keys are not matched.
     assert!(!super::is_secret_key("name"));
     assert!(!super::is_secret_key("model"));
+}
+
+#[test]
+fn should_rotate_log_when_size_limit_exceeded() {
+    let now = SystemTime::now();
+    let modified = now - Duration::from_secs(60);
+    assert!(should_rotate_log(
+        1024,
+        modified,
+        now,
+        512,
+        Duration::from_secs(3600)
+    ));
+}
+
+#[test]
+fn should_rotate_log_when_age_limit_exceeded() {
+    let now = SystemTime::now();
+    let started = now - Duration::from_secs(31 * 24 * 60 * 60);
+    assert!(should_rotate_log(
+        10,
+        started,
+        now,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+}
+
+#[test]
+fn should_rotate_log_by_age_when_mtime_is_recent() {
+    let now = SystemTime::now();
+    let started = now - Duration::from_secs(31 * 24 * 60 * 60);
+    let recent_write = now - Duration::from_secs(60);
+    assert!(should_rotate_log(
+        10,
+        started,
+        now,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+    assert!(!should_rotate_log(
+        10,
+        recent_write,
+        now,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+}
+
+#[test]
+fn should_not_rotate_log_when_within_limits() {
+    let now = SystemTime::now();
+    let modified = now - Duration::from_secs(60);
+    assert!(!should_rotate_log(
+        10,
+        modified,
+        now,
+        512,
+        Duration::from_secs(3600)
+    ));
+}
+
+#[test]
+fn rotates_debug_log_file_when_size_limit_exceeded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "x".repeat(1024)).expect("write debug log");
+
+    maybe_rotate_log(&path, 512, Duration::from_secs(3600)).expect("rotate debug log");
+
+    assert!(!path.exists());
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
+    assert_eq!(fs::metadata(&backup).expect("backup metadata").len(), 1024);
+}
+
+#[test]
+fn rotates_debug_log_file_when_age_limit_exceeded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-age-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "old log content").expect("write debug log");
+
+    let metadata = fs::metadata(&path).expect("metadata");
+    if metadata.created().is_ok() {
+        return;
+    }
+
+    let old_time = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
+    let file_times = fs::FileTimes::new().set_modified(old_time);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open for set_times")
+        .set_times(file_times)
+        .expect("set old modified time");
+
+    maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect("rotate debug log by age");
+
+    assert!(!path.exists());
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
+}
+
+#[test]
+fn does_not_rotate_by_stale_mtime_when_created_is_recent() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-age-mtime-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "recent log content").expect("write debug log");
+
+    let metadata = fs::metadata(&path).expect("metadata");
+    if metadata.created().is_err() {
+        return;
+    }
+
+    let old_time = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
+    let file_times = fs::FileTimes::new().set_modified(old_time);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open for set_times")
+        .set_times(file_times)
+        .expect("set stale modified time");
+
+    maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect("rotation check");
+
+    assert!(path.exists());
+    assert!(!rotation_backup_path(&path).exists());
+}
+
+#[test]
+fn rejects_directory_log_path_for_rotation() {
+    let dir = std::env::temp_dir().join(format!("codex-warp-debug-log-dir-{}", std::process::id()));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::create_dir(&path).expect("create directory masquerading as log path");
+
+    let err = maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect_err("directory log path should not rotate");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(path.exists());
+}
+
+#[test]
+fn log_age_anchor_prefers_created_over_modified() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-age-anchor-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "seed").expect("write debug log");
+    let metadata = fs::metadata(&path).expect("metadata");
+    let created = match metadata.created() {
+        Ok(created) => created,
+        Err(_) => return,
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    fs::write(&path, "seed\nappend").expect("append debug log");
+    let metadata = fs::metadata(&path).expect("metadata after append");
+    assert_eq!(
+        log_age_anchor(&metadata).expect("age anchor"),
+        created,
+        "age anchor should follow creation time when available"
+    );
+    assert!(
+        metadata.modified().expect("modified") > created,
+        "append should refresh mtime for this test"
+    );
+}
+
+#[test]
+fn recovers_orphaned_staging_to_active_log_when_backup_exists() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-active-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "staged segment").expect("write staging");
+    assert!(!path.exists());
+
+    recover_interrupted_rotation(&path).expect("recover staging to active log");
+
+    assert!(path.exists());
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "staged segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "previous backup"
+    );
+}
+
+#[test]
+fn completes_interrupted_rotation_when_backup_is_missing() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-backup-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&staging, "staged segment").expect("write staging");
+    assert!(!path.exists());
+    assert!(!backup.exists());
+
+    recover_interrupted_rotation(&path).expect("complete interrupted rotation");
+
+    assert!(!path.exists());
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "staged segment"
+    );
+}
+
+#[test]
+fn preserves_staged_segment_when_active_log_was_recreated() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-promote-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&path, "new segment").expect("write active log");
+    fs::write(&staging, "old staged segment").expect("write staging");
+
+    recover_interrupted_rotation(&path).expect("promote staged segment to backup");
+
+    assert!(path.exists());
+    assert!(!staging.exists());
+    assert!(backup.exists());
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "new segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "old staged segment"
+    );
+}
+
+#[test]
+fn promote_staging_to_backup_replaces_existing_backup() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-promote-backup-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "rotated segment").expect("write staging");
+
+    promote_staging_to_backup(&staging, &backup, &path).expect("promote staging to backup");
+
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn promote_staging_to_backup_preserves_existing_backup_on_failure() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-promote-rollback-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    let retired = {
+        let mut retired: std::ffi::OsString = path.as_os_str().to_owned();
+        retired.push(".1.old");
+        PathBuf::from(retired)
+    };
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "rotated segment").expect("write staging");
+    fs::create_dir(&retired).expect("block backup retirement");
+
+    let err = promote_staging_to_backup(&staging, &backup, &path)
+        .expect_err("promotion should fail when retired path is blocked");
+    assert_ne!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "previous backup"
+    );
+    assert_eq!(
+        fs::read_to_string(&staging).expect("read staging"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn recovers_orphaned_pending_to_backup_after_staging_promotion_crash() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&backup, "previous backup").expect("write backup");
+    assert!(!path.exists());
+
+    recover_interrupted_rotation(&path).expect("recover pending promotion");
+
+    assert!(!pending.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn recovers_orphaned_pending_and_retired_after_backup_retirement_crash() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-retired-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    let retired = {
+        let mut retired: std::ffi::OsString = path.as_os_str().to_owned();
+        retired.push(".1.old");
+        PathBuf::from(retired)
+    };
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&retired, "previous backup").expect("write retired");
+    assert!(!path.exists());
+    assert!(!backup.exists());
+
+    recover_interrupted_rotation(&path).expect("recover pending and retired");
+
+    assert!(!pending.exists());
+    assert!(!retired.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn recover_pending_orphans_during_rotate_check_without_rotating() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-recover-pending-check-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let pending = rotation_pending_backup_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&pending, "rotated segment").expect("write pending");
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&path, "active").expect("write active log");
+
+    maybe_rotate_log(&path, 512, Duration::from_secs(3600)).expect("rotation check");
+
+    assert!(!pending.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("read active log"),
+        "active"
+    );
 }

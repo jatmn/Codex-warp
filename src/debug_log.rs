@@ -1,11 +1,16 @@
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsString;
+use std::fs;
 use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::SystemTime;
 
 use serde_json::Value;
 use serde_json::json;
@@ -14,13 +19,271 @@ use tracing::warn;
 use crate::config::DebugConfig;
 
 const REDACTED: &str = "[REDACTED]";
+pub(crate) const DEFAULT_MAX_LOG_MB: u64 = 128;
+pub(crate) const DEFAULT_MAX_LOG_AGE_DAYS: u64 = 30;
 
 #[derive(Clone)]
 pub(crate) struct DebugLog {
     pub(crate) path: Option<Arc<PathBuf>>,
     pub(crate) include_bodies: bool,
     pub(crate) include_stream_bodies: bool,
+    max_log_bytes: u64,
+    max_log_age: Duration,
     writer_lock: Arc<Mutex<()>>,
+}
+
+fn max_log_bytes_from_config(config: &DebugConfig) -> u64 {
+    let mb = config.max_log_mb.unwrap_or(DEFAULT_MAX_LOG_MB);
+    let mb = if mb == 0 {
+        warn!(
+            "debug.max_log_mb must be greater than 0, using default {}",
+            DEFAULT_MAX_LOG_MB
+        );
+        DEFAULT_MAX_LOG_MB
+    } else {
+        mb
+    };
+    mb.saturating_mul(1024 * 1024)
+}
+
+fn max_log_age_from_config(config: &DebugConfig) -> Duration {
+    let days = config.max_log_age_days.unwrap_or(DEFAULT_MAX_LOG_AGE_DAYS);
+    let days = if days == 0 {
+        warn!(
+            "debug.max_log_age_days must be greater than 0, using default {}",
+            DEFAULT_MAX_LOG_AGE_DAYS
+        );
+        DEFAULT_MAX_LOG_AGE_DAYS
+    } else {
+        days
+    };
+    Duration::from_secs(days.saturating_mul(24 * 60 * 60))
+}
+
+pub(crate) fn should_rotate_log(
+    file_len: u64,
+    age_anchor_at: SystemTime,
+    now: SystemTime,
+    max_bytes: u64,
+    max_age: Duration,
+) -> bool {
+    let too_large = file_len >= max_bytes;
+    let too_old = now
+        .duration_since(age_anchor_at)
+        .is_ok_and(|age| age >= max_age);
+    too_large || too_old
+}
+
+pub(crate) fn log_age_anchor(metadata: &fs::Metadata) -> std::io::Result<SystemTime> {
+    metadata.created().or_else(|_| metadata.modified())
+}
+
+fn rotation_backup_path(path: &Path) -> PathBuf {
+    let mut backup: OsString = path.as_os_str().to_owned();
+    backup.push(".1");
+    PathBuf::from(backup)
+}
+
+fn rotation_staging_path(path: &Path) -> PathBuf {
+    let mut staging: OsString = path.as_os_str().to_owned();
+    staging.push(".rotating");
+    PathBuf::from(staging)
+}
+
+fn rotation_pending_backup_path(path: &Path) -> PathBuf {
+    let mut pending: OsString = path.as_os_str().to_owned();
+    pending.push(".1.new");
+    PathBuf::from(pending)
+}
+
+fn rotation_retired_backup_path(path: &Path) -> PathBuf {
+    let mut retired: OsString = path.as_os_str().to_owned();
+    retired.push(".1.old");
+    PathBuf::from(retired)
+}
+
+fn restore_staged_log(path: &Path, staging: &Path) {
+    if staging.exists() && !path.exists() {
+        if let Err(err) = fs::rename(staging, path) {
+            warn!(
+                "failed to restore debug log {} from staging {}: {err}",
+                path.display(),
+                staging.display()
+            );
+        }
+    }
+}
+
+fn restore_pending_to_staging(staging: &Path, pending: &Path) {
+    if pending.exists() && !staging.exists() {
+        if let Err(err) = fs::rename(pending, staging) {
+            warn!(
+                "failed to restore debug log staging {} from pending {}: {err}",
+                staging.display(),
+                pending.display()
+            );
+        }
+    }
+}
+
+fn rollback_failed_backup_promotion(backup: &Path, retired: &Path, staging: &Path, pending: &Path) {
+    if retired.exists() && !backup.exists() {
+        if let Err(err) = fs::rename(retired, backup) {
+            warn!(
+                "failed to restore debug log backup {} from retired {}: {err}",
+                backup.display(),
+                retired.display()
+            );
+        }
+    }
+    restore_pending_to_staging(staging, pending);
+}
+
+/// Finish or roll back a promotion interrupted after `staging → .1.new` and/or
+/// `backup → .1.old`.
+fn recover_pending_backup_promotion(path: &Path) -> std::io::Result<()> {
+    let backup = rotation_backup_path(path);
+    let pending = rotation_pending_backup_path(path);
+    let retired = rotation_retired_backup_path(path);
+
+    if pending.exists() {
+        if backup.exists() && !retired.exists() {
+            fs::rename(&backup, &retired)?;
+            fs::rename(&pending, &backup)?;
+            let _ = fs::remove_file(&retired);
+        } else if !backup.exists() && retired.exists() {
+            fs::rename(&pending, &backup)?;
+            let _ = fs::remove_file(&retired);
+        } else if !backup.exists() {
+            fs::rename(&pending, &backup)?;
+        } else {
+            let _ = fs::remove_file(&retired);
+            fs::rename(&pending, &backup)?;
+        }
+    } else if retired.exists() && !backup.exists() {
+        fs::rename(&retired, &backup)?;
+    } else if retired.exists() {
+        let _ = fs::remove_file(&retired);
+    }
+
+    Ok(())
+}
+
+/// Move `staging` into `{path}.1` without deleting the prior backup until the
+/// staged segment is committed at the backup path.
+pub(crate) fn promote_staging_to_backup(
+    staging: &Path,
+    backup: &Path,
+    path: &Path,
+) -> std::io::Result<()> {
+    let pending = rotation_pending_backup_path(path);
+    let retired = rotation_retired_backup_path(path);
+
+    recover_pending_backup_promotion(path)?;
+
+    fs::rename(staging, &pending)?;
+
+    if backup.exists() {
+        match fs::rename(backup, &retired) {
+            Ok(()) => {}
+            Err(err) => {
+                restore_pending_to_staging(staging, &pending);
+                return Err(err);
+            }
+        }
+    }
+
+    match fs::rename(&pending, backup) {
+        Ok(()) => {
+            if retired.exists() {
+                let _ = fs::remove_file(&retired);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            rollback_failed_backup_promotion(backup, &retired, staging, &pending);
+            Err(err)
+        }
+    }
+}
+
+/// Recover from a crash or kill that interrupted staging rename.
+pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
+    recover_pending_backup_promotion(path)?;
+
+    let backup = rotation_backup_path(path);
+    let staging = rotation_staging_path(path);
+    if !staging.exists() {
+        return Ok(());
+    }
+
+    if path.exists() {
+        return promote_staging_to_backup(&staging, &backup, path);
+    }
+
+    if backup.exists() {
+        restore_staged_log(path, &staging);
+        return Ok(());
+    }
+
+    promote_staging_to_backup(&staging, &backup, path)
+}
+
+/// Move `path` to `{path}.1` via a staging file so the active log and prior
+/// backup are not lost if promotion fails.
+fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::Result<()> {
+    recover_interrupted_rotation(path)?;
+    if staging.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "debug log staging file {} still exists after recovery",
+                staging.display()
+            ),
+        ));
+    }
+    fs::rename(path, staging)?;
+    match promote_staging_to_backup(staging, backup, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            restore_staged_log(path, staging);
+            Err(err)
+        }
+    }
+}
+
+/// Rotate `path` to `{path}.1` when it exceeds size or age limits.
+///
+/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`,
+/// but multiple Warp processes sharing the same `log_path` can still race. In
+/// that situation the backup may be overwritten or removed unexpectedly; use a
+/// distinct `log_path` per instance.
+fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
+    recover_interrupted_rotation(path)?;
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("debug log path {} is not a file", path.display()),
+        ));
+    }
+    let age_anchor_at = log_age_anchor(&metadata)?;
+    if !should_rotate_log(
+        metadata.len(),
+        age_anchor_at,
+        SystemTime::now(),
+        max_bytes,
+        max_age,
+    ) {
+        return Ok(());
+    }
+    let backup = rotation_backup_path(path);
+    let staging = rotation_staging_path(path);
+    rotate_log_to_backup(path, &backup, &staging)
 }
 
 impl DebugLog {
@@ -30,11 +293,15 @@ impl DebugLog {
             path: None,
             include_bodies: false,
             include_stream_bodies: false,
+            max_log_bytes: max_log_bytes_from_config(&DebugConfig::default()),
+            max_log_age: max_log_age_from_config(&DebugConfig::default()),
             writer_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub(crate) fn new(config: &DebugConfig) -> Self {
+        let max_log_bytes = max_log_bytes_from_config(config);
+        let max_log_age = max_log_age_from_config(config);
         let path = config
             .enabled
             .then(|| config.log_path.clone())
@@ -43,10 +310,17 @@ impl DebugLog {
         if config.enabled && path.is_none() {
             warn!("debug logging is enabled but debug.log_path is not set");
         }
+        if let Some(path) = path.as_ref() {
+            maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age).unwrap_or_else(|err| {
+                warn!("failed to rotate debug log {}: {err}", path.display())
+            });
+        }
         Self {
             path,
             include_bodies: config.include_bodies,
             include_stream_bodies: config.include_stream_bodies,
+            max_log_bytes,
+            max_log_age,
             writer_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -114,6 +388,9 @@ impl DebugLog {
             warn!("failed to lock debug log writer {}", path.display());
             return;
         };
+        if let Err(err) = maybe_rotate_log(path.as_path(), self.max_log_bytes, self.max_log_age) {
+            warn!("failed to rotate debug log {}: {err}", path.display());
+        }
         match OpenOptions::new()
             .create(true)
             .append(true)
