@@ -9,10 +9,9 @@
 # `none`/`low`/`high` (it drops `medium`; Hy3 has no medium mode), so Codex
 # selects from the advertised levels and will not normally request `medium`.
 # If a client still sends `medium`, it is forwarded unchanged (no remap) since
-# Hy3 has no medium mode to map to. `none` is mapped to `no_think` via
-# `reasoning_effort_none_value` so the provider receives a valid mode.
-# NOTE: `no_think` is the assumed Hy3 value and is not yet verified against the
-# live gateway; confirm with a smoke test (see docs/live-testing.md).
+# Hy3 has no medium mode to map to on OpenRouter/hicap-style gateways. `none` is
+# mapped to `no_think` via `reasoning_effort_none_value` for those gateways.
+# Tencent TokenHub uses `thinking.type: disabled` instead; see `hy3_tencent`.
 #
 # Hy3 understands standard function tools but not Codex's `custom` (apply_patch
 # freeform) tool type, so those are coerced with `as_function` and reconstructed
@@ -31,7 +30,6 @@ patterns = [
   "tencent/hy3*",
   "hunyuan-3",
   "hunyuan3",
-  "hunyuan-3b",
 ]
 
 [model_families.hy3.model_metadata]
@@ -76,3 +74,19 @@ patterns = [
 
 [model_families.hy3_exact.model_metadata]
 context_window = 256000
+
+# Tencent TokenHub disables thinking with `thinking.type: disabled` and accepts
+# `reasoning_effort` only as low/medium/high. Keep OpenRouter/hicap on `no_think`
+# while mapping Codex disable-effort to TokenHub's thinking toggle.
+[model_families.hy3_tencent]
+priority = 15
+patterns = [
+  "tencent/hy3",
+  "tencent/hy3:free",
+  "tencent/hy3*",
+]
+
+[[model_families.hy3_tencent.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"

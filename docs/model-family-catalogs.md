@@ -93,8 +93,9 @@ Recommended priority convention:
 | `20` | Emergency/special-case overrides that must win over normal exact models. |
 
 Unknown keys under `[model_families.*]`, `[model_families.*.model_metadata]`,
-`[model_families.*.transform]`, morph array entries (for example
-`[[model_families.*.transform.append_chat_request_morphs]]`), and
+`[model_families.*.transform]`, append/remove morph array entries (for example
+`[[model_families.*.transform.append_chat_request_morphs]]` and
+`[[model_families.*.transform.remove_chat_request_morphs]]`), and
 `[providers.*.model_metadata]` defaults/overrides are rejected at load time
 (`deny_unknown_fields` on the catalog structs). Typos fail startup instead of
 being silently ignored; remove experimental keys or rename them to supported

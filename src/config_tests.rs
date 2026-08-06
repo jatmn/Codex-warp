@@ -63,6 +63,7 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
     assert!(default_config.model_families.contains_key("hy3"));
     assert!(default_config.model_families.contains_key("hy3_exact"));
+    assert!(default_config.model_families.contains_key("hy3_tencent"));
     assert!(provider_entries(&default_config).is_empty());
     assert!(provider_entries(&generic_config).is_empty());
     assert!(!generic_config.provider.is_enabled());
@@ -668,6 +669,46 @@ fn model_family_morph_rejects_unknown_fields() {
 }
 
 #[test]
+fn model_family_remove_morph_selector_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-remove-morph-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad-remove-morph.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad-remove-morph.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+
+            [[model_families.bad_family.transform.remove_chat_request_morphs]]
+            from = "reasoning.effort"
+            to = "reasoning_effort"
+            kind = "rename"
+            typo_field = "oops"
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("typo_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn model_family_patterns_support_wildcards() {
     let mut config = AppConfig::default();
     config.model_families.insert(
@@ -872,8 +913,8 @@ fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
             "{id} should not match the hy3 family"
         );
     }
-    // Real Hy3 Hunyuan ids should still match.
-    for id in ["hunyuan-3", "hunyuan3", "hunyuan-3b"] {
+    // Real Hy3 Hunyuan aliases should still match.
+    for id in ["hunyuan-3", "hunyuan3"] {
         assert!(
             matching_model_families(&config, id)
                 .iter()
@@ -881,6 +922,12 @@ fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
             "{id} should match the hy3 family"
         );
     }
+    assert!(
+        !matching_model_families(&config, "hunyuan-3b")
+            .iter()
+            .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+        "hunyuan-3b should not match the hy3 family"
+    );
 }
 
 #[test]

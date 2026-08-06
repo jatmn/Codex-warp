@@ -453,4 +453,52 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(grok43_none.body["reasoning_effort"], "none");
     assert!(grok43_none.body.get("thinking").is_none());
+
+    let hy3_hicap = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("hicap/hy3:free"),
+    );
+    let hy3_hicap_none = responses_to_chat(
+        json!({
+            "model": "hicap/hy3:free",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &hy3_hicap.transform,
+    );
+    assert_eq!(hy3_hicap_none.body["reasoning_effort"], "no_think");
+    assert!(hy3_hicap_none.body.get("thinking").is_none());
+
+    let hy3_tencent = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("tencent/hy3"),
+    );
+    let hy3_tencent_none = responses_to_chat(
+        json!({
+            "model": "tencent/hy3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &hy3_tencent.transform,
+    );
+    assert!(hy3_tencent_none.body.get("reasoning_effort").is_none());
+    assert_eq!(hy3_tencent_none.body["thinking"]["type"], "disabled");
+
+    let hy3_tencent_high = responses_to_chat(
+        json!({
+            "model": "tencent/hy3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "high"},
+            "stream": true
+        }),
+        &hy3_tencent.transform,
+    );
+    assert_eq!(hy3_tencent_high.body["reasoning_effort"], "high");
+    assert_eq!(hy3_tencent_high.body["thinking"]["type"], "enabled");
 }

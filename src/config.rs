@@ -442,7 +442,7 @@ impl TransformConfigPatch {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MorphSelector {
     pub from: String,
     pub to: Option<String>,

@@ -89,6 +89,24 @@ fn strip_disabled_reasoning_effort_removes_disable_values_for_thinking_type_fami
 }
 
 #[test]
+fn strip_disabled_reasoning_effort_removes_none_value_for_thinking_type_families() {
+    let mut transform = TransformConfig::default();
+    transform.reasoning_effort_none_value = Some("no_think".to_string());
+    transform
+        .chat_request_morphs
+        .push(crate::config::RequestMorph {
+            from: "reasoning.effort".to_string(),
+            to: Some("thinking.type".to_string()),
+            value: None,
+            kind: RequestMorphKind::ThinkingType,
+        });
+    let mut body = json!({"reasoning_effort": "no_think", "thinking": {"type": "disabled"}});
+    strip_disabled_reasoning_effort(&mut body, &transform);
+    assert!(body.get("reasoning_effort").is_none());
+    assert_eq!(body["thinking"]["type"], "disabled");
+}
+
+#[test]
 fn strip_disabled_reasoning_effort_preserves_disable_values_for_rename_only_families() {
     let transform = TransformConfig::default();
     let mut body = json!({"reasoning_effort": "none"});
