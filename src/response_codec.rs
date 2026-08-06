@@ -399,8 +399,9 @@ impl ChatAccum {
             if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 self.finish_reason = Some(finish_reason.to_string());
             }
-            if let Some(reasoning) = chat_reasoning_text(delta)
-                && !reasoning.is_empty()
+            if let Some(incoming) = chat_reasoning_text(delta)
+                && let Some(reasoning) =
+                    reasoning_stream_delta(&self.reasoning_text, &incoming).map(str::to_string)
             {
                 if self.reasoning_item_id.is_none() {
                     let item_id = generated_id("rsn");
@@ -428,7 +429,7 @@ impl ChatAccum {
                 }
                 if !self.reasoning_display_header_emitted {
                     self.reasoning_display_header_emitted = true;
-                    if !reasoning.trim_start().starts_with("**") {
+                    if !incoming.trim_start().starts_with("**") {
                         events.push(sse(
                             "response.reasoning_summary_text.delta",
                             json!({
@@ -440,14 +441,14 @@ impl ChatAccum {
                         ));
                     }
                 }
-                self.reasoning_text.push_str(reasoning);
+                self.reasoning_text.push_str(&reasoning);
                 events.push(sse(
                     "response.reasoning_summary_text.delta",
                     json!({
                         "type": "response.reasoning_summary_text.delta",
                         "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
                         "summary_index": 0,
-                        "delta": reasoning
+                        "delta": reasoning.as_str()
                     }),
                 ));
             }
@@ -926,11 +927,76 @@ pub(crate) fn chat_json_to_responses_with_policy(
     })
 }
 
-fn chat_reasoning_text(value: &Value) -> Option<&str> {
-    value
+/// Returns only the new reasoning text to append for a streaming delta.
+/// Providers may send either incremental fragments or cumulative snapshots.
+fn reasoning_stream_delta<'a>(accumulated: &'a str, incoming: &'a str) -> Option<&'a str> {
+    if incoming.is_empty() {
+        return None;
+    }
+    if accumulated.is_empty() {
+        return Some(incoming);
+    }
+    if incoming.starts_with(accumulated) {
+        let suffix = &incoming[accumulated.len()..];
+        return (!suffix.is_empty()).then_some(suffix);
+    }
+    Some(incoming)
+}
+
+fn chat_reasoning_text(value: &Value) -> Option<String> {
+    if let Some(text) = value
         .get("reasoning_content")
         .or_else(|| value.get("reasoning"))
         .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    // OpenRouter and some gateways return reasoning as a `reasoning_details`
+    // array of objects such as {"type": "text", "text": "..."} or plain strings.
+    // Some providers also emit `reasoning_details` as a single string or object,
+    // or use object shapes like {"type": "reasoning.summary", "text": "..."} /
+    // {"summary": "..."}. Flatten the contiguous text so hybrid-thinking models
+    // (e.g. Hy3) surface their chain-of-thought to Codex, and never silently
+    // discard all reasoning when the field is not an array.
+    let details: Vec<&Value> = match value.get("reasoning_details") {
+        Some(Value::Array(arr)) => arr.iter().collect(),
+        Some(Value::String(s)) => return Some(s.clone()),
+        Some(Value::Object(obj)) => {
+            if let Some(text) = obj
+                .get("text")
+                .or_else(|| obj.get("summary"))
+                .or_else(|| obj.get("reasoning"))
+                .and_then(Value::as_str)
+            {
+                return Some(text.to_string());
+            }
+            return None;
+        }
+        _ => return None,
+    };
+    let mut combined = String::new();
+    for item in details {
+        match item {
+            Value::String(text) => combined.push_str(text),
+            Value::Object(obj) => {
+                if let Some(text) = obj
+                    .get("text")
+                    .or_else(|| obj.get("summary"))
+                    .or_else(|| obj.get("reasoning"))
+                    .and_then(Value::as_str)
+                {
+                    combined.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    if combined.is_empty() {
+        None
+    } else {
+        Some(combined)
+    }
 }
 
 pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
@@ -1110,15 +1176,19 @@ pub(crate) fn native_stream_debug_summary(value: &Value) -> Option<Value> {
 }
 
 fn custom_tool_input(arguments: &str) -> String {
-    serde_json::from_str::<Value>(arguments)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("input")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-        })
-        .unwrap_or_else(|| arguments.to_string())
+    match serde_json::from_str::<Value>(arguments) {
+        // The model returned a JSON-encoded string for the patch input.
+        Ok(Value::String(s)) => s,
+        Ok(Value::Object(obj)) => {
+            if let Some(input) = obj.get("input").and_then(Value::as_str) {
+                return input.to_string();
+            }
+            arguments.to_string()
+        }
+        // Non-JSON or an unexpected JSON shape: pass the raw arguments through
+        // as the input so the failure is visible rather than silently dropped.
+        _ => arguments.to_string(),
+    }
 }
 
 pub(crate) fn morph_native_sse_frame(

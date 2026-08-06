@@ -100,7 +100,13 @@ pub(crate) fn strip_disabled_reasoning_effort(body: &mut Value, transform: &Tran
     let remove = map
         .get("reasoning_effort")
         .and_then(Value::as_str)
-        .is_some_and(is_disable_reasoning_effort);
+        .is_some_and(|effort| {
+            is_disable_reasoning_effort(effort)
+                || transform
+                    .reasoning_effort_none_value
+                    .as_deref()
+                    .is_some_and(|none_value| effort == none_value)
+        });
     if remove {
         map.remove("reasoning_effort");
     }

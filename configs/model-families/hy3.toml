@@ -1,0 +1,92 @@
+# Hy3 (Tencent Hunyuan 3) model-family compatibility.
+#
+# Hy3 is a 295B MoE model (21B active) from the Tencent Hy Team with a 256K
+# context window. It is an OpenAI-compatible /chat/completions model that
+# supports hybrid thinking (reasoning) and native function/tool calling.
+#
+# Reasoning modes are `no_think` (direct), `low`, and `high`. Codex expresses
+# effort as `none`/`low`/`medium`/`high`. This catalog advertises only
+# `none`/`low`/`high` (it drops `medium`; Hy3 has no medium mode), so Codex
+# selects from the advertised levels and will not normally request `medium`.
+# If a client still sends `medium`, it is forwarded unchanged (no remap) since
+# Hy3 has no medium mode to map to on OpenRouter/hicap-style gateways. `none` is
+# mapped to `no_think` via `reasoning_effort_none_value` for those gateways.
+# Tencent TokenHub uses `thinking.type: disabled` instead; see `hy3_tencent`.
+#
+# Hy3 understands standard function tools but not Codex's `custom` (apply_patch
+# freeform) tool type, so those are coerced with `as_function` and reconstructed
+# on the way back (handled by the shared transform path).
+#
+# `preserve_reasoning_content_history` replays Codex reasoning items into outbound
+# assistant/tool-call `reasoning_content` so multi-turn tool loops keep chain-of-thought
+# context (same pattern as Kimi code variants and DeepSeek V4 on this repo).
+
+[model_families.hy3]
+priority = 0
+patterns = [
+  "hy3*",
+  "hy3:*",
+  "hicap/hy3*",
+  "tencent/hy3*",
+  "hunyuan-3",
+  "hunyuan3",
+]
+
+[model_families.hy3.model_metadata]
+context_window = 256000
+max_context_window = 262144
+effective_context_window_percent = 95
+input_modalities = ["text"]
+supports_parallel_tool_calls = false
+supported_reasoning_levels = ["none", "low", "high"]
+default_reasoning_level = "high"
+supports_reasoning_summaries = true
+shell_type = "shell_command"
+apply_patch_tool_type = "freeform"
+supports_search_tool = false
+include_skills_usage_instructions = true
+
+[model_families.hy3.transform]
+backend = "open_ai_chat"
+unsupported_tool_types = ["custom"]
+unsupported_tool_strategy = "as_function"
+force_parallel_tool_calls = false
+drop_empty_tool_choice = true
+reasoning_effort_none_value = "no_think"
+preserve_reasoning_content_history = true
+
+# Exact override entry. It intentionally omits [transform] and most
+# [model_metadata] fields: family transforms/metadata merge cumulatively
+# (see provider.rs / config.rs `apply_to`), so exact ids inherit everything
+# from the broad `hy3` family above and this entry only pins an exact
+# context_window. Keep it minimal; add distinct behavior here only when a
+# specific exact id needs to diverge from the broad family.
+[model_families.hy3_exact]
+priority = 10
+patterns = [
+  "hy3",
+  "hy3:free",
+  "hicap/hy3",
+  "hicap/hy3:free",
+  "tencent/hy3",
+  "tencent/hy3:free",
+]
+
+[model_families.hy3_exact.model_metadata]
+context_window = 256000
+
+# Tencent TokenHub disables thinking with `thinking.type: disabled` and accepts
+# `reasoning_effort` only as low/medium/high. Keep OpenRouter/hicap on `no_think`
+# while mapping Codex disable-effort to TokenHub's thinking toggle.
+[model_families.hy3_tencent]
+priority = 15
+patterns = [
+  "tencent/hy3",
+  "tencent/hy3:free",
+  "tencent/hy3*",
+]
+
+[[model_families.hy3_tencent.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"

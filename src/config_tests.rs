@@ -61,6 +61,9 @@ fn example_configs_parse_request_morphs() {
     );
     assert!(default_config.model_families.contains_key("z_ai_glm_5"));
     assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
+    assert!(default_config.model_families.contains_key("hy3"));
+    assert!(default_config.model_families.contains_key("hy3_exact"));
+    assert!(default_config.model_families.contains_key("hy3_tencent"));
     assert!(provider_entries(&default_config).is_empty());
     assert!(provider_entries(&generic_config).is_empty());
     assert!(!generic_config.provider.is_enabled());
@@ -171,6 +174,48 @@ fn example_configs_parse_request_morphs() {
             .first()
             .and_then(|family| family.model_metadata.context_window),
         Some(1_000_000)
+    );
+}
+
+#[test]
+fn hy3_family_advertises_context_reasoning_and_tool_transforms() {
+    let config = load_config_layers(&[]).expect("default parses");
+    let hy3_matches = matching_model_families(&config, "hicap/hy3:free");
+    let family = hy3_matches
+        .first()
+        .expect("hy3 family matches hicap/hy3:free");
+
+    assert_eq!(family.model_metadata.context_window, Some(256000));
+    assert_eq!(
+        family.model_metadata.default_reasoning_level.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        family.model_metadata.supports_parallel_tool_calls,
+        Some(false)
+    );
+
+    let levels = family
+        .model_metadata
+        .supported_reasoning_levels
+        .as_ref()
+        .expect("supported reasoning levels present");
+    assert!(levels.iter().any(|level| level == "none"));
+    assert!(levels.iter().any(|level| level == "low"));
+    assert!(levels.iter().any(|level| level == "high"));
+    assert!(!levels.iter().any(|level| level == "medium"));
+
+    assert_eq!(
+        family.transform.reasoning_effort_none_value.as_deref(),
+        Some("no_think")
+    );
+    assert_eq!(
+        family.transform.unsupported_tool_strategy,
+        Some(UnsupportedToolStrategy::AsFunction)
+    );
+    assert_eq!(
+        family.transform.preserve_reasoning_content_history,
+        Some(true)
     );
 }
 
@@ -546,6 +591,124 @@ fn model_family_includes_load_relative_to_declaring_file() {
 }
 
 #[test]
+fn model_family_overlay_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-family-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+            unknown_family_field = "oops"
+
+            [model_families.bad_family.model_metadata]
+            context_window = 1000
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("unknown_family_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn model_family_morph_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-morph-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad-morph.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad-morph.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+
+            [[model_families.bad_family.transform.append_chat_request_morphs]]
+            from = "reasoning.effort"
+            to = "reasoning_effort"
+            kind = "rename"
+            typo_field = "oops"
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("typo_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn model_family_remove_morph_selector_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-remove-morph-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad-remove-morph.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad-remove-morph.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+
+            [[model_families.bad_family.transform.remove_chat_request_morphs]]
+            from = "reasoning.effort"
+            to = "reasoning_effort"
+            kind = "rename"
+            typo_field = "oops"
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("typo_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn model_family_patterns_support_wildcards() {
     let mut config = AppConfig::default();
     config.model_families.insert(
@@ -730,4 +893,64 @@ fn transform_patch_can_remove_inherited_morphs_before_appending() {
             .iter()
             .any(|morph| morph.kind == RequestMorphKind::ThinkingType)
     );
+}
+
+#[test]
+fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
+    let config = load_config_layers(&[]).expect("default parses");
+    // These should NOT match the hy3 family, which would otherwise inherit the
+    // none->no_think remap and as_function coercion.
+    for id in [
+        "hunyuan-13b",
+        "hunyuan-turbo-3b",
+        "hunyuan-30b",
+        "hunyuan-35b",
+    ] {
+        assert!(
+            !matching_model_families(&config, id)
+                .iter()
+                .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+            "{id} should not match the hy3 family"
+        );
+    }
+    // Real Hy3 Hunyuan aliases should still match.
+    for id in ["hunyuan-3", "hunyuan3"] {
+        assert!(
+            matching_model_families(&config, id)
+                .iter()
+                .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+            "{id} should match the hy3 family"
+        );
+    }
+    assert!(
+        !matching_model_families(&config, "hunyuan-3b")
+            .iter()
+            .any(|f| f.transform.reasoning_effort_none_value.is_some()),
+        "hunyuan-3b should not match the hy3 family"
+    );
+}
+
+#[test]
+fn hy3_exact_ids_inherit_broad_family_transform() {
+    // Exact ids match both the broad `hy3` family (priority 0) and the exact
+    // `hy3_exact` family (priority 10). Because transforms merge cumulatively
+    // (provider.rs / config.rs `apply_to`), an exact id must still carry the
+    // broad family's `reasoning_effort_none_value` and `as_function` coercion.
+    let config = load_config_layers(&[]).expect("default parses");
+    for id in ["hy3", "hy3:free", "hicap/hy3:free", "tencent/hy3"] {
+        let mut transform = TransformConfig::default();
+        for family in matching_model_families(&config, id) {
+            family.transform.apply_to(&mut transform);
+        }
+        assert_eq!(
+            transform.reasoning_effort_none_value.as_deref(),
+            Some("no_think"),
+            "exact id {id} should inherit none->no_think from the broad hy3 family"
+        );
+        assert_eq!(
+            transform.unsupported_tool_strategy,
+            UnsupportedToolStrategy::AsFunction,
+            "exact id {id} should inherit the as_function coercion"
+        );
+    }
 }

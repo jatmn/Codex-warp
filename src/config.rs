@@ -303,7 +303,7 @@ pub struct ModelMetadataConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModelMetadataFields {
     pub context_window: Option<i64>,
     pub max_context_window: Option<i64>,
@@ -331,7 +331,7 @@ pub struct ModelMetadataFields {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModelFamilyConfig {
     pub priority: i32,
     pub patterns: Vec<String>,
@@ -372,7 +372,7 @@ impl Default for TransformConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TransformConfigPatch {
     pub backend: Option<Backend>,
     pub chat_request_morphs: Option<Vec<RequestMorph>>,
@@ -442,7 +442,7 @@ impl TransformConfigPatch {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MorphSelector {
     pub from: String,
     pub to: Option<String>,
@@ -466,6 +466,7 @@ fn remove_morphs(morphs: &mut Vec<RequestMorph>, selectors: &[MorphSelector]) {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RequestMorph {
     pub from: String,
     #[serde(default)]

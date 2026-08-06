@@ -325,6 +325,135 @@ fn chat_stream_reasoning_field_emits_reasoning_deltas() {
 }
 
 #[test]
+fn reasoning_stream_delta_handles_incremental_and_cumulative_fragments() {
+    assert_eq!(reasoning_stream_delta("", "A"), Some("A"));
+    assert_eq!(reasoning_stream_delta("A", "B"), Some("B"));
+    assert_eq!(reasoning_stream_delta("A", "AB"), Some("B"));
+    assert_eq!(reasoning_stream_delta("AB", "AB"), None);
+    assert_eq!(reasoning_stream_delta("Hel", "Hello"), Some("lo"));
+}
+
+#[test]
+fn chat_stream_reasoning_details_deduplicates_cumulative_snapshots() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "A"}]
+            }
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [
+                    {"type": "text", "text": "A"},
+                    {"type": "text", "text": "B"}
+                ]
+            }
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "AB");
+}
+
+#[test]
+fn chat_stream_reasoning_details_handles_incremental_items() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "A"}]
+            }
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "B"}]
+            }
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "AB");
+}
+
+#[test]
+fn chat_stream_reasoning_content_deduplicates_cumulative_strings() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"reasoning_content": "Hel"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"reasoning_content": "Hello"}
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "Hello");
+}
+
+#[test]
+fn chat_reasoning_text_flattens_reasoning_details_array() {
+    let text = chat_reasoning_text(&json!({
+        "reasoning_details": [
+            {"type": "text", "text": "Step one. "},
+            {"type": "text", "text": "Step two."},
+            "loose string"
+        ]
+    }));
+    assert_eq!(text.as_deref(), Some("Step one. Step two.loose string"));
+
+    // reasoning_content / reasoning take precedence over reasoning_details
+    let text = chat_reasoning_text(&json!({
+        "reasoning": "direct",
+        "reasoning_details": [{"type": "text", "text": "ignored"}]
+    }));
+    assert_eq!(text.as_deref(), Some("direct"));
+
+    // empty details yield no reasoning text
+    assert_eq!(chat_reasoning_text(&json!({"reasoning_details": []})), None);
+}
+
+#[test]
 fn chat_stream_debug_summary_counts_reasoning_without_text() {
     let mut accum = ChatAccum::default();
     let chunk = json!({
@@ -777,5 +906,70 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
     assert_eq!(
         err.to_string(),
         "upstream SSE frame buffer exceeded maximum size"
+    );
+}
+
+#[test]
+fn custom_tool_input_extracts_input_field() {
+    assert_eq!(custom_tool_input(r#"{"input":"patch text"}"#), "patch text");
+}
+
+#[test]
+fn custom_tool_input_unwraps_json_string() {
+    // The model returned a JSON-encoded string as the arguments.
+    assert_eq!(custom_tool_input(r#""bare patch text""#), "bare patch text");
+}
+
+#[test]
+fn custom_tool_input_falls_back_to_raw_on_unknown_shape() {
+    // No `input` and more than one string field: preserve the raw arguments so
+    // the failure is visible rather than forwarding a malformed patch.
+    assert_eq!(
+        custom_tool_input(r#"{"a":"x","b":"y"}"#),
+        r#"{"a":"x","b":"y"}"#
+    );
+    // Single non-`input` string field: also preserve raw JSON rather than guessing.
+    assert_eq!(
+        custom_tool_input(r#"{"patch":"diff text"}"#),
+        r#"{"patch":"diff text"}"#
+    );
+}
+
+#[test]
+fn chat_reasoning_text_falls_through_empty_reasoning_to_reasoning_details() {
+    assert_eq!(
+        chat_reasoning_text(&json!({
+            "reasoning_content": "",
+            "reasoning_details": [{"type": "text", "text": "real thought"}]
+        })),
+        Some("real thought".to_string())
+    );
+    assert_eq!(
+        chat_reasoning_text(&json!({
+            "reasoning": "",
+            "reasoning_details": "direct string"
+        })),
+        Some("direct string".to_string())
+    );
+}
+
+#[test]
+fn chat_reasoning_text_handles_non_array_reasoning_details() {
+    // A single string `reasoning_details` should still surface reasoning.
+    assert_eq!(
+        chat_reasoning_text(&json!({ "reasoning_details": "direct string" })),
+        Some("direct string".to_string())
+    );
+    // A single object `reasoning_details` with a `summary` key should surface it.
+    assert_eq!(
+        chat_reasoning_text(
+            &json!({ "reasoning_details": { "type": "reasoning.summary", "summary": "via summary" } })
+        ),
+        Some("via summary".to_string())
+    );
+    // A non-reasoning object without a text/summary/reasoning key yields nothing.
+    assert_eq!(
+        chat_reasoning_text(&json!({ "reasoning_details": { "type": "other" } })),
+        None
     );
 }
