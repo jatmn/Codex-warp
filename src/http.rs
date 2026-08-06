@@ -189,6 +189,15 @@ pub(crate) fn no_provider_response() -> Response {
     )
 }
 
+pub(crate) fn unknown_model_response(model: &str) -> Response {
+    error_response(
+        StatusCode::BAD_GATEWAY,
+        format!(
+            "no upstream provider is configured for model `{model}`; use /models to list routable models or add a provider catalog entry"
+        ),
+    )
+}
+
 #[cfg(test)]
 #[path = "http_tests.rs"]
 mod tests;

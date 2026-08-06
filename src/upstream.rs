@@ -11,7 +11,9 @@ use bytes::Bytes;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::config::AppConfig;
 use crate::config::ProviderConfig;
+use crate::config_loader::resolve_provider_alias;
 use crate::debug_log::request_debug_summary;
 use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
@@ -38,7 +40,7 @@ pub(crate) async fn proxy_native_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    rewrite_model_for_upstream(&selected.provider, &mut body);
+    rewrite_model_for_upstream(&state.config, &selected.id, &selected.provider, &mut body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
     let body = normalize_responses_request(body, &selected.transform);
@@ -75,7 +77,7 @@ pub(crate) async fn proxy_chat_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    rewrite_model_for_upstream(&selected.provider, &mut body);
+    rewrite_model_for_upstream(&state.config, &selected.id, &selected.provider, &mut body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard =
@@ -205,7 +207,12 @@ pub(crate) async fn proxy_chat_responses(
     }
 }
 
-pub(crate) fn rewrite_model_for_upstream(provider: &ProviderConfig, body: &mut Value) {
+pub(crate) fn rewrite_model_for_upstream(
+    config: &AppConfig,
+    provider_id: &str,
+    provider: &ProviderConfig,
+    body: &mut Value,
+) {
     let Some(model) = body.get("model").and_then(Value::as_str) else {
         return;
     };
@@ -214,12 +221,16 @@ pub(crate) fn rewrite_model_for_upstream(provider: &ProviderConfig, body: &mut V
         .iter()
         .find(|entry| entry.id == model)
     {
-        if let Some(upstream_id) = entry.upstream_id.as_deref() {
+        if let Some(upstream_id) = entry.upstream_id.as_deref().filter(|id| !id.is_empty()) {
             body["model"] = json!(upstream_id);
         }
         return;
     }
-    if let Some((_, suffix)) = model.rsplit_once('/') {
+    if let Some((prefix, suffix)) = model.rsplit_once('/')
+        && !prefix.is_empty()
+        && !suffix.is_empty()
+        && resolve_provider_alias(config, prefix).as_deref() == Some(provider_id)
+    {
         body["model"] = json!(suffix);
     }
 }

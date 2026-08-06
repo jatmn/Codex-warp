@@ -398,3 +398,17 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
         .expect("wire capture");
     assert_eq!(wire, "application/json");
 }
+
+#[tokio::test]
+async fn unknown_model_response_reports_the_requested_model() {
+    let response = unknown_model_response("grok-4.3");
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(
+        value["error"]["message"].as_str().expect("error message"),
+        "no upstream provider is configured for model `grok-4.3`; use /models to list routable models or add a provider catalog entry"
+    );
+}

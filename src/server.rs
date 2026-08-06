@@ -21,8 +21,10 @@ use tracing::info;
 use crate::config::Backend;
 use crate::config::ContinueGuardMode;
 use crate::config::load_config_layers;
+use crate::config::provider_entries;
 use crate::debug_log::DebugLog;
 use crate::http::no_provider_response;
+use crate::http::unknown_model_response;
 use crate::models::models;
 use crate::provider::select_provider;
 use crate::state::AppState;
@@ -154,7 +156,15 @@ async fn responses(
 ) -> Response {
     let selected = match select_provider(&state, &body).await {
         Some(selected) => selected,
-        None => return no_provider_response(),
+        None => {
+            if provider_entries(&state.config).is_empty() {
+                return no_provider_response();
+            }
+            if let Some(model) = body.get("model").and_then(Value::as_str) {
+                return unknown_model_response(model);
+            }
+            return no_provider_response();
+        }
     };
     match selected.transform.backend {
         Backend::OpenAiChat => proxy_chat_responses(state, selected, headers, body).await,
