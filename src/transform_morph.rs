@@ -59,6 +59,53 @@ pub(crate) fn apply_request_morphs(
     }
 }
 
+fn is_disable_reasoning_effort(effort: &str) -> bool {
+    matches!(
+        effort.to_ascii_lowercase().as_str(),
+        "none" | "off" | "disabled"
+    )
+}
+
+fn remap_disable_reasoning_effort(effort: &mut String, fallback: &str) {
+    if is_disable_reasoning_effort(effort) {
+        *effort = fallback.to_string();
+    }
+}
+
+pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &TransformConfig) {
+    let Some(none_value) = &transform.reasoning_effort_none_value else {
+        return;
+    };
+    if let Some(Value::String(effort)) = body.get_mut("reasoning_effort") {
+        remap_disable_reasoning_effort(effort, none_value);
+    }
+    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
+        if let Some(Value::String(effort)) = reasoning.get_mut("effort") {
+            remap_disable_reasoning_effort(effort, none_value);
+        }
+    }
+}
+
+pub(crate) fn strip_disabled_reasoning_effort(body: &mut Value, transform: &TransformConfig) {
+    let strips_disable_effort = transform
+        .chat_request_morphs
+        .iter()
+        .any(|morph| morph.kind == RequestMorphKind::ThinkingType);
+    if !strips_disable_effort {
+        return;
+    }
+    let Value::Object(map) = body else {
+        return;
+    };
+    let remove = map
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .is_some_and(is_disable_reasoning_effort);
+    if remove {
+        map.remove("reasoning_effort");
+    }
+}
+
 pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &TransformConfig) {
     let original = request.clone();
     for morph in &transform.responses_request_morphs {

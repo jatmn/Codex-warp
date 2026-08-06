@@ -9,7 +9,9 @@ use crate::config::TransformConfig;
 use crate::config::UnsupportedToolStrategy;
 use crate::ids::generated_id;
 use crate::transform_morph::apply_native_request_morphs;
+use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
+use crate::transform_morph::strip_disabled_reasoning_effort;
 
 #[derive(Debug, Clone)]
 pub struct ChatTransform {
@@ -57,11 +59,18 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                 let prior_reasoning = pending_reasoning.take();
                 let (item_messages, consumed_reasoning) =
                     response_item_to_messages(item, transform, prior_reasoning.as_deref());
-                if !consumed_reasoning {
+                if !consumed_reasoning && should_retain_pending_reasoning(item) {
                     pending_reasoning = prior_reasoning;
                 }
                 if is_assistant_tool_call_message(item_messages.first()) {
-                    if let Some(message) = item_messages.into_iter().next() {
+                    if let Some(mut message) = item_messages.into_iter().next() {
+                        if transform.preserve_reasoning_content_history
+                            && message.get("reasoning_content").is_none()
+                            && let Some(reasoning) =
+                                take_reasoning_from_preceding_assistant_text(&mut messages)
+                        {
+                            message["reasoning_content"] = Value::String(reasoning);
+                        }
                         merge_pending_tool_call_message(&mut pending_tool_calls, message);
                     }
                 } else {
@@ -138,7 +147,9 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
     }
     apply_request_morphs(&request, &mut out, transform);
 
-    let body = Value::Object(out);
+    let mut body = Value::Object(out);
+    apply_reasoning_effort_none_value(&mut body, transform);
+    strip_disabled_reasoning_effort(&mut body, transform);
     let diagnostics = transform_diagnostics(&request, &body, input_tools.len(), tool_diagnostics);
 
     ChatTransform {
@@ -389,6 +400,65 @@ fn reasoning_item_to_text(item: &Value) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+fn should_retain_pending_reasoning(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call") | Some("custom_tool_call") => true,
+        Some("function_call_output") | Some("custom_tool_call_output") => true,
+        Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
+        _ => false,
+    }
+}
+
+fn is_empty_assistant_shell(message: &Map<String, Value>) -> bool {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return false;
+    }
+    if message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|tool_calls| !tool_calls.is_empty())
+    {
+        return false;
+    }
+    if message.get("reasoning_content").is_some() {
+        return false;
+    }
+    match message.get("content") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.is_empty(),
+        _ => false,
+    }
+}
+
+fn take_reasoning_from_preceding_assistant_text(messages: &mut Vec<Value>) -> Option<String> {
+    let reasoning = {
+        let last = messages.last_mut()?;
+        let obj = last.as_object_mut()?;
+        if obj.get("role").and_then(Value::as_str) != Some("assistant") {
+            return None;
+        }
+        if obj
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|tool_calls| !tool_calls.is_empty())
+        {
+            return None;
+        }
+        match obj.remove("reasoning_content") {
+            Some(Value::String(text)) if !text.is_empty() => text,
+            _ => return None,
+        }
+    };
+    if messages
+        .last()
+        .and_then(Value::as_object)
+        .is_some_and(is_empty_assistant_shell)
+    {
+        messages.pop();
+    }
+    Some(reasoning)
 }
 
 fn append_reasoning_text(target: &mut Option<String>, text: Option<String>) {

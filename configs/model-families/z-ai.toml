@@ -69,3 +69,8 @@ patterns = [
 context_window = 1000000
 input_modalities = ["text"]
 auto_review_model_override = "glm-5.2"
+
+[[model_families.z_ai_glm_5_2.transform.append_chat_request_morphs]]
+from = "reasoning.effort"
+to = "reasoning_effort"
+kind = "rename"

@@ -53,6 +53,7 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("mimo_v2_5_pro"));
     assert!(default_config.model_families.contains_key("x_ai_grok"));
     assert!(default_config.model_families.contains_key("x_ai_grok_4_3"));
+    assert!(default_config.model_families.contains_key("x_ai_grok_4_5"));
     assert!(
         default_config
             .model_families
@@ -525,6 +526,109 @@ fn model_family_matches_are_sorted_by_priority() {
 
     assert_eq!(matches[0].priority, 0);
     assert_eq!(matches[1].priority, 10);
+}
+
+#[test]
+fn first_class_reasoning_and_tool_translation_for_target_models() {
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    // grok-4.5: new model with correct metadata and `none` -> `low` mapping.
+    let grok45 = config
+        .model_families
+        .get("x_ai_grok_4_5")
+        .expect("grok-4.5 family exists");
+    assert_eq!(grok45.model_metadata.context_window, Some(500_000));
+    assert_eq!(
+        grok45.model_metadata.default_reasoning_level.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        grok45.model_metadata.supported_reasoning_levels,
+        Some(vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string()
+        ])
+    );
+    assert_eq!(
+        grok45.transform.reasoning_effort_none_value.as_deref(),
+        Some("low")
+    );
+    assert!(
+        grok45
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+    assert!(
+        matching_model_families(&config, "grok-4.5")
+            .iter()
+            .any(|family| family.priority == 10)
+    );
+    assert!(
+        matching_model_families(&config, "grok4.5")
+            .iter()
+            .any(|family| family.priority == 10)
+    );
+
+    // DeepSeek V4: 1M context + reasoning-history preservation + effort forwarding.
+    let ds_flash = config
+        .model_families
+        .get("deepseek_v4_flash")
+        .expect("deepseek-v4-flash family exists");
+    assert_eq!(ds_flash.model_metadata.context_window, Some(1_000_000));
+    assert_eq!(
+        ds_flash.transform.preserve_reasoning_content_history,
+        Some(true)
+    );
+    assert!(
+        ds_flash
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+
+    let ds_pro = config
+        .model_families
+        .get("deepseek_v4_pro")
+        .expect("deepseek-v4-pro family exists");
+    assert_eq!(
+        ds_pro.transform.preserve_reasoning_content_history,
+        Some(true)
+    );
+    assert!(
+        ds_pro
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+
+    // GLM-5.2: exact family forwards reasoning_effort alongside thinking.type.
+    let glm52 = config
+        .model_families
+        .get("z_ai_glm_5_2")
+        .expect("glm-5.2 exact family exists");
+    assert!(
+        glm52
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+    let glm5 = config
+        .model_families
+        .get("z_ai_glm_5")
+        .expect("glm-5 broad family exists");
+    assert!(
+        !glm5
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
 }
 
 #[test]
