@@ -466,6 +466,7 @@ fn remove_morphs(morphs: &mut Vec<RequestMorph>, selectors: &[MorphSelector]) {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RequestMorph {
     pub from: String,
     #[serde(default)]

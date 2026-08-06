@@ -325,6 +325,113 @@ fn chat_stream_reasoning_field_emits_reasoning_deltas() {
 }
 
 #[test]
+fn reasoning_stream_delta_handles_incremental_and_cumulative_fragments() {
+    assert_eq!(reasoning_stream_delta("", "A"), Some("A"));
+    assert_eq!(reasoning_stream_delta("A", "B"), Some("B"));
+    assert_eq!(reasoning_stream_delta("A", "AB"), Some("B"));
+    assert_eq!(reasoning_stream_delta("AB", "AB"), None);
+    assert_eq!(reasoning_stream_delta("Hel", "Hello"), Some("lo"));
+}
+
+#[test]
+fn chat_stream_reasoning_details_deduplicates_cumulative_snapshots() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "A"}]
+            }
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [
+                    {"type": "text", "text": "A"},
+                    {"type": "text", "text": "B"}
+                ]
+            }
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "AB");
+}
+
+#[test]
+fn chat_stream_reasoning_details_handles_incremental_items() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "A"}]
+            }
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_details": [{"type": "text", "text": "B"}]
+            }
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "AB");
+}
+
+#[test]
+fn chat_stream_reasoning_content_deduplicates_cumulative_strings() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"reasoning_content": "Hel"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"reasoning_content": "Hello"}
+        }]
+    }));
+
+    let done = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let done_data = done
+        .iter()
+        .find(|event| event.contains("response.output_item.done"))
+        .and_then(|event| sse_data(event))
+        .expect("reasoning done event has data");
+    let done: Value = serde_json::from_str(&done_data).expect("done event is JSON");
+    assert_eq!(done["item"]["summary"][0]["text"], "Hello");
+}
+
+#[test]
 fn chat_reasoning_text_flattens_reasoning_details_array() {
     let text = chat_reasoning_text(&json!({
         "reasoning_details": [

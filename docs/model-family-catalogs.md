@@ -92,11 +92,13 @@ Recommended priority convention:
 | `10` | Exact model or current variant overrides. |
 | `20` | Emergency/special-case overrides that must win over normal exact models. |
 
-Unknown keys under `[model_families.*]`, `[model_families.*.model_metadata]`, and
-`[model_families.*.transform]` are rejected at load time (`deny_unknown_fields` on
-the catalog structs). Typos fail startup instead of being silently ignored; remove
-experimental keys or rename them to supported fields before layering a custom
-family file.
+Unknown keys under `[model_families.*]`, `[model_families.*.model_metadata]`,
+`[model_families.*.transform]`, morph array entries (for example
+`[[model_families.*.transform.append_chat_request_morphs]]`), and
+`[providers.*.model_metadata]` defaults/overrides are rejected at load time
+(`deny_unknown_fields` on the catalog structs). Typos fail startup instead of
+being silently ignored; remove experimental keys or rename them to supported
+fields before layering a custom family file or provider profile.
 
 ## What Belongs In A Model Catalog
 

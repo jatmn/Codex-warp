@@ -399,8 +399,9 @@ impl ChatAccum {
             if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 self.finish_reason = Some(finish_reason.to_string());
             }
-            if let Some(reasoning) = chat_reasoning_text(delta)
-                && !reasoning.is_empty()
+            if let Some(incoming) = chat_reasoning_text(delta)
+                && let Some(reasoning) =
+                    reasoning_stream_delta(&self.reasoning_text, &incoming).map(str::to_string)
             {
                 if self.reasoning_item_id.is_none() {
                     let item_id = generated_id("rsn");
@@ -428,7 +429,7 @@ impl ChatAccum {
                 }
                 if !self.reasoning_display_header_emitted {
                     self.reasoning_display_header_emitted = true;
-                    if !reasoning.trim_start().starts_with("**") {
+                    if !incoming.trim_start().starts_with("**") {
                         events.push(sse(
                             "response.reasoning_summary_text.delta",
                             json!({
@@ -447,7 +448,7 @@ impl ChatAccum {
                         "type": "response.reasoning_summary_text.delta",
                         "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
                         "summary_index": 0,
-                        "delta": reasoning
+                        "delta": reasoning.as_str()
                     }),
                 ));
             }
@@ -924,6 +925,22 @@ pub(crate) fn chat_json_to_responses_with_policy(
         "output": output,
         "usage": chat_usage_to_responses_usage(value.get("usage"))
     })
+}
+
+/// Returns only the new reasoning text to append for a streaming delta.
+/// Providers may send either incremental fragments or cumulative snapshots.
+fn reasoning_stream_delta<'a>(accumulated: &'a str, incoming: &'a str) -> Option<&'a str> {
+    if incoming.is_empty() {
+        return None;
+    }
+    if accumulated.is_empty() {
+        return Some(incoming);
+    }
+    if incoming.starts_with(accumulated) {
+        let suffix = &incoming[accumulated.len()..];
+        return (!suffix.is_empty()).then_some(suffix);
+    }
+    Some(incoming)
 }
 
 fn chat_reasoning_text(value: &Value) -> Option<String> {

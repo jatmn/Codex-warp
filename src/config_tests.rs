@@ -628,6 +628,46 @@ fn model_family_overlay_rejects_unknown_fields() {
 }
 
 #[test]
+fn model_family_morph_rejects_unknown_fields() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("codex-warp-morph-deny-{suffix}"));
+    fs::create_dir_all(dir.join("families")).expect("temp family dir created");
+    fs::write(
+        dir.join("base.toml"),
+        r#"
+            [config]
+            model_family_include = ["families/bad-morph.toml"]
+            "#,
+    )
+    .expect("base config written");
+    fs::write(
+        dir.join("families/bad-morph.toml"),
+        r#"
+            [model_families.bad_family]
+            priority = 0
+            patterns = ["bad-*"]
+
+            [[model_families.bad_family.transform.append_chat_request_morphs]]
+            from = "reasoning.effort"
+            to = "reasoning_effort"
+            kind = "rename"
+            typo_field = "oops"
+            "#,
+    )
+    .expect("family config written");
+
+    let error = load_config_layers(&[dir.join("base.toml")]).unwrap_err();
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("typo_field"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
 fn model_family_patterns_support_wildcards() {
     let mut config = AppConfig::default();
     config.model_families.insert(
