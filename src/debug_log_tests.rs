@@ -160,10 +160,31 @@ fn should_rotate_log_when_size_limit_exceeded() {
 #[test]
 fn should_rotate_log_when_age_limit_exceeded() {
     let now = SystemTime::now();
-    let modified = now - Duration::from_secs(31 * 24 * 60 * 60);
+    let started = now - Duration::from_secs(31 * 24 * 60 * 60);
     assert!(should_rotate_log(
         10,
-        modified,
+        started,
+        now,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+}
+
+#[test]
+fn should_rotate_log_by_age_when_mtime_is_recent() {
+    let now = SystemTime::now();
+    let started = now - Duration::from_secs(31 * 24 * 60 * 60);
+    let recent_write = now - Duration::from_secs(60);
+    assert!(should_rotate_log(
+        10,
+        started,
+        now,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60)
+    ));
+    assert!(!should_rotate_log(
+        10,
+        recent_write,
         now,
         DEFAULT_MAX_LOG_MB * 1024 * 1024,
         Duration::from_secs(30 * 24 * 60 * 60)
@@ -211,6 +232,11 @@ fn rotates_debug_log_file_when_age_limit_exceeded() {
     let path = dir.join("debug.jsonl");
     fs::write(&path, "old log content").expect("write debug log");
 
+    let metadata = fs::metadata(&path).expect("metadata");
+    if metadata.created().is_ok() {
+        return;
+    }
+
     let old_time = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
     let file_times = fs::FileTimes::new().set_modified(old_time);
     fs::OpenOptions::new()
@@ -218,7 +244,7 @@ fn rotates_debug_log_file_when_age_limit_exceeded() {
         .open(&path)
         .expect("open for set_times")
         .set_times(file_times)
-        .expect("set old mtime");
+        .expect("set old modified time");
 
     maybe_rotate_log(
         &path,
@@ -230,4 +256,84 @@ fn rotates_debug_log_file_when_age_limit_exceeded() {
     assert!(!path.exists());
     let backup = rotation_backup_path(&path);
     assert!(backup.exists());
+}
+
+#[test]
+fn does_not_rotate_by_stale_mtime_when_created_is_recent() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-rotate-age-mtime-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "recent log content").expect("write debug log");
+
+    let metadata = fs::metadata(&path).expect("metadata");
+    if metadata.created().is_err() {
+        return;
+    }
+
+    let old_time = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
+    let file_times = fs::FileTimes::new().set_modified(old_time);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open for set_times")
+        .set_times(file_times)
+        .expect("set stale modified time");
+
+    maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect("rotation check");
+
+    assert!(path.exists());
+    assert!(!rotation_backup_path(&path).exists());
+}
+
+#[test]
+fn rejects_directory_log_path_for_rotation() {
+    let dir = std::env::temp_dir().join(format!("codex-warp-debug-log-dir-{}", std::process::id()));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::create_dir(&path).expect("create directory masquerading as log path");
+
+    let err = maybe_rotate_log(
+        &path,
+        DEFAULT_MAX_LOG_MB * 1024 * 1024,
+        Duration::from_secs(30 * 24 * 60 * 60),
+    )
+    .expect_err("directory log path should not rotate");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(path.exists());
+}
+
+#[test]
+fn log_age_anchor_prefers_created_over_modified() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-age-anchor-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, "seed").expect("write debug log");
+    let metadata = fs::metadata(&path).expect("metadata");
+    let created = match metadata.created() {
+        Ok(created) => created,
+        Err(_) => return,
+    };
+    std::thread::sleep(Duration::from_secs(1));
+    fs::write(&path, "seed\nappend").expect("append debug log");
+    let metadata = fs::metadata(&path).expect("metadata after append");
+    assert_eq!(
+        log_age_anchor(&metadata).expect("age anchor"),
+        created,
+        "age anchor should follow creation time when available"
+    );
+    assert!(
+        metadata.modified().expect("modified") > created,
+        "append should refresh mtime for this test"
+    );
 }

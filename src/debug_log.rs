@@ -62,22 +62,69 @@ fn max_log_age_from_config(config: &DebugConfig) -> Duration {
 
 pub(crate) fn should_rotate_log(
     file_len: u64,
-    modified_at: SystemTime,
+    age_anchor_at: SystemTime,
     now: SystemTime,
     max_bytes: u64,
     max_age: Duration,
 ) -> bool {
     let too_large = file_len >= max_bytes;
     let too_old = now
-        .duration_since(modified_at)
+        .duration_since(age_anchor_at)
         .is_ok_and(|age| age >= max_age);
     too_large || too_old
+}
+
+pub(crate) fn log_age_anchor(metadata: &fs::Metadata) -> std::io::Result<SystemTime> {
+    metadata.created().or_else(|_| metadata.modified())
 }
 
 fn rotation_backup_path(path: &Path) -> PathBuf {
     let mut backup: OsString = path.as_os_str().to_owned();
     backup.push(".1");
     PathBuf::from(backup)
+}
+
+fn rotation_staging_path(path: &Path) -> PathBuf {
+    let mut staging: OsString = path.as_os_str().to_owned();
+    staging.push(".rotating");
+    PathBuf::from(staging)
+}
+
+fn restore_staged_log(path: &Path, staging: &Path) {
+    if staging.exists() && !path.exists() {
+        if let Err(err) = fs::rename(staging, path) {
+            warn!(
+                "failed to restore debug log {} from staging {}: {err}",
+                path.display(),
+                staging.display()
+            );
+        }
+    }
+}
+
+/// Move `path` to `{path}.1` via a staging file so the active log is not lost
+/// if backup removal or the final rename fails.
+fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::Result<()> {
+    if staging.exists() {
+        fs::remove_file(staging)?;
+    }
+    fs::rename(path, staging)?;
+    if backup.exists() {
+        match fs::remove_file(backup) {
+            Ok(()) => {}
+            Err(err) => {
+                restore_staged_log(path, staging);
+                return Err(err);
+            }
+        }
+    }
+    match fs::rename(staging, backup) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            restore_staged_log(path, staging);
+            Err(err)
+        }
+    }
 }
 
 /// Rotate `path` to `{path}.1` when it exceeds size or age limits.
@@ -92,10 +139,16 @@ fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
-    let modified_at = metadata.modified()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("debug log path {} is not a file", path.display()),
+        ));
+    }
+    let age_anchor_at = log_age_anchor(&metadata)?;
     if !should_rotate_log(
         metadata.len(),
-        modified_at,
+        age_anchor_at,
         SystemTime::now(),
         max_bytes,
         max_age,
@@ -103,9 +156,8 @@ fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::
         return Ok(());
     }
     let backup = rotation_backup_path(path);
-    let _ = fs::remove_file(&backup);
-    fs::rename(path, backup)?;
-    Ok(())
+    let staging = rotation_staging_path(path);
+    rotate_log_to_backup(path, &backup, &staging)
 }
 
 impl DebugLog {

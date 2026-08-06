@@ -316,10 +316,13 @@ target/debug/codex-warp \
 ### Rotation
 
 When `log_path` points to an existing file, Warp rotates it before startup and
-before each write once it reaches `max_log_mb` megabytes (default `128`) or is
-`max_log_age_days` days old (default `30`), whichever comes first. The current
-log is renamed to `{log_path}.1` and a fresh log file is started. Only one
-backup is kept, so a second rotation overwrites the previous backup.
+before each write once it reaches `max_log_mb` megabytes (default `128`) or the
+current log file is `max_log_age_days` days old (default `30`), whichever comes
+first. Age is measured from the log file's creation time when the platform
+provides it (the start of the current log segment after the last rotation),
+otherwise from its last modification time. The current log is renamed to
+`{log_path}.1` and a fresh log file is started. Only one backup is kept, so a
+second rotation overwrites the previous backup.
 
 Set `max_log_mb` and `max_log_age_days` in TOML:
 
