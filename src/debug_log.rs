@@ -90,6 +90,18 @@ fn rotation_staging_path(path: &Path) -> PathBuf {
     PathBuf::from(staging)
 }
 
+fn rotation_pending_backup_path(path: &Path) -> PathBuf {
+    let mut pending: OsString = path.as_os_str().to_owned();
+    pending.push(".1.new");
+    PathBuf::from(pending)
+}
+
+fn rotation_retired_backup_path(path: &Path) -> PathBuf {
+    let mut retired: OsString = path.as_os_str().to_owned();
+    retired.push(".1.old");
+    PathBuf::from(retired)
+}
+
 fn restore_staged_log(path: &Path, staging: &Path) {
     if staging.exists() && !path.exists() {
         if let Err(err) = fs::rename(staging, path) {
@@ -98,6 +110,74 @@ fn restore_staged_log(path: &Path, staging: &Path) {
                 path.display(),
                 staging.display()
             );
+        }
+    }
+}
+
+fn restore_pending_to_staging(staging: &Path, pending: &Path) {
+    if pending.exists() && !staging.exists() {
+        if let Err(err) = fs::rename(pending, staging) {
+            warn!(
+                "failed to restore debug log staging {} from pending {}: {err}",
+                staging.display(),
+                pending.display()
+            );
+        }
+    }
+}
+
+fn rollback_failed_backup_promotion(backup: &Path, retired: &Path, staging: &Path, pending: &Path) {
+    if retired.exists() && !backup.exists() {
+        if let Err(err) = fs::rename(retired, backup) {
+            warn!(
+                "failed to restore debug log backup {} from retired {}: {err}",
+                backup.display(),
+                retired.display()
+            );
+        }
+    }
+    restore_pending_to_staging(staging, pending);
+}
+
+/// Move `staging` into `{path}.1` without deleting the prior backup until the
+/// staged segment is committed at the backup path.
+pub(crate) fn promote_staging_to_backup(
+    staging: &Path,
+    backup: &Path,
+    path: &Path,
+) -> std::io::Result<()> {
+    let pending = rotation_pending_backup_path(path);
+    let retired = rotation_retired_backup_path(path);
+
+    if pending.exists() {
+        fs::remove_file(&pending)?;
+    }
+    if retired.exists() {
+        fs::remove_file(&retired)?;
+    }
+
+    fs::rename(staging, &pending)?;
+
+    if backup.exists() {
+        match fs::rename(backup, &retired) {
+            Ok(()) => {}
+            Err(err) => {
+                restore_pending_to_staging(staging, &pending);
+                return Err(err);
+            }
+        }
+    }
+
+    match fs::rename(&pending, backup) {
+        Ok(()) => {
+            if retired.exists() {
+                let _ = fs::remove_file(&retired);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            rollback_failed_backup_promotion(backup, &retired, staging, &pending);
+            Err(err)
         }
     }
 }
@@ -111,11 +191,7 @@ pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
     }
 
     if path.exists() {
-        if backup.exists() {
-            fs::remove_file(&backup)?;
-        }
-        fs::rename(&staging, &backup)?;
-        return Ok(());
+        return promote_staging_to_backup(&staging, &backup, path);
     }
 
     if backup.exists() {
@@ -123,11 +199,11 @@ pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
         return Ok(());
     }
 
-    fs::rename(&staging, &backup)
+    promote_staging_to_backup(&staging, &backup, path)
 }
 
-/// Move `path` to `{path}.1` via a staging file so the active log is not lost
-/// if backup removal or the final rename fails.
+/// Move `path` to `{path}.1` via a staging file so the active log and prior
+/// backup are not lost if promotion fails.
 fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::Result<()> {
     recover_interrupted_rotation(path)?;
     if staging.exists() {
@@ -140,16 +216,7 @@ fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::
         ));
     }
     fs::rename(path, staging)?;
-    if backup.exists() {
-        match fs::remove_file(backup) {
-            Ok(()) => {}
-            Err(err) => {
-                restore_staged_log(path, staging);
-                return Err(err);
-            }
-        }
-    }
-    match fs::rename(staging, backup) {
+    match promote_staging_to_backup(staging, backup, path) {
         Ok(()) => Ok(()),
         Err(err) => {
             restore_staged_log(path, staging);

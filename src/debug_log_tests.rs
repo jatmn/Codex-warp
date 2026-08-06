@@ -417,3 +417,57 @@ fn preserves_staged_segment_when_active_log_was_recreated() {
         "old staged segment"
     );
 }
+
+#[test]
+fn promote_staging_to_backup_replaces_existing_backup() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-promote-backup-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "rotated segment").expect("write staging");
+
+    promote_staging_to_backup(&staging, &backup, &path).expect("promote staging to backup");
+
+    assert!(!staging.exists());
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "rotated segment"
+    );
+}
+
+#[test]
+fn promote_staging_to_backup_preserves_existing_backup_on_failure() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-promote-rollback-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let staging = rotation_staging_path(&path);
+    let backup = rotation_backup_path(&path);
+    let retired = {
+        let mut retired: std::ffi::OsString = path.as_os_str().to_owned();
+        retired.push(".1.old");
+        PathBuf::from(retired)
+    };
+    fs::write(&backup, "previous backup").expect("write backup");
+    fs::write(&staging, "rotated segment").expect("write staging");
+    fs::create_dir(&retired).expect("block backup retirement");
+
+    let err = promote_staging_to_backup(&staging, &backup, &path)
+        .expect_err("promotion should fail when retired path is blocked");
+    assert_ne!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        fs::read_to_string(&backup).expect("read backup"),
+        "previous backup"
+    );
+    assert_eq!(
+        fs::read_to_string(&staging).expect("read staging"),
+        "rotated segment"
+    );
+}
