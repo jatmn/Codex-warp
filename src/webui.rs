@@ -643,6 +643,20 @@ async fn add_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
+    let already_in_catalog = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| {
+                provider
+                    .model_catalog
+                    .iter()
+                    .any(|catalog| catalog.id == entry.id)
+            })
+            .unwrap_or(false)
+    };
+
     store
         .upsert_model_catalog(&id, &entry, managed)
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -650,9 +664,7 @@ async fn add_model(
     {
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
-        provider
-            .disabled_models
-            .retain(|model_id| model_id != &entry.id);
+        provider.clear_disabled_overlapping(&entry.id);
         if let Some(existing) = provider
             .model_catalog
             .iter_mut()
@@ -679,7 +691,12 @@ async fn add_model(
         .into_iter()
         .find(|model| model.id == entry.id)
         .expect("model inserted");
-    Ok((StatusCode::CREATED, Json(view)))
+    let status = if already_in_catalog {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(view)))
 }
 
 async fn update_model(
@@ -731,9 +748,7 @@ async fn update_model(
         {
             *existing = updated.clone();
         }
-        provider
-            .disabled_models
-            .retain(|disabled| disabled != &model_id);
+        provider.clear_disabled_overlapping(&model_id);
     }
 
     finish_mutation(&state).await?;
@@ -879,14 +894,10 @@ async fn set_model_enabled(
                 entry.enabled = body.enabled;
             }
             if body.enabled {
-                provider
-                    .disabled_models
-                    .retain(|disabled_id| disabled_id != &model_id);
+                provider.clear_disabled_overlapping(&model_id);
             }
         } else if body.enabled {
-            provider
-                .disabled_models
-                .retain(|disabled| disabled != &model_id);
+            provider.clear_disabled_overlapping(&model_id);
         } else if !provider
             .disabled_models
             .iter()

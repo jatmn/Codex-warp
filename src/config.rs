@@ -358,6 +358,11 @@ impl ProviderConfig {
             .unwrap_or(true)
     }
 
+    pub fn clear_disabled_overlapping(&mut self, model_id: &str) {
+        self.disabled_models
+            .retain(|disabled| !model_ids_overlap(disabled, model_id));
+    }
+
     pub fn api_key(&self) -> Option<String> {
         if let Some(value) = &self.api_key {
             return Some(value.clone());

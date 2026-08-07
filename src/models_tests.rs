@@ -731,3 +731,47 @@ async fn models_returns_empty_list_when_no_providers_configured() {
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(value["models"], json!([]));
 }
+
+#[tokio::test]
+async fn models_returns_empty_list_when_all_models_disabled() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig::default();
+    provider.base_url = "https://example.test/v1".to_string();
+    provider.model_catalog_only = true;
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "disabled-model".to_string(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("test".to_string(), provider);
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(value["models"], json!([]));
+}

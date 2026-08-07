@@ -101,6 +101,9 @@ fn enabling_catalog_model_clears_disabled_models() {
         ..ModelCatalogEntry::default()
     });
     provider.disabled_models.push("catalog-model".into());
+    provider
+        .disabled_models
+        .push("provider/catalog-model".into());
 
     let model_id = "catalog-model";
     if let Some(entry) = provider
@@ -110,17 +113,11 @@ fn enabling_catalog_model_clears_disabled_models() {
     {
         entry.enabled = true;
     }
-    provider
-        .disabled_models
-        .retain(|disabled_id| disabled_id != model_id);
+    provider.clear_disabled_overlapping(model_id);
 
     assert!(provider.model_is_enabled(model_id));
-    assert!(
-        !provider
-            .disabled_models
-            .iter()
-            .any(|id| id == "catalog-model")
-    );
+    assert!(provider.model_is_enabled("provider/catalog-model"));
+    assert!(provider.disabled_models.is_empty());
 }
 
 #[test]

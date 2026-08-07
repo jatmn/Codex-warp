@@ -990,3 +990,18 @@ fn disabling_catalog_entry_blocks_prefixed_model_id() {
     assert!(!provider.model_is_enabled("foo"));
     assert!(!provider.model_is_enabled("provider/foo"));
 }
+
+#[test]
+fn clear_disabled_overlapping_removes_prefixed_and_unprefixed_ids() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+    provider.disabled_models.push("provider/foo".into());
+    provider.disabled_models.push("provider/bar".into());
+
+    provider.clear_disabled_overlapping("foo");
+
+    assert_eq!(provider.disabled_models, vec!["provider/bar".to_string()]);
+    assert!(provider.model_is_enabled("foo"));
+    assert!(provider.model_is_enabled("provider/foo"));
+    assert!(!provider.model_is_enabled("provider/bar"));
+}
