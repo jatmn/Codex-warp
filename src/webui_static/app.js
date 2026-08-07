@@ -3,6 +3,7 @@
 
   const API = "/api";
   let providers = [];
+  let analyticsModelIds = [];
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let activeTab = "providers";
@@ -57,9 +58,18 @@
     return { wrap, input };
   }
 
+  async function refreshModelRoutes() {
+    try {
+      await fetch("/v1/models");
+    } catch {
+      // Best-effort: populate server model_routes for discovered upstream models.
+    }
+  }
+
   async function loadProviders() {
     status("Loading providers…");
     try {
+      await refreshModelRoutes();
       providers = await api("/providers");
       renderProviders();
       fillAnalyticsFilters();
@@ -316,12 +326,23 @@
     const modelSel = $("#analytics-model");
     const mcur = modelSel.value;
     modelSel.innerHTML = "<option value=''>All models</option>";
+    const seen = new Set();
     const prov = providers.find((p) => p.id === provSel.value);
     if (prov) {
       for (const m of prov.models || []) {
+        seen.add(m.id);
         const o = document.createElement("option");
         o.value = m.id;
         o.textContent = m.display_name || m.id;
+        modelSel.append(o);
+      }
+    }
+    for (const id of analyticsModelIds) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = id;
         modelSel.append(o);
       }
     }
@@ -346,6 +367,10 @@
     if (model) qs.set("model", model);
     try {
       const data = await api(`/analytics?${qs}`);
+      analyticsModelIds = (data.by_model || [])
+        .map((row) => row.key)
+        .filter(Boolean);
+      fillAnalyticsFilters();
       renderAnalyticsCards(data);
       drawLineChart($("#chart-line"), data.series || []);
       const barRows = model

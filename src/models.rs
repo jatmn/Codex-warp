@@ -110,7 +110,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     if merged_models.is_empty() {
-        if provider_entries(&state.read_config()).is_empty() {
+        if failures.is_empty() {
             return Json(json!({ "models": [] })).into_response();
         }
         return error_response(
