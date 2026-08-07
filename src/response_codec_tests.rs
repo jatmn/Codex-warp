@@ -676,15 +676,14 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     let chunk_b = Bytes::from_static(b":{\"cached_tokens\":5}}}}\n\n");
 
-    let mut recorded = false;
+    let mut pending_usage = None;
     log_native_usage_from_sse_chunk(
         &chunk_a,
         &mut pending,
         &debug_log,
         "dbg_test",
         200,
-        None,
-        &mut recorded,
+        &mut pending_usage,
     );
     assert!(!pending.is_empty());
     log_native_usage_from_sse_chunk(
@@ -693,10 +692,10 @@ fn native_usage_logging_buffers_split_sse_frames() {
         &debug_log,
         "dbg_test",
         200,
-        None,
-        &mut recorded,
+        &mut pending_usage,
     );
     assert!(pending.is_empty());
+    assert!(pending_usage.is_some());
 }
 
 #[test]

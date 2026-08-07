@@ -245,6 +245,12 @@ impl Store {
                             error = %err,
                             "skipping corrupt provider overlay config_json"
                         );
+                        if let Some(enabled) = overlay.enabled
+                            && let Some(provider) =
+                                provider_config_mut(config, &overlay.provider_id)
+                        {
+                            provider.enabled = enabled;
+                        }
                         continue;
                     }
                 };
@@ -304,6 +310,11 @@ impl Store {
                             error = %err,
                             "skipping corrupt model overlay catalog_json"
                         );
+                        if enabled {
+                            provider.clear_disabled_overlapping(&model_id);
+                        } else if !provider.disabled_models.iter().any(|id| id == &model_id) {
+                            provider.disabled_models.push(model_id);
+                        }
                         continue;
                     }
                 };
@@ -346,6 +357,7 @@ impl Store {
             .map(|provider| {
                 let mut stripped = provider.clone();
                 stripped.api_key = None;
+                strip_sensitive_provider_headers(&mut stripped);
                 serde_json::to_string(&stripped)
             })
             .transpose()
@@ -755,6 +767,20 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     existing.api_key = preserved_api_key;
 }
 
+fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
+    provider.headers.retain(|name, _| {
+        let lower = name.to_ascii_lowercase();
+        lower != "authorization"
+            && lower != "proxy-authorization"
+            && lower != "x-api-key"
+            && lower != "api-key"
+    });
+}
+
+fn non_negative_tokens(value: Option<i64>) -> i64 {
+    value.unwrap_or(0).max(0)
+}
+
 pub(crate) fn usage_event_from_normalized(
     provider_id: &str,
     model: &str,
@@ -765,26 +791,19 @@ pub(crate) fn usage_event_from_normalized(
         provider_id: provider_id.to_string(),
         model: model.to_string(),
         session_key,
-        input_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        total_tokens: usage
-            .get("total_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        cached_tokens: usage
-            .pointer("/input_tokens_details/cached_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
-        reasoning_tokens: usage
-            .pointer("/output_tokens_details/reasoning_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0),
+        input_tokens: non_negative_tokens(usage.get("input_tokens").and_then(Value::as_i64)),
+        output_tokens: non_negative_tokens(usage.get("output_tokens").and_then(Value::as_i64)),
+        total_tokens: non_negative_tokens(usage.get("total_tokens").and_then(Value::as_i64)),
+        cached_tokens: non_negative_tokens(
+            usage
+                .pointer("/input_tokens_details/cached_tokens")
+                .and_then(Value::as_i64),
+        ),
+        reasoning_tokens: non_negative_tokens(
+            usage
+                .pointer("/output_tokens_details/reasoning_tokens")
+                .and_then(Value::as_i64),
+        ),
     }
 }
 

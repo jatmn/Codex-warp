@@ -261,7 +261,8 @@ fn apply_overlays_skips_corrupt_overlay_json() {
     store.apply_overlays(&mut config).unwrap();
 
     assert!(config.providers.contains_key("manual"));
-    assert_eq!(config.providers["manual"].enabled, true);
+    // Corrupt config_json is skipped, but the overlay enabled column still applies.
+    assert_eq!(config.providers["manual"].enabled, false);
     assert_eq!(config.providers["manual"].name.as_deref(), Some("Manual"));
 
     let _ = std::fs::remove_dir_all(dir);

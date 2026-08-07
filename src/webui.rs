@@ -492,7 +492,7 @@ async fn create_provider(
             .providers
             .get(&body.id)
             .cloned()
-            .expect("provider inserted")
+            .ok_or_else(|| ApiError::internal("provider insert raced away"))?
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &body.id);
@@ -518,7 +518,7 @@ async fn update_provider(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
-            .expect("provider exists after ensure");
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);
         snapshot
@@ -530,7 +530,8 @@ async fn update_provider(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clone_from(&snapshot);
     }
 
@@ -541,7 +542,7 @@ async fn update_provider(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider.clone())
-            .expect("provider exists")
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
@@ -608,7 +609,8 @@ async fn set_provider_enabled(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.enabled = body.enabled;
     }
 
@@ -619,7 +621,7 @@ async fn set_provider_enabled(
                 .into_iter()
                 .find(|(provider_id, _)| *provider_id == id)
                 .map(|(_, provider)| provider.clone())
-                .expect("provider exists")
+                .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
         };
         let mut routes = state.model_routes.write().await;
         register_catalog_routes_for_provider(&mut routes, &id, &provider);
@@ -634,7 +636,7 @@ async fn set_provider_enabled(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider.clone())
-            .expect("provider exists")
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
@@ -679,7 +681,8 @@ async fn add_model(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clear_disabled_overlapping(&entry.id);
         if let Some(existing) = provider
             .model_catalog
@@ -699,14 +702,14 @@ async fn add_model(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider.clone())
-            .expect("provider exists")
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
     let view = build_model_views(&state, &id, &provider, &routed)
         .into_iter()
         .find(|model| model.id == entry.id)
-        .expect("model inserted");
+        .ok_or_else(|| ApiError::not_found(format!("model `{}` not found", entry.id)))?;
     let status = if already_in_catalog {
         StatusCode::OK
     } else {
@@ -727,7 +730,7 @@ async fn update_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let updated = {
+    let (updated, previous_upstream_id) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -735,19 +738,18 @@ async fn update_model(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
-            .expect("provider exists after ensure");
-        let exists = provider
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
+        let existing = provider
             .model_catalog
             .iter()
-            .any(|catalog| catalog.id == model_id);
-        if !exists {
-            return Err(ApiError::not_found(format!(
-                "model `{model_id}` not found for provider `{id}`"
-            )));
-        }
+            .find(|catalog| catalog.id == model_id)
+            .ok_or_else(|| {
+                ApiError::not_found(format!("model `{model_id}` not found for provider `{id}`"))
+            })?;
+        let previous_upstream_id = existing.upstream_id.clone();
         let mut updated = entry;
         updated.id = model_id.clone();
-        updated
+        (updated, previous_upstream_id)
     };
 
     store
@@ -756,7 +758,8 @@ async fn update_model(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if let Some(existing) = provider
             .model_catalog
             .iter_mut()
@@ -767,6 +770,15 @@ async fn update_model(
         provider.clear_disabled_overlapping(&model_id);
     }
 
+    if previous_upstream_id.as_deref() != updated.upstream_id.as_deref() {
+        remove_model_routes(&state, &model_id, previous_upstream_id.as_deref()).await;
+    }
+    if updated.enabled {
+        insert_model_route(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
+    } else {
+        remove_model_routes(&state, &model_id, updated.upstream_id.as_deref()).await;
+    }
+
     finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
@@ -774,14 +786,14 @@ async fn update_model(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider.clone())
-            .expect("provider exists")
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
     let view = build_model_views(&state, &id, &provider, &routed)
         .into_iter()
         .find(|model| model.id == model_id)
-        .expect("model exists");
+        .ok_or_else(|| ApiError::not_found(format!("model `{model_id}` not found")))?;
     Ok(Json(view))
 }
 
@@ -804,7 +816,7 @@ async fn delete_model(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
-            .expect("provider exists after ensure");
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         let in_catalog = provider
             .model_catalog
             .iter()
@@ -835,7 +847,8 @@ async fn delete_model(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if in_catalog {
             if managed {
                 provider
@@ -881,7 +894,7 @@ async fn set_model_enabled(
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
-            .expect("provider exists after ensure");
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         let in_catalog = provider
             .model_catalog
             .iter()
@@ -900,7 +913,8 @@ async fn set_model_enabled(
 
     {
         let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if in_catalog {
             if let Some(entry) = provider
                 .model_catalog
@@ -935,7 +949,7 @@ async fn set_model_enabled(
         .into_iter()
         .find(|(provider_id, _)| *provider_id == id)
         .map(|(_, provider)| provider)
-        .expect("provider exists");
+        .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
     let enabled = provider.model_is_enabled(&model_id);
     let catalog_entry = provider
         .model_catalog
