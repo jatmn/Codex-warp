@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::fmt;
+use std::marker::PhantomData;
 
 use axum::Json;
 use axum::Router;
@@ -14,7 +16,9 @@ use axum::routing::get;
 use axum::routing::post;
 use axum::routing::put;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::{self, Visitor};
 use serde_json::json;
 
 use crate::config::AppConfig;
@@ -86,12 +90,68 @@ async fn serve_js() -> impl IntoResponse {
     )
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum OptionalPatch<T> {
+    #[default]
+    Absent,
+    Clear,
+    Set(T),
+}
+
+impl<'de, T> Deserialize<'de> for OptionalPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OptionalPatchVisitor<T>(PhantomData<T>);
+
+        impl<'de, T> Visitor<'de> for OptionalPatchVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = OptionalPatch<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an optional value, null to clear")
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OptionalPatch::Clear)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OptionalPatch::Clear)
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                T::deserialize(deserializer).map(OptionalPatch::Set)
+            }
+        }
+
+        deserializer.deserialize_option(OptionalPatchVisitor(PhantomData))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ProviderPersist {
-    name: Option<String>,
+    #[serde(default)]
+    name: OptionalPatch<String>,
     base_url: Option<String>,
     enabled: Option<bool>,
-    api_key_env: Option<String>,
+    #[serde(default)]
+    api_key_env: OptionalPatch<String>,
     api_key: Option<String>,
     auth_header: Option<String>,
     auth_scheme: Option<String>,
@@ -236,14 +296,40 @@ async fn insert_model_route(
     upstream_id: Option<&str>,
 ) {
     let mut routes = state.model_routes.write().await;
-    if !routes.contains_key(model_id) {
-        routes.insert(model_id.to_string(), provider_id.to_string());
-    }
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-        && !routes.contains_key(upstream_id)
-    {
+    // Explicit operator enable/add always claims ownership for colliding slugs.
+    routes.insert(model_id.to_string(), provider_id.to_string());
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
         routes.insert(upstream_id.to_string(), provider_id.to_string());
     }
+}
+
+async fn sync_provider_routes_for_enabled(
+    state: &AppState,
+    provider_id: &str,
+    enabled: bool,
+) -> Result<(), ApiError> {
+    if enabled {
+        let provider = {
+            let config = state.read_config();
+            configured_provider_entries(&config)
+                .into_iter()
+                .find(|(id, _)| *id == provider_id)
+                .map(|(_, provider)| provider.clone())
+                .ok_or_else(|| ApiError::not_found(format!("provider `{provider_id}` not found")))?
+        };
+        {
+            let mut routes = state.model_routes.write().await;
+            register_catalog_routes_for_provider(&mut routes, provider_id, &provider);
+        }
+        // Rebuild upstream-discovered routes for API clients that do not call /v1/models.
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            let _ = models::models(State(refresh_state), axum::http::HeaderMap::new()).await;
+        });
+    } else {
+        remove_provider_model_routes(state, provider_id).await;
+    }
+    Ok(())
 }
 
 fn routed_models_for_provider(
@@ -282,7 +368,7 @@ fn build_model_views(
             display_name: entry.display_name.clone(),
             upstream_id: entry.upstream_id.clone(),
             description: entry.description.clone(),
-            enabled: provider.model_is_enabled(&entry.id),
+            enabled: provider.enabled && provider.model_is_enabled(&entry.id),
             managed: managed_provider,
             catalog: true,
         });
@@ -313,7 +399,7 @@ fn build_model_views(
             display_name: None,
             upstream_id: None,
             description: None,
-            enabled: provider.model_is_enabled(routed_id),
+            enabled: provider.enabled && provider.model_is_enabled(routed_id),
             managed: false,
             catalog: false,
         });
@@ -380,8 +466,13 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
 }
 
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
-    if let Some(name) = &fields.name {
-        provider.name = Some(name.clone());
+    match &fields.name {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.name = None,
+        OptionalPatch::Set(name) => {
+            let trimmed = name.trim();
+            provider.name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
     }
     if let Some(base_url) = &fields.base_url {
         provider.base_url = base_url.clone();
@@ -389,8 +480,13 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(enabled) = fields.enabled {
         provider.enabled = enabled;
     }
-    if let Some(api_key_env) = &fields.api_key_env {
-        provider.api_key_env = Some(api_key_env.clone());
+    match &fields.api_key_env {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.api_key_env = None,
+        OptionalPatch::Set(api_key_env) => {
+            let trimmed = api_key_env.trim();
+            provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
     }
     if let Some(auth_header) = &fields.auth_header {
         provider.auth_header = auth_header.clone();
@@ -511,7 +607,7 @@ async fn update_provider(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let snapshot = {
+    let (snapshot, previous_enabled) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -520,9 +616,10 @@ async fn update_provider(
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
+        let previous_enabled = provider.enabled;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);
-        snapshot
+        (snapshot, previous_enabled)
     };
 
     store
@@ -534,6 +631,10 @@ async fn update_provider(
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clone_from(&snapshot);
+    }
+
+    if snapshot.enabled != previous_enabled {
+        sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
     }
 
     finish_mutation(&state).await?;
@@ -555,6 +656,9 @@ async fn delete_provider(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     validate_provider_id(&id)?;
+    if id == PRIMARY_PROVIDER_ID {
+        return Err(ApiError::bad_request("cannot delete default provider id"));
+    }
     let store = require_store(&state)?;
     {
         let config = state.read_config();
@@ -568,21 +672,13 @@ async fn delete_provider(
             .delete_provider_overlay(&id)
             .map_err(|err| ApiError::internal(err.to_string()))?;
         let mut config = state.write_config();
-        if id == PRIMARY_PROVIDER_ID {
-            config.provider = ProviderConfig::default();
-        } else {
-            config.providers.remove(&id);
-        }
+        config.providers.remove(&id);
     } else {
         store
             .soft_remove_provider(&id)
             .map_err(|err| ApiError::internal(err.to_string()))?;
         let mut config = state.write_config();
-        if id == PRIMARY_PROVIDER_ID {
-            config.provider = ProviderConfig::default();
-        } else {
-            config.providers.remove(&id);
-        }
+        config.providers.remove(&id);
     }
 
     remove_provider_model_routes(&state, &id).await;
@@ -615,27 +711,7 @@ async fn set_provider_enabled(
         provider.enabled = body.enabled;
     }
 
-    if body.enabled {
-        let provider = {
-            let config = state.read_config();
-            configured_provider_entries(&config)
-                .into_iter()
-                .find(|(provider_id, _)| *provider_id == id)
-                .map(|(_, provider)| provider.clone())
-                .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
-        };
-        {
-            let mut routes = state.model_routes.write().await;
-            register_catalog_routes_for_provider(&mut routes, &id, &provider);
-        }
-        // Rebuild upstream-discovered routes for API clients that do not call /v1/models.
-        let refresh_state = state.clone();
-        tokio::spawn(async move {
-            let _ = models::models(State(refresh_state), axum::http::HeaderMap::new()).await;
-        });
-    } else {
-        remove_provider_model_routes(&state, &id).await;
-    }
+    sync_provider_routes_for_enabled(&state, &id, body.enabled).await?;
 
     finish_mutation(&state).await?;
     let provider = {
@@ -955,7 +1031,7 @@ async fn set_model_enabled(
         .find(|(provider_id, _)| *provider_id == id)
         .map(|(_, provider)| provider)
         .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-    let enabled = provider.model_is_enabled(&model_id);
+    let enabled = provider.enabled && provider.model_is_enabled(&model_id);
     let catalog_entry = provider
         .model_catalog
         .iter()

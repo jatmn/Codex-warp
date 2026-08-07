@@ -118,7 +118,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 
     if merged_models.is_empty() {
         if failures.is_empty() {
-            *state.model_routes.write().await = routes;
+            publish_model_routes(&state, routes).await;
             return Json(json!({ "models": [] })).into_response();
         }
         // Keep previously discovered routes when upstream catalogs fail transiently.
@@ -135,8 +135,33 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 
-    *state.model_routes.write().await = routes;
+    publish_model_routes(&state, routes).await;
     Json(json!({ "models": merged_models })).into_response()
+}
+
+/// Replace `model_routes` while retaining still-valid prior ownership.
+///
+/// Fresh catalog/upstream discovery builds `routes`, then any prior
+/// `(model → provider)` mapping is restored when that provider is still enabled
+/// and the model is still enabled there. This preserves:
+/// - routes for providers that failed or returned empty catalogs this refresh
+/// - UI-inserted upstream-only routes across `/v1/models` rebuilds
+/// - explicit operator ownership from enable/add until the model is disabled
+async fn publish_model_routes(state: &AppState, mut routes: BTreeMap<String, String>) {
+    let prior = state.model_routes.read().await.clone();
+    {
+        let config = state.read_config();
+        for (model_id, owner) in prior {
+            let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
+                continue;
+            };
+            if !provider.model_is_enabled(&model_id) {
+                continue;
+            }
+            routes.insert(model_id, owner);
+        }
+    }
+    *state.model_routes.write().await = routes;
 }
 
 pub(crate) fn register_catalog_routes_for_provider(
@@ -153,6 +178,7 @@ pub(crate) fn register_catalog_routes_for_provider(
         }
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
+            && provider.model_is_enabled(upstream_id)
             && !routes.contains_key(upstream_id)
         {
             routes.insert(upstream_id.to_string(), provider_id.to_string());

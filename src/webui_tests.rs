@@ -33,10 +33,10 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
         ..ProviderConfig::default()
     };
     let fields = ProviderPersist {
-        name: Some("Updated".into()),
+        name: OptionalPatch::Set("Updated".into()),
         base_url: None,
         enabled: None,
-        api_key_env: None,
+        api_key_env: OptionalPatch::Absent,
         api_key: None,
         auth_header: None,
         auth_scheme: None,
@@ -51,12 +51,55 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
 }
 
 #[test]
-fn validate_provider_persist_rejects_api_key() {
+fn provider_persist_null_clears_optional_name_and_api_key_env() {
+    let mut provider = ProviderConfig {
+        name: Some("Named".into()),
+        api_key_env: Some("OLD_KEY".into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
     let fields = ProviderPersist {
-        name: None,
+        name: OptionalPatch::Clear,
         base_url: None,
         enabled: None,
-        api_key_env: None,
+        api_key_env: OptionalPatch::Clear,
+        api_key: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    fields.apply_to(&mut provider);
+    assert!(provider.name.is_none());
+    assert!(provider.api_key_env.is_none());
+}
+
+#[test]
+fn provider_persist_deserializes_null_as_clear() {
+    let fields: ProviderPersist =
+        serde_json::from_str(r#"{"name":null,"api_key_env":null}"#).expect("deserialize");
+    assert_eq!(fields.name, OptionalPatch::Clear);
+    assert_eq!(fields.api_key_env, OptionalPatch::Clear);
+}
+
+#[test]
+fn provider_persist_deserializes_omitted_as_absent() {
+    let fields: ProviderPersist =
+        serde_json::from_str(r#"{"base_url":"https://x"}"#).expect("deserialize");
+    assert_eq!(fields.name, OptionalPatch::Absent);
+    assert_eq!(fields.api_key_env, OptionalPatch::Absent);
+    assert_eq!(fields.base_url.as_deref(), Some("https://x"));
+}
+
+#[test]
+fn validate_provider_persist_rejects_api_key() {
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
         api_key: Some("secret".into()),
         auth_header: None,
         auth_scheme: None,
@@ -76,10 +119,10 @@ fn validate_provider_persist_rejects_api_key() {
 #[test]
 fn validate_provider_persist_rejects_empty_base_url() {
     let fields = ProviderPersist {
-        name: None,
+        name: OptionalPatch::Absent,
         base_url: Some("   ".into()),
         enabled: None,
-        api_key_env: None,
+        api_key_env: OptionalPatch::Absent,
         api_key: None,
         auth_header: None,
         auth_scheme: None,
@@ -138,6 +181,40 @@ fn build_model_views_includes_routed_upstream_models() {
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "upstream/discovered");
     assert!(!models[0].catalog);
+    assert!(models[0].enabled);
+}
+
+#[test]
+fn build_model_views_marks_models_disabled_when_provider_disabled() {
+    let state = test_state();
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: false,
+        ..ProviderConfig::default()
+    };
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "catalog-model".into(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    let models = build_model_views(&state, "alpha", &provider, &["routed".into()]);
+    assert!(models.iter().all(|model| !model.enabled));
+}
+
+#[tokio::test]
+async fn insert_model_route_repoints_existing_owner() {
+    let state = test_state();
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("shared-model".into(), "alpha".into());
+    }
+    insert_model_route(&state, "beta", "shared-model", Some("upstream-shared")).await;
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared-model").map(String::as_str), Some("beta"));
+    assert_eq!(
+        routes.get("upstream-shared").map(String::as_str),
+        Some("beta")
+    );
 }
 
 #[test]

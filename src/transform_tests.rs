@@ -113,6 +113,29 @@ fn can_request_stream_usage_when_provider_supports_it() {
 }
 
 #[test]
+fn ensure_chat_stream_include_usage_adds_stream_options_when_absent() {
+    let mut body = json!({
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    });
+    ensure_chat_stream_include_usage(&mut body);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+}
+
+#[test]
+fn ensure_chat_stream_include_usage_preserves_explicit_stream_options() {
+    let mut body = json!({
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true,
+        "stream_options": {"include_usage": false}
+    });
+    ensure_chat_stream_include_usage(&mut body);
+    assert_eq!(body["stream_options"]["include_usage"], false);
+}
+
+#[test]
 fn preserves_explicit_stream_options() {
     let request = json!({
         "model": "test-model",

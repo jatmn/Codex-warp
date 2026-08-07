@@ -687,6 +687,14 @@ fn register_catalog_routes_skips_disabled_entries() {
             upstream_id: Some("upstream-disabled".to_string()),
             ..crate::config::ModelCatalogEntry::default()
         });
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "alias-model".to_string(),
+            enabled: true,
+            upstream_id: Some("upstream-only".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
     provider.disabled_models.push("upstream-only".to_string());
 
     register_catalog_routes_for_provider(&mut routes, "test", &provider);
@@ -697,7 +705,110 @@ fn register_catalog_routes_skips_disabled_entries() {
     );
     assert!(!routes.contains_key("disabled-model"));
     assert!(!routes.contains_key("upstream-disabled"));
+    assert!(!routes.contains_key("alias-model"));
     assert!(!routes.contains_key("upstream-only"));
+}
+
+#[tokio::test]
+async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig::default();
+    provider.base_url = "https://example.test/v1".to_string();
+    provider.model_catalog_only = true;
+    // No enabled catalog entries → empty merged models, but prior routes should stick.
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "disabled-model".to_string(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("test".to_string(), provider);
+
+    let mut prior = BTreeMap::new();
+    prior.insert("upstream/discovered".to_string(), "test".to_string());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("upstream/discovered").map(String::as_str),
+        Some("test")
+    );
+}
+
+#[tokio::test]
+async fn models_preserves_ui_owner_across_catalog_rebuild() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut alpha = ProviderConfig::default();
+    alpha.base_url = "https://alpha.example/v1".to_string();
+    alpha.model_catalog_only = true;
+    alpha.model_catalog.push(ModelCatalogEntry {
+        id: "shared".to_string(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    let mut beta = ProviderConfig::default();
+    beta.base_url = "https://beta.example/v1".to_string();
+    beta.model_catalog_only = true;
+    beta.model_catalog.push(ModelCatalogEntry {
+        id: "shared".to_string(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("alpha".to_string(), alpha);
+    config.providers.insert("beta".to_string(), beta);
+
+    // Operator previously enabled on beta; rebuild must keep beta ownership.
+    let mut prior = BTreeMap::new();
+    prior.insert("shared".to_string(), "beta".to_string());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
 }
 
 #[tokio::test]

@@ -348,7 +348,7 @@
         modelSel.append(o);
       }
     }
-    modelSel.value = mcur;
+    modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
   }
 
   let analyticsPending = { queued: false };
