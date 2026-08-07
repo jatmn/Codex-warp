@@ -22,6 +22,7 @@ use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
 use crate::config::configured_provider_entries;
+use crate::models;
 use crate::models::register_catalog_routes_for_provider;
 use crate::provider::provider_display_name;
 use crate::state::AppState;
@@ -623,8 +624,15 @@ async fn set_provider_enabled(
                 .map(|(_, provider)| provider.clone())
                 .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
         };
-        let mut routes = state.model_routes.write().await;
-        register_catalog_routes_for_provider(&mut routes, &id, &provider);
+        {
+            let mut routes = state.model_routes.write().await;
+            register_catalog_routes_for_provider(&mut routes, &id, &provider);
+        }
+        // Rebuild upstream-discovered routes for API clients that do not call /v1/models.
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            let _ = models::models(State(refresh_state), axum::http::HeaderMap::new()).await;
+        });
     } else {
         remove_provider_model_routes(&state, &id).await;
     }
