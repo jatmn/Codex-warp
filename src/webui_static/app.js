@@ -103,9 +103,7 @@
             body: JSON.stringify({ enabled }),
           });
           p.enabled = enabled;
-          if (enabled) {
-            await refreshModelRoutes();
-          }
+          await refreshModelRoutes();
           status(`${p.id} ${enabled ? "enabled" : "disabled"}`);
         } catch (e) {
           sw.input.checked = !enabled;

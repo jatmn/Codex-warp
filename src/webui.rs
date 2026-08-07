@@ -22,6 +22,7 @@ use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
 use crate::config::configured_provider_entries;
+use crate::models::register_catalog_routes_for_provider;
 use crate::provider::provider_display_name;
 use crate::state::AppState;
 use crate::store::AnalyticsRange;
@@ -609,6 +610,21 @@ async fn set_provider_enabled(
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         provider.enabled = body.enabled;
+    }
+
+    if body.enabled {
+        let provider = {
+            let config = state.read_config();
+            configured_provider_entries(&config)
+                .into_iter()
+                .find(|(provider_id, _)| *provider_id == id)
+                .map(|(_, provider)| provider.clone())
+                .expect("provider exists")
+        };
+        let mut routes = state.model_routes.write().await;
+        register_catalog_routes_for_provider(&mut routes, &id, &provider);
+    } else {
+        remove_provider_model_routes(&state, &id).await;
     }
 
     finish_mutation(&state).await?;
