@@ -104,6 +104,7 @@
           });
           p.enabled = enabled;
           await refreshModelRoutes();
+          await loadProviders();
           status(`${p.id} ${enabled ? "enabled" : "disabled"}`);
         } catch (e) {
           sw.input.checked = !enabled;
@@ -391,7 +392,7 @@
       drawBarChart(
         $("#chart-bar"),
         series.map((point) => ({
-          key: formatBucketLabel(point.bucket_start_ms, range),
+          key: formatBucketLabel(point.ts, range),
           total_tokens: point.total_tokens || 0,
           prompts: point.prompts || 0,
           sessions: point.sessions || 0,

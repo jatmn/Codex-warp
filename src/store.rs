@@ -455,9 +455,21 @@ impl Store {
             .optional()?;
         if let Some((managed, catalog_json)) = existing {
             let catalog_json = if let Some(raw) = catalog_json {
-                let mut entry: ModelCatalogEntry = serde_json::from_str(&raw)?;
-                entry.enabled = enabled;
-                Some(serde_json::to_string(&entry)?)
+                match serde_json::from_str::<ModelCatalogEntry>(&raw) {
+                    Ok(mut entry) => {
+                        entry.enabled = enabled;
+                        Some(serde_json::to_string(&entry)?)
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            provider_id = %provider_id,
+                            model_id = %model_id,
+                            error = %err,
+                            "ignoring corrupt catalog_json while updating model enabled state"
+                        );
+                        None
+                    }
+                }
             } else {
                 None
             };
@@ -796,8 +808,24 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     } else {
         overlay.api_key.clone()
     };
+    let mut preserved_headers = existing.headers.clone();
+    for (name, value) in &overlay.headers {
+        preserved_headers.insert(name.clone(), value.clone());
+    }
+    // Keep sensitive TOML auth headers that were stripped from the overlay snapshot.
+    for (name, value) in &existing.headers {
+        let lower = name.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "authorization" | "proxy-authorization" | "x-api-key" | "api-key"
+        ) && !overlay.headers.contains_key(name)
+        {
+            preserved_headers.insert(name.clone(), value.clone());
+        }
+    }
     *existing = overlay.clone();
     existing.api_key = preserved_api_key;
+    existing.headers = preserved_headers;
 }
 
 fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
