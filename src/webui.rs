@@ -63,17 +63,23 @@ async fn serve_index() -> Html<&'static str> {
 
 async fn serve_css() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+        ],
         include_str!("webui_static/app.css"),
     )
 }
 
 async fn serve_js() -> impl IntoResponse {
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+        ],
         include_str!("webui_static/app.js"),
     )
 }
@@ -836,33 +842,35 @@ async fn set_model_enabled(
     }
     let store = require_store(&state)?;
 
-    let upstream_id = {
+    let (in_catalog, upstream_id) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-        configured_provider_entries(&config)
+        let provider = configured_provider_entries(&config)
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
-            .and_then(|(_, provider)| {
-                provider
-                    .model_catalog
-                    .iter()
-                    .find(|catalog| catalog.id == model_id)
-                    .and_then(|entry| entry.upstream_id.clone())
-            })
-    };
-
-    {
-        let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+            .map(|(_, provider)| provider)
+            .expect("provider exists after ensure");
         let in_catalog = provider
             .model_catalog
             .iter()
             .any(|catalog| catalog.id == model_id);
+        let upstream_id = provider
+            .model_catalog
+            .iter()
+            .find(|catalog| catalog.id == model_id)
+            .and_then(|entry| entry.upstream_id.clone());
+        (in_catalog, upstream_id)
+    };
+
+    store
+        .set_model_enabled(&id, &model_id, body.enabled)
+        .map_err(|err| ApiError::internal(err.to_string()))?;
+
+    {
+        let mut config = state.write_config();
+        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         if in_catalog {
-            store
-                .set_model_enabled(&id, &model_id, body.enabled)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
             if let Some(entry) = provider
                 .model_catalog
                 .iter_mut()
@@ -876,23 +884,15 @@ async fn set_model_enabled(
                     .retain(|disabled_id| disabled_id != &model_id);
             }
         } else if body.enabled {
-            store
-                .set_model_enabled(&id, &model_id, true)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
             provider
                 .disabled_models
                 .retain(|disabled| disabled != &model_id);
-        } else {
-            store
-                .set_model_enabled(&id, &model_id, false)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
-            if !provider
-                .disabled_models
-                .iter()
-                .any(|disabled| disabled == &model_id)
-            {
-                provider.disabled_models.push(model_id.clone());
-            }
+        } else if !provider
+            .disabled_models
+            .iter()
+            .any(|disabled| disabled == &model_id)
+        {
+            provider.disabled_models.push(model_id.clone());
         }
     }
 

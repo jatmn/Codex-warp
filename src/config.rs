@@ -302,6 +302,38 @@ impl Default for ProviderConfig {
     }
 }
 
+fn model_ids_overlap(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if let Some((_, suffix)) = a.rsplit_once('/') {
+        if !suffix.is_empty() && suffix == b {
+            return true;
+        }
+        if let Some((_, other_suffix)) = b.rsplit_once('/') {
+            if suffix == other_suffix {
+                return true;
+            }
+        }
+    }
+    if let Some((_, suffix)) = b.rsplit_once('/') {
+        if !suffix.is_empty() && suffix == a {
+            return true;
+        }
+    }
+    false
+}
+
+fn catalog_entry_matches_model(entry: &ModelCatalogEntry, model_id: &str) -> bool {
+    if model_ids_overlap(&entry.id, model_id) {
+        return true;
+    }
+    entry
+        .upstream_id
+        .as_deref()
+        .is_some_and(|upstream_id| model_ids_overlap(upstream_id, model_id))
+}
+
 impl ProviderConfig {
     pub fn is_configured(&self) -> bool {
         !self.base_url.trim().is_empty()
@@ -315,13 +347,13 @@ impl ProviderConfig {
         if self
             .disabled_models
             .iter()
-            .any(|disabled| disabled == model_id)
+            .any(|disabled| model_ids_overlap(disabled, model_id))
         {
             return false;
         }
         self.model_catalog
             .iter()
-            .find(|entry| entry.id == model_id || entry.upstream_id.as_deref() == Some(model_id))
+            .find(|entry| catalog_entry_matches_model(entry, model_id))
             .map(|entry| entry.enabled)
             .unwrap_or(true)
     }
