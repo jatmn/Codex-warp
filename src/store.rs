@@ -568,6 +568,13 @@ impl Store {
                 event.reasoning_tokens
             ],
         )?;
+        // Opportunistic retention so long-lived processes do not grow forever.
+        let row_id = db.last_insert_rowid();
+        if row_id % 128 == 0 {
+            const USAGE_RETENTION_DAYS: i64 = 400;
+            let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
+            let _ = db.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff]);
+        }
         Ok(())
     }
 
@@ -898,6 +905,16 @@ impl UsageRecorder {
                     .get("conversation_id")
                     .and_then(Value::as_str)
                     .filter(|value| !value.is_empty())
+            })
+            .or_else(|| {
+                request.get("conversation").and_then(|value| match value {
+                    Value::String(id) => (!id.is_empty()).then(|| id.as_str()),
+                    Value::Object(map) => map
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty()),
+                    _ => None,
+                })
             })
             .map(str::to_string);
         Some(Self {
