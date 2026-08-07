@@ -172,11 +172,6 @@
         }
       });
       sw.input.checked = m.enabled;
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.className = "btn small";
-      edit.textContent = "Edit";
-      edit.addEventListener("click", () => openModelForm(provider.id, m));
       const del = document.createElement("button");
       del.type = "button";
       del.className = "btn small danger";
@@ -191,7 +186,17 @@
           await loadProviders();
         } catch (e) { status(`Error: ${e.message}`); }
       });
-      row.append(meta, sw.wrap, edit, del);
+      const actions = [sw.wrap];
+      if (m.catalog) {
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "btn small";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => openModelForm(provider.id, m));
+        actions.push(edit);
+      }
+      actions.push(del);
+      row.append(meta, ...actions);
       container.append(row);
     }
   }

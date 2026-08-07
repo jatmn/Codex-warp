@@ -326,8 +326,11 @@ pub(crate) fn log_native_usage_from_sse_frame(
             "usage": usage
         }));
         if !*recorded_usage {
-            if let Some(recorder) = usage_recorder {
-                recorder.record_normalized(usage);
+            let normalized = chat_usage_to_responses_usage(Some(usage));
+            if let Some(recorder) = usage_recorder
+                && !normalized.is_null()
+            {
+                recorder.record_normalized(&normalized);
             }
             *recorded_usage = true;
         }
