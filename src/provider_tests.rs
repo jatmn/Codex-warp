@@ -504,3 +504,26 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     assert_eq!(hy3_tencent_high.body["reasoning_effort"], "high");
     assert_eq!(hy3_tencent_high.body["thinking"]["type"], "enabled");
 }
+
+#[tokio::test]
+async fn select_provider_rejects_disabled_catalog_model() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.openrouter]
+            base_url = "https://openrouter.ai/api/v1"
+            api_key = "test-key"
+
+            [[providers.openrouter.model_catalog]]
+            id = "disabled-model"
+            enabled = false
+        "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "disabled-model",
+        "input": "hello"
+    });
+
+    assert!(select_provider(&state, &body).await.is_none());
+}

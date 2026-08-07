@@ -133,6 +133,9 @@ pub(crate) fn register_catalog_routes_for_provider(
     provider: &ProviderConfig,
 ) {
     for entry in &provider.model_catalog {
+        if !entry.enabled || !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
         if !routes.contains_key(&entry.id) {
             routes.insert(entry.id.clone(), provider_id.to_string());
         }

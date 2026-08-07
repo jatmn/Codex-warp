@@ -198,7 +198,9 @@ pub(crate) async fn proxy_chat_responses(
                     }),
                     Some(&value),
                 );
-                if let Some(recorder) = &usage_recorder {
+                if let Some(recorder) = &usage_recorder
+                    && !normalized_usage.is_null()
+                {
                     recorder.record_normalized(&normalized_usage);
                 }
                 Json(chat_json_to_responses_with_policy(

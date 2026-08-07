@@ -18,6 +18,7 @@ use reqwest::Client;
 use serde_json::Value;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
+use tracing::warn;
 
 use crate::config::Backend;
 use crate::config::ContinueGuardMode;
@@ -133,26 +134,28 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     }
 
     let webui_enabled = config.webui.enabled;
-    let store = if webui_enabled {
-        let store = Store::open(&config.webui.db_path)
-            .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
-        store.apply_overlays(&mut config)?;
-        Some(store)
-    } else {
-        None
-    };
+    let store = Store::open(&config.webui.db_path)
+        .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
+    store.apply_overlays(&mut config)?;
 
     let addr: SocketAddr = config
         .listen
         .parse()
         .with_context(|| format!("parse listen address {}", config.listen))?;
 
+    if webui_enabled && !is_loopback_addr(&addr) {
+        warn!(
+            "webui routes are enabled but listen address {addr} is not loopback; \
+             the Web UI has no authentication — bind to 127.0.0.1 or disable webui"
+        );
+    }
+
     let state = AppState {
         debug_log: DebugLog::new(&config.debug),
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        store,
+        store: Some(store),
     };
 
     let mut app = Router::new()
@@ -179,6 +182,13 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+fn is_loopback_addr(addr: &SocketAddr) -> bool {
+    match addr {
+        SocketAddr::V4(v4) => v4.ip().is_loopback(),
+        SocketAddr::V6(v6) => v6.ip().is_loopback(),
+    }
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {

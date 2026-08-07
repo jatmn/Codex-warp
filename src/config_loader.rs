@@ -236,6 +236,9 @@ pub(crate) fn resolve_provider_alias(config: &AppConfig, alias: &str) -> Option<
 }
 
 pub(crate) fn provider_matches_model(provider: &ProviderConfig, model: &str) -> bool {
+    if !provider.model_is_enabled(model) {
+        return false;
+    }
     provider.model_metadata.overrides.contains_key(model)
         || provider
             .model_catalog

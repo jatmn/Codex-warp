@@ -201,6 +201,9 @@ impl Store {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1')",
             [],
         )?;
+        const USAGE_RETENTION_DAYS: i64 = 400;
+        let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
+        connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
         })
@@ -308,7 +311,11 @@ impl Store {
         provider: Option<&ProviderConfig>,
     ) -> anyhow::Result<()> {
         let config_json = provider
-            .map(serde_json::to_string)
+            .map(|provider| {
+                let mut stripped = provider.clone();
+                stripped.api_key = None;
+                serde_json::to_string(&stripped)
+            })
             .transpose()
             .context("serialize provider overlay")?;
         let db = self.db.lock().expect("sqlite lock poisoned");
@@ -365,7 +372,13 @@ impl Store {
     }
 
     pub(crate) fn soft_remove_provider(&self, provider_id: &str) -> anyhow::Result<()> {
-        self.upsert_provider_overlay(provider_id, Some(false), true, false, None)
+        self.upsert_provider_overlay(provider_id, Some(false), true, false, None)?;
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "DELETE FROM model_overlays WHERE provider_id = ?1",
+            params![provider_id],
+        )?;
+        Ok(())
     }
 
     pub(crate) fn set_model_enabled(
@@ -494,7 +507,7 @@ impl Store {
         let summary_sql = format!(
             "SELECT
                 COUNT(*),
-                COUNT(DISTINCT session_key),
+                COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(total_tokens), 0),
@@ -539,7 +552,7 @@ impl Store {
             "SELECT
                 (ts / ?{bucket_idx}) * ?{bucket_idx} AS bucket,
                 COUNT(*),
-                COUNT(DISTINCT session_key),
+                COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(total_tokens), 0)
@@ -622,7 +635,7 @@ fn breakdown_query(
         "SELECT
             {column},
             COUNT(*),
-            COUNT(DISTINCT session_key),
+            COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
             COALESCE(SUM(input_tokens), 0),
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(total_tokens), 0)
@@ -774,6 +787,9 @@ impl UsageRecorder {
     }
 
     pub(crate) fn record_normalized(&self, usage: &Value) {
+        if usage.is_null() {
+            return;
+        }
         let event = usage_event_from_normalized(
             &self.provider_id,
             &self.model,

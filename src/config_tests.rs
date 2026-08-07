@@ -954,3 +954,16 @@ fn hy3_exact_ids_inherit_broad_family_transform() {
         );
     }
 }
+
+#[test]
+fn webui_config_partial_toml_keeps_enabled_true() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        db_path = "/tmp/custom.db"
+        "#,
+    )
+    .expect("partial webui config parses");
+    assert!(config.webui.enabled);
+    assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
+}

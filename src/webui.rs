@@ -202,11 +202,15 @@ fn require_store(state: &AppState) -> Result<&Store, ApiError> {
     state
         .store
         .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("webui store is not configured"))
+        .ok_or_else(|| ApiError::service_unavailable("analytics store is not configured"))
 }
 
-async fn clear_model_routes(state: &AppState) {
-    state.model_routes.write().await.clear();
+async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
+    state
+        .model_routes
+        .write()
+        .await
+        .retain(|_, owner| owner != provider_id);
 }
 
 fn provider_is_managed(state: &AppState, provider_id: &str) -> bool {
@@ -325,8 +329,7 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
 }
 
-async fn finish_mutation(state: &AppState) -> Result<(), ApiError> {
-    clear_model_routes(state).await;
+async fn finish_mutation(_state: &AppState) -> Result<(), ApiError> {
     Ok(())
 }
 
@@ -358,22 +361,21 @@ async fn create_provider(
         .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
 
     let store = require_store(&state)?;
+    {
+        let config = state.read_config();
+        if config.providers.contains_key(&body.id)
+            || (body.id == PRIMARY_PROVIDER_ID && config.provider.is_configured())
+        {
+            return Err(ApiError::bad_request("provider already exists"));
+        }
+    }
+
     let mut provider = ProviderConfig {
         base_url: base_url.to_string(),
         enabled: body.fields.enabled.unwrap_or(true),
         ..ProviderConfig::default()
     };
     apply_provider_persist(&mut provider, &body.fields);
-
-    {
-        let mut config = state.write_config();
-        if config.providers.contains_key(&body.id)
-            || (body.id == PRIMARY_PROVIDER_ID && config.provider.is_configured())
-        {
-            return Err(ApiError::bad_request("provider already exists"));
-        }
-        config.providers.insert(body.id.clone(), provider.clone());
-    }
 
     store
         .upsert_provider_overlay(
@@ -384,6 +386,11 @@ async fn create_provider(
             Some(&provider),
         )
         .map_err(|err| ApiError::internal(err.to_string()))?;
+
+    {
+        let mut config = state.write_config();
+        config.providers.insert(body.id.clone(), provider.clone());
+    }
 
     finish_mutation(&state).await?;
     let config = state.read_config();
@@ -402,25 +409,22 @@ async fn update_provider(
 ) -> Result<Json<ProviderView>, ApiError> {
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
+    let managed = provider_is_managed(&state, &id);
 
-    {
+    let snapshot = {
         let mut config = state.write_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
-        apply_provider_persist(provider, &fields);
-        let snapshot = provider.clone();
-        let managed = provider_is_managed(&state, &id);
-        if managed {
-            store
-                .upsert_provider_overlay(&id, Some(snapshot.enabled), false, true, Some(&snapshot))
-                .map_err(|err| ApiError::internal(err.to_string()))?;
-        } else {
-            store
-                .upsert_provider_overlay(&id, Some(snapshot.enabled), false, false, Some(&snapshot))
-                .map_err(|err| ApiError::internal(err.to_string()))?;
-        }
-    }
+        let mut snapshot = provider.clone();
+        apply_provider_persist(&mut snapshot, &fields);
+        provider.clone_from(&snapshot);
+        snapshot
+    };
+
+    store
+        .upsert_provider_overlay(&id, Some(snapshot.enabled), false, managed, Some(&snapshot))
+        .map_err(|err| ApiError::internal(err.to_string()))?;
 
     finish_mutation(&state).await?;
     let config = state.read_config();
@@ -467,6 +471,7 @@ async fn delete_provider(
         }
     }
 
+    remove_provider_model_routes(&state, &id).await;
     finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -479,15 +484,20 @@ async fn set_provider_enabled(
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
 
+    store
+        .set_provider_enabled(&id, body.enabled)
+        .map_err(|err| ApiError::internal(err.to_string()))?;
+
     {
         let mut config = state.write_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         provider.enabled = body.enabled;
-        store
-            .set_provider_enabled(&id, body.enabled)
-            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
+
+    if !body.enabled {
+        remove_provider_model_routes(&state, &id).await;
     }
 
     finish_mutation(&state).await?;
@@ -510,6 +520,11 @@ async fn add_model(
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
+    let managed = provider_is_managed(&state, &id);
+
+    store
+        .upsert_model_catalog(&id, &entry, managed)
+        .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
         let mut config = state.write_config();
@@ -528,9 +543,6 @@ async fn add_model(
         } else {
             provider.model_catalog.push(entry.clone());
         }
-        store
-            .upsert_model_catalog(&id, &entry, true)
-            .map_err(|err| ApiError::internal(err.to_string()))?;
     }
 
     finish_mutation(&state).await?;
@@ -557,8 +569,9 @@ async fn update_model(
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
+    let managed = provider_is_managed(&state, &id);
 
-    {
+    let updated = {
         let mut config = state.write_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -584,10 +597,12 @@ async fn update_model(
         provider
             .disabled_models
             .retain(|disabled| disabled != &model_id);
-        store
-            .upsert_model_catalog(&id, &updated, provider_is_managed(&state, &id))
-            .map_err(|err| ApiError::internal(err.to_string()))?;
-    }
+        updated
+    };
+
+    store
+        .upsert_model_catalog(&id, &updated, managed)
+        .map_err(|err| ApiError::internal(err.to_string()))?;
 
     finish_mutation(&state).await?;
     let config = state.read_config();
@@ -612,6 +627,7 @@ async fn delete_model(
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
+    let managed = provider_is_managed(&state, &id);
 
     {
         let mut config = state.write_config();
@@ -623,12 +639,25 @@ async fn delete_model(
             .iter()
             .any(|catalog| catalog.id == model_id);
         if in_catalog {
-            provider
-                .model_catalog
-                .retain(|catalog| catalog.id != model_id);
-            store
-                .delete_model_overlay(&id, &model_id)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
+            if managed {
+                provider
+                    .model_catalog
+                    .retain(|catalog| catalog.id != model_id);
+                store
+                    .delete_model_overlay(&id, &model_id)
+                    .map_err(|err| ApiError::internal(err.to_string()))?;
+            } else {
+                if let Some(entry) = provider
+                    .model_catalog
+                    .iter_mut()
+                    .find(|catalog| catalog.id == model_id)
+                {
+                    entry.enabled = false;
+                }
+                store
+                    .set_model_enabled(&id, &model_id, false)
+                    .map_err(|err| ApiError::internal(err.to_string()))?;
+            }
         } else {
             if !provider
                 .disabled_models
@@ -668,6 +697,9 @@ async fn set_model_enabled(
             .iter()
             .any(|catalog| catalog.id == model_id);
         if in_catalog {
+            store
+                .set_model_enabled(&id, &model_id, body.enabled)
+                .map_err(|err| ApiError::internal(err.to_string()))?;
             if let Some(entry) = provider
                 .model_catalog
                 .iter_mut()
@@ -675,17 +707,17 @@ async fn set_model_enabled(
             {
                 entry.enabled = body.enabled;
             }
-            store
-                .set_model_enabled(&id, &model_id, body.enabled)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
         } else if body.enabled {
-            provider
-                .disabled_models
-                .retain(|disabled| disabled != &model_id);
             store
                 .set_model_enabled(&id, &model_id, true)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
+            provider
+                .disabled_models
+                .retain(|disabled| disabled != &model_id);
         } else {
+            store
+                .set_model_enabled(&id, &model_id, false)
+                .map_err(|err| ApiError::internal(err.to_string()))?;
             if !provider
                 .disabled_models
                 .iter()
@@ -693,9 +725,6 @@ async fn set_model_enabled(
             {
                 provider.disabled_models.push(model_id.clone());
             }
-            store
-                .set_model_enabled(&id, &model_id, false)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
         }
     }
 
