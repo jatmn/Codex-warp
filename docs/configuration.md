@@ -312,15 +312,18 @@ The UI can:
 - add, edit, and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider
-- chart token usage, prompts, and sessions over time (global, per provider, and
-  per model)
+- chart token usage, prompts, and sessions over time with both line and bar
+  charts (global, per provider, and per model)
 
 Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
 `week`, `30d`, `yearly`.
 
 SQLite (`db_path`) stores overlays and usage analytics. TOML remains the
 bootstrap source of truth; overlays apply on startup whenever the database is
-open. Managed providers created in the UI live entirely in SQLite.
+open. Managed providers created in the UI live entirely in SQLite. Removing a
+TOML-sourced provider or catalog model soft-deletes it via an overlay so it
+stays suppressed across restarts until the overlay row is cleared or the model
+is re-added in the UI.
 
 CLI overrides:
 

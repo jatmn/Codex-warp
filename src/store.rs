@@ -176,6 +176,7 @@ impl Store {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 managed INTEGER NOT NULL DEFAULT 0,
                 catalog_json TEXT,
+                removed INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (provider_id, model_id)
             );
             CREATE TABLE IF NOT EXISTS usage_events (
@@ -201,6 +202,10 @@ impl Store {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '1')",
             [],
         )?;
+        let _ = connection.execute(
+            "ALTER TABLE model_overlays ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         const USAGE_RETENTION_DAYS: i64 = 400;
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
         connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
@@ -282,7 +287,8 @@ impl Store {
         }
 
         let mut model_stmt = db.prepare(
-            "SELECT provider_id, model_id, enabled, managed, catalog_json FROM model_overlays",
+            "SELECT provider_id, model_id, enabled, managed, catalog_json, COALESCE(removed, 0)
+             FROM model_overlays",
         )?;
         let model_rows = model_stmt
             .query_map([], |row| {
@@ -292,14 +298,20 @@ impl Store {
                     row.get::<_, i64>(2)? != 0,
                     row.get::<_, i64>(3)? != 0,
                     row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)? != 0,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
-        for (provider_id, model_id, enabled, managed, catalog_json) in model_rows {
+        for (provider_id, model_id, enabled, _managed, catalog_json, removed) in model_rows {
             let Some(provider) = provider_config_mut(config, &provider_id) else {
                 continue;
             };
+            if removed {
+                provider.model_catalog.retain(|entry| entry.id != model_id);
+                provider.clear_disabled_overlapping(&model_id);
+                continue;
+            }
             if let Some(catalog_json) = catalog_json {
                 let entry: ModelCatalogEntry = match serde_json::from_str(&catalog_json) {
                     Ok(entry) => entry,
@@ -324,7 +336,8 @@ impl Store {
                     .find(|entry| entry.id == model_id)
                 {
                     *existing = entry;
-                } else if managed || enabled {
+                } else {
+                    // Persist UI-added catalog entries even when currently disabled.
                     provider.model_catalog.push(entry);
                 }
             } else if let Some(entry) = provider
@@ -449,15 +462,16 @@ impl Store {
                 None
             };
             db.execute(
-                "UPDATE model_overlays SET enabled = ?1, catalog_json = COALESCE(?2, catalog_json)
+                "UPDATE model_overlays SET enabled = ?1, removed = 0,
+                    catalog_json = COALESCE(?2, catalog_json)
                  WHERE provider_id = ?3 AND model_id = ?4",
                 params![i64::from(enabled), catalog_json, provider_id, model_id],
             )?;
             let _ = managed;
         } else {
             db.execute(
-                "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json)
-                 VALUES (?1, ?2, ?3, 0, NULL)",
+                "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+                 VALUES (?1, ?2, ?3, 0, NULL, 0)",
                 params![provider_id, model_id, i64::from(enabled)],
             )?;
         }
@@ -473,12 +487,13 @@ impl Store {
         let catalog_json = serde_json::to_string(entry)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute(
-            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0)
              ON CONFLICT(provider_id, model_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 managed = excluded.managed OR model_overlays.managed,
-                catalog_json = excluded.catalog_json",
+                catalog_json = excluded.catalog_json,
+                removed = 0",
             params![
                 provider_id,
                 entry.id,
@@ -498,6 +513,24 @@ impl Store {
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute(
             "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+            params![provider_id, model_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn soft_remove_model(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+             VALUES (?1, ?2, 0, 0, NULL, 1)
+             ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                enabled = 0,
+                removed = 1,
+                catalog_json = NULL",
             params![provider_id, model_id],
         )?;
         Ok(())

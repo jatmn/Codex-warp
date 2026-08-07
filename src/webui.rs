@@ -695,6 +695,10 @@ async fn add_model(
         }
     }
 
+    if entry.enabled {
+        insert_model_route(&state, &id, &entry.id, entry.upstream_id.as_deref()).await;
+    }
+
     finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
@@ -836,7 +840,7 @@ async fn delete_model(
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         } else {
             store
-                .set_model_enabled(&id, &model_id, false)
+                .soft_remove_model(&id, &model_id)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         }
     } else {
@@ -850,17 +854,10 @@ async fn delete_model(
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if in_catalog {
-            if managed {
-                provider
-                    .model_catalog
-                    .retain(|catalog| catalog.id != model_id);
-            } else if let Some(entry) = provider
+            provider
                 .model_catalog
-                .iter_mut()
-                .find(|catalog| catalog.id == model_id)
-            {
-                entry.enabled = false;
-            }
+                .retain(|catalog| catalog.id != model_id);
+            provider.clear_disabled_overlapping(&model_id);
         } else if !provider
             .disabled_models
             .iter()

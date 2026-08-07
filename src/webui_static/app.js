@@ -350,6 +350,8 @@
     modelSel.value = mcur;
   }
 
+  let analyticsPending = { queued: false };
+
   $("#analytics-provider").addEventListener("change", () => {
     fillAnalyticsFilters();
     loadAnalytics();
@@ -358,8 +360,12 @@
   $("#analytics-model").addEventListener("change", loadAnalytics);
 
   async function loadAnalytics() {
-    if (analyticsInFlight) return;
+    if (analyticsInFlight) {
+      analyticsPending.queued = true;
+      return;
+    }
     analyticsInFlight = true;
+    analyticsPending.queued = false;
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
@@ -373,32 +379,42 @@
         .filter(Boolean);
       fillAnalyticsFilters();
       renderAnalyticsCards(data);
-      drawLineChart($("#chart-line"), data.series || []);
-      const barRows = model
-        ? [{
-            key: model,
-            prompts: data.prompts,
-            sessions: data.sessions,
-            input_tokens: data.input_tokens,
-            output_tokens: data.output_tokens,
-            total_tokens: data.total_tokens,
-          }]
+      const series = data.series || [];
+      drawLineChart($("#chart-line"), series);
+      // Bar chart shows the same time series as bars so usage-over-time is visible
+      // in both chart styles; breakdowns remain available via provider/model filters.
+      $("#chart-bar-title").textContent = model
+        ? `${model} over time`
         : provider
-          ? data.by_model || []
-          : data.by_provider || [];
-      const barTitle = model
-        ? model
-        : provider
-          ? "By model"
-          : "By provider";
-      $("#chart-bar-title").textContent = barTitle;
-      drawBarChart($("#chart-bar"), barRows);
+          ? `${provider} over time`
+          : "Usage over time";
+      drawBarChart(
+        $("#chart-bar"),
+        series.map((point) => ({
+          key: formatBucketLabel(point.bucket_start_ms, range),
+          total_tokens: point.total_tokens || 0,
+          prompts: point.prompts || 0,
+          sessions: point.sessions || 0,
+        })),
+      );
       status("Analytics updated");
     } catch (e) {
       status(`Analytics error: ${e.message}`);
     } finally {
       analyticsInFlight = false;
+      if (analyticsPending.queued) {
+        loadAnalytics();
+      }
     }
+  }
+
+  function formatBucketLabel(ms, range) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    if (range === "yearly" || range === "30d" || range === "week") {
+      return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+    }
+    return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   }
 
   function renderAnalyticsCards(d) {
