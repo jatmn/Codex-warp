@@ -173,3 +173,46 @@ fn soft_remove_provider_deletes_model_overlays() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn apply_overlays_preserves_api_key_for_non_managed_provider() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-api-key-preserve-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("preserve.db")).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "toml".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            api_key: Some("toml-secret".into()),
+            name: Some("TOML".into()),
+            ..ProviderConfig::default()
+        },
+    );
+
+    let overlay = ProviderConfig {
+        base_url: "https://overlay.test/v1".into(),
+        name: Some("Overlay".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("toml", Some(true), false, false, Some(&overlay))
+        .unwrap();
+    store.apply_overlays(&mut config).unwrap();
+
+    assert_eq!(
+        config.providers["toml"].api_key.as_deref(),
+        Some("toml-secret")
+    );
+    assert_eq!(config.providers["toml"].base_url, "https://overlay.test/v1");
+    assert_eq!(config.providers["toml"].name.as_deref(), Some("Overlay"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

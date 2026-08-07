@@ -344,7 +344,14 @@
       renderAnalyticsCards(data);
       drawLineChart($("#chart-line"), data.series || []);
       const barRows = model
-        ? []
+        ? [{
+            key: model,
+            prompts: data.prompts,
+            sessions: data.sessions,
+            input_tokens: data.input_tokens,
+            output_tokens: data.output_tokens,
+            total_tokens: data.total_tokens,
+          }]
         : provider
           ? data.by_model || []
           : data.by_provider || [];
