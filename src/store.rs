@@ -322,8 +322,11 @@ impl Store {
                 .find(|entry| entry.id == model_id)
             {
                 entry.enabled = enabled;
+                if enabled {
+                    provider.clear_disabled_overlapping(&model_id);
+                }
             } else if enabled {
-                provider.disabled_models.retain(|id| id != &model_id);
+                provider.clear_disabled_overlapping(&model_id);
             } else if !provider.disabled_models.iter().any(|id| id == &model_id) {
                 provider.disabled_models.push(model_id);
             }
