@@ -55,6 +55,7 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WebUiConfig {
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub db_path: PathBuf,
 }

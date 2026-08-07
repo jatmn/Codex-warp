@@ -296,7 +296,8 @@ before enabling the feature and use it at your own risk.
 
 Codex Warp can serve a lightweight local Web UI for managing providers/models and
 viewing usage analytics. It is enabled by default and listens on the same bind
-address as the proxy:
+address as the proxy. The Web UI has no authentication; bind to loopback
+(`127.0.0.1`) when the UI is enabled.
 
 ```toml
 [webui]
@@ -314,22 +315,26 @@ The UI can:
 - chart token usage, prompts, and sessions over time (global, per provider, and
   per model)
 
-Ranges: `1h`, `5h`, `today`, `24h`, `48h`, `3d`, `week`, `30d`, `yearly`.
+Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
+`week`, `30d`, `yearly`.
 
-Web UI edits and analytics are stored in SQLite (`db_path`). TOML remains the
-bootstrap source of truth; SQLite overlays apply on top at startup and after UI
-mutations. Managed providers created in the UI live entirely in SQLite.
+SQLite (`db_path`) stores overlays and usage analytics. TOML remains the
+bootstrap source of truth; overlays apply on startup whenever the database is
+open. Managed providers created in the UI live entirely in SQLite.
 
 CLI overrides:
 
 ```bash
-codex-warp --no-webui
+codex-warp --no-webui          # skip /ui and /api routes only
 codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
 ```
 
-Usage events are recorded from successful proxied responses when the Web UI
-store is open. Session grouping prefers `prompt_cache_key`, then
-`conversation_id`.
+`--no-webui` and `webui.enabled = false` disable the Web UI routes but still
+open the SQLite store for overlays and usage recording.
+
+Usage events are recorded from successful proxied responses when the store is
+open. Session grouping prefers `prompt_cache_key`, then `conversation_id`.
+Events without a session key count as distinct sessions per prompt.
 
 ## Debug Logging
 

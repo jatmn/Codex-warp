@@ -667,3 +667,35 @@ fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
             .any(|model| model["slug"].as_str() == Some("gpt-5.4"))
     );
 }
+
+#[test]
+fn register_catalog_routes_skips_disabled_entries() {
+    let mut routes = BTreeMap::new();
+    let mut provider = ProviderConfig::default();
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "enabled-model".to_string(),
+            enabled: true,
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "disabled-model".to_string(),
+            enabled: false,
+            upstream_id: Some("upstream-disabled".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    provider.disabled_models.push("upstream-only".to_string());
+
+    register_catalog_routes_for_provider(&mut routes, "test", &provider);
+
+    assert_eq!(
+        routes.get("enabled-model").map(String::as_str),
+        Some("test")
+    );
+    assert!(!routes.contains_key("disabled-model"));
+    assert!(!routes.contains_key("upstream-disabled"));
+    assert!(!routes.contains_key("upstream-only"));
+}

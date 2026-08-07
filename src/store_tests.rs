@@ -101,3 +101,75 @@ fn store_applies_provider_and_model_overlays() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn upsert_provider_overlay_strips_api_key() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-api-key-strip-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("strip.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("secret", Some(true), false, true, Some(&provider))
+        .unwrap();
+
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'secret'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!json.contains("secret-key"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed.get("api_key").is_none() || parsed["api_key"].is_null());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn soft_remove_provider_deletes_model_overlays() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-soft-remove-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("soft.db")).unwrap();
+    store
+        .upsert_model_catalog(
+            "legacy",
+            &ModelCatalogEntry {
+                id: "legacy/model".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+            false,
+        )
+        .unwrap();
+    store.soft_remove_provider("legacy").unwrap();
+
+    let db = store.db.lock().expect("lock");
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM model_overlays WHERE provider_id = 'legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+
+    let _ = std::fs::remove_dir_all(dir);
+}

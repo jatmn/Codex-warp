@@ -4,6 +4,7 @@
   const API = "/api";
   let providers = [];
   let analyticsTimer = null;
+  let analyticsInFlight = false;
   let activeTab = "providers";
 
   const $ = (sel) => document.querySelector(sel);
@@ -244,6 +245,7 @@
 
   const modelDialog = $("#model-dialog");
   const modelForm = $("#model-form");
+  let editingModel = null;
   $("#model-form-cancel").addEventListener("click", () => modelDialog.close());
   modelForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -254,7 +256,7 @@
       upstream_id: fd.get("upstream_id")?.trim() || null,
       display_name: fd.get("display_name")?.trim() || null,
       description: fd.get("description")?.trim() || null,
-      enabled: true,
+      enabled: editingModel?.enabled ?? true,
     };
     const mode = modelForm.dataset.mode || "create";
     try {
@@ -276,6 +278,7 @@
 
   function openModelForm(providerId, m = null) {
     modelForm.reset();
+    editingModel = m;
     modelForm.querySelector("[name=provider_id]").value = providerId;
     const idInput = modelForm.querySelector("[name=id]");
     if (m) {
@@ -328,6 +331,8 @@
   $("#analytics-model").addEventListener("change", loadAnalytics);
 
   async function loadAnalytics() {
+    if (analyticsInFlight) return;
+    analyticsInFlight = true;
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
@@ -338,10 +343,17 @@
       const data = await api(`/analytics?${qs}`);
       renderAnalyticsCards(data);
       drawLineChart($("#chart-line"), data.series || []);
-      drawBarChart($("#chart-bar"), data.by_provider || []);
+      const barRows = model
+        ? []
+        : provider
+          ? data.by_model || []
+          : data.by_provider || [];
+      drawBarChart($("#chart-bar"), barRows);
       status("Analytics updated");
     } catch (e) {
       status(`Analytics error: ${e.message}`);
+    } finally {
+      analyticsInFlight = false;
     }
   }
 
@@ -368,23 +380,35 @@
     ctx.clearRect(0, 0, w, h);
     if (!series.length) return;
     const pad = 28;
-    const vals = series.map((p) => p.total_tokens || 0);
-    const max = Math.max(1, ...vals);
+    const promptVals = series.map((p) => p.prompts || 0);
+    const tokenVals = series.map((p) => p.total_tokens || 0);
+    const max = Math.max(1, ...promptVals, ...tokenVals);
     const step = (w - pad * 2) / Math.max(1, series.length - 1);
-    ctx.strokeStyle = "#3d9cdb";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    series.forEach((p, i) => {
-      const x = pad + i * step;
-      const y = h - pad - (vals[i] / max) * (h - pad * 2);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
+
+    function strokeSeries(vals, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      vals.forEach((val, i) => {
+        const x = pad + i * step;
+        const y = h - pad - (val / max) * (h - pad * 2);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    strokeSeries(tokenVals, "#3d9cdb");
+    strokeSeries(promptVals, "#e8a838");
+
     ctx.fillStyle = "#8b98a8";
     ctx.font = "11px system-ui";
     ctx.fillText("0", 4, h - pad);
     ctx.fillText(String(max), 4, pad + 4);
+    ctx.fillStyle = "#3d9cdb";
+    ctx.fillText("tokens", w - 52, pad + 4);
+    ctx.fillStyle = "#e8a838";
+    ctx.fillText("prompts", w - 52, pad + 18);
   }
 
   function drawBarChart(canvas, rows) {
