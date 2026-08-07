@@ -117,10 +117,11 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     if merged_models.is_empty() {
-        *state.model_routes.write().await = routes;
         if failures.is_empty() {
+            *state.model_routes.write().await = routes;
             return Json(json!({ "models": [] })).into_response();
         }
+        // Keep previously discovered routes when upstream catalogs fail transiently.
         return error_response(
             StatusCode::BAD_GATEWAY,
             format!(
