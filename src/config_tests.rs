@@ -1005,3 +1005,14 @@ fn clear_disabled_overlapping_removes_prefixed_and_unprefixed_ids() {
     assert!(provider.model_is_enabled("provider/foo"));
     assert!(!provider.model_is_enabled("provider/bar"));
 }
+
+#[test]
+fn distinct_prefixed_model_ids_do_not_overlap() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("team-a/foo".into());
+
+    assert!(!provider.model_is_enabled("team-a/foo"));
+    assert!(provider.model_is_enabled("team-b/foo"));
+    // Bare suffix still overlaps the disabled prefixed id.
+    assert!(!provider.model_is_enabled("foo"));
+}
