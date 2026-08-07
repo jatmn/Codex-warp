@@ -85,16 +85,23 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }))
     .await;
 
-    let config = state.read_config().clone();
     let mut merged_models = Vec::new();
     let mut routes = BTreeMap::new();
     let mut failures = Vec::new();
 
-    for (provider_id, provider) in provider_entries(&config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    {
+        let config = state.read_config();
+        for (provider_id, provider) in provider_entries(&config) {
+            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        }
     }
 
-    for (provider_id, provider, provider_models, provider_failures) in fetch_results {
+    for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+        let config = state.read_config().clone();
+        let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
+            // Provider was disabled/removed while upstream fetch was in flight.
+            continue;
+        };
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,

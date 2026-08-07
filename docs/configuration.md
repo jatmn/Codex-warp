@@ -312,8 +312,8 @@ The UI can:
 - add, edit, and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider
-- chart token usage, prompts, and sessions over time with both line and bar
-  charts (global, per provider, and per model)
+- chart token usage, prompts, and sessions over time with a line chart, plus
+  token usage over time with a bar chart (global, per provider, and per model)
 
 Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
 `week`, `30d`, `yearly`.
@@ -336,7 +336,8 @@ codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
 open the SQLite store for overlays and usage recording.
 
 Usage events are recorded from successful proxied responses when the store is
-open. Session grouping prefers `prompt_cache_key`, then `conversation_id`.
+open. Session grouping prefers `prompt_cache_key`, then `conversation_id`, then
+Responses `conversation` (string or `{ "id": ... }`).
 Events without a session key count as distinct sessions per prompt.
 
 ## Debug Logging
