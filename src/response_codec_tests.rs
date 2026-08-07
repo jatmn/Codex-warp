@@ -676,10 +676,26 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     let chunk_b = Bytes::from_static(b":{\"cached_tokens\":5}}}}\n\n");
 
-    log_native_usage_from_sse_chunk(&chunk_a, &mut pending, &debug_log, "dbg_test", 200);
+    let mut pending_usage = None;
+    log_native_usage_from_sse_chunk(
+        &chunk_a,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(!pending.is_empty());
-    log_native_usage_from_sse_chunk(&chunk_b, &mut pending, &debug_log, "dbg_test", 200);
+    log_native_usage_from_sse_chunk(
+        &chunk_b,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(pending.is_empty());
+    assert!(pending_usage.is_some());
 }
 
 #[test]
@@ -845,6 +861,7 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         ContinueGuardState::default(),
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -869,6 +886,7 @@ async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -894,6 +912,7 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;

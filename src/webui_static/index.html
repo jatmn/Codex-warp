@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Warp</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <h1>Codex Warp</h1>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="providers" role="tab">Providers</button>
+      <button type="button" class="tab" data-tab="analytics" role="tab">Analytics</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="panel-providers" class="panel active" role="tabpanel">
+      <div class="panel-head">
+        <h2>Providers</h2>
+        <button type="button" id="btn-add-provider" class="btn primary">Add provider</button>
+      </div>
+      <div id="providers-list" class="providers-list"></div>
+      <dialog id="provider-dialog">
+        <form id="provider-form" method="dialog">
+          <h3 id="provider-form-title">Add provider</h3>
+          <label>ID <input name="id" required pattern="[A-Za-z0-9_-]+"></label>
+          <label>Name <input name="name"></label>
+          <label>Base URL <input name="base_url" required></label>
+          <label>API key env <input name="api_key_env" placeholder="OPENAI_API_KEY"></label>
+          <div class="form-actions">
+            <button type="button" class="btn" id="provider-form-cancel">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="model-dialog">
+        <form id="model-form" method="dialog">
+          <h3 id="model-form-title">Add model</h3>
+          <input type="hidden" name="provider_id">
+          <label>Model ID <input name="id" required></label>
+          <label>Upstream ID <input name="upstream_id"></label>
+          <label>Display name <input name="display_name"></label>
+          <label>Description <input name="description"></label>
+          <div class="form-actions">
+            <button type="button" class="btn" id="model-form-cancel">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
+    </section>
+
+    <section id="panel-analytics" class="panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Analytics</h2>
+        <div class="filters">
+          <select id="analytics-range" aria-label="Range">
+            <option value="1h">Last 1 hour</option>
+            <option value="5h">Last 5 hours</option>
+            <option value="today">Today</option>
+            <option value="24h" selected>Last 24 hours</option>
+            <option value="48h">Last 48 hours</option>
+            <option value="3d">Last 3 days</option>
+            <option value="week">Last week</option>
+            <option value="30d">Last 30 days</option>
+            <option value="yearly">Yearly</option>
+          </select>
+          <select id="analytics-provider" aria-label="Provider filter">
+            <option value="">All providers</option>
+          </select>
+          <select id="analytics-model" aria-label="Model filter">
+            <option value="">All models</option>
+          </select>
+        </div>
+      </div>
+      <div id="analytics-cards" class="cards"></div>
+      <div class="charts">
+        <div class="chart-box">
+          <h3>Token usage</h3>
+          <canvas id="chart-line" width="800" height="220"></canvas>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-bar-title">By provider</h3>
+          <canvas id="chart-bar" width="800" height="220"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span id="status-line">Ready</span>
+  </footer>
+  <script src="/ui/app.js" defer></script>
+</body>
+</html>

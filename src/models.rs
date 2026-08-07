@@ -36,7 +36,11 @@ pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
 ];
 
 pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let provider_list: Vec<_> = provider_entries(&state.config).into_iter().collect();
+    let hide_builtins = state.read_config().config.hide_codex_builtin_models;
+    let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
+        .into_iter()
+        .map(|(id, p)| (id.to_string(), p.clone()))
+        .collect();
 
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
@@ -44,14 +48,15 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         let state = state.clone();
         let headers = headers.clone();
         async move {
+            let config = state.read_config().clone();
             let mut provider_models = Vec::new();
             let mut provider_failures = Vec::new();
 
             if !provider.model_catalog_only {
-                let url = endpoint_url(provider, &provider.models_path);
+                let url = endpoint_url(&provider, &provider.models_path);
                 let mut request = state.client.get(url);
                 request =
-                    apply_headers_with_accept(request, provider, &headers, "application/json");
+                    apply_headers_with_accept(request, &provider, &headers, "application/json");
                 request = request.timeout(MODEL_CATALOG_TIMEOUT);
 
                 match request.send().await {
@@ -60,9 +65,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
                         let body = response.bytes().await.unwrap_or_default();
                         if !status.is_success() {
                             provider_failures.push(format!("{provider_id}: HTTP {status}"));
-                        } else if let Some(models) =
-                            normalize_models(&body, provider, &state.config)
-                        {
+                        } else if let Some(models) = normalize_models(&body, &provider, &config) {
                             provider_models.extend(models);
                         } else {
                             provider_failures
@@ -74,7 +77,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
             }
 
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(provider, &state.config));
+                provider_models.extend(manual_catalog_models(&provider, &config));
             }
 
             (provider_id, provider, provider_models, provider_failures)
@@ -86,15 +89,23 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     let mut routes = BTreeMap::new();
     let mut failures = Vec::new();
 
-    for (provider_id, provider) in provider_entries(&state.config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    {
+        let config = state.read_config();
+        for (provider_id, provider) in provider_entries(&config) {
+            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        }
     }
 
-    for (provider_id, provider, provider_models, provider_failures) in fetch_results {
+    for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+        let config = state.read_config().clone();
+        let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
+            // Provider was disabled/removed while upstream fetch was in flight.
+            continue;
+        };
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,
-            &state.config,
+            &config,
             &provider_id,
             &provider,
             provider_models,
@@ -106,6 +117,11 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     if merged_models.is_empty() {
+        if failures.is_empty() {
+            publish_model_routes(&state, routes).await;
+            return Json(json!({ "models": [] })).into_response();
+        }
+        // Keep previously discovered routes when upstream catalogs fail transiently.
         return error_response(
             StatusCode::BAD_GATEWAY,
             format!(
@@ -115,12 +131,37 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         );
     }
 
-    if state.config.config.hide_codex_builtin_models {
+    if hide_builtins {
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 
-    *state.model_routes.write().await = routes;
+    publish_model_routes(&state, routes).await;
     Json(json!({ "models": merged_models })).into_response()
+}
+
+/// Replace `model_routes` while retaining still-valid prior ownership.
+///
+/// Fresh catalog/upstream discovery builds `routes`, then any prior
+/// `(model → provider)` mapping is restored when that provider is still enabled
+/// and the model is still enabled there. This preserves:
+/// - routes for providers that failed or returned empty catalogs this refresh
+/// - UI-inserted upstream-only routes across `/v1/models` rebuilds
+/// - explicit operator ownership from enable/add until the model is disabled
+async fn publish_model_routes(state: &AppState, mut routes: BTreeMap<String, String>) {
+    let prior = state.model_routes.read().await.clone();
+    {
+        let config = state.read_config();
+        for (model_id, owner) in prior {
+            let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
+                continue;
+            };
+            if !provider.model_is_enabled(&model_id) {
+                continue;
+            }
+            routes.insert(model_id, owner);
+        }
+    }
+    *state.model_routes.write().await = routes;
 }
 
 pub(crate) fn register_catalog_routes_for_provider(
@@ -129,11 +170,15 @@ pub(crate) fn register_catalog_routes_for_provider(
     provider: &ProviderConfig,
 ) {
     for entry in &provider.model_catalog {
+        if !entry.enabled || !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
         if !routes.contains_key(&entry.id) {
             routes.insert(entry.id.clone(), provider_id.to_string());
         }
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
+            && provider.model_is_enabled(upstream_id)
             && !routes.contains_key(upstream_id)
         {
             routes.insert(upstream_id.to_string(), provider_id.to_string());
@@ -156,6 +201,9 @@ pub(crate) fn add_models_for_provider(
     for model in models {
         let mut model = model;
         if let Some(slug) = model.get("slug").and_then(Value::as_str) {
+            if !provider.model_is_enabled(slug) {
+                continue;
+            }
             if let Some(owner) = routes.get(slug).map(String::as_str) {
                 if owner == provider_id {
                     prefix_model_display_name(&mut model, &gateway_name);
@@ -263,6 +311,9 @@ pub(crate) fn normalize_models(
 pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
     let mut models = Vec::new();
     for entry in &provider.model_catalog {
+        if !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
         let mut model = json!({
             "id": entry.id,
             "object": "model"
@@ -280,6 +331,7 @@ pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfi
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
             && upstream_id != entry.id
+            && provider.model_is_enabled(upstream_id)
         {
             let mut alias = json!({
                 "id": upstream_id,

@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::config::ModelCatalogEntry;
+use crate::config::ProviderConfig;
 use serde_json::json;
 
 #[test]
@@ -141,4 +143,17 @@ fn merge_toml_appends_tool_policy_rules_only() {
         base["tool_policy"]["rules"][1]["id"].as_str(),
         Some("second")
     );
+}
+
+#[test]
+fn provider_matches_model_requires_enabled_model() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "disabled-model".into(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    assert!(!provider_matches_model(&provider, "disabled-model"));
+    provider.model_catalog[0].enabled = true;
+    assert!(provider_matches_model(&provider, "disabled-model"));
 }

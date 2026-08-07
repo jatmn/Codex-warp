@@ -954,3 +954,81 @@ fn hy3_exact_ids_inherit_broad_family_transform() {
         );
     }
 }
+
+#[test]
+fn webui_config_partial_toml_keeps_enabled_true() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        db_path = "/tmp/custom.db"
+        "#,
+    )
+    .expect("partial webui config parses");
+    assert!(config.webui.enabled);
+    assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
+}
+
+#[test]
+fn disabling_unprefixed_model_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+    assert!(provider.model_is_enabled("provider/bar"));
+}
+
+#[test]
+fn disabling_catalog_entry_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "foo".into(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+}
+
+#[test]
+fn clear_disabled_overlapping_removes_prefixed_and_unprefixed_ids() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+    provider.disabled_models.push("provider/foo".into());
+    provider.disabled_models.push("provider/bar".into());
+
+    provider.clear_disabled_overlapping("foo");
+
+    assert_eq!(provider.disabled_models, vec!["provider/bar".to_string()]);
+    assert!(provider.model_is_enabled("foo"));
+    assert!(provider.model_is_enabled("provider/foo"));
+    assert!(!provider.model_is_enabled("provider/bar"));
+}
+
+#[test]
+fn distinct_prefixed_model_ids_do_not_overlap() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("team-a/foo".into());
+
+    assert!(!provider.model_is_enabled("team-a/foo"));
+    assert!(provider.model_is_enabled("team-b/foo"));
+    // Bare suffix still overlaps the disabled prefixed id.
+    assert!(!provider.model_is_enabled("foo"));
+}
+
+#[test]
+fn disabling_upstream_slug_blocks_catalog_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("gpt-4".into());
+
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+}

@@ -5,6 +5,11 @@
 
 listen = "127.0.0.1:8787"
 
+[webui]
+# Local management UI at http://127.0.0.1:8787/ui/
+# enabled = true
+# db_path = "codex-warp.db"
+
 [continue_guard]
 # Detects chat-completions providers that finish with plain assistant text like
 # "Now let me check..." while Codex still has an active plan. Keep observe mode

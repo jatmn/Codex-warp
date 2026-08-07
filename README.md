@@ -40,6 +40,7 @@ of client patches:
 - editable request/tool morphs for chat-completions and Responses backends
 - optional continue guard for chat-completions models that stop mid-plan
 - optional tool approval policy loaded from TOML
+- optional local Web UI for provider/model toggles and SQLite usage analytics
 - sanitized debug logging and upstream `User-Agent` reporting
 
 ## Quick Start
@@ -147,6 +148,13 @@ for your own policy configuration and use it at your own risk.
 See the [tool approval policy guide](docs/tool-approval-policy.md) for the rule
 format and the [configuration guide](docs/configuration.md#tool-approval-policy)
 for deployment examples.
+
+**Local Web UI**
+
+Warp serves a lightweight management UI at `/ui/` on the same listen address.
+Use it to add or edit providers and models, toggle them with switches, and chart
+token/session usage from a local SQLite database. See the
+[configuration guide](docs/configuration.md#web-ui-and-analytics).
 
 ## Built-In Gateway Profiles
 

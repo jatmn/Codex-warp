@@ -2,3 +2,6 @@
 /_research
 *.local.toml
 .env
+*.db
+*.db-shm
+*.db-wal

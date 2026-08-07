@@ -12,6 +12,7 @@ top of it, so provider profiles can stay small and provider-specific.
 - [Request Morphs](#request-morphs)
 - [Continue Guard](#continue-guard)
 - [Tool Approval Policy](#tool-approval-policy)
+- [Web UI And Analytics](#web-ui-and-analytics)
 - [Debug Logging](#debug-logging)
 
 ## Baseline Includes
@@ -290,6 +291,54 @@ for the TOML rule shape and GitHub policy table.
 **Notice:** tool approval policy can change what Codex is told to approve,
 prompt for, or block. Misconfigured rules are your responsibility. Review them
 before enabling the feature and use it at your own risk.
+
+## Web UI And Analytics
+
+Codex Warp can serve a lightweight local Web UI for managing providers/models and
+viewing usage analytics. It is enabled by default and listens on the same bind
+address as the proxy. The Web UI has no authentication; bind to loopback
+(`127.0.0.1`) when the UI is enabled.
+
+```toml
+[webui]
+enabled = true
+db_path = "codex-warp.db"
+```
+
+Open `http://127.0.0.1:8787/ui/` while the proxy is running.
+
+The UI can:
+
+- add, edit, and remove providers and model catalog entries
+- toggle providers on/off (disabled providers are omitted from `/v1/models`)
+- toggle models on/off per provider
+- chart token usage, prompts, and sessions over time with a line chart, plus
+  token usage over time with a bar chart (global, per provider, and per model)
+
+Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
+`week`, `30d`, `yearly`.
+
+SQLite (`db_path`) stores overlays and usage analytics. TOML remains the
+bootstrap source of truth; overlays apply on startup whenever the database is
+open. Managed providers created in the UI live entirely in SQLite. Removing a
+TOML-sourced provider or catalog model soft-deletes it via an overlay so it
+stays suppressed across restarts until the overlay row is cleared or the model
+is re-added in the UI.
+
+CLI overrides:
+
+```bash
+codex-warp --no-webui          # skip /ui and /api routes only
+codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
+```
+
+`--no-webui` and `webui.enabled = false` disable the Web UI routes but still
+open the SQLite store for overlays and usage recording.
+
+Usage events are recorded from successful proxied responses when the store is
+open. Session grouping prefers `prompt_cache_key`, then `conversation_id`, then
+Responses `conversation` (string or `{ "id": ... }`).
+Events without a session key count as distinct sessions per prompt.
 
 ## Debug Logging
 

@@ -2,10 +2,11 @@ use super::*;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use reqwest::Client;
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::load_config_layers;
@@ -14,10 +15,11 @@ use crate::transform::responses_to_chat;
 
 fn test_state(config: AppConfig) -> AppState {
     AppState {
-        config: Arc::new(config),
+        config: Arc::new(RwLock::new(config)),
         client: Client::new(),
-        model_routes: Arc::new(RwLock::new(BTreeMap::new())),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         debug_log: DebugLog::disabled(),
+        store: None,
     }
 }
 
@@ -501,4 +503,50 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(hy3_tencent_high.body["reasoning_effort"], "high");
     assert_eq!(hy3_tencent_high.body["thinking"]["type"], "enabled");
+}
+
+#[tokio::test]
+async fn select_provider_rejects_disabled_catalog_model() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.openrouter]
+            base_url = "https://openrouter.ai/api/v1"
+            api_key = "test-key"
+
+            [[providers.openrouter.model_catalog]]
+            id = "disabled-model"
+            enabled = false
+        "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "disabled-model",
+        "input": "hello"
+    });
+
+    assert!(select_provider(&state, &body).await.is_none());
+}
+
+#[tokio::test]
+async fn select_provider_rejects_prefixed_model_when_suffix_disabled() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+            api_key = "test-key"
+
+            [[providers.hicap.model_catalog]]
+            id = "foo"
+            enabled = false
+        "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "hicap/foo",
+        "input": "hello"
+    });
+
+    assert!(select_provider(&state, &body).await.is_none());
 }
