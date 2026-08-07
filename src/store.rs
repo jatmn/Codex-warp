@@ -829,6 +829,21 @@ impl UsageRecorder {
         if usage.is_null() {
             return;
         }
+        let input_tokens = usage
+            .get("input_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let output_tokens = usage
+            .get("output_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let total_tokens = usage
+            .get("total_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        if input_tokens == 0 && output_tokens == 0 && total_tokens == 0 {
+            return;
+        }
         let event = usage_event_from_normalized(
             &self.provider_id,
             &self.model,

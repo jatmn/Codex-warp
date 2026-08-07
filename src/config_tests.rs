@@ -967,3 +967,26 @@ fn webui_config_partial_toml_keeps_enabled_true() {
     assert!(config.webui.enabled);
     assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
 }
+
+#[test]
+fn disabling_unprefixed_model_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+    assert!(provider.model_is_enabled("provider/bar"));
+}
+
+#[test]
+fn disabling_catalog_entry_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "foo".into(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+}

@@ -527,3 +527,26 @@ async fn select_provider_rejects_disabled_catalog_model() {
 
     assert!(select_provider(&state, &body).await.is_none());
 }
+
+#[tokio::test]
+async fn select_provider_rejects_prefixed_model_when_suffix_disabled() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [providers.hicap]
+            base_url = "https://api.hicap.ai/v1"
+            api_key = "test-key"
+
+            [[providers.hicap.model_catalog]]
+            id = "foo"
+            enabled = false
+        "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let body = json!({
+        "model": "hicap/foo",
+        "input": "hello"
+    });
+
+    assert!(select_provider(&state, &body).await.is_none());
+}

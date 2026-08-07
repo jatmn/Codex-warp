@@ -360,6 +360,12 @@
         : provider
           ? data.by_model || []
           : data.by_provider || [];
+      const barTitle = model
+        ? model
+        : provider
+          ? "By model"
+          : "By provider";
+      $("#chart-bar-title").textContent = barTitle;
       drawBarChart($("#chart-bar"), barRows);
       status("Analytics updated");
     } catch (e) {
@@ -393,8 +399,9 @@
     if (!series.length) return;
     const pad = 28;
     const promptVals = series.map((p) => p.prompts || 0);
+    const sessionVals = series.map((p) => p.sessions || 0);
     const tokenVals = series.map((p) => p.total_tokens || 0);
-    const max = Math.max(1, ...promptVals, ...tokenVals);
+    const max = Math.max(1, ...promptVals, ...sessionVals, ...tokenVals);
     const step = (w - pad * 2) / Math.max(1, series.length - 1);
 
     function strokeSeries(vals, color) {
@@ -412,15 +419,18 @@
 
     strokeSeries(tokenVals, "#3d9cdb");
     strokeSeries(promptVals, "#e8a838");
+    strokeSeries(sessionVals, "#6bc96b");
 
     ctx.fillStyle = "#8b98a8";
     ctx.font = "11px system-ui";
     ctx.fillText("0", 4, h - pad);
     ctx.fillText(String(max), 4, pad + 4);
     ctx.fillStyle = "#3d9cdb";
-    ctx.fillText("tokens", w - 52, pad + 4);
+    ctx.fillText("tokens", w - 60, pad + 4);
     ctx.fillStyle = "#e8a838";
-    ctx.fillText("prompts", w - 52, pad + 18);
+    ctx.fillText("prompts", w - 60, pad + 18);
+    ctx.fillStyle = "#6bc96b";
+    ctx.fillText("sessions", w - 60, pad + 32);
   }
 
   function drawBarChart(canvas, rows) {
