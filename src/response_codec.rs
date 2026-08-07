@@ -16,6 +16,7 @@ use crate::config::ToolPolicyConfig;
 use crate::debug_log::DebugLog;
 use crate::debug_log::text_fingerprint;
 use crate::ids::generated_id;
+use crate::store::UsageRecorder;
 use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
@@ -37,6 +38,7 @@ pub(crate) fn chat_stream_to_responses(
     debug_log: DebugLog,
     request_log_id: String,
     continue_guard: ContinueGuardState,
+    usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
@@ -49,6 +51,7 @@ pub(crate) fn chat_stream_to_responses(
         let mut state = ChatAccum::default();
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
+        let mut recorded_usage = false;
 
         while let Some(chunk) = bytes.next().await {
             let chunk = match chunk {
@@ -98,14 +101,21 @@ pub(crate) fn chat_stream_to_responses(
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
                 {
+                    let normalized = chat_usage_to_responses_usage(Some(usage));
                     debug_log.log(json!({
                         "event": "upstream_response",
                         "id": request_log_id,
                         "status": 200,
                         "success": true,
                         "usage": usage,
-                        "normalized_usage": chat_usage_to_responses_usage(Some(usage))
+                        "normalized_usage": normalized.clone()
                     }));
+                    if !recorded_usage {
+                        if let Some(recorder) = &usage_recorder {
+                            recorder.record_normalized(&normalized);
+                        }
+                        recorded_usage = true;
+                    }
                 }
                 let events = state.apply_chat_chunk(payload);
                 if let Some(summary) = chat_stream_debug_summary(payload, &events) {
@@ -121,6 +131,13 @@ pub(crate) fn chat_stream_to_responses(
                     yield Ok(Bytes::from(event));
                 }
             }
+        }
+
+        if !recorded_usage
+            && let Some(usage) = &state.usage
+            && let Some(recorder) = &usage_recorder
+        {
+            recorder.record_normalized(usage);
         }
 
         for event in state.finish(
@@ -142,11 +159,13 @@ pub(crate) fn native_stream_to_responses(
     debug_log: DebugLog,
     request_log_id: String,
     status: u16,
+    usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let mut pending = Vec::new();
         let mut debug_pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
+        let mut recorded_usage = false;
 
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
@@ -157,6 +176,8 @@ pub(crate) fn native_stream_to_responses(
                     &debug_log,
                     &request_log_id,
                     status,
+                    usage_recorder.as_ref(),
+                    &mut recorded_usage,
                 );
                 if debug_pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
                     yield Err(std::io::Error::new(
@@ -190,7 +211,14 @@ pub(crate) fn native_stream_to_responses(
                         return;
                     }
                 };
-                log_native_usage_from_sse_frame(&frame, &debug_log, &request_log_id, status);
+                log_native_usage_from_sse_frame(
+                    &frame,
+                    &debug_log,
+                    &request_log_id,
+                    status,
+                    usage_recorder.as_ref(),
+                    &mut recorded_usage,
+                );
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
                     "id": request_log_id,
@@ -235,6 +263,8 @@ pub(crate) fn log_native_usage_from_sse_chunk(
     debug_log: &DebugLog,
     request_log_id: &str,
     status: u16,
+    usage_recorder: Option<&UsageRecorder>,
+    recorded_usage: &mut bool,
 ) {
     pending.extend_from_slice(chunk);
     while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(pending) {
@@ -243,7 +273,14 @@ pub(crate) fn log_native_usage_from_sse_chunk(
         let Ok(frame) = String::from_utf8(frame) else {
             continue;
         };
-        log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status);
+        log_native_usage_from_sse_frame(
+            &frame,
+            debug_log,
+            request_log_id,
+            status,
+            usage_recorder,
+            recorded_usage,
+        );
     }
 }
 
@@ -252,6 +289,8 @@ pub(crate) fn log_native_usage_from_sse_frame(
     debug_log: &DebugLog,
     request_log_id: &str,
     status: u16,
+    usage_recorder: Option<&UsageRecorder>,
+    recorded_usage: &mut bool,
 ) {
     let Some(data) = sse_data(frame) else {
         return;
@@ -286,6 +325,12 @@ pub(crate) fn log_native_usage_from_sse_frame(
             "success": true,
             "usage": usage
         }));
+        if !*recorded_usage {
+            if let Some(recorder) = usage_recorder {
+                recorder.record_normalized(usage);
+            }
+            *recorded_usage = true;
+        }
     }
 }
 

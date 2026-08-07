@@ -19,37 +19,40 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         if model == "codex-auto-review" {
             return None;
         }
-        if let Some(provider_id) = state.model_routes.read().await.get(model)
-            && let Some(provider) = provider_by_id(&state.config, provider_id)
+        let route_id = state.model_routes.read().await.get(model).cloned();
+        let config = state.read_config();
+        if let Some(provider_id) = route_id
+            && let Some(provider) = provider_by_id(&*config, &provider_id)
         {
             return Some(selected_provider(
-                &state.config,
-                provider_id,
-                provider,
-                Some(model),
-            ));
-        }
-        if let Some(provider_id) = provider_id_for_config_model(&state.config, model)
-            && let Some(provider) = provider_by_id(&state.config, &provider_id)
-        {
-            return Some(selected_provider(
-                &state.config,
+                &*config,
                 &provider_id,
                 provider,
                 Some(model),
             ));
         }
-        let providers = provider_entries(&state.config);
+        if let Some(provider_id) = provider_id_for_config_model(&*config, model)
+            && let Some(provider) = provider_by_id(&*config, &provider_id)
+        {
+            return Some(selected_provider(
+                &*config,
+                &provider_id,
+                provider,
+                Some(model),
+            ));
+        }
+        let providers = provider_entries(&*config);
         if providers.len() == 1 {
             let (id, provider) = providers[0];
-            return Some(selected_provider(&state.config, id, provider, Some(model)));
+            return Some(selected_provider(&*config, id, provider, Some(model)));
         }
         return None;
     }
-    provider_entries(&state.config)
+    let config = state.read_config();
+    provider_entries(&*config)
         .into_iter()
         .next()
-        .map(|(id, provider)| selected_provider(&state.config, id, provider, model))
+        .map(|(id, provider)| selected_provider(&*config, id, provider, model))
 }
 
 pub(crate) fn selected_provider(

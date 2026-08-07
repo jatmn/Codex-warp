@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use anyhow::Context;
 use axum::Json;
@@ -15,7 +16,7 @@ use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 
 use crate::config::Backend;
@@ -28,9 +29,11 @@ use crate::http::unknown_model_response;
 use crate::models::models;
 use crate::provider::select_provider;
 use crate::state::AppState;
+use crate::store::Store;
 use crate::upstream::proxy_chat_responses;
 use crate::upstream::proxy_native_responses;
 use crate::version::AGENT_VERSION;
+use crate::webui;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -77,6 +80,12 @@ struct Args {
 
     #[arg(long, help = "Max automatic follow-ups per prompt cache key")]
     continue_guard_max_followups: Option<u8>,
+
+    #[arg(long, help = "Disable the Web UI")]
+    no_webui: bool,
+
+    #[arg(long, help = "SQLite database path for Web UI overlays and analytics")]
+    webui_db: Option<PathBuf>,
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
@@ -116,6 +125,22 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     if let Some(max_followups) = args.continue_guard_max_followups {
         config.continue_guard.max_followups = max_followups;
     }
+    if args.no_webui {
+        config.webui.enabled = false;
+    }
+    if let Some(db_path) = args.webui_db {
+        config.webui.db_path = db_path;
+    }
+
+    let webui_enabled = config.webui.enabled;
+    let store = if webui_enabled {
+        let store = Store::open(&config.webui.db_path)
+            .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
+        store.apply_overlays(&mut config)?;
+        Some(store)
+    } else {
+        None
+    };
 
     let addr: SocketAddr = config
         .listen
@@ -124,20 +149,27 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
     let state = AppState {
         debug_log: DebugLog::new(&config.debug),
-        config: Arc::new(config),
+        config: Arc::new(RwLock::new(config)),
         client: Client::new(),
-        model_routes: Arc::new(RwLock::new(BTreeMap::new())),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        store,
     };
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/responses", post(responses))
         .route("/v1/responses", post(responses))
         .route("/models", get(models))
-        .route("/v1/models", get(models))
-        .with_state(state);
+        .route("/v1/models", get(models));
+    if webui_enabled {
+        app = app.merge(webui::router());
+    }
+    let app = app.with_state(state);
 
     info!("listening on http://{addr}");
+    if webui_enabled {
+        info!("webui available at http://{addr}/ui/");
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -150,7 +182,7 @@ async fn shutdown_signal() {
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {
-    if provider_entries(&state.config).is_empty() {
+    if provider_entries(&*state.read_config()).is_empty() {
         return no_provider_response();
     }
     if let Some(model) = body

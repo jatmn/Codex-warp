@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+pub use crate::config_loader::configured_provider_by_id;
+pub use crate::config_loader::configured_provider_entries;
 pub use crate::config_loader::load_config_layers;
 pub use crate::config_loader::matches_model_pattern_for_sort;
 pub use crate::config_loader::matching_model_families;
@@ -21,6 +23,7 @@ pub struct AppConfig {
     pub continue_guard: ContinueGuardConfig,
     pub debug: DebugConfig,
     pub tool_policy: ToolPolicyConfig,
+    pub webui: WebUiConfig,
     pub listen: String,
     pub provider: ProviderConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -35,11 +38,32 @@ impl Default for AppConfig {
             continue_guard: ContinueGuardConfig::default(),
             debug: DebugConfig::default(),
             tool_policy: ToolPolicyConfig::default(),
+            webui: WebUiConfig::default(),
             listen: "127.0.0.1:8787".to_string(),
             provider: ProviderConfig::default(),
             providers: BTreeMap::new(),
             model_families: BTreeMap::new(),
             transform: TransformConfig::default(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WebUiConfig {
+    pub enabled: bool,
+    pub db_path: PathBuf,
+}
+
+impl Default for WebUiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            db_path: PathBuf::from("codex-warp.db"),
         }
     }
 }
@@ -230,11 +254,13 @@ impl Default for DebugConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
     pub base_url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub auth_header: String,
@@ -247,6 +273,9 @@ pub struct ProviderConfig {
     pub chat_completions_path: String,
     pub models_path: String,
     pub model_catalog_only: bool,
+    /// Model ids discovered from upstream that should stay hidden from `/models`.
+    #[serde(default)]
+    pub disabled_models: Vec<String>,
 }
 
 impl Default for ProviderConfig {
@@ -254,6 +283,7 @@ impl Default for ProviderConfig {
         Self {
             name: None,
             base_url: String::new(),
+            enabled: true,
             api_key: None,
             api_key_env: None,
             auth_header: "authorization".to_string(),
@@ -266,13 +296,33 @@ impl Default for ProviderConfig {
             chat_completions_path: "/chat/completions".to_string(),
             models_path: "/models".to_string(),
             model_catalog_only: false,
+            disabled_models: Vec::new(),
         }
     }
 }
 
 impl ProviderConfig {
-    pub fn is_enabled(&self) -> bool {
+    pub fn is_configured(&self) -> bool {
         !self.base_url.trim().is_empty()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.is_configured()
+    }
+
+    pub fn model_is_enabled(&self, model_id: &str) -> bool {
+        if self
+            .disabled_models
+            .iter()
+            .any(|disabled| disabled == model_id)
+        {
+            return false;
+        }
+        self.model_catalog
+            .iter()
+            .find(|entry| entry.id == model_id || entry.upstream_id.as_deref() == Some(model_id))
+            .map(|entry| entry.enabled)
+            .unwrap_or(true)
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -286,23 +336,37 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModelCatalogEntry {
     pub id: String,
     pub upstream_id: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+impl Default for ModelCatalogEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            upstream_id: None,
+            display_name: None,
+            description: None,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModelMetadataConfig {
     pub defaults: ModelMetadataFields,
     pub overrides: BTreeMap<String, ModelMetadataFields>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelMetadataFields {
     pub context_window: Option<i64>,
@@ -339,7 +403,7 @@ pub struct ModelFamilyConfig {
     pub transform: TransformConfigPatch,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TransformConfig {
     pub backend: Backend,
@@ -465,7 +529,7 @@ fn remove_morphs(morphs: &mut Vec<RequestMorph>, selectors: &[MorphSelector]) {
     });
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestMorph {
     pub from: String,
@@ -476,7 +540,7 @@ pub struct RequestMorph {
     pub kind: RequestMorphKind,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestMorphKind {
     Copy,
@@ -534,7 +598,7 @@ fn default_chat_request_morphs() -> Vec<RequestMorph> {
     ]
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
     OpenAiChat,
@@ -547,7 +611,7 @@ impl Default for Backend {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnsupportedToolStrategy {
     Drop,

@@ -112,6 +112,9 @@ Keep source changes near their domain:
 - `src/models.rs`: `/models` catalog fetching, sorting, and metadata shaping
 - `src/upstream.rs`: upstream request dispatch and response plumbing
 - `src/response_codec.rs`: SSE, chat/responses conversion, usage normalization
+- `src/store.rs`: SQLite overlays and usage analytics
+- `src/webui.rs`: embedded Web UI routes and config/analytics API
+- `src/webui_static/`: embedded HTML/CSS/JS for the Web UI
 - `src/transform_morph.rs`: configured request morphs and dotted-path edits
 - `src/tool_policy.rs`: optional downstream tool-call approval policy
 - `src/debug_log.rs`: sanitized debug log events and fingerprints
