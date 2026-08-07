@@ -357,6 +357,20 @@ fn provider_config_mut<'a>(
     }
 }
 
+fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
+    if let Some(base_url) = &fields.base_url
+        && base_url.trim().is_empty()
+    {
+        return Err(ApiError::bad_request("base_url cannot be empty"));
+    }
+    if fields.api_key.is_some() {
+        return Err(ApiError::bad_request(
+            "api_key cannot be set via API; use api_key_env instead",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     if let Some(name) = &fields.name {
         provider.name = Some(name.clone());
@@ -369,9 +383,6 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
     if let Some(api_key_env) = &fields.api_key_env {
         provider.api_key_env = Some(api_key_env.clone());
-    }
-    if let Some(api_key) = &fields.api_key {
-        provider.api_key = Some(api_key.clone());
     }
     if let Some(auth_header) = &fields.auth_header {
         provider.auth_header = auth_header.clone();
@@ -433,6 +444,7 @@ async fn create_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
+    validate_provider_persist(&body.fields)?;
 
     let store = require_store(&state)?;
     {
@@ -487,6 +499,7 @@ async fn update_provider(
     Json(fields): Json<ProviderPersist>,
 ) -> Result<Json<ProviderView>, ApiError> {
     validate_provider_id(&id)?;
+    validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
@@ -592,10 +605,6 @@ async fn set_provider_enabled(
         provider.enabled = body.enabled;
     }
 
-    if !body.enabled {
-        remove_provider_model_routes(&state, &id).await;
-    }
-
     finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
@@ -619,6 +628,12 @@ async fn add_model(
     if entry.id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
     }
+    {
+        let config = state.read_config();
+        ensure_provider_exists(&config, &id)
+            .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
+    }
+
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
@@ -628,8 +643,6 @@ async fn add_model(
 
     {
         let mut config = state.write_config();
-        ensure_provider_exists(&config, &id)
-            .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         provider
             .disabled_models

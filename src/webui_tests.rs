@@ -51,6 +51,48 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_api_key() {
+    let fields = ProviderPersist {
+        name: None,
+        base_url: None,
+        enabled: None,
+        api_key_env: None,
+        api_key: Some("secret".into()),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(
+        err.message.contains("api_key_env"),
+        "expected api_key_env hint in error message"
+    );
+}
+
+#[test]
+fn validate_provider_persist_rejects_empty_base_url() {
+    let fields = ProviderPersist {
+        name: None,
+        base_url: Some("   ".into()),
+        enabled: None,
+        api_key_env: None,
+        api_key: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
 fn enabling_catalog_model_clears_disabled_models() {
     let mut provider = ProviderConfig::default();
     provider.model_catalog.push(ModelCatalogEntry {

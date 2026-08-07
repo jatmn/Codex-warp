@@ -237,10 +237,17 @@ impl Store {
             }
 
             if let Some(config_json) = &overlay.config_json {
-                let overlay_provider: ProviderConfig = serde_json::from_str(config_json)
-                    .with_context(|| {
-                        format!("parse provider overlay json for {}", overlay.provider_id)
-                    })?;
+                let overlay_provider: ProviderConfig = match serde_json::from_str(config_json) {
+                    Ok(provider) => provider,
+                    Err(err) => {
+                        tracing::warn!(
+                            provider_id = overlay.provider_id,
+                            error = %err,
+                            "skipping corrupt provider overlay config_json"
+                        );
+                        continue;
+                    }
+                };
                 if overlay.managed {
                     let mut provider = overlay_provider;
                     if let Some(enabled) = overlay.enabled {
@@ -288,10 +295,18 @@ impl Store {
                 continue;
             };
             if let Some(catalog_json) = catalog_json {
-                let entry: ModelCatalogEntry =
-                    serde_json::from_str(&catalog_json).with_context(|| {
-                        format!("parse model overlay json for {provider_id}/{model_id}")
-                    })?;
+                let entry: ModelCatalogEntry = match serde_json::from_str(&catalog_json) {
+                    Ok(entry) => entry,
+                    Err(err) => {
+                        tracing::warn!(
+                            provider_id = %provider_id,
+                            model_id = %model_id,
+                            error = %err,
+                            "skipping corrupt model overlay catalog_json"
+                        );
+                        continue;
+                    }
+                };
                 if let Some(existing) = provider
                     .model_catalog
                     .iter_mut()

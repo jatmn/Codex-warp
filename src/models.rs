@@ -110,6 +110,9 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     if merged_models.is_empty() {
+        if provider_entries(&state.read_config()).is_empty() {
+            return Json(json!({ "models": [] })).into_response();
+        }
         return error_response(
             StatusCode::BAD_GATEWAY,
             format!(
@@ -273,7 +276,7 @@ pub(crate) fn normalize_models(
 pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
     let mut models = Vec::new();
     for entry in &provider.model_catalog {
-        if !entry.enabled {
+        if !provider.model_is_enabled(&entry.id) {
             continue;
         }
         let mut model = json!({
@@ -293,6 +296,7 @@ pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfi
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
             && upstream_id != entry.id
+            && provider.model_is_enabled(upstream_id)
         {
             let mut alias = json!({
                 "id": upstream_id,

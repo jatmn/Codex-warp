@@ -349,11 +349,12 @@ async fn send_native_responses(
         }),
         response_body.as_ref(),
     );
+    let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
         && let Some(recorder) = &usage_recorder
-        && !usage.is_null()
+        && !normalized_usage.is_null()
     {
-        recorder.record_normalized(&usage);
+        recorder.record_normalized(&normalized_usage);
     }
 
     let body = if status.is_success() && (!custom_tool_names.is_empty() || tool_policy.enabled) {

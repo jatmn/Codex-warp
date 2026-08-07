@@ -216,3 +216,53 @@ fn apply_overlays_preserves_api_key_for_non_managed_provider() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn apply_overlays_skips_corrupt_overlay_json() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-corrupt-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("corrupt.db")).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            name: Some("Manual".into()),
+            base_url: "https://example.test/v1".into(),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    {
+        let db = store.db.lock().expect("lock");
+        db.execute(
+            "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["manual", 0i64, 0i64, 1i64, "{not-json}"],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params!["manual", "manual/model-a", 1i64, 1i64, "{bad-json}"],
+        )
+        .unwrap();
+    }
+
+    store.apply_overlays(&mut config).unwrap();
+
+    assert!(config.providers.contains_key("manual"));
+    assert_eq!(config.providers["manual"].enabled, true);
+    assert_eq!(config.providers["manual"].name.as_deref(), Some("Manual"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
