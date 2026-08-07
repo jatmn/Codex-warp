@@ -1016,3 +1016,19 @@ fn distinct_prefixed_model_ids_do_not_overlap() {
     // Bare suffix still overlaps the disabled prefixed id.
     assert!(!provider.model_is_enabled("foo"));
 }
+
+#[test]
+fn disabling_upstream_slug_blocks_catalog_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("gpt-4".into());
+
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+}

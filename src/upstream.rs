@@ -31,6 +31,7 @@ use crate::response_codec::response_usage_from_bytes;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::UsageRecorder;
+use crate::transform::ensure_chat_stream_include_usage;
 use crate::transform::native_custom_tool_names;
 use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
@@ -94,7 +95,10 @@ pub(crate) async fn proxy_chat_responses(
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
-    let chat_transform = responses_to_chat(body, &selected.transform);
+    let mut chat_transform = responses_to_chat(body, &selected.transform);
+    if usage_recorder.is_some() {
+        ensure_chat_stream_include_usage(&mut chat_transform.body);
+    }
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
     state.debug_log.log_request(

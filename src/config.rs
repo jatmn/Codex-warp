@@ -350,11 +350,27 @@ impl ProviderConfig {
         {
             return false;
         }
-        self.model_catalog
+        let Some(entry) = self
+            .model_catalog
             .iter()
             .find(|entry| catalog_entry_matches_model(entry, model_id))
-            .map(|entry| entry.enabled)
-            .unwrap_or(true)
+        else {
+            return true;
+        };
+        if !entry.enabled {
+            return false;
+        }
+        // Disabling an upstream slug also blocks catalog aliases that resolve to it.
+        if let Some(upstream_id) = entry.upstream_id.as_deref()
+            && !upstream_id.is_empty()
+            && self
+                .disabled_models
+                .iter()
+                .any(|disabled| model_ids_overlap(disabled, upstream_id))
+        {
+            return false;
+        }
+        true
     }
 
     pub fn clear_disabled_overlapping(&mut self, model_id: &str) {
