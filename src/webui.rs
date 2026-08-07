@@ -213,6 +213,42 @@ async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
         .retain(|_, owner| owner != provider_id);
 }
 
+async fn remove_model_routes(state: &AppState, model_id: &str, upstream_id: Option<&str>) {
+    let mut routes = state.model_routes.write().await;
+    routes.remove(model_id);
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+        routes.remove(upstream_id);
+    }
+}
+
+async fn insert_model_route(
+    state: &AppState,
+    provider_id: &str,
+    model_id: &str,
+    upstream_id: Option<&str>,
+) {
+    let mut routes = state.model_routes.write().await;
+    if !routes.contains_key(model_id) {
+        routes.insert(model_id.to_string(), provider_id.to_string());
+    }
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+        && !routes.contains_key(upstream_id)
+    {
+        routes.insert(upstream_id.to_string(), provider_id.to_string());
+    }
+}
+
+fn routed_models_for_provider(
+    routes: &std::collections::BTreeMap<String, String>,
+    provider_id: &str,
+) -> Vec<String> {
+    routes
+        .iter()
+        .filter(|(_, owner)| owner.as_str() == provider_id)
+        .map(|(model_id, _)| model_id.clone())
+        .collect()
+}
+
 fn provider_is_managed(state: &AppState, provider_id: &str) -> bool {
     state
         .store
@@ -225,6 +261,7 @@ fn build_model_views(
     state: &AppState,
     provider_id: &str,
     provider: &ProviderConfig,
+    routed_models: &[String],
 ) -> Vec<ModelView> {
     let managed_provider = provider_is_managed(state, provider_id);
     let mut seen = BTreeSet::new();
@@ -256,13 +293,34 @@ fn build_model_views(
             managed: false,
             catalog: false,
         });
+        seen.insert(disabled_id.clone());
+    }
+
+    for routed_id in routed_models {
+        if seen.contains(routed_id) {
+            continue;
+        }
+        models.push(ModelView {
+            id: routed_id.clone(),
+            display_name: None,
+            upstream_id: None,
+            description: None,
+            enabled: provider.model_is_enabled(routed_id),
+            managed: false,
+            catalog: false,
+        });
     }
 
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models
 }
 
-fn build_provider_view(state: &AppState, id: &str, provider: &ProviderConfig) -> ProviderView {
+fn build_provider_view(
+    state: &AppState,
+    id: &str,
+    provider: &ProviderConfig,
+    routed_models: &[String],
+) -> ProviderView {
     ProviderView {
         id: id.to_string(),
         display_name: provider_display_name(id, provider),
@@ -278,7 +336,13 @@ fn build_provider_view(state: &AppState, id: &str, provider: &ProviderConfig) ->
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),
         model_catalog_only: provider.model_catalog_only,
-        models: build_model_views(state, id, provider),
+        models: build_model_views(state, id, provider, routed_models),
+    }
+}
+
+impl ProviderPersist {
+    fn apply_to(&self, provider: &mut ProviderConfig) {
+        apply_provider_persist(provider, self);
     }
 }
 
@@ -336,10 +400,20 @@ async fn finish_mutation(_state: &AppState) -> Result<(), ApiError> {
 async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProviderView>>, ApiError> {
-    let config = state.read_config();
-    let views = configured_provider_entries(&config)
+    let providers: Vec<(String, ProviderConfig)> = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .map(|(id, provider)| (id.to_string(), provider.clone()))
+            .collect()
+    };
+    let routes = state.model_routes.read().await;
+    let views = providers
         .into_iter()
-        .map(|(id, provider)| build_provider_view(&state, id, provider))
+        .map(|(id, provider)| {
+            let routed = routed_models_for_provider(&routes, &id);
+            build_provider_view(&state, &id, &provider, &routed)
+        })
         .collect();
     Ok(Json(views))
 }
@@ -393,12 +467,17 @@ async fn create_provider(
     }
 
     finish_mutation(&state).await?;
-    let config = state.read_config();
-    let view = config
-        .providers
-        .get(&body.id)
-        .map(|provider| build_provider_view(&state, &body.id, provider))
-        .expect("provider inserted");
+    let provider = {
+        let config = state.read_config();
+        config
+            .providers
+            .get(&body.id)
+            .cloned()
+            .expect("provider inserted")
+    };
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &body.id);
+    let view = build_provider_view(&state, &body.id, &provider, &routed);
     Ok((StatusCode::CREATED, Json(view)))
 }
 
@@ -412,13 +491,16 @@ async fn update_provider(
     let managed = provider_is_managed(&state, &id);
 
     let snapshot = {
-        let mut config = state.write_config();
+        let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider)
+            .expect("provider exists after ensure");
         let mut snapshot = provider.clone();
-        apply_provider_persist(&mut snapshot, &fields);
-        provider.clone_from(&snapshot);
+        fields.apply_to(&mut snapshot);
         snapshot
     };
 
@@ -426,14 +508,24 @@ async fn update_provider(
         .upsert_provider_overlay(&id, Some(snapshot.enabled), false, managed, Some(&snapshot))
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
+    {
+        let mut config = state.write_config();
+        let provider = provider_config_mut(&mut config, &id).expect("provider exists");
+        provider.clone_from(&snapshot);
+    }
+
     finish_mutation(&state).await?;
-    let config = state.read_config();
-    let provider = configured_provider_entries(&config)
-        .into_iter()
-        .find(|(provider_id, _)| *provider_id == id)
-        .map(|(_, provider)| provider)
-        .expect("provider exists");
-    Ok(Json(build_provider_view(&state, &id, provider)))
+    let provider = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.clone())
+            .expect("provider exists")
+    };
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &id);
+    Ok(Json(build_provider_view(&state, &id, &provider, &routed)))
 }
 
 async fn delete_provider(
@@ -484,14 +576,18 @@ async fn set_provider_enabled(
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
 
+    {
+        let config = state.read_config();
+        ensure_provider_exists(&config, &id)
+            .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
+    }
+
     store
         .set_provider_enabled(&id, body.enabled)
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
         let mut config = state.write_config();
-        ensure_provider_exists(&config, &id)
-            .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         provider.enabled = body.enabled;
     }
@@ -501,13 +597,17 @@ async fn set_provider_enabled(
     }
 
     finish_mutation(&state).await?;
-    let config = state.read_config();
-    let provider = configured_provider_entries(&config)
-        .into_iter()
-        .find(|(provider_id, _)| *provider_id == id)
-        .map(|(_, provider)| provider)
-        .expect("provider exists");
-    Ok(Json(build_provider_view(&state, &id, provider)))
+    let provider = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.clone())
+            .expect("provider exists")
+    };
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &id);
+    Ok(Json(build_provider_view(&state, &id, &provider, &routed)))
 }
 
 async fn add_model(
@@ -546,13 +646,17 @@ async fn add_model(
     }
 
     finish_mutation(&state).await?;
-    let config = state.read_config();
-    let provider = configured_provider_entries(&config)
-        .into_iter()
-        .find(|(provider_id, _)| *provider_id == id)
-        .map(|(_, provider)| provider)
-        .expect("provider exists");
-    let view = build_model_views(&state, &id, provider)
+    let provider = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.clone())
+            .expect("provider exists")
+    };
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &id);
+    let view = build_model_views(&state, &id, &provider, &routed)
         .into_iter()
         .find(|model| model.id == entry.id)
         .expect("model inserted");
@@ -572,10 +676,14 @@ async fn update_model(
     let managed = provider_is_managed(&state, &id);
 
     let updated = {
-        let mut config = state.write_config();
+        let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider)
+            .expect("provider exists after ensure");
         let exists = provider
             .model_catalog
             .iter()
@@ -587,6 +695,16 @@ async fn update_model(
         }
         let mut updated = entry;
         updated.id = model_id.clone();
+        updated
+    };
+
+    store
+        .upsert_model_catalog(&id, &updated, managed)
+        .map_err(|err| ApiError::internal(err.to_string()))?;
+
+    {
+        let mut config = state.write_config();
+        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         if let Some(existing) = provider
             .model_catalog
             .iter_mut()
@@ -597,21 +715,20 @@ async fn update_model(
         provider
             .disabled_models
             .retain(|disabled| disabled != &model_id);
-        updated
-    };
-
-    store
-        .upsert_model_catalog(&id, &updated, managed)
-        .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
 
     finish_mutation(&state).await?;
-    let config = state.read_config();
-    let provider = configured_provider_entries(&config)
-        .into_iter()
-        .find(|(provider_id, _)| *provider_id == id)
-        .map(|(_, provider)| provider)
-        .expect("provider exists");
-    let view = build_model_views(&state, &id, provider)
+    let provider = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.clone())
+            .expect("provider exists")
+    };
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &id);
+    let view = build_model_views(&state, &id, &provider, &routed)
         .into_iter()
         .find(|model| model.id == model_id)
         .expect("model exists");
@@ -629,49 +746,68 @@ async fn delete_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    {
-        let mut config = state.write_config();
+    let (in_catalog, upstream_id) = {
+        let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
+        let provider = configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider)
+            .expect("provider exists after ensure");
         let in_catalog = provider
             .model_catalog
             .iter()
             .any(|catalog| catalog.id == model_id);
+        let upstream_id = provider
+            .model_catalog
+            .iter()
+            .find(|catalog| catalog.id == model_id)
+            .and_then(|entry| entry.upstream_id.clone());
+        (in_catalog, upstream_id)
+    };
+
+    if in_catalog {
+        if managed {
+            store
+                .delete_model_overlay(&id, &model_id)
+                .map_err(|err| ApiError::internal(err.to_string()))?;
+        } else {
+            store
+                .set_model_enabled(&id, &model_id, false)
+                .map_err(|err| ApiError::internal(err.to_string()))?;
+        }
+    } else {
+        store
+            .set_model_enabled(&id, &model_id, false)
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
+
+    {
+        let mut config = state.write_config();
+        let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         if in_catalog {
             if managed {
                 provider
                     .model_catalog
                     .retain(|catalog| catalog.id != model_id);
-                store
-                    .delete_model_overlay(&id, &model_id)
-                    .map_err(|err| ApiError::internal(err.to_string()))?;
-            } else {
-                if let Some(entry) = provider
-                    .model_catalog
-                    .iter_mut()
-                    .find(|catalog| catalog.id == model_id)
-                {
-                    entry.enabled = false;
-                }
-                store
-                    .set_model_enabled(&id, &model_id, false)
-                    .map_err(|err| ApiError::internal(err.to_string()))?;
-            }
-        } else {
-            if !provider
-                .disabled_models
-                .iter()
-                .any(|disabled| disabled == &model_id)
+            } else if let Some(entry) = provider
+                .model_catalog
+                .iter_mut()
+                .find(|catalog| catalog.id == model_id)
             {
-                provider.disabled_models.push(model_id.clone());
+                entry.enabled = false;
             }
-            store
-                .set_model_enabled(&id, &model_id, false)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
+        } else if !provider
+            .disabled_models
+            .iter()
+            .any(|disabled| disabled == &model_id)
+        {
+            provider.disabled_models.push(model_id.clone());
         }
     }
 
+    remove_model_routes(&state, &model_id, upstream_id.as_deref()).await;
     finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -687,10 +823,24 @@ async fn set_model_enabled(
     }
     let store = require_store(&state)?;
 
-    {
-        let mut config = state.write_config();
+    let upstream_id = {
+        let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .and_then(|(_, provider)| {
+                provider
+                    .model_catalog
+                    .iter()
+                    .find(|catalog| catalog.id == model_id)
+                    .and_then(|entry| entry.upstream_id.clone())
+            })
+    };
+
+    {
+        let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id).expect("provider exists after ensure");
         let in_catalog = provider
             .model_catalog
@@ -706,6 +856,11 @@ async fn set_model_enabled(
                 .find(|catalog| catalog.id == model_id)
             {
                 entry.enabled = body.enabled;
+            }
+            if body.enabled {
+                provider
+                    .disabled_models
+                    .retain(|disabled_id| disabled_id != &model_id);
             }
         } else if body.enabled {
             store
@@ -726,6 +881,12 @@ async fn set_model_enabled(
                 provider.disabled_models.push(model_id.clone());
             }
         }
+    }
+
+    if body.enabled {
+        insert_model_route(&state, &id, &model_id, upstream_id.as_deref()).await;
+    } else {
+        remove_model_routes(&state, &model_id, upstream_id.as_deref()).await;
     }
 
     finish_mutation(&state).await?;

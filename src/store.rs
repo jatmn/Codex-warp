@@ -237,14 +237,28 @@ impl Store {
             }
 
             if let Some(config_json) = &overlay.config_json {
-                let mut provider: ProviderConfig =
-                    serde_json::from_str(config_json).with_context(|| {
+                let overlay_provider: ProviderConfig = serde_json::from_str(config_json)
+                    .with_context(|| {
                         format!("parse provider overlay json for {}", overlay.provider_id)
                     })?;
-                if let Some(enabled) = overlay.enabled {
-                    provider.enabled = enabled;
+                if overlay.managed {
+                    let mut provider = overlay_provider;
+                    if let Some(enabled) = overlay.enabled {
+                        provider.enabled = enabled;
+                    }
+                    set_provider_config(config, &overlay.provider_id, provider);
+                } else if let Some(existing) = provider_config_mut(config, &overlay.provider_id) {
+                    merge_provider_overlay(existing, &overlay_provider);
+                    if let Some(enabled) = overlay.enabled {
+                        existing.enabled = enabled;
+                    }
+                } else {
+                    let mut provider = overlay_provider;
+                    if let Some(enabled) = overlay.enabled {
+                        provider.enabled = enabled;
+                    }
+                    set_provider_config(config, &overlay.provider_id, provider);
                 }
-                set_provider_config(config, &overlay.provider_id, provider);
             } else if let Some(enabled) = overlay.enabled {
                 if let Some(provider) = provider_config_mut(config, &overlay.provider_id) {
                     provider.enabled = enabled;
@@ -642,7 +656,7 @@ fn breakdown_query(
          FROM usage_events
          {where_sql}
          GROUP BY {column}
-         ORDER BY total_tokens DESC, COUNT(*) DESC, {column} ASC"
+         ORDER BY SUM(total_tokens) DESC, COUNT(*) DESC, {column} ASC"
     );
     let mut stmt = db.prepare(&sql)?;
     let rows = stmt
@@ -711,6 +725,16 @@ fn set_provider_config(config: &mut AppConfig, provider_id: &str, provider: Prov
     } else {
         config.providers.insert(provider_id.to_string(), provider);
     }
+}
+
+fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfig) {
+    let preserved_api_key = if overlay.api_key.is_none() {
+        existing.api_key.clone()
+    } else {
+        overlay.api_key.clone()
+    };
+    *existing = overlay.clone();
+    existing.api_key = preserved_api_key;
 }
 
 pub(crate) fn usage_event_from_normalized(
