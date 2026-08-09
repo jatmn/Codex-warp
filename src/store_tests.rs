@@ -442,3 +442,124 @@ fn enabled_model_route_seeds_survive_store_reopen() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn create_provider_with_catalog_persists_provider_and_models() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-provider-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("create.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "model-a".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("newprov", &provider, &provider.model_catalog)
+        .unwrap();
+    assert!(store.provider_is_managed("newprov").unwrap());
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    assert!(
+        seeds
+            .iter()
+            .any(|(id, model, _)| id == "newprov" && model == "model-a")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_corrupt_model_overlay_preserves_disabled_models() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-corrupt-model-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("corrupt-model.db")).unwrap();
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            enabled: true,
+            disabled_models: vec!["blocked".into()],
+            ..ProviderConfig::default()
+        },
+    );
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+             VALUES (?1, ?2, 1, 0, '{not-json', 0)",
+            params!["manual", "blocked"],
+        )
+        .unwrap();
+    }
+    store.apply_overlays(&mut config).unwrap();
+    assert!(
+        config.providers["manual"]
+            .disabled_models
+            .contains(&"blocked".to_string())
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_strips_inline_api_key_from_overlay_json() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-overlay-api-key-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay-key.db")).unwrap();
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            api_key: Some("toml-secret".into()),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+             VALUES (?1, 1, 0, 0, ?2)",
+            params![
+                "manual",
+                r#"{"base_url":"https://overlay.test/v1","api_key":"tampered-secret"}"#
+            ],
+        )
+        .unwrap();
+    }
+    store.apply_overlays(&mut config).unwrap();
+    assert_eq!(
+        config.providers["manual"].api_key.as_deref(),
+        Some("toml-secret")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

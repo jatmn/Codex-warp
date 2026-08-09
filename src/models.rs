@@ -228,6 +228,43 @@ pub(crate) fn seed_model_routes_from_config_and_store(
     routes
 }
 
+/// Replay overlay-enabled route seeds for one provider (e.g. after Web UI re-enable).
+pub(crate) fn register_overlay_route_seeds_for_provider(
+    routes: &mut BTreeMap<String, String>,
+    provider_id: &str,
+    provider: &crate::config::ProviderConfig,
+    store: &crate::store::Store,
+) {
+    if !provider.enabled {
+        return;
+    }
+    let seeds = match store.enabled_model_route_seeds() {
+        Ok(seeds) => seeds,
+        Err(err) => {
+            tracing::warn!(
+                provider_id = %provider_id,
+                error = %err,
+                "failed to read overlay route seeds during provider route sync"
+            );
+            return;
+        }
+    };
+    for (seed_provider_id, model_id, upstream_id) in seeds {
+        if seed_provider_id != provider_id {
+            continue;
+        }
+        if !provider.model_is_enabled(&model_id) {
+            continue;
+        }
+        routes.insert(model_id, provider_id.to_string());
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+            && provider.model_is_enabled(&upstream_id)
+        {
+            routes.insert(upstream_id, provider_id.to_string());
+        }
+    }
+}
+
 pub(crate) fn add_models_for_provider(
     merged_models: &mut Vec<Value>,
     routes: &mut BTreeMap<String, String>,

@@ -205,6 +205,17 @@ fn build_model_views_marks_models_disabled_when_provider_disabled() {
 async fn insert_model_route_repoints_existing_owner() {
     let state = test_state();
     {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
         let mut routes = state.model_routes.write().await;
         routes.insert("shared-model".into(), "alpha".into());
     }
@@ -215,6 +226,37 @@ async fn insert_model_route_repoints_existing_owner() {
         routes.get("upstream-shared").map(String::as_str),
         Some("beta")
     );
+}
+
+#[tokio::test]
+async fn remove_model_routes_preserves_other_provider_upstream_slug() {
+    let state = test_state();
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("gpt-4".into(), "alpha".into());
+    }
+    remove_model_routes(&state, "beta", "other-model", Some("gpt-4")).await;
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("gpt-4").map(String::as_str), Some("alpha"));
+}
+
+#[tokio::test]
+async fn insert_model_route_skips_disabled_provider() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "disabled".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                enabled: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    insert_model_route(&state, "disabled", "blocked-model", None).await;
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("blocked-model"));
 }
 
 #[test]

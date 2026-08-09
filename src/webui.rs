@@ -290,10 +290,19 @@ async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
         .retain(|_, owner| owner != provider_id);
 }
 
-async fn remove_model_routes(state: &AppState, model_id: &str, upstream_id: Option<&str>) {
+async fn remove_model_routes(
+    state: &AppState,
+    provider_id: &str,
+    model_id: &str,
+    upstream_id: Option<&str>,
+) {
     let mut routes = state.model_routes.write().await;
-    routes.remove(model_id);
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+    if routes.get(model_id).map(String::as_str) == Some(provider_id) {
+        routes.remove(model_id);
+    }
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+        && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
+    {
         routes.remove(upstream_id);
     }
 }
@@ -304,6 +313,17 @@ async fn insert_model_route(
     model_id: &str,
     upstream_id: Option<&str>,
 ) {
+    let provider_enabled = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(id, _)| *id == provider_id)
+            .map(|(_, provider)| provider.enabled)
+            .unwrap_or(false)
+    };
+    if !provider_enabled {
+        return;
+    }
     let mut routes = state.model_routes.write().await;
     // Explicit operator enable/add always claims ownership for colliding slugs.
     routes.insert(model_id.to_string(), provider_id.to_string());
@@ -329,6 +349,14 @@ async fn sync_provider_routes_for_enabled(
         {
             let mut routes = state.model_routes.write().await;
             register_catalog_routes_for_provider(&mut routes, provider_id, &provider);
+            if let Some(store) = state.store.as_ref() {
+                models::register_overlay_route_seeds_for_provider(
+                    &mut routes,
+                    provider_id,
+                    &provider,
+                    store,
+                );
+            }
         }
         // Rebuild upstream-discovered routes for API clients that do not call /v1/models.
         let refresh_state = state.clone();
@@ -658,19 +686,8 @@ async fn create_provider(
     }
 
     store
-        .upsert_provider_overlay(
-            &provider_id,
-            Some(provider.enabled),
-            false,
-            true,
-            Some(&provider),
-        )
+        .create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
-    for entry in &provider.model_catalog {
-        store
-            .upsert_model_catalog(&provider_id, entry, true)
-            .map_err(|err| ApiError::internal(err.to_string()))?;
-    }
 
     {
         let mut config = state.write_config();
@@ -962,12 +979,12 @@ async fn update_model(
     }
 
     if previous_upstream_id.as_deref() != updated.upstream_id.as_deref() {
-        remove_model_routes(&state, &model_id, previous_upstream_id.as_deref()).await;
+        remove_model_routes(&state, &id, &model_id, previous_upstream_id.as_deref()).await;
     }
     if updated.enabled {
         insert_model_route(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
     } else {
-        remove_model_routes(&state, &model_id, updated.upstream_id.as_deref()).await;
+        remove_model_routes(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
     }
 
     finish_mutation(&state).await?;
@@ -999,7 +1016,7 @@ async fn delete_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let catalog_entry = {
+    let (catalog_entry, upstream_id, managed_snapshot) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -1008,15 +1025,23 @@ async fn delete_model(
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        provider
+        let catalog_entry = provider
             .model_catalog
             .iter()
             .find(|catalog| catalog.id == model_id)
-            .cloned()
+            .cloned();
+        let upstream_id = catalog_entry
+            .as_ref()
+            .and_then(|entry| entry.upstream_id.clone());
+        let mut snapshot = provider.clone();
+        if catalog_entry.is_some() {
+            snapshot.suppress_catalog_model(&model_id, upstream_id.as_deref());
+        } else {
+            snapshot.disable_model(&model_id);
+        }
+        let managed_snapshot = if managed { Some(snapshot) } else { None };
+        (catalog_entry, upstream_id, managed_snapshot)
     };
-    let upstream_id = catalog_entry
-        .as_ref()
-        .and_then(|entry| entry.upstream_id.clone());
 
     if let Some(entry) = &catalog_entry {
         if managed {
@@ -1034,29 +1059,24 @@ async fn delete_model(
             .map_err(|err| ApiError::internal(err.to_string()))?;
     }
 
-    let managed_snapshot = {
-        let mut config = state.write_config();
-        let provider = provider_config_mut(&mut config, &id)
-            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        if catalog_entry.is_some() {
-            // Soft-delete means suppress rediscovery, not clear prior disables.
-            provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
-        } else {
-            provider.disable_model(&model_id);
-        }
-        if managed {
-            Some(provider.clone())
-        } else {
-            None
-        }
-    };
     if let Some(snapshot) = managed_snapshot {
         store
             .upsert_provider_overlay(&id, Some(snapshot.enabled), false, true, Some(&snapshot))
             .map_err(|err| ApiError::internal(err.to_string()))?;
     }
 
-    remove_model_routes(&state, &model_id, upstream_id.as_deref()).await;
+    {
+        let mut config = state.write_config();
+        let provider = provider_config_mut(&mut config, &id)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
+        if catalog_entry.is_some() {
+            provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+        } else {
+            provider.disable_model(&model_id);
+        }
+    }
+
+    remove_model_routes(&state, &id, &model_id, upstream_id.as_deref()).await;
     finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1122,7 +1142,7 @@ async fn set_model_enabled(
     if body.enabled {
         insert_model_route(&state, &id, &model_id, upstream_id.as_deref()).await;
     } else {
-        remove_model_routes(&state, &model_id, upstream_id.as_deref()).await;
+        remove_model_routes(&state, &id, &model_id, upstream_id.as_deref()).await;
     }
 
     finish_mutation(&state).await?;

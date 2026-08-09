@@ -245,6 +245,7 @@ impl Store {
                 let overlay_provider: ProviderConfig = match serde_json::from_str(config_json) {
                     Ok(mut provider) => {
                         strip_sensitive_provider_headers(&mut provider);
+                        provider.api_key = None;
                         provider
                     }
                     Err(err) => {
@@ -337,11 +338,6 @@ impl Store {
                             error = %err,
                             "skipping corrupt model overlay catalog_json"
                         );
-                        if enabled {
-                            provider.clear_disabled_overlapping(&model_id);
-                        } else {
-                            provider.disable_model(&model_id);
-                        }
                         continue;
                     }
                 };
@@ -519,6 +515,62 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically persist a newly created managed provider and its catalog overlays.
+    pub(crate) fn create_provider_with_catalog(
+        &self,
+        provider_id: &str,
+        provider: &ProviderConfig,
+        catalog: &[ModelCatalogEntry],
+    ) -> anyhow::Result<()> {
+        let mut stripped = provider.clone();
+        stripped.api_key = None;
+        strip_sensitive_provider_headers(&mut stripped);
+        let config_json = serde_json::to_string(&stripped).context("serialize provider overlay")?;
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute("BEGIN IMMEDIATE", [])?;
+        let result: anyhow::Result<()> = (|| {
+            db.execute(
+                "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+                 VALUES (?1, ?2, 0, 1, ?3)
+                 ON CONFLICT(provider_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    removed = excluded.removed,
+                    managed = excluded.managed,
+                    config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
+                params![provider_id, i64::from(provider.enabled), config_json,],
+            )?;
+            for entry in catalog {
+                let catalog_json = serde_json::to_string(entry)?;
+                db.execute(
+                    "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+                     VALUES (?1, ?2, ?3, 1, ?4, 0)
+                     ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                        enabled = excluded.enabled,
+                        managed = excluded.managed OR model_overlays.managed,
+                        catalog_json = excluded.catalog_json,
+                        removed = 0",
+                    params![
+                        provider_id,
+                        entry.id,
+                        i64::from(entry.enabled),
+                        catalog_json
+                    ],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = db.execute("ROLLBACK", []);
+                Err(err)
+            }
+        }
+    }
+
     pub(crate) fn upsert_model_catalog(
         &self,
         provider_id: &str,
@@ -588,7 +640,8 @@ impl Store {
     ///
     /// Returns `(provider_id, model_id, upstream_id)` for non-removed enabled
     /// overlays so headless multi-provider routing does not depend on a prior
-    /// `/v1/models` refresh.
+    /// `/v1/models` refresh. When multiple providers seed the same slug,
+    /// lexicographic `provider_id` order wins on each restart.
     pub(crate) fn enabled_model_route_seeds(
         &self,
     ) -> anyhow::Result<Vec<(String, String, Option<String>)>> {
