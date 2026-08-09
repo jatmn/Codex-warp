@@ -3,10 +3,12 @@
 
   const API = "/api";
   let providers = [];
+  let providerTemplates = [];
+  let selectedTemplateCatalog = [];
   let analyticsModelIds = [];
   let analyticsTimer = null;
   let analyticsInFlight = false;
-  let activeTab = "providers";
+  let activeTab = "analytics";
 
   const $ = (sel) => document.querySelector(sel);
   const status = (msg) => { $("#status-line").textContent = msg; };
@@ -32,7 +34,9 @@
   function switchTab(name) {
     activeTab = name;
     document.querySelectorAll(".tab").forEach((b) => {
-      b.classList.toggle("active", b.dataset.tab === name);
+      const on = b.dataset.tab === name;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
     });
     document.querySelectorAll(".panel").forEach((p) => {
       const on = p.id === `panel-${name}`;
@@ -68,15 +72,10 @@
 
   async function loadProviders() {
     status("Loading providers…");
-    try {
-      await refreshModelRoutes();
-      providers = await api("/providers");
-      renderProviders();
-      fillAnalyticsFilters();
-      status("Ready");
-    } catch (e) {
-      status(`Error: ${e.message}`);
-    }
+    await refreshModelRoutes();
+    providers = await api("/providers");
+    renderProviders();
+    fillAnalyticsFilters();
   }
 
   function renderProviders() {
@@ -173,11 +172,11 @@
       meta.innerHTML = `<strong>${esc(m.display_name || m.id)}</strong><small>${esc(m.id)}</small>`;
       const sw = toggleSwitch(async (enabled) => {
         try {
-          await api(
+          const view = await api(
             `/providers/${encodeURIComponent(provider.id)}/models/enabled/${encodeURIComponent(m.id)}`,
             { method: "POST", body: JSON.stringify({ enabled }) },
           );
-          m.enabled = enabled;
+          m.enabled = view.enabled;
         } catch (e) {
           sw.input.checked = !enabled;
           status(`Error: ${e.message}`);
@@ -215,49 +214,223 @@
 
   const providerDialog = $("#provider-dialog");
   const providerForm = $("#provider-form");
+  const templateSelect = $("#provider-template");
+  const templateDescription = $("#template-description");
+  const templateCatalogPreview = $("#template-catalog-preview");
+  const templateField = $("#template-field");
+
   $("#btn-add-provider").addEventListener("click", () => openProviderForm());
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
+  templateSelect.addEventListener("change", () => applySelectedTemplate());
+
   providerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const fd = new FormData(providerForm);
-    const id = fd.get("id").trim();
-    const body = {
-      name: fd.get("name")?.trim() || null,
-      base_url: fd.get("base_url").trim(),
-      api_key_env: fd.get("api_key_env")?.trim() || null,
-    };
+    const id = String(fd.get("id") || "").trim();
     const mode = providerForm.dataset.mode || "create";
+    const template = mode === "create"
+      ? findTemplateByOptionValue(templateSelect.value)
+      : null;
+    const body = {
+      name: String(fd.get("name") || "").trim() || null,
+      base_url: String(fd.get("base_url") || "").trim(),
+      api_key_env: String(fd.get("api_key_env") || "").trim() || null,
+      auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
+      auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
+      responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
+      chat_completions_path:
+        String(fd.get("chat_completions_path") || "").trim() || "/chat/completions",
+      models_path: String(fd.get("models_path") || "").trim() || "/models",
+      model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
+      enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
+    };
     try {
       if (mode === "create") {
-        await api("/providers", { method: "POST", body: JSON.stringify({ id, ...body }) });
+        const isCustom = !template || template.key === "custom";
+        const payload = isCustom
+          ? {
+              template: "custom",
+              id,
+              ...body,
+              model_catalog: selectedTemplateCatalog,
+            }
+          : {
+              template: template.key,
+              id: template.id,
+              api_key_env: body.api_key_env,
+              enabled: body.enabled,
+            };
+        await api("/providers", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
       } else {
         await api(`/providers/${encodeURIComponent(id)}`, {
           method: "PUT",
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            name: body.name,
+            base_url: body.base_url,
+            api_key_env: body.api_key_env,
+            auth_header: body.auth_header,
+            auth_scheme: body.auth_scheme,
+            responses_path: body.responses_path,
+            chat_completions_path: body.chat_completions_path,
+            models_path: body.models_path,
+            model_catalog_only: body.model_catalog_only,
+            enabled: body.enabled,
+          }),
         });
       }
       providerDialog.close();
       await loadProviders();
+      status(mode === "create" ? `Provider ${id} created` : `Provider ${id} updated`);
     } catch (e) { status(`Error: ${e.message}`); }
   });
 
+  function templateOptionValue(template) {
+    return template.key;
+  }
+
+  function findTemplateByOptionValue(value) {
+    return providerTemplates.find((template) => template.key === value) || null;
+  }
+
+  function populateTemplateSelect() {
+    templateSelect.innerHTML = "";
+    providerTemplates.forEach((template) => {
+      const option = document.createElement("option");
+      option.value = templateOptionValue(template);
+      option.textContent = template.label;
+      templateSelect.append(option);
+    });
+  }
+
+  function renderCatalogPreview(catalog) {
+    if (!catalog?.length) {
+      templateCatalogPreview.hidden = true;
+      templateCatalogPreview.innerHTML = "";
+      return;
+    }
+    const names = catalog
+      .map((entry) => entry.display_name || entry.id)
+      .slice(0, 8)
+      .map((name) => esc(name));
+    const more = catalog.length > 8 ? ` +${catalog.length - 8} more` : "";
+    templateCatalogPreview.hidden = false;
+    templateCatalogPreview.innerHTML =
+      `<strong>${catalog.length} catalog model${catalog.length === 1 ? "" : "s"}</strong>` +
+      `<div>${names.join(" · ")}${more}</div>`;
+  }
+
+  function setNamedTemplateMode(isNamed) {
+    const identity = $("#provider-identity-fields");
+    const advanced = $("#provider-advanced");
+    const idInput = providerForm.querySelector("[name=id]");
+    const baseUrlInput = providerForm.querySelector("[name=base_url]");
+    identity.classList.toggle("template-locked", isNamed);
+    advanced.hidden = isNamed;
+    idInput.readOnly = isNamed;
+    baseUrlInput.readOnly = isNamed;
+    providerForm.querySelector("[name=name]").readOnly = isNamed;
+    ["auth_header", "auth_scheme", "responses_path", "chat_completions_path", "models_path"]
+      .forEach((name) => {
+        providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
+      });
+    providerForm.querySelector("[name=model_catalog_only]").disabled = isNamed;
+    if (isNamed) {
+      idInput.removeAttribute("required");
+      baseUrlInput.removeAttribute("required");
+    } else {
+      idInput.setAttribute("required", "required");
+      baseUrlInput.setAttribute("required", "required");
+    }
+  }
+
+  function applySelectedTemplate() {
+    const template = findTemplateByOptionValue(templateSelect.value);
+    const idInput = providerForm.querySelector("[name=id]");
+    if (!template) {
+      selectedTemplateCatalog = [];
+      templateDescription.textContent = "";
+      renderCatalogPreview([]);
+      setNamedTemplateMode(false);
+      return;
+    }
+    const isNamed = template.key !== "custom";
+    selectedTemplateCatalog = Array.isArray(template.model_catalog)
+      ? template.model_catalog.map((entry) => ({ ...entry }))
+      : [];
+    templateDescription.textContent = template.description || "";
+    idInput.value = template.id || "";
+    providerForm.querySelector("[name=name]").value = template.name || "";
+    providerForm.querySelector("[name=base_url]").value = template.base_url || "";
+    providerForm.querySelector("[name=api_key_env]").value = template.api_key_env || "";
+    providerForm.querySelector("[name=auth_header]").value =
+      template.auth_header || "authorization";
+    providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme || "Bearer";
+    providerForm.querySelector("[name=responses_path]").value =
+      template.responses_path || "/responses";
+    providerForm.querySelector("[name=chat_completions_path]").value =
+      template.chat_completions_path || "/chat/completions";
+    providerForm.querySelector("[name=models_path]").value = template.models_path || "/models";
+    providerForm.querySelector("[name=model_catalog_only]").checked = !!template.model_catalog_only;
+    providerForm.querySelector("[name=enabled]").checked = true;
+    setNamedTemplateMode(isNamed);
+    renderCatalogPreview(selectedTemplateCatalog);
+    if (!isNamed) {
+      idInput.focus();
+    } else {
+      providerForm.querySelector("[name=api_key_env]").focus();
+    }
+  }
+
   function openProviderForm(p = null) {
     providerForm.reset();
+    selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");
+    const enabledField = $("#provider-enabled-field");
     if (p) {
       providerForm.dataset.mode = "edit";
       $("#provider-form-title").textContent = "Edit provider";
+      templateField.hidden = true;
+      templateDescription.textContent = "";
+      templateCatalogPreview.hidden = true;
+      enabledField.hidden = false;
+      setNamedTemplateMode(false);
+      $("#provider-advanced").hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
       providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
       providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
+      providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
+      providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
+      providerForm.querySelector("[name=responses_path]").value = p.responses_path || "/responses";
+      providerForm.querySelector("[name=chat_completions_path]").value =
+        p.chat_completions_path || "/chat/completions";
+      providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
+      providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
+      providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
     } else {
       providerForm.dataset.mode = "create";
-      $("#provider-form-title").textContent = "Add provider";
-      idInput.readOnly = false;
+      $("#provider-form-title").textContent = "Add from example template";
+      templateField.hidden = false;
+      enabledField.hidden = false;
+      populateTemplateSelect();
+      const preferred =
+        providerTemplates.find((template) => template.key === "openrouter") ||
+        providerTemplates[0];
+      if (preferred) {
+        templateSelect.value = templateOptionValue(preferred);
+      }
+      applySelectedTemplate();
     }
     providerDialog.showModal();
+  }
+
+  async function loadProviderTemplates() {
+    providerTemplates = await api("/provider-templates");
+    populateTemplateSelect();
   }
 
   const modelDialog = $("#model-dialog");
@@ -511,5 +684,16 @@
     analyticsTimer = null;
   }
 
-  loadProviders();
+  async function boot() {
+    switchTab("analytics");
+    status("Loading…");
+    try {
+      await Promise.all([loadProviders(), loadProviderTemplates()]);
+      status("Ready");
+    } catch (e) {
+      status(`Error: ${e.message}`);
+    }
+  }
+
+  boot();
 })();

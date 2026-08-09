@@ -239,3 +239,23 @@ fn analytics_range_parse_matches_webui_query_values() {
     );
     assert!(AnalyticsRange::parse("invalid").is_none());
 }
+
+#[test]
+fn create_provider_body_accepts_named_template_payload() {
+    let body: CreateProviderBody = serde_json::from_str(
+        r#"{
+            "template": "opencode_go",
+            "id": "opencode_go",
+            "api_key_env": "OPENCODE_GO_API_KEY",
+            "enabled": true
+        }"#,
+    )
+    .expect("deserialize template create body");
+    assert_eq!(body.template.as_deref(), Some("opencode_go"));
+    assert_eq!(body.id, "opencode_go");
+    assert_eq!(
+        body.fields.api_key_env,
+        OptionalPatch::Set("OPENCODE_GO_API_KEY".into())
+    );
+    assert_eq!(body.fields.enabled, Some(true));
+}

@@ -886,3 +886,42 @@ async fn models_returns_empty_list_when_all_models_disabled() {
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(value["models"], json!([]));
 }
+
+#[test]
+fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-seed-routes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .set_model_enabled("beta", "upstream-only", true)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    let mut alpha = ProviderConfig::default();
+    alpha.base_url = "https://alpha.example/v1".into();
+    alpha.model_catalog_only = true;
+    let mut beta = ProviderConfig::default();
+    beta.base_url = "https://beta.example/v1".into();
+    beta.model_catalog_only = true;
+    config.providers.insert("alpha".into(), alpha);
+    config.providers.insert("beta".into(), beta);
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(
+        routes.get("upstream-only").map(String::as_str),
+        Some("beta")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

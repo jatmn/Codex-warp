@@ -243,7 +243,10 @@ impl Store {
 
             if let Some(config_json) = &overlay.config_json {
                 let overlay_provider: ProviderConfig = match serde_json::from_str(config_json) {
-                    Ok(provider) => provider,
+                    Ok(mut provider) => {
+                        strip_sensitive_provider_headers(&mut provider);
+                        provider
+                    }
                     Err(err) => {
                         tracing::warn!(
                             provider_id = overlay.provider_id,
@@ -308,8 +311,20 @@ impl Store {
                 continue;
             };
             if removed {
-                provider.model_catalog.retain(|entry| entry.id != model_id);
-                provider.clear_disabled_overlapping(&model_id);
+                // Prefer upstream alias from the soft-remove snapshot so live
+                // catalogs cannot rediscover the model after restart.
+                let upstream_id = catalog_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<ModelCatalogEntry>(raw).ok())
+                    .and_then(|entry| entry.upstream_id)
+                    .or_else(|| {
+                        provider
+                            .model_catalog
+                            .iter()
+                            .find(|entry| entry.id == model_id)
+                            .and_then(|entry| entry.upstream_id.clone())
+                    });
+                provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
                 continue;
             }
             if let Some(catalog_json) = catalog_json {
@@ -324,21 +339,33 @@ impl Store {
                         );
                         if enabled {
                             provider.clear_disabled_overlapping(&model_id);
-                        } else if !provider.disabled_models.iter().any(|id| id == &model_id) {
-                            provider.disabled_models.push(model_id);
+                        } else {
+                            provider.disable_model(&model_id);
                         }
                         continue;
                     }
                 };
+                let entry_enabled = entry.enabled;
+                let upstream_id = entry.upstream_id.clone();
                 if let Some(existing) = provider
                     .model_catalog
                     .iter_mut()
-                    .find(|entry| entry.id == model_id)
+                    .find(|catalog| catalog.id == model_id)
                 {
                     *existing = entry;
                 } else {
                     // Persist UI-added catalog entries even when currently disabled.
                     provider.model_catalog.push(entry);
+                }
+                // Catalog overlays must win over TOML disabled_models on enable,
+                // otherwise a UI re-enable is lost on the next restart.
+                if entry_enabled {
+                    provider.clear_disabled_overlapping(&model_id);
+                    if let Some(upstream_id) = upstream_id.as_deref().filter(|id| !id.is_empty()) {
+                        provider.clear_disabled_overlapping(upstream_id);
+                    }
+                } else {
+                    provider.disable_model(&model_id);
                 }
             } else if let Some(entry) = provider
                 .model_catalog
@@ -348,11 +375,13 @@ impl Store {
                 entry.enabled = enabled;
                 if enabled {
                     provider.clear_disabled_overlapping(&model_id);
+                } else {
+                    provider.disable_model(&model_id);
                 }
             } else if enabled {
                 provider.clear_disabled_overlapping(&model_id);
-            } else if !provider.disabled_models.iter().any(|id| id == &model_id) {
-                provider.disabled_models.push(model_id);
+            } else {
+                provider.disable_model(&model_id);
             }
         }
         Ok(())
@@ -534,18 +563,60 @@ impl Store {
         &self,
         provider_id: &str,
         model_id: &str,
+        catalog: Option<&ModelCatalogEntry>,
     ) -> anyhow::Result<()> {
+        // Keep catalog_json so restart can suppress upstream aliases as well as
+        // the catalog id. Prefer the caller snapshot, else leave any prior row.
+        let catalog_json = catalog
+            .map(serde_json::to_string)
+            .transpose()
+            .context("serialize soft-removed model catalog")?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute(
             "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
-             VALUES (?1, ?2, 0, 0, NULL, 1)
+             VALUES (?1, ?2, 0, 0, ?3, 1)
              ON CONFLICT(provider_id, model_id) DO UPDATE SET
                 enabled = 0,
                 removed = 1,
-                catalog_json = NULL",
-            params![provider_id, model_id],
+                catalog_json = COALESCE(excluded.catalog_json, model_overlays.catalog_json)",
+            params![provider_id, model_id, catalog_json],
         )?;
         Ok(())
+    }
+
+    /// Enabled overlay models that should own routes after restart.
+    ///
+    /// Returns `(provider_id, model_id, upstream_id)` for non-removed enabled
+    /// overlays so headless multi-provider routing does not depend on a prior
+    /// `/v1/models` refresh.
+    pub(crate) fn enabled_model_route_seeds(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, Option<String>)>> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let mut stmt = db.prepare(
+            "SELECT provider_id, model_id, catalog_json FROM model_overlays
+             WHERE enabled = 1 AND COALESCE(removed, 0) = 0
+             ORDER BY provider_id, model_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut seeds = Vec::with_capacity(rows.len());
+        for (provider_id, model_id, catalog_json) in rows {
+            let upstream_id = catalog_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<ModelCatalogEntry>(raw).ok())
+                .and_then(|entry| entry.upstream_id)
+                .filter(|value| !value.is_empty());
+            seeds.push((provider_id, model_id, upstream_id));
+        }
+        Ok(seeds)
     }
 
     pub(crate) fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
@@ -836,13 +907,10 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
 }
 
 fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
-    provider.headers.retain(|name, _| {
-        let lower = name.to_ascii_lowercase();
-        lower != "authorization"
-            && lower != "proxy-authorization"
-            && lower != "x-api-key"
-            && lower != "api-key"
-    });
+    // Overlays must not persist request headers: secrets may use arbitrary
+    // header names, and TOML remains the source of truth for header auth.
+    // merge_provider_overlay restores TOML headers for non-managed providers.
+    provider.headers.clear();
 }
 
 fn non_negative_tokens(value: Option<i64>) -> i64 {

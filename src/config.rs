@@ -378,6 +378,35 @@ impl ProviderConfig {
             .retain(|disabled| !model_ids_overlap(disabled, model_id));
     }
 
+    /// Suppress a model id so it cannot be rediscovered or routed.
+    ///
+    /// No-ops when an overlapping disable is already present (for example
+    /// `provider/foo` already covers bare `foo`).
+    pub fn disable_model(&mut self, model_id: &str) {
+        if model_id.is_empty() {
+            return;
+        }
+        if self
+            .disabled_models
+            .iter()
+            .any(|disabled| model_ids_overlap(disabled, model_id))
+        {
+            return;
+        }
+        self.disabled_models.push(model_id.to_string());
+    }
+
+    /// Soft-remove a catalog identity: drop the catalog row and suppress the
+    /// catalog id plus any upstream alias so live `/models` fetches cannot
+    /// resurrect the model.
+    pub fn suppress_catalog_model(&mut self, model_id: &str, upstream_id: Option<&str>) {
+        self.model_catalog.retain(|entry| entry.id != model_id);
+        self.disable_model(model_id);
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+            self.disable_model(upstream_id);
+        }
+    }
+
     pub fn api_key(&self) -> Option<String> {
         if let Some(value) = &self.api_key {
             return Some(value.clone());

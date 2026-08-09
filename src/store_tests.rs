@@ -267,3 +267,178 @@ fn apply_overlays_skips_corrupt_overlay_json() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn soft_remove_model_suppresses_catalog_and_upstream_across_restart() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-soft-remove-model-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("soft-model.db")).unwrap();
+
+    let entry = ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            enabled: true,
+            model_catalog: vec![entry.clone()],
+            // Prior overlapping disable must survive soft-remove.
+            disabled_models: vec!["provider/gpt-4".into()],
+            ..ProviderConfig::default()
+        },
+    );
+
+    store
+        .soft_remove_model("manual", "my-model", Some(&entry))
+        .unwrap();
+    store.apply_overlays(&mut config).unwrap();
+
+    let provider = &config.providers["manual"];
+    assert!(provider.model_catalog.is_empty());
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-catalog-enable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("enable.db")).unwrap();
+
+    let entry = ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            enabled: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "my-model".into(),
+                upstream_id: Some("gpt-4".into()),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            }],
+            disabled_models: vec!["my-model".into(), "gpt-4".into()],
+            ..ProviderConfig::default()
+        },
+    );
+
+    store.upsert_model_catalog("manual", &entry, false).unwrap();
+    store.apply_overlays(&mut config).unwrap();
+
+    let provider = &config.providers["manual"];
+    assert!(provider.model_is_enabled("my-model"));
+    assert!(provider.model_is_enabled("gpt-4"));
+    assert!(provider.disabled_models.is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upsert_provider_overlay_strips_custom_headers() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-header-strip-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("headers.db")).unwrap();
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    provider
+        .headers
+        .insert("x-custom-token".into(), "secret-header".into());
+    provider
+        .headers
+        .insert("authorization".into(), "Bearer leaked".into());
+    store
+        .upsert_provider_overlay("secret", Some(true), false, true, Some(&provider))
+        .unwrap();
+
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'secret'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!json.contains("secret-header"));
+    assert!(!json.contains("Bearer leaked"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let headers = parsed.get("headers").and_then(|value| value.as_object());
+    assert!(headers.is_none_or(|map| map.is_empty()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn enabled_model_route_seeds_survive_store_reopen() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-seeds-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .set_model_enabled("beta", "upstream-only", true)
+            .unwrap();
+        store
+            .upsert_model_catalog(
+                "alpha",
+                &ModelCatalogEntry {
+                    id: "shared".into(),
+                    upstream_id: Some("shared-up".into()),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                },
+                false,
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(&db_path).unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    assert!(seeds.iter().any(|(provider, model, upstream)| {
+        provider == "beta" && model == "upstream-only" && upstream.is_none()
+    }));
+    assert!(seeds.iter().any(|(provider, model, upstream)| {
+        provider == "alpha" && model == "shared" && upstream.as_deref() == Some("shared-up")
+    }));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

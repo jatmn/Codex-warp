@@ -186,6 +186,48 @@ pub(crate) fn register_catalog_routes_for_provider(
     }
 }
 
+/// Seed `model_routes` from enabled providers and SQLite overlays at startup.
+///
+/// Catalog routes establish baseline ownership. Overlay seeds then claim
+/// ownership for models the operator explicitly enabled (including
+/// upstream-only toggles) so multi-provider headless clients do not need a
+/// prior `/v1/models` refresh after restart.
+pub(crate) fn seed_model_routes_from_config_and_store(
+    config: &AppConfig,
+    store: &crate::store::Store,
+) -> BTreeMap<String, String> {
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(config) {
+        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    }
+    let seeds = match store.enabled_model_route_seeds() {
+        Ok(seeds) => seeds,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "failed to read enabled model route seeds; overlay routes omitted at startup"
+            );
+            return routes;
+        }
+    };
+    for (provider_id, model_id, upstream_id) in seeds {
+        let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
+            continue;
+        };
+        if !provider.model_is_enabled(&model_id) {
+            continue;
+        }
+        // Explicit overlay enable claims ownership for colliding slugs.
+        routes.insert(model_id, provider_id.clone());
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+            && provider.model_is_enabled(&upstream_id)
+        {
+            routes.insert(upstream_id, provider_id);
+        }
+    }
+    routes
+}
+
 pub(crate) fn add_models_for_provider(
     merged_models: &mut Vec<Value>,
     routes: &mut BTreeMap<String, String>,

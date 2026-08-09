@@ -156,11 +156,49 @@ dialog {
   background: var(--surface);
   color: var(--text);
   padding: 1rem;
-  max-width: 420px;
+  max-width: 480px;
+  width: calc(100vw - 2rem);
 }
 dialog form { display: flex; flex-direction: column; gap: 0.6rem; }
 dialog h3 { margin: 0 0 0.25rem; }
 dialog label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; }
+.checkbox-row {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+}
+.checkbox-row input { width: auto; }
+.hint { margin: 0; font-size: 0.8rem; line-height: 1.35; }
+.muted { color: var(--muted); }
+.catalog-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0.55rem 0.7rem;
+  font-size: 0.82rem;
+  max-height: 8rem;
+  overflow: auto;
+}
+.catalog-preview strong { color: var(--text); }
+#provider-identity-fields.template-locked {
+  opacity: 0.72;
+}
+#provider-identity-fields.template-locked input {
+  background: var(--surface-2);
+}
+details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.65rem;
+  background: var(--surface-2);
+}
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+details[open] summary { margin-bottom: 0.5rem; }
+details label { margin-bottom: 0.45rem; }
 .form-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
 
 .footer {

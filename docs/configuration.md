@@ -309,11 +309,15 @@ Open `http://127.0.0.1:8787/ui/` while the proxy is running.
 
 The UI can:
 
-- add, edit, and remove providers and model catalog entries
+- add providers from bundled example templates (OpenRouter, Kimi Code, OpenCode Go,
+  ClinePass, Xiaomi Token Plan, or a blank OpenAI-compatible profile)
+- edit and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider
 - chart token usage, prompts, and sessions over time with a line chart, plus
   token usage over time with a bar chart (global, per provider, and per model)
+
+The Analytics tab is the default landing view.
 
 Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
 `week`, `30d`, `yearly`.
@@ -323,7 +327,13 @@ bootstrap source of truth; overlays apply on startup whenever the database is
 open. Managed providers created in the UI live entirely in SQLite. Removing a
 TOML-sourced provider or catalog model soft-deletes it via an overlay so it
 stays suppressed across restarts until the overlay row is cleared or the model
-is re-added in the UI.
+is re-added in the UI. Soft-deleting a catalog model also suppresses its
+upstream alias so live `/models` fetches cannot resurrect it. Enabled model
+overlays reseed `model_routes` at startup so multi-provider routing does not
+require a prior `/v1/models` call after restart.
+
+Provider overlays never persist `api_key` or request `headers`; use
+`api_key_env` (and TOML headers) for durable secrets.
 
 CLI overrides:
 

@@ -29,6 +29,8 @@ use crate::config::configured_provider_entries;
 use crate::models;
 use crate::models::register_catalog_routes_for_provider;
 use crate::provider::provider_display_name;
+use crate::provider_templates::bundled_provider_templates;
+use crate::provider_templates::find_provider_template;
 use crate::state::AppState;
 use crate::store::AnalyticsRange;
 use crate::store::Store;
@@ -60,6 +62,7 @@ fn api_router() -> Router<AppState> {
             "/providers/{id}/models/{*model_id}",
             put(update_model).delete(delete_model),
         )
+        .route("/provider-templates", get(list_provider_templates))
         .route("/analytics", get(get_analytics))
 }
 
@@ -169,8 +172,14 @@ struct EnabledBody {
 #[derive(Debug, Deserialize)]
 struct CreateProviderBody {
     id: String,
+    /// Bundled example key (`openrouter`, `custom`, …). Named templates apply
+    /// the full example provider snapshot server-side.
+    #[serde(default)]
+    template: Option<String>,
     #[serde(flatten)]
     fields: ProviderPersist,
+    #[serde(default)]
+    model_catalog: Vec<ModelCatalogEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -465,6 +474,17 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn clear_catalog_enable_overlaps(
+    provider: &mut ProviderConfig,
+    model_id: &str,
+    upstream_id: Option<&str>,
+) {
+    provider.clear_disabled_overlapping(model_id);
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+        provider.clear_disabled_overlapping(upstream_id);
+    }
+}
+
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     match &fields.name {
         OptionalPatch::Absent => {}
@@ -533,53 +553,134 @@ async fn list_providers(
     Ok(Json(views))
 }
 
+async fn list_provider_templates() -> Json<Vec<crate::provider_templates::ProviderTemplate>> {
+    Json(bundled_provider_templates())
+}
+
 async fn create_provider(
     State(state): State<AppState>,
     Json(body): Json<CreateProviderBody>,
 ) -> Result<(StatusCode, Json<ProviderView>), ApiError> {
-    validate_provider_id(&body.id)?;
-    if body.id == PRIMARY_PROVIDER_ID {
-        return Err(ApiError::bad_request("cannot create default provider id"));
-    }
-    let base_url = body
-        .fields
-        .base_url
+    validate_provider_persist(&body.fields)?;
+
+    let template_key = body
+        .template
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
-    validate_provider_persist(&body.fields)?;
+        .filter(|value| !value.is_empty());
+    let (provider_id, provider) = if let Some(template_key) = template_key {
+        let template = find_provider_template(template_key).ok_or_else(|| {
+            ApiError::bad_request(format!("unknown provider template `{template_key}`"))
+        })?;
+        if template.key == "custom" {
+            let id = body.id.trim();
+            validate_provider_id(id)?;
+            if id == PRIMARY_PROVIDER_ID {
+                return Err(ApiError::bad_request("cannot create default provider id"));
+            }
+            let base_url = body
+                .fields
+                .base_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
+            for entry in &body.model_catalog {
+                if entry.id.trim().is_empty() {
+                    return Err(ApiError::bad_request(
+                        "model catalog entries require a non-empty id",
+                    ));
+                }
+            }
+            let mut provider = template.provider;
+            provider.base_url = base_url.to_string();
+            provider.enabled = body.fields.enabled.unwrap_or(true);
+            provider.model_catalog = body.model_catalog.clone();
+            apply_provider_persist(&mut provider, &body.fields);
+            (id.to_string(), provider)
+        } else {
+            // Named example profiles always use the bundled provider id + snapshot.
+            let id = template.id.clone();
+            validate_provider_id(&id)?;
+            if id == PRIMARY_PROVIDER_ID {
+                return Err(ApiError::bad_request("cannot create default provider id"));
+            }
+            let mut provider = template.provider;
+            provider.enabled = body.fields.enabled.unwrap_or(true);
+            match &body.fields.api_key_env {
+                OptionalPatch::Absent => {}
+                OptionalPatch::Clear => provider.api_key_env = None,
+                OptionalPatch::Set(api_key_env) => {
+                    let trimmed = api_key_env.trim();
+                    provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                }
+            }
+            (id, provider)
+        }
+    } else {
+        let id = body.id.trim();
+        validate_provider_id(id)?;
+        if id == PRIMARY_PROVIDER_ID {
+            return Err(ApiError::bad_request("cannot create default provider id"));
+        }
+        let base_url = body
+            .fields
+            .base_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
+        for entry in &body.model_catalog {
+            if entry.id.trim().is_empty() {
+                return Err(ApiError::bad_request(
+                    "model catalog entries require a non-empty id",
+                ));
+            }
+        }
+        let mut provider = ProviderConfig {
+            base_url: base_url.to_string(),
+            enabled: body.fields.enabled.unwrap_or(true),
+            model_catalog: body.model_catalog.clone(),
+            ..ProviderConfig::default()
+        };
+        apply_provider_persist(&mut provider, &body.fields);
+        (id.to_string(), provider)
+    };
 
     let store = require_store(&state)?;
     {
         let config = state.read_config();
-        if config.providers.contains_key(&body.id)
-            || (body.id == PRIMARY_PROVIDER_ID && config.provider.is_configured())
+        if config.providers.contains_key(&provider_id)
+            || (provider_id == PRIMARY_PROVIDER_ID && config.provider.is_configured())
         {
             return Err(ApiError::bad_request("provider already exists"));
         }
     }
 
-    let mut provider = ProviderConfig {
-        base_url: base_url.to_string(),
-        enabled: body.fields.enabled.unwrap_or(true),
-        ..ProviderConfig::default()
-    };
-    apply_provider_persist(&mut provider, &body.fields);
-
     store
         .upsert_provider_overlay(
-            &body.id,
+            &provider_id,
             Some(provider.enabled),
             false,
             true,
             Some(&provider),
         )
         .map_err(|err| ApiError::internal(err.to_string()))?;
+    for entry in &provider.model_catalog {
+        store
+            .upsert_model_catalog(&provider_id, entry, true)
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
 
     {
         let mut config = state.write_config();
-        config.providers.insert(body.id.clone(), provider.clone());
+        config
+            .providers
+            .insert(provider_id.clone(), provider.clone());
+    }
+
+    if provider.enabled {
+        sync_provider_routes_for_enabled(&state, &provider_id, true).await?;
     }
 
     finish_mutation(&state).await?;
@@ -587,13 +688,13 @@ async fn create_provider(
         let config = state.read_config();
         config
             .providers
-            .get(&body.id)
+            .get(&provider_id)
             .cloned()
             .ok_or_else(|| ApiError::internal("provider insert raced away"))?
     };
     let routes = state.model_routes.read().await;
-    let routed = routed_models_for_provider(&routes, &body.id);
-    let view = build_provider_view(&state, &body.id, &provider, &routed);
+    let routed = routed_models_for_provider(&routes, &provider_id);
+    let view = build_provider_view(&state, &provider_id, &provider, &routed);
     Ok((StatusCode::CREATED, Json(view)))
 }
 
@@ -767,7 +868,7 @@ async fn add_model(
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        provider.clear_disabled_overlapping(&entry.id);
+        clear_catalog_enable_overlaps(provider, &entry.id, entry.upstream_id.as_deref());
         if let Some(existing) = provider
             .model_catalog
             .iter_mut()
@@ -855,7 +956,9 @@ async fn update_model(
         {
             *existing = updated.clone();
         }
-        provider.clear_disabled_overlapping(&model_id);
+        if updated.enabled {
+            clear_catalog_enable_overlaps(provider, &model_id, updated.upstream_id.as_deref());
+        }
     }
 
     if previous_upstream_id.as_deref() != updated.upstream_id.as_deref() {
@@ -896,7 +999,7 @@ async fn delete_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let (in_catalog, upstream_id) = {
+    let catalog_entry = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -905,26 +1008,24 @@ async fn delete_model(
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        let in_catalog = provider
-            .model_catalog
-            .iter()
-            .any(|catalog| catalog.id == model_id);
-        let upstream_id = provider
+        provider
             .model_catalog
             .iter()
             .find(|catalog| catalog.id == model_id)
-            .and_then(|entry| entry.upstream_id.clone());
-        (in_catalog, upstream_id)
+            .cloned()
     };
+    let upstream_id = catalog_entry
+        .as_ref()
+        .and_then(|entry| entry.upstream_id.clone());
 
-    if in_catalog {
+    if let Some(entry) = &catalog_entry {
         if managed {
             store
                 .delete_model_overlay(&id, &model_id)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         } else {
             store
-                .soft_remove_model(&id, &model_id)
+                .soft_remove_model(&id, &model_id, Some(entry))
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         }
     } else {
@@ -933,22 +1034,26 @@ async fn delete_model(
             .map_err(|err| ApiError::internal(err.to_string()))?;
     }
 
-    {
+    let managed_snapshot = {
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        if in_catalog {
-            provider
-                .model_catalog
-                .retain(|catalog| catalog.id != model_id);
-            provider.clear_disabled_overlapping(&model_id);
-        } else if !provider
-            .disabled_models
-            .iter()
-            .any(|disabled| disabled == &model_id)
-        {
-            provider.disabled_models.push(model_id.clone());
+        if catalog_entry.is_some() {
+            // Soft-delete means suppress rediscovery, not clear prior disables.
+            provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+        } else {
+            provider.disable_model(&model_id);
         }
+        if managed {
+            Some(provider.clone())
+        } else {
+            None
+        }
+    };
+    if let Some(snapshot) = managed_snapshot {
+        store
+            .upsert_provider_overlay(&id, Some(snapshot.enabled), false, true, Some(&snapshot))
+            .map_err(|err| ApiError::internal(err.to_string()))?;
     }
 
     remove_model_routes(&state, &model_id, upstream_id.as_deref()).await;
@@ -1005,16 +1110,12 @@ async fn set_model_enabled(
                 entry.enabled = body.enabled;
             }
             if body.enabled {
-                provider.clear_disabled_overlapping(&model_id);
+                clear_catalog_enable_overlaps(provider, &model_id, upstream_id.as_deref());
             }
         } else if body.enabled {
             provider.clear_disabled_overlapping(&model_id);
-        } else if !provider
-            .disabled_models
-            .iter()
-            .any(|disabled| disabled == &model_id)
-        {
-            provider.disabled_models.push(model_id.clone());
+        } else {
+            provider.disable_model(&model_id);
         }
     }
 

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -137,6 +136,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     let store = Store::open(&config.webui.db_path)
         .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
     store.apply_overlays(&mut config)?;
+    let model_routes = crate::models::seed_model_routes_from_config_and_store(&config, &store);
 
     let addr: SocketAddr = config
         .listen
@@ -154,7 +154,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         debug_log: DebugLog::new(&config.debug),
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_routes: Arc::new(AsyncRwLock::new(model_routes)),
         store: Some(store),
     };
 

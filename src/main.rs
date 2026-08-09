@@ -5,6 +5,7 @@ mod http;
 mod ids;
 mod models;
 mod provider;
+mod provider_templates;
 mod response_codec;
 mod server;
 mod state;

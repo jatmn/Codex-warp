@@ -13,48 +13,13 @@
       <h1>Codex Warp</h1>
     </div>
     <nav class="tabs" role="tablist">
-      <button type="button" class="tab active" data-tab="providers" role="tab">Providers</button>
-      <button type="button" class="tab" data-tab="analytics" role="tab">Analytics</button>
+      <button type="button" class="tab active" data-tab="analytics" role="tab" aria-selected="true">Analytics</button>
+      <button type="button" class="tab" data-tab="providers" role="tab" aria-selected="false">Providers</button>
     </nav>
   </header>
 
   <main>
-    <section id="panel-providers" class="panel active" role="tabpanel">
-      <div class="panel-head">
-        <h2>Providers</h2>
-        <button type="button" id="btn-add-provider" class="btn primary">Add provider</button>
-      </div>
-      <div id="providers-list" class="providers-list"></div>
-      <dialog id="provider-dialog">
-        <form id="provider-form" method="dialog">
-          <h3 id="provider-form-title">Add provider</h3>
-          <label>ID <input name="id" required pattern="[A-Za-z0-9_-]+"></label>
-          <label>Name <input name="name"></label>
-          <label>Base URL <input name="base_url" required></label>
-          <label>API key env <input name="api_key_env" placeholder="OPENAI_API_KEY"></label>
-          <div class="form-actions">
-            <button type="button" class="btn" id="provider-form-cancel">Cancel</button>
-            <button type="submit" class="btn primary">Save</button>
-          </div>
-        </form>
-      </dialog>
-      <dialog id="model-dialog">
-        <form id="model-form" method="dialog">
-          <h3 id="model-form-title">Add model</h3>
-          <input type="hidden" name="provider_id">
-          <label>Model ID <input name="id" required></label>
-          <label>Upstream ID <input name="upstream_id"></label>
-          <label>Display name <input name="display_name"></label>
-          <label>Description <input name="description"></label>
-          <div class="form-actions">
-            <button type="button" class="btn" id="model-form-cancel">Cancel</button>
-            <button type="submit" class="btn primary">Save</button>
-          </div>
-        </form>
-      </dialog>
-    </section>
-
-    <section id="panel-analytics" class="panel" role="tabpanel" hidden>
+    <section id="panel-analytics" class="panel active" role="tabpanel">
       <div class="panel-head">
         <h2>Analytics</h2>
         <div class="filters">
@@ -88,6 +53,71 @@
           <canvas id="chart-bar" width="800" height="220"></canvas>
         </div>
       </div>
+    </section>
+
+    <section id="panel-providers" class="panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Providers</h2>
+        <button type="button" id="btn-add-provider" class="btn primary">Add provider</button>
+      </div>
+      <div id="providers-list" class="providers-list"></div>
+      <dialog id="provider-dialog">
+        <form id="provider-form" method="dialog">
+          <h3 id="provider-form-title">Add provider</h3>
+          <label id="template-field">
+            Example template
+            <select name="template" id="provider-template">
+              <option value="">Loading templates…</option>
+            </select>
+          </label>
+          <p id="template-description" class="hint muted"></p>
+          <div id="template-catalog-preview" class="catalog-preview muted" hidden></div>
+          <div id="provider-identity-fields">
+            <label>ID <input name="id" required pattern="[A-Za-z0-9_-]+"></label>
+            <label>Name <input name="name"></label>
+            <label>Base URL <input name="base_url" required placeholder="https://provider.example/v1"></label>
+          </div>
+          <label>
+            API key env
+            <input name="api_key_env" placeholder="PROVIDER_API_KEY">
+          </label>
+          <p class="hint muted">Export this env var in the process that runs Codex Warp, then enable the provider. Inline API keys are not stored by the Web UI.</p>
+          <details id="provider-advanced">
+            <summary>Advanced paths</summary>
+            <label>Auth header <input name="auth_header" value="authorization"></label>
+            <label>Auth scheme <input name="auth_scheme" value="Bearer"></label>
+            <label>Responses path <input name="responses_path" value="/responses"></label>
+            <label>Chat completions path <input name="chat_completions_path" value="/chat/completions"></label>
+            <label>Models path <input name="models_path" value="/models"></label>
+            <label class="checkbox-row">
+              <input type="checkbox" name="model_catalog_only">
+              Catalog only (skip upstream /models)
+            </label>
+          </details>
+          <label id="provider-enabled-field" class="checkbox-row">
+            <input type="checkbox" name="enabled" checked>
+            Enable after save
+          </label>
+          <div class="form-actions">
+            <button type="button" class="btn" id="provider-form-cancel">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="model-dialog">
+        <form id="model-form" method="dialog">
+          <h3 id="model-form-title">Add model</h3>
+          <input type="hidden" name="provider_id">
+          <label>Model ID <input name="id" required></label>
+          <label>Upstream ID <input name="upstream_id"></label>
+          <label>Display name <input name="display_name"></label>
+          <label>Description <input name="description"></label>
+          <div class="form-actions">
+            <button type="button" class="btn" id="model-form-cancel">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
     </section>
   </main>
 

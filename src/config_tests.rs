@@ -1032,3 +1032,37 @@ fn disabling_upstream_slug_blocks_catalog_alias() {
     assert!(!provider.model_is_enabled("my-model"));
     assert!(!provider.model_is_enabled("provider/gpt-4"));
 }
+
+#[test]
+fn suppress_catalog_model_blocks_rediscovery_without_clearing_prior_disable() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("provider/gpt-4".into());
+
+    provider.suppress_catalog_model("my-model", Some("gpt-4"));
+
+    assert!(provider.model_catalog.is_empty());
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+    // Prior overlapping disable is kept; bare gpt-4 is covered by overlap.
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .any(|id| id == "provider/gpt-4")
+    );
+}
+
+#[test]
+fn disable_model_is_noop_when_overlapping_disable_exists() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("provider/foo".into());
+    provider.disable_model("foo");
+    assert_eq!(provider.disabled_models, vec!["provider/foo".to_string()]);
+}
