@@ -605,10 +605,7 @@ impl Store {
         model_id: &str,
         provider_snapshot: &ProviderConfig,
     ) -> anyhow::Result<()> {
-        let mut stripped = provider_snapshot.clone();
-        stripped.api_key = None;
-        strip_sensitive_provider_headers(&mut stripped);
-        let config_json = serde_json::to_string(&stripped).context("serialize provider overlay")?;
+        let config_json = provider_overlay_config_json(provider_snapshot)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute("BEGIN IMMEDIATE", [])?;
         let result: anyhow::Result<()> = (|| {
@@ -616,32 +613,46 @@ impl Store {
                 "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
                 params![provider_id, model_id],
             )?;
-            db.execute(
-                "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
-                 VALUES (?1, ?2, 0, 1, ?3)
-                 ON CONFLICT(provider_id) DO UPDATE SET
-                    enabled = excluded.enabled,
-                    removed = excluded.removed,
-                    managed = excluded.managed,
-                    config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
-                params![
-                    provider_id,
-                    i64::from(provider_snapshot.enabled),
-                    config_json,
-                ],
+            upsert_managed_provider_overlay_row(
+                &db,
+                provider_id,
+                provider_snapshot.enabled,
+                &config_json,
             )?;
             Ok(())
         })();
-        match result {
-            Ok(()) => {
-                db.execute("COMMIT", [])?;
-                Ok(())
-            }
-            Err(err) => {
-                let _ = db.execute("ROLLBACK", []);
-                Err(err)
-            }
-        }
+        finish_store_transaction(&db, result)
+    }
+
+    /// Atomically disable an overlay-only managed model and persist the provider snapshot.
+    pub(crate) fn persist_managed_overlay_disable(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        provider_snapshot: &ProviderConfig,
+    ) -> anyhow::Result<()> {
+        let config_json = provider_overlay_config_json(provider_snapshot)?;
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute("BEGIN IMMEDIATE", [])?;
+        let result: anyhow::Result<()> = (|| {
+            db.execute(
+                "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed)
+                 VALUES (?1, ?2, 0, 1, NULL, 0)
+                 ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                    enabled = 0,
+                    removed = 0,
+                    managed = excluded.managed OR model_overlays.managed",
+                params![provider_id, model_id],
+            )?;
+            upsert_managed_provider_overlay_row(
+                &db,
+                provider_id,
+                provider_snapshot.enabled,
+                &config_json,
+            )?;
+            Ok(())
+        })();
+        finish_store_transaction(&db, result)
     }
 
     pub(crate) fn soft_remove_model(
@@ -978,6 +989,48 @@ fn route_seeds_from_overlay_rows(
             (provider_id, model_id, upstream_id)
         })
         .collect()
+}
+
+fn provider_overlay_config_json(provider: &ProviderConfig) -> anyhow::Result<String> {
+    let mut stripped = provider.clone();
+    stripped.api_key = None;
+    strip_sensitive_provider_headers(&mut stripped);
+    serde_json::to_string(&stripped).context("serialize provider overlay")
+}
+
+fn upsert_managed_provider_overlay_row(
+    db: &rusqlite::Connection,
+    provider_id: &str,
+    enabled: bool,
+    config_json: &str,
+) -> anyhow::Result<()> {
+    db.execute(
+        "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+         VALUES (?1, ?2, 0, 1, ?3)
+         ON CONFLICT(provider_id) DO UPDATE SET
+            enabled = excluded.enabled,
+            removed = excluded.removed,
+            managed = excluded.managed,
+            config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
+        params![provider_id, i64::from(enabled), config_json],
+    )?;
+    Ok(())
+}
+
+fn finish_store_transaction(
+    db: &rusqlite::Connection,
+    result: anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(()) => {
+            db.execute("COMMIT", [])?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = db.execute("ROLLBACK", []);
+            Err(err)
+        }
+    }
 }
 
 fn provider_config_mut<'a>(

@@ -636,3 +636,50 @@ fn enabled_model_route_seeds_for_provider_scopes_overlay_rows() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn persist_managed_overlay_disable_updates_provider_and_disables_model_overlay() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-overlay-disable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay-disable.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "catalog-only".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .unwrap();
+    store
+        .set_model_enabled("managed", "overlay-only", true)
+        .unwrap();
+    let mut snapshot = provider.clone();
+    snapshot.disable_model("overlay-only");
+    store
+        .persist_managed_overlay_disable("managed", "overlay-only", &snapshot)
+        .unwrap();
+
+    let seeds = store
+        .enabled_model_route_seeds_for_provider("managed")
+        .unwrap();
+    assert!(seeds.iter().any(|(model, _)| model == "catalog-only"));
+    assert!(!seeds.iter().any(|(model, _)| model == "overlay-only"));
+
+    let mut config = AppConfig::default();
+    config.providers.insert("managed".into(), provider);
+    store.apply_overlays(&mut config).unwrap();
+    assert!(!config.providers["managed"].model_is_enabled("overlay-only"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
