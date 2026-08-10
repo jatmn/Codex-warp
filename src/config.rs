@@ -323,7 +323,7 @@ fn model_ids_overlap(a: &str, b: &str) -> bool {
     false
 }
 
-fn catalog_entry_matches_model(entry: &ModelCatalogEntry, model_id: &str) -> bool {
+pub(crate) fn catalog_entry_matches_model(entry: &ModelCatalogEntry, model_id: &str) -> bool {
     if model_ids_overlap(&entry.id, model_id) {
         return true;
     }

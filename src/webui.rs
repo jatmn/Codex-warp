@@ -25,6 +25,7 @@ use crate::config::AppConfig;
 use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
+use crate::config::catalog_entry_matches_model;
 use crate::config::configured_provider_entries;
 use crate::models;
 use crate::models::register_catalog_routes_for_provider;
@@ -400,6 +401,9 @@ fn build_model_views(
 
     for entry in &provider.model_catalog {
         seen.insert(entry.id.clone());
+        if let Some(upstream_id) = entry.upstream_id.as_ref().filter(|value| !value.is_empty()) {
+            seen.insert(upstream_id.clone());
+        }
         models.push(ModelView {
             id: entry.id.clone(),
             display_name: entry.display_name.clone(),
@@ -429,6 +433,13 @@ fn build_model_views(
 
     for routed_id in routed_models {
         if seen.contains(routed_id) {
+            continue;
+        }
+        if provider
+            .model_catalog
+            .iter()
+            .any(|entry| catalog_entry_matches_model(entry, routed_id))
+        {
             continue;
         }
         models.push(ModelView {

@@ -384,16 +384,34 @@
     }
   }
 
+  function findTemplateForProvider(provider) {
+    if (!provider) return null;
+    return (
+      providerTemplates.find((template) => template.id === provider.id) ||
+      providerTemplates.find((template) => template.key === "custom")
+    );
+  }
+
   function openProviderForm(p = null) {
-    providerForm.reset();
     selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");
     const enabledField = $("#provider-enabled-field");
     if (p) {
       providerForm.dataset.mode = "edit";
+      populateTemplateSelect();
       $("#provider-form-title").textContent = "Edit provider";
-      templateField.hidden = true;
-      templateDescription.textContent = "";
+      templateField.hidden = false;
+      templateSelect.disabled = true;
+      const matching = findTemplateForProvider(p);
+      templateSelect.value = matching
+        ? templateOptionValue(matching)
+        : templateOptionValue(
+            providerTemplates.find((template) => template.key === "custom") ||
+              providerTemplates[0],
+          );
+      templateDescription.textContent =
+        matching?.description ||
+        "This provider does not match a bundled example template.";
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
       setNamedTemplateMode(false);
@@ -412,9 +430,11 @@
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
     } else {
+      providerForm.reset();
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;
+      templateSelect.disabled = false;
       enabledField.hidden = false;
       populateTemplateSelect();
       const preferred =

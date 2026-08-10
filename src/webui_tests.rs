@@ -185,6 +185,32 @@ fn build_model_views_includes_routed_upstream_models() {
 }
 
 #[test]
+fn build_model_views_skips_routed_upstream_alias_for_catalog_entry() {
+    let state = test_state();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "opencode-go/deepseek-v4-flash".into(),
+            upstream_id: Some("deepseek-v4-flash".into()),
+            display_name: Some("DeepSeek V4 Flash".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    let routed = vec![
+        "opencode-go/deepseek-v4-flash".into(),
+        "deepseek-v4-flash".into(),
+    ];
+    let models = build_model_views(&state, "opencode_go", &provider, &routed);
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "opencode-go/deepseek-v4-flash");
+    assert_eq!(models[0].display_name.as_deref(), Some("DeepSeek V4 Flash"));
+    assert!(models[0].catalog);
+}
+
+#[test]
 fn build_model_views_marks_models_disabled_when_provider_disabled() {
     let state = test_state();
     let mut provider = ProviderConfig {

@@ -180,6 +180,10 @@ dialog label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0
   overflow: auto;
 }
 .catalog-preview strong { color: var(--text); }
+#provider-template:disabled {
+  opacity: 0.85;
+  cursor: not-allowed;
+}
 #provider-identity-fields.template-locked {
   opacity: 0.72;
 }
