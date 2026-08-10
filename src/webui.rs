@@ -1150,7 +1150,7 @@ async fn set_model_enabled(
     }
     let store = require_store(&state)?;
 
-    let (in_catalog, upstream_id) = {
+    let (in_catalog, previous_upstream_id) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -1171,9 +1171,13 @@ async fn set_model_enabled(
         (in_catalog, upstream_id)
     };
 
-    store
+    let restored_catalog = store
         .set_model_enabled(&id, &model_id, body.enabled)
         .map_err(|err| ApiError::internal(err.to_string()))?;
+    let upstream_id = restored_catalog
+        .as_ref()
+        .and_then(|entry| entry.upstream_id.clone())
+        .or(previous_upstream_id);
 
     {
         let mut config = state.write_config();
@@ -1191,7 +1195,13 @@ async fn set_model_enabled(
                 clear_catalog_enable_overlaps(provider, &model_id, upstream_id.as_deref());
             }
         } else if body.enabled {
+            if let Some(entry) = restored_catalog {
+                provider.model_catalog.push(entry);
+            }
             provider.clear_disabled_overlapping(&model_id);
+            if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty()) {
+                provider.clear_disabled_overlapping(upstream_id);
+            }
         } else {
             provider.disable_model(&model_id);
         }

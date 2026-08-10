@@ -329,6 +329,77 @@ fn router_builds_without_panicking() {
     let _router: axum::Router<AppState> = router().with_state(state);
 }
 
+#[tokio::test]
+async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-reenable-soft-delete-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let state = AppState {
+        config: Arc::new(RwLock::new(AppConfig::default())),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: Some(store),
+    };
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "manual".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("upstream-friendly".into()),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    assert!(
+        delete_model(
+            State(state.clone()),
+            Path(("manual".to_string(), "friendly".to_string())),
+        )
+        .await
+        .is_ok()
+    );
+    assert!(
+        set_model_enabled(
+            State(state.clone()),
+            Path(("manual".to_string(), "friendly".to_string())),
+            Json(EnabledBody { enabled: true }),
+        )
+        .await
+        .is_ok()
+    );
+
+    let config = state.config.read().expect("config lock");
+    let restored = config.providers["manual"]
+        .model_catalog
+        .iter()
+        .find(|entry| entry.id == "friendly")
+        .expect("catalog entry is restored immediately");
+    assert!(restored.enabled);
+    assert_eq!(restored.upstream_id.as_deref(), Some("upstream-friendly"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn analytics_range_parse_matches_webui_query_values() {
     assert_eq!(

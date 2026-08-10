@@ -930,3 +930,44 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-claim-order-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("seed.db");
+    {
+        let store = Store::open(&db_path).unwrap();
+        store.set_model_enabled("zeta", "shared", true).unwrap();
+        store.set_model_enabled("alpha", "shared", true).unwrap();
+    }
+    let store = Store::open(&db_path).unwrap();
+
+    let mut config = AppConfig::default();
+    for provider_id in ["alpha", "zeta"] {
+        config.providers.insert(
+            provider_id.into(),
+            ProviderConfig {
+                base_url: format!("https://{provider_id}.example/v1"),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
