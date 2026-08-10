@@ -563,3 +563,76 @@ fn apply_overlays_strips_inline_api_key_from_overlay_json() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn delete_managed_model_catalog_entry_updates_provider_and_removes_model_overlay() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-managed-model-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("delete-managed.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "keep".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "drop".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .unwrap();
+    let mut snapshot = provider.clone();
+    snapshot.suppress_catalog_model("drop", None);
+    store
+        .delete_managed_model_catalog_entry("managed", "drop", &snapshot)
+        .unwrap();
+    let seeds = store
+        .enabled_model_route_seeds_for_provider("managed")
+        .unwrap();
+    assert!(seeds.iter().any(|(model, _)| model == "keep"));
+    assert!(!seeds.iter().any(|(model, _)| model == "drop"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn enabled_model_route_seeds_for_provider_scopes_overlay_rows() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-seeds-provider-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("scoped-seeds.db")).unwrap();
+    store
+        .set_model_enabled("alpha", "alpha-only", true)
+        .unwrap();
+    store.set_model_enabled("beta", "beta-only", true).unwrap();
+    let alpha_seeds = store
+        .enabled_model_route_seeds_for_provider("alpha")
+        .unwrap();
+    let beta_seeds = store
+        .enabled_model_route_seeds_for_provider("beta")
+        .unwrap();
+    assert!(alpha_seeds.iter().any(|(model, _)| model == "alpha-only"));
+    assert!(!alpha_seeds.iter().any(|(model, _)| model == "beta-only"));
+    assert!(beta_seeds.iter().any(|(model, _)| model == "beta-only"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}

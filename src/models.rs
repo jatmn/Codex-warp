@@ -238,7 +238,7 @@ pub(crate) fn register_overlay_route_seeds_for_provider(
     if !provider.enabled {
         return;
     }
-    let seeds = match store.enabled_model_route_seeds() {
+    let seeds = match store.enabled_model_route_seeds_for_provider(provider_id) {
         Ok(seeds) => seeds,
         Err(err) => {
             tracing::warn!(
@@ -249,10 +249,7 @@ pub(crate) fn register_overlay_route_seeds_for_provider(
             return;
         }
     };
-    for (seed_provider_id, model_id, upstream_id) in seeds {
-        if seed_provider_id != provider_id {
-            continue;
-        }
+    for (model_id, upstream_id) in seeds {
         if !provider.model_is_enabled(&model_id) {
             continue;
         }

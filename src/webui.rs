@@ -677,23 +677,23 @@ async fn create_provider(
 
     let store = require_store(&state)?;
     {
-        let config = state.read_config();
+        let mut config = state.write_config();
         if config.providers.contains_key(&provider_id)
             || (provider_id == PRIMARY_PROVIDER_ID && config.provider.is_configured())
         {
             return Err(ApiError::bad_request("provider already exists"));
         }
-    }
-
-    store
-        .create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
-        .map_err(|err| ApiError::internal(err.to_string()))?;
-
-    {
-        let mut config = state.write_config();
         config
             .providers
             .insert(provider_id.clone(), provider.clone());
+    }
+
+    if let Err(err) =
+        store.create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
+    {
+        let mut config = state.write_config();
+        config.providers.remove(&provider_id);
+        return Err(ApiError::internal(err.to_string()));
     }
 
     if provider.enabled {
@@ -1046,7 +1046,11 @@ async fn delete_model(
     if let Some(entry) = &catalog_entry {
         if managed {
             store
-                .delete_model_overlay(&id, &model_id)
+                .delete_managed_model_catalog_entry(
+                    &id,
+                    &model_id,
+                    managed_snapshot.as_ref().expect("managed snapshot"),
+                )
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         } else {
             store
@@ -1057,12 +1061,11 @@ async fn delete_model(
         store
             .set_model_enabled(&id, &model_id, false)
             .map_err(|err| ApiError::internal(err.to_string()))?;
-    }
-
-    if let Some(snapshot) = managed_snapshot {
-        store
-            .upsert_provider_overlay(&id, Some(snapshot.enabled), false, true, Some(&snapshot))
-            .map_err(|err| ApiError::internal(err.to_string()))?;
+        if let Some(snapshot) = managed_snapshot {
+            store
+                .upsert_provider_overlay(&id, Some(snapshot.enabled), false, true, Some(&snapshot))
+                .map_err(|err| ApiError::internal(err.to_string()))?;
+        }
     }
 
     {

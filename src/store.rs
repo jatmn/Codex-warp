@@ -598,17 +598,50 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) fn delete_model_overlay(
+    /// Atomically remove a managed catalog model overlay and persist the updated provider snapshot.
+    pub(crate) fn delete_managed_model_catalog_entry(
         &self,
         provider_id: &str,
         model_id: &str,
+        provider_snapshot: &ProviderConfig,
     ) -> anyhow::Result<()> {
+        let mut stripped = provider_snapshot.clone();
+        stripped.api_key = None;
+        strip_sensitive_provider_headers(&mut stripped);
+        let config_json = serde_json::to_string(&stripped).context("serialize provider overlay")?;
         let db = self.db.lock().expect("sqlite lock poisoned");
-        db.execute(
-            "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
-            params![provider_id, model_id],
-        )?;
-        Ok(())
+        db.execute("BEGIN IMMEDIATE", [])?;
+        let result: anyhow::Result<()> = (|| {
+            db.execute(
+                "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+                params![provider_id, model_id],
+            )?;
+            db.execute(
+                "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+                 VALUES (?1, ?2, 0, 1, ?3)
+                 ON CONFLICT(provider_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    removed = excluded.removed,
+                    managed = excluded.managed,
+                    config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
+                params![
+                    provider_id,
+                    i64::from(provider_snapshot.enabled),
+                    config_json,
+                ],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = db.execute("ROLLBACK", []);
+                Err(err)
+            }
+        }
     }
 
     pub(crate) fn soft_remove_model(
@@ -660,16 +693,29 @@ impl Store {
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut seeds = Vec::with_capacity(rows.len());
-        for (provider_id, model_id, catalog_json) in rows {
-            let upstream_id = catalog_json
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<ModelCatalogEntry>(raw).ok())
-                .and_then(|entry| entry.upstream_id)
-                .filter(|value| !value.is_empty());
-            seeds.push((provider_id, model_id, upstream_id));
-        }
-        Ok(seeds)
+        Ok(route_seeds_from_overlay_rows(rows))
+    }
+
+    /// Enabled overlay models for one provider that should own routes after restart or re-enable.
+    pub(crate) fn enabled_model_route_seeds_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<Vec<(String, Option<String>)>> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let mut stmt = db.prepare(
+            "SELECT model_id, catalog_json FROM model_overlays
+             WHERE provider_id = ?1 AND enabled = 1 AND COALESCE(removed, 0) = 0
+             ORDER BY model_id",
+        )?;
+        let rows = stmt
+            .query_map(params![provider_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .map(|(model_id, catalog_json)| overlay_route_seed(model_id, catalog_json))
+            .collect())
     }
 
     pub(crate) fn record_usage(&self, event: &UsageEvent) -> anyhow::Result<()> {
@@ -912,6 +958,26 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn overlay_route_seed(model_id: String, catalog_json: Option<String>) -> (String, Option<String>) {
+    let upstream_id = catalog_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<ModelCatalogEntry>(raw).ok())
+        .and_then(|entry| entry.upstream_id)
+        .filter(|value| !value.is_empty());
+    (model_id, upstream_id)
+}
+
+fn route_seeds_from_overlay_rows(
+    rows: Vec<(String, String, Option<String>)>,
+) -> Vec<(String, String, Option<String>)> {
+    rows.into_iter()
+        .map(|(provider_id, model_id, catalog_json)| {
+            let (model_id, upstream_id) = overlay_route_seed(model_id, catalog_json);
+            (provider_id, model_id, upstream_id)
+        })
+        .collect()
 }
 
 fn provider_config_mut<'a>(

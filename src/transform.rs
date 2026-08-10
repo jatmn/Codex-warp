@@ -159,18 +159,6 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
     }
 }
 
-/// When analytics recording is active, ask chat upstreams for stream usage unless
-/// the caller already set `stream_options` (including an explicit `include_usage: false`).
-pub fn ensure_chat_stream_include_usage(body: &mut Value) {
-    let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
-    if !streaming || body.get("stream_options").is_some() {
-        return;
-    }
-    if let Some(object) = body.as_object_mut() {
-        object.insert("stream_options".to_string(), json!({"include_usage": true}));
-    }
-}
-
 pub fn normalize_responses_request(mut request: Value, transform: &TransformConfig) -> Value {
     apply_native_request_morphs(&mut request, transform);
     if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
