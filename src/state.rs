@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
@@ -17,6 +18,8 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Monotonically changes after a Web UI mutation updates live configuration.
+    pub(crate) config_revision: Arc<AtomicU64>,
     /// Serializes Web UI mutations so SQLite overlays and live config update together.
     pub(crate) mutation_lock: Arc<AsyncMutex<()>>,
     pub(crate) debug_log: DebugLog,

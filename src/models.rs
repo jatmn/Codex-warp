@@ -1,6 +1,7 @@
 use futures_util::future::join_all;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Json;
@@ -27,6 +28,7 @@ use crate::state::AppState;
 
 const DEFAULT_MODEL_CONTEXT_WINDOW: i64 = 128_000;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+const MODEL_DISCOVERY_RETRY_LIMIT: usize = 2;
 pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
@@ -36,6 +38,45 @@ pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
 ];
 
 pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    models_with_publish_lock(state, headers, false).await
+}
+
+/// Refresh routes while the caller already holds `AppState::mutation_lock`.
+/// Web UI mutations use this to rebuild overlapping routes before returning;
+/// taking the non-reentrant mutex a second time would deadlock that request.
+pub(crate) async fn models_while_mutation_locked(state: AppState, headers: HeaderMap) -> Response {
+    models_with_publish_lock(state, headers, true).await
+}
+
+async fn models_with_publish_lock(
+    state: AppState,
+    headers: HeaderMap,
+    mutation_locked: bool,
+) -> Response {
+    for _ in 0..MODEL_DISCOVERY_RETRY_LIMIT {
+        let revision = state.config_revision.load(Ordering::Acquire);
+        if let Some(response) =
+            models_for_revision(state.clone(), headers.clone(), revision, mutation_locked).await
+        {
+            return response;
+        }
+    }
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "provider configuration changed while refreshing models; retry the request".to_string(),
+    )
+}
+
+/// Fetch and publish a model catalog only if configuration stayed stable for the
+/// whole fetch. A Web UI provider edit changes both the destination and routes,
+/// so merging a response collected with an earlier snapshot would advertise
+/// models that are subsequently sent to the edited provider.
+async fn models_for_revision(
+    state: AppState,
+    headers: HeaderMap,
+    revision: u64,
+    mutation_locked: bool,
+) -> Option<Response> {
     let hide_builtins = state.read_config().config.hide_codex_builtin_models;
     let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
         .into_iter()
@@ -126,25 +167,66 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 
     if merged_models.is_empty() {
         if failures.is_empty() {
-            publish_model_routes(&state, routes, &failed_providers).await;
-            return Json(json!({ "models": [] })).into_response();
+            return publish_models_if_current(
+                &state,
+                revision,
+                routes,
+                &failed_providers,
+                Json(json!({ "models": [] })).into_response(),
+                mutation_locked,
+            )
+            .await;
+        }
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return None;
         }
         // Keep previously discovered routes when upstream catalogs fail transiently.
-        return error_response(
+        return Some(error_response(
             StatusCode::BAD_GATEWAY,
             format!(
                 "no provider model catalogs could be loaded: {}",
                 failures.join("; ")
             ),
-        );
+        ));
     }
 
     if hide_builtins {
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 
-    publish_model_routes(&state, routes, &failed_providers).await;
-    Json(json!({ "models": merged_models })).into_response()
+    publish_models_if_current(
+        &state,
+        revision,
+        routes,
+        &failed_providers,
+        Json(json!({ "models": merged_models })).into_response(),
+        mutation_locked,
+    )
+    .await
+}
+
+async fn publish_models_if_current(
+    state: &AppState,
+    revision: u64,
+    routes: BTreeMap<String, String>,
+    failed_providers: &BTreeSet<String>,
+    response: Response,
+    mutation_locked: bool,
+) -> Option<Response> {
+    if mutation_locked {
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return None;
+        }
+        publish_model_routes(state, routes, failed_providers).await;
+        return Some(response);
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return None;
+    }
+    publish_model_routes(state, routes, failed_providers).await;
+    Some(response)
 }
 
 /// Replace `model_routes` while retaining prior discovery only for failed providers.
@@ -227,7 +309,7 @@ pub(crate) fn seed_model_routes_from_config_and_store(
         let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
             continue;
         };
-        if !provider.model_is_enabled(&model_id) {
+        if !provider.enabled || !provider.model_is_enabled(&model_id) {
             continue;
         }
         // Explicit overlay enable claims ownership for colliding slugs.

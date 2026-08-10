@@ -93,14 +93,14 @@ fn translates_responses_fields_to_chat_fields() {
     assert_eq!(transformed.body["prompt_cache_key"], "workspace-1");
     assert!(transformed.body.get("metadata").is_none());
     assert!(transformed.body.get("client_metadata").is_none());
-    assert!(transformed.body.get("stream_options").is_none());
+    assert_eq!(transformed.body["stream_options"]["include_usage"], true);
     assert!(transformed.body.get("include").is_none());
 }
 
 #[test]
-fn can_request_stream_usage_when_provider_supports_it() {
+fn default_transform_requests_stream_usage() {
     let mut transform = TransformConfig::default();
-    transform.request_stream_options_include_usage = true;
+    transform.request_stream_options_include_usage = false;
     let request = json!({
         "model": "test-model",
         "input": "hello",
@@ -109,7 +109,7 @@ fn can_request_stream_usage_when_provider_supports_it() {
 
     let transformed = responses_to_chat(request, &transform);
 
-    assert_eq!(transformed.body["stream_options"]["include_usage"], true);
+    assert!(transformed.body.get("stream_options").is_none());
 }
 
 #[test]

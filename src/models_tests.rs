@@ -6,6 +6,7 @@ use bytes::Bytes;
 use serde_json::json;
 
 use crate::config::AppConfig;
+use crate::config::ModelCatalogEntry;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
 use crate::config::load_config_layers;
@@ -745,6 +746,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
@@ -801,6 +803,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
@@ -832,6 +835,7 @@ async fn models_returns_empty_list_when_no_providers_configured() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
@@ -878,6 +882,7 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
@@ -890,6 +895,86 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         .expect("body reads");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(value["models"], json!([]));
+}
+
+#[tokio::test]
+async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::models_while_mutation_locked;
+    use crate::state::AppState;
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(AppConfig::default())),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    let response = models_while_mutation_locked(state.clone(), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn stale_model_discovery_does_not_publish_routes() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "alpha-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    let mut prior = BTreeMap::new();
+    prior.insert("old-route".into(), "alpha".into());
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    assert!(
+        models_for_revision(state.clone(), HeaderMap::new(), 0, false)
+            .await
+            .is_none()
+    );
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("old-route").map(String::as_str), Some("alpha"));
+    assert!(!routes.contains_key("alpha-model"));
 }
 
 #[test]
@@ -927,6 +1012,54 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
         routes.get("upstream-only").map(String::as_str),
         Some("beta")
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-overlay-seed-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store.set_model_enabled("disabled", "shared", true).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "disabled".into(),
+        ProviderConfig {
+            base_url: "https://disabled.example/v1".into(),
+            enabled: false,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "enabled".into(),
+        ProviderConfig {
+            base_url: "https://enabled.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(routes.get("shared").map(String::as_str), Some("enabled"));
 
     let _ = std::fs::remove_dir_all(dir);
 }

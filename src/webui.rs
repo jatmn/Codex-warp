@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::Router;
@@ -331,7 +332,7 @@ async fn remove_model_routes_and_rebuild(
     upstream_id: Option<&str>,
 ) {
     remove_model_routes(state, provider_id, model_id, upstream_id).await;
-    let _ = models::models(State(state.clone()), axum::http::HeaderMap::new()).await;
+    let _ = models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
 }
 
 async fn insert_model_route(
@@ -356,6 +357,31 @@ async fn insert_model_route(
     routes.insert(model_id.to_string(), provider_id.to_string());
     if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
         routes.insert(upstream_id.to_string(), provider_id.to_string());
+    }
+}
+
+/// Apply a catalog mutation to the live route map. Both POST and PUT are
+/// upserts, so they must share this transition rather than letting one leave a
+/// disabled model's previous owner behind.
+async fn sync_model_route(
+    state: &AppState,
+    provider_id: &str,
+    entry: &ModelCatalogEntry,
+    previous_upstream_id: Option<&str>,
+) {
+    if previous_upstream_id != entry.upstream_id.as_deref() {
+        remove_model_routes(state, provider_id, &entry.id, previous_upstream_id).await;
+    }
+    if entry.enabled {
+        insert_model_route(state, provider_id, &entry.id, entry.upstream_id.as_deref()).await;
+    } else {
+        remove_model_routes_and_rebuild(
+            state,
+            provider_id,
+            &entry.id,
+            entry.upstream_id.as_deref(),
+        )
+        .await;
     }
 }
 
@@ -394,7 +420,8 @@ async fn sync_provider_routes_for_enabled(
         remove_provider_model_routes(state, provider_id).await;
         // Rebuild synchronously so an overlapping live-discovered model can be
         // reassigned before this mutation reports success.
-        let _ = models::models(State(state.clone()), axum::http::HeaderMap::new()).await;
+        let _ =
+            models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
     }
     Ok(())
 }
@@ -596,7 +623,12 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
 }
 
-async fn finish_mutation(_state: &AppState) -> Result<(), ApiError> {
+async fn finish_mutation(state: &AppState) -> Result<(), ApiError> {
+    // Model discovery works from a provider snapshot while it awaits upstream.
+    // Bump the revision only after a mutation has atomically updated config and
+    // persistence, so stale discovery results can never publish routes for old
+    // provider settings.
+    state.config_revision.fetch_add(1, Ordering::AcqRel);
     Ok(())
 }
 
@@ -764,6 +796,9 @@ async fn update_provider(
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     validate_provider_persist(&fields)?;
+    let refresh_discovery = fields.base_url.is_some()
+        || fields.models_path.is_some()
+        || fields.model_catalog_only.is_some();
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
@@ -795,6 +830,12 @@ async fn update_provider(
 
     if snapshot.enabled != previous_enabled {
         sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
+    } else if snapshot.enabled && refresh_discovery {
+        // Endpoint, discovery mode, and catalog edits all invalidate the live
+        // discovery ownership previously learned for this provider.
+        remove_provider_model_routes(&state, &id).await;
+        let _ =
+            models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
     }
 
     finish_mutation(&state).await?;
@@ -946,12 +987,7 @@ async fn add_model(
         }
     }
 
-    if previous_upstream_id.as_deref() != entry.upstream_id.as_deref() {
-        remove_model_routes(&state, &id, &entry.id, previous_upstream_id.as_deref()).await;
-    }
-    if entry.enabled {
-        insert_model_route(&state, &id, &entry.id, entry.upstream_id.as_deref()).await;
-    }
+    sync_model_route(&state, &id, &entry, previous_upstream_id.as_deref()).await;
 
     finish_mutation(&state).await?;
     let provider = {
@@ -1031,16 +1067,7 @@ async fn update_model(
         }
     }
 
-    if previous_upstream_id.as_deref() != updated.upstream_id.as_deref() {
-        remove_model_routes_and_rebuild(&state, &id, &model_id, previous_upstream_id.as_deref())
-            .await;
-    }
-    if updated.enabled {
-        insert_model_route(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
-    } else {
-        remove_model_routes_and_rebuild(&state, &id, &model_id, updated.upstream_id.as_deref())
-            .await;
-    }
+    sync_model_route(&state, &id, &updated, previous_upstream_id.as_deref()).await;
 
     finish_mutation(&state).await?;
     let provider = {

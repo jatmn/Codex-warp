@@ -31,6 +31,12 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("deepseek_v3_2"));
     assert!(
         default_config
+            .transform
+            .request_stream_options_include_usage,
+        "the shipped partial [transform] table retains the analytics usage default"
+    );
+    assert!(
+        default_config
             .model_families
             .contains_key("deepseek_v4_pro")
     );

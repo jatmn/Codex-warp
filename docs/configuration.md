@@ -171,10 +171,11 @@ The main transform knobs are:
   example `custom`.
 - `transform.unsupported_tool_strategy`: `drop`, `as_function`, or
   `passthrough`.
-- `transform.request_stream_options_include_usage`: when `true`, streamed
-  chat-completions requests that do not already include `stream_options` get
-  `stream_options.include_usage = true`. Use this only for gateways that
-  document support for that field.
+- `transform.request_stream_options_include_usage`: defaults to `true` so
+  streamed OpenAI-compatible chat requests receive the final usage chunk needed
+  for local analytics. Requests that do not already include `stream_options`
+  get `stream_options.include_usage = true`; set this to `false` for gateways
+  that do not document support for that field.
 
 Supported request morph kinds:
 

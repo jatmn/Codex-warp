@@ -3,6 +3,7 @@ use super::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
@@ -21,6 +22,7 @@ fn test_state() -> AppState {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
@@ -305,6 +307,54 @@ async fn removing_model_route_reassigns_a_shared_catalog_slug() {
 }
 
 #[tokio::test]
+async fn catalog_upsert_disabling_model_rebuilds_its_route() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        enabled: true,
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+        config
+            .providers
+            .get_mut("alpha")
+            .expect("alpha exists")
+            .disable_model("shared");
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    sync_model_route(
+        &state,
+        "alpha",
+        &ModelCatalogEntry {
+            id: "shared".into(),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        },
+        None,
+    )
+    .await;
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+}
+
+#[tokio::test]
 async fn insert_model_route_skips_disabled_provider() {
     let state = test_state();
     {
@@ -348,6 +398,7 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: Some(store),

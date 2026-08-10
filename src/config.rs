@@ -499,6 +499,7 @@ pub struct TransformConfig {
     pub reasoning_effort_none_value: Option<String>,
     pub drop_empty_tool_choice: bool,
     pub force_parallel_tool_calls: Option<bool>,
+    #[serde(default = "default_true")]
     pub request_stream_options_include_usage: bool,
     pub preserve_reasoning_content_history: bool,
 }
@@ -514,7 +515,9 @@ impl Default for TransformConfig {
             reasoning_effort_none_value: None,
             drop_empty_tool_choice: true,
             force_parallel_tool_calls: None,
-            request_stream_options_include_usage: false,
+            // Analytics is enabled by default and streamed OpenAI-compatible
+            // chat responses only include usage when explicitly requested.
+            request_stream_options_include_usage: true,
             preserve_reasoning_content_history: false,
         }
     }
