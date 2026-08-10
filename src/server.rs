@@ -135,6 +135,11 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     }
 
     let webui_enabled = config.webui.enabled;
+    let management_token = if webui_enabled {
+        load_optional_webui_token(config.webui.auth_token_env.as_deref())?
+    } else {
+        None
+    };
     let store = Store::open(&config.webui.db_path)
         .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
     store.apply_overlays(&mut config)?;
@@ -148,6 +153,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     ensure_webui_bind(
         webui_enabled,
         config.webui.allow_unauthenticated_remote_access,
+        management_token.is_some(),
         &addr,
     )?;
 
@@ -168,7 +174,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         .route("/models", get(models))
         .route("/v1/models", get(models));
     if webui_enabled {
-        app = app.merge(webui::router());
+        app = app.merge(webui::router(management_token));
     }
     let app = app.with_state(state);
 
@@ -197,22 +203,40 @@ fn is_loopback_addr(addr: &SocketAddr) -> bool {
 fn ensure_webui_bind(
     webui_enabled: bool,
     allow_unauthenticated_remote_access: bool,
+    authentication_enabled: bool,
     addr: &SocketAddr,
 ) -> anyhow::Result<()> {
     if webui_enabled && !is_loopback_addr(addr) && !allow_unauthenticated_remote_access {
         anyhow::bail!(
-            "webui routes have no authentication and require a loopback listen address; \
-             bind to 127.0.0.1/[::1], disable the Web UI with --no-webui, or set \
+            "webui remote access requires explicit configuration; bind to \
+             127.0.0.1/[::1], disable the Web UI with --no-webui, or set \
              webui.allow_unauthenticated_remote_access = true only on a trusted network"
         );
     }
-    if webui_enabled && !is_loopback_addr(addr) {
+    if webui_enabled && !is_loopback_addr(addr) && !authentication_enabled {
         warn!(
             "webui routes are exposed without authentication on {addr}; \
              remote management is enabled only by explicit configuration"
         );
+    } else if webui_enabled && !is_loopback_addr(addr) {
+        warn!(
+            "webui routes are exposed on {addr} with bearer authentication but no TLS; \
+             use only on a trusted network or behind a TLS reverse proxy"
+        );
     }
     Ok(())
+}
+
+fn load_optional_webui_token(env_name: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(env_name) = env_name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(None);
+    };
+    let token = std::env::var(env_name)
+        .with_context(|| format!("read optional Web UI auth token from {env_name}"))?;
+    if token.trim().is_empty() {
+        anyhow::bail!("Web UI auth token environment variable {env_name} is empty");
+    }
+    Ok(Some(token))
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {

@@ -171,11 +171,11 @@ The main transform knobs are:
   example `custom`.
 - `transform.unsupported_tool_strategy`: `drop`, `as_function`, or
   `passthrough`.
-- `transform.request_stream_options_include_usage`: defaults to `true` so
-  streamed OpenAI-compatible chat requests receive the final usage chunk needed
-  for local analytics. Requests that do not already include `stream_options`
-  get `stream_options.include_usage = true`; set this to `false` for gateways
-  that do not document support for that field.
+- `transform.request_stream_options_include_usage`: defaults to `false` because
+  some OpenAI-compatible gateways reject `stream_options`. Set it to `true` for
+  a provider that documents `stream_options.include_usage`; requests that do
+  not already include `stream_options` then receive
+  `stream_options.include_usage = true` for local token analytics.
 
 Supported request morph kinds:
 
@@ -297,22 +297,27 @@ before enabling the feature and use it at your own risk.
 
 Codex Warp can serve a lightweight local Web UI for managing providers/models and
 viewing usage analytics. It is enabled by default and listens on the same bind
-address as the proxy. The Web UI has no authentication, so it requires a
-loopback listen address (`127.0.0.1` or `[::1]`) by default. A trusted-network
-deployment can opt in to remote access explicitly, but doing so gives every
-reachable client full provider-management access and can expose credentials.
+address as the proxy. Authentication is optional: by default the UI has no
+authentication and requires a loopback listen address (`127.0.0.1` or `[::1]`).
+Set `auth_token_env` to protect `/api` with a bearer token read from that
+environment variable; the browser asks for it only if the API returns 401.
+A trusted-network deployment can opt in to remote access explicitly.
 
 ```toml
 [webui]
 enabled = true
+auth_token_env = "CODEX_WARP_WEBUI_TOKEN" # Optional; omit for no authentication.
 db_path = "codex-warp.db"
 # Default false. Set true only on an access-controlled, trusted network.
 allow_unauthenticated_remote_access = false
 ```
 
 When `listen` is non-loopback, startup fails unless
-`allow_unauthenticated_remote_access = true` is set. This is an intentionally
-unsafe compatibility switch for trusted networks, not an authentication layer.
+`allow_unauthenticated_remote_access = true` is set. The existing setting remains
+the explicit LAN-exposure gate whether authentication is configured or not.
+Without `auth_token_env`, it is an intentionally unsafe compatibility switch
+for trusted networks. Codex Warp does not terminate TLS, so authenticated remote
+deployments should still use a trusted network or TLS reverse proxy.
 
 Open `http://127.0.0.1:8787/ui/` while the proxy is running.
 

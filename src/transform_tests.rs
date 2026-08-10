@@ -80,7 +80,9 @@ fn translates_responses_fields_to_chat_fields() {
         "stream": true
     });
 
-    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let mut transform = TransformConfig::default();
+    transform.request_stream_options_include_usage = true;
+    let transformed = responses_to_chat(request, &transform);
 
     assert_eq!(transformed.body["reasoning_effort"], "medium");
     assert_eq!(transformed.body["response_format"]["type"], "json_schema");
@@ -98,9 +100,8 @@ fn translates_responses_fields_to_chat_fields() {
 }
 
 #[test]
-fn default_transform_requests_stream_usage() {
-    let mut transform = TransformConfig::default();
-    transform.request_stream_options_include_usage = false;
+fn default_transform_omits_stream_usage_request() {
+    let transform = TransformConfig::default();
     let request = json!({
         "model": "test-model",
         "input": "hello",

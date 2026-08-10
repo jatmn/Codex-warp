@@ -102,8 +102,11 @@ fn args_parse_config_overrides_and_debug_flags() {
 fn webui_requires_loopback_unless_remote_access_is_explicitly_enabled() {
     let loopback: std::net::SocketAddr = "127.0.0.1:8787".parse().unwrap();
     let remote: std::net::SocketAddr = "0.0.0.0:8787".parse().unwrap();
-    assert!(ensure_webui_bind(true, false, &loopback).is_ok());
-    assert!(ensure_webui_bind(true, false, &remote).is_err());
-    assert!(ensure_webui_bind(true, true, &remote).is_ok());
-    assert!(ensure_webui_bind(false, false, &remote).is_ok());
+    assert!(ensure_webui_bind(true, false, false, &loopback).is_ok());
+    assert!(ensure_webui_bind(true, false, true, &loopback).is_ok());
+    assert!(ensure_webui_bind(true, false, false, &remote).is_err());
+    assert!(ensure_webui_bind(true, false, true, &remote).is_err());
+    assert!(ensure_webui_bind(true, true, false, &remote).is_ok());
+    assert!(ensure_webui_bind(true, true, true, &remote).is_ok());
+    assert!(ensure_webui_bind(false, false, false, &remote).is_ok());
 }

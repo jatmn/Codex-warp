@@ -1,15 +1,19 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::Router;
 use axum::extract::Path;
 use axum::extract::Query;
+use axum::extract::Request;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::header;
+use axum::middleware;
+use axum::middleware::Next;
 use axum::response::Html;
 use axum::response::IntoResponse;
 use axum::response::Response;
@@ -38,18 +42,23 @@ use crate::store::AnalyticsRange;
 use crate::store::Store;
 use crate::store::ensure_provider_exists;
 
-pub(crate) fn router() -> Router<AppState> {
+#[derive(Clone)]
+struct ManagementAuth {
+    token: Arc<str>,
+}
+
+pub(crate) fn router(management_token: Option<String>) -> Router<AppState> {
     Router::new()
         .route("/ui", get(serve_index))
         .route("/ui/", get(serve_index))
         .route("/ui/app.css", get(serve_css))
         .route("/ui/theme-bootstrap.js", get(serve_theme_bootstrap))
         .route("/ui/app.js", get(serve_js))
-        .nest("/api", api_router())
+        .nest("/api", api_router(management_token))
 }
 
-fn api_router() -> Router<AppState> {
-    Router::new()
+fn api_router(management_token: Option<String>) -> Router<AppState> {
+    let router = Router::new()
         .route("/providers", get(list_providers).post(create_provider))
         .route(
             "/providers/{id}",
@@ -66,7 +75,40 @@ fn api_router() -> Router<AppState> {
             put(update_model).delete(delete_model),
         )
         .route("/provider-templates", get(list_provider_templates))
-        .route("/analytics", get(get_analytics))
+        .route("/analytics", get(get_analytics));
+    if let Some(token) = management_token {
+        router.layer(middleware::from_fn_with_state(
+            ManagementAuth {
+                token: Arc::from(token),
+            },
+            require_management_auth,
+        ))
+    } else {
+        router
+    }
+}
+
+async fn require_management_auth(
+    State(auth): State<ManagementAuth>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let authorized = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| token == auth.token.as_ref());
+    if authorized {
+        next.run(request).await
+    } else {
+        let mut response = StatusCode::UNAUTHORIZED.into_response();
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            header::HeaderValue::from_static("Bearer"),
+        );
+        response
+    }
 }
 
 async fn serve_index() -> Html<&'static str> {
@@ -287,6 +329,24 @@ fn validate_provider_id(id: &str) -> Result<(), ApiError> {
         return Err(ApiError::bad_request(
             "provider id must be alphanumeric, underscore, or hyphen",
         ));
+    }
+    Ok(())
+}
+
+fn validate_model_catalog(entries: &[ModelCatalogEntry]) -> Result<(), ApiError> {
+    let mut ids = BTreeSet::new();
+    for entry in entries {
+        let id = entry.id.trim();
+        if id.is_empty() {
+            return Err(ApiError::bad_request(
+                "model catalog entries require a non-empty id",
+            ));
+        }
+        if !ids.insert(id) {
+            return Err(ApiError::bad_request(format!(
+                "duplicate model catalog id `{id}`"
+            )));
+        }
     }
     Ok(())
 }
@@ -686,13 +746,6 @@ async fn create_provider(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
-            for entry in &body.model_catalog {
-                if entry.id.trim().is_empty() {
-                    return Err(ApiError::bad_request(
-                        "model catalog entries require a non-empty id",
-                    ));
-                }
-            }
             let mut provider = template.provider;
             provider.base_url = base_url.to_string();
             provider.enabled = body.fields.enabled.unwrap_or(true);
@@ -731,13 +784,6 @@ async fn create_provider(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
-        for entry in &body.model_catalog {
-            if entry.id.trim().is_empty() {
-                return Err(ApiError::bad_request(
-                    "model catalog entries require a non-empty id",
-                ));
-            }
-        }
         let mut provider = ProviderConfig {
             base_url: base_url.to_string(),
             enabled: body.fields.enabled.unwrap_or(true),
@@ -747,6 +793,7 @@ async fn create_provider(
         apply_provider_persist(&mut provider, &body.fields);
         (id.to_string(), provider)
     };
+    validate_model_catalog(&provider.model_catalog)?;
 
     let store = require_store(&state)?;
     {

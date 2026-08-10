@@ -57,6 +57,8 @@ fn default_true() -> bool {
 pub struct WebUiConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional environment variable containing a bearer token for `/api`.
+    pub auth_token_env: Option<String>,
     /// Explicit opt-in for exposing the unauthenticated management API beyond loopback.
     pub allow_unauthenticated_remote_access: bool,
     pub db_path: PathBuf,
@@ -66,6 +68,7 @@ impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            auth_token_env: None,
             allow_unauthenticated_remote_access: false,
             db_path: PathBuf::from("codex-warp.db"),
         }
@@ -499,7 +502,6 @@ pub struct TransformConfig {
     pub reasoning_effort_none_value: Option<String>,
     pub drop_empty_tool_choice: bool,
     pub force_parallel_tool_calls: Option<bool>,
-    #[serde(default = "default_true")]
     pub request_stream_options_include_usage: bool,
     pub preserve_reasoning_content_history: bool,
 }
@@ -515,9 +517,9 @@ impl Default for TransformConfig {
             reasoning_effort_none_value: None,
             drop_empty_tool_choice: true,
             force_parallel_tool_calls: None,
-            // Analytics is enabled by default and streamed OpenAI-compatible
-            // chat responses only include usage when explicitly requested.
-            request_stream_options_include_usage: true,
+            // Some OpenAI-compatible gateways reject stream_options. Providers
+            // that support usage chunks can opt in explicitly.
+            request_stream_options_include_usage: false,
             preserve_reasoning_content_history: false,
         }
     }

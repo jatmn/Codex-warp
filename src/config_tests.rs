@@ -30,10 +30,10 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("deepseek"));
     assert!(default_config.model_families.contains_key("deepseek_v3_2"));
     assert!(
-        default_config
+        !default_config
             .transform
             .request_stream_options_include_usage,
-        "the shipped partial [transform] table retains the analytics usage default"
+        "shipped profiles do not force optional stream usage fields"
     );
     assert!(
         default_config
@@ -971,8 +971,24 @@ fn webui_config_partial_toml_keeps_enabled_true() {
     )
     .expect("partial webui config parses");
     assert!(config.webui.enabled);
+    assert!(config.webui.auth_token_env.is_none());
     assert!(!config.webui.allow_unauthenticated_remote_access);
     assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
+}
+
+#[test]
+fn webui_auth_is_optional_and_config_driven() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        auth_token_env = "MY_WEBUI_TOKEN"
+        "#,
+    )
+    .expect("optional Web UI auth parses");
+    assert_eq!(
+        config.webui.auth_token_env.as_deref(),
+        Some("MY_WEBUI_TOKEN")
+    );
 }
 
 #[test]

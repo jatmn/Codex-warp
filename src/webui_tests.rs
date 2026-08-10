@@ -376,7 +376,13 @@ async fn insert_model_route_skips_disabled_provider() {
 #[test]
 fn router_builds_without_panicking() {
     let state = test_state();
-    let _router: axum::Router<AppState> = router().with_state(state);
+    let _router: axum::Router<AppState> = router(None).with_state(state);
+}
+
+#[test]
+fn authenticated_router_builds_without_panicking() {
+    let state = test_state();
+    let _router: axum::Router<AppState> = router(Some("test-token".into())).with_state(state);
 }
 
 #[tokio::test]
@@ -486,4 +492,23 @@ fn create_provider_body_accepts_named_template_payload() {
         OptionalPatch::Set("OPENCODE_GO_API_KEY".into())
     );
     assert_eq!(body.fields.enabled, Some(true));
+}
+
+#[test]
+fn model_catalog_rejects_duplicate_ids_before_persistence() {
+    let entries = vec![
+        ModelCatalogEntry {
+            id: "duplicate".into(),
+            ..ModelCatalogEntry::default()
+        },
+        ModelCatalogEntry {
+            id: "duplicate".into(),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        },
+    ];
+
+    let error = validate_model_catalog(&entries).expect_err("duplicate ids must be rejected");
+    assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(error.message.contains("duplicate model catalog id"));
 }

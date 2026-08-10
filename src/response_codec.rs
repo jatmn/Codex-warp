@@ -51,8 +51,9 @@ pub(crate) fn chat_stream_to_responses(
         let mut state = ChatAccum::default();
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
+        let mut completed = false;
 
-        while let Some(chunk) = bytes.next().await {
+        'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
@@ -91,7 +92,8 @@ pub(crate) fn chat_stream_to_responses(
                     continue;
                 };
                 if data == "[DONE]" {
-                    break;
+                    completed = true;
+                    break 'upstream;
                 }
                 let Ok(value) = serde_json::from_str::<Value>(&data) else {
                     continue;
@@ -126,10 +128,19 @@ pub(crate) fn chat_stream_to_responses(
             }
         }
 
-        if let Some(usage) = &state.usage
-            && let Some(recorder) = &usage_recorder
-        {
-            recorder.record_normalized(usage);
+        if !completed {
+            yield Ok(Bytes::from(sse("response.failed", json!({
+                "type": "response.failed",
+                "response": {
+                    "id": response_id,
+                    "error": {"message": "upstream chat stream ended before [DONE]"}
+                }
+            }))));
+            return;
+        }
+
+        if let Some(recorder) = &usage_recorder {
+            recorder.record_completed(state.usage.as_ref());
         }
 
         for event in state.finish(

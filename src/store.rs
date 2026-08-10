@@ -13,6 +13,7 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use serde_json::json;
 
 use crate::config::AppConfig;
 use crate::config::ModelCatalogEntry;
@@ -1239,6 +1240,27 @@ impl UsageRecorder {
         );
         if let Err(err) = self.store.record_usage(&event) {
             tracing::warn!(error = %err, "failed to record usage analytics");
+        }
+    }
+
+    /// Record a successfully completed response even when the upstream omits
+    /// optional token metadata, so prompt and session analytics remain useful.
+    pub(crate) fn record_completed(&self, usage: Option<&Value>) {
+        let empty_usage = json!({
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        });
+        let event = usage_event_from_normalized(
+            &self.provider_id,
+            &self.model,
+            self.session_key.clone(),
+            usage.unwrap_or(&empty_usage),
+        );
+        if let Err(err) = self.store.record_usage(&event) {
+            tracing::warn!(error = %err, "failed to record completed response analytics");
         }
     }
 }

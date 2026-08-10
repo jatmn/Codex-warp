@@ -2,6 +2,8 @@
   "use strict";
 
   const API = "/api";
+  const TOKEN_KEY = "codex-warp-webui-token";
+  let managementToken = sessionStorage.getItem(TOKEN_KEY) || "";
   let providers = [];
   let providerTemplates = [];
   let selectedTemplateCatalog = [];
@@ -40,15 +42,31 @@
     ),
   };
 
-  async function api(path, opts = {}) {
+  async function api(path, opts = {}, allowAuthRetry = true) {
+    const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    if (managementToken) headers.Authorization = `Bearer ${managementToken}`;
     const res = await fetch(API + path, {
-      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
       ...opts,
+      headers,
     });
+    if (res.status === 401 && allowAuthRetry) {
+      const token = window.prompt("This Codex Warp server requires a Web UI token.");
+      if (token) {
+        managementToken = token;
+        sessionStorage.setItem(TOKEN_KEY, token);
+        return api(path, opts, false);
+      }
+    }
     const text = await res.text();
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
-    if (!res.ok) throw new Error(data?.error || res.statusText);
+    if (!res.ok) {
+      if (res.status === 401) {
+        managementToken = "";
+        sessionStorage.removeItem(TOKEN_KEY);
+      }
+      throw new Error(data?.error || res.statusText);
+    }
     return data;
   }
 

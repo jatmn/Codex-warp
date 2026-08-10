@@ -188,7 +188,7 @@ Transforms let a model entry override or adjust request translation.
 | `reasoning_effort_none_value` | Remap disable-effort synonyms (`none`, `off`, `disabled`) on `reasoning_effort` to a provider-valid fallback (for example `no_think` on Hy3 or `low` on grok-4.5). |
 | `drop_empty_tool_choice` | Whether to avoid forwarding empty/default tool choice. |
 | `force_parallel_tool_calls` | Force `parallel_tool_calls` to a boolean value. |
-| `request_stream_options_include_usage` | Defaults to `true` so streamed OpenAI-compatible chat requests return usage for local analytics. Set it to `false` for a provider that does not support `stream_options.include_usage`; otherwise it is added when the caller did not supply `stream_options`. |
+| `request_stream_options_include_usage` | Defaults to `false` for compatibility with gateways that reject `stream_options`. Enable it for providers that support `stream_options.include_usage`; when enabled, it is added if the caller did not supply `stream_options`. |
 | `preserve_reasoning_content_history` | Replay prior reasoning text into outbound assistant/tool-call `reasoning_content` fields for multi-turn tool use. |
 
 Supported morph kinds:
