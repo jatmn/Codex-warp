@@ -143,9 +143,13 @@
     }
   }
 
-  async function loadProviders() {
+  async function loadProviders({ refreshRoutes = true } = {}) {
     status("Loading providers…");
-    await refreshModelRoutes();
+    // Mutations that already refreshed server routes should skip this — GET
+    // /v1/models rediscovers every provider and can take seconds.
+    if (refreshRoutes) {
+      await refreshModelRoutes();
+    }
     providers = await api("/providers");
     renderProviders();
     fillAnalyticsFilters();
@@ -175,8 +179,7 @@
             body: JSON.stringify({ enabled }),
           });
           p.enabled = enabled;
-          await refreshModelRoutes();
-          await loadProviders();
+          await loadProviders({ refreshRoutes: false });
           status(`${p.id} ${enabled ? "enabled" : "disabled"}`);
         } catch (e) {
           sw.input.checked = !enabled;
@@ -226,7 +229,7 @@
         try {
           await api(`/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
           expandedProviderIds.delete(p.id);
-          await loadProviders();
+          await loadProviders({ refreshRoutes: false });
         } catch (e) { status(`Error: ${e.message}`); }
       });
 
@@ -271,6 +274,10 @@
             { method: "POST", body: JSON.stringify({ enabled }) },
           );
           m.enabled = view.enabled;
+          // Route ownership can move across providers when shared slugs toggle;
+          // reload the full provider list so sibling cards stay accurate.
+          // Server already rebuilt routes during the enable API call.
+          await loadProviders({ refreshRoutes: false });
         } catch (e) {
           sw.input.checked = !enabled;
           status(`Error: ${e.message}`);
@@ -290,7 +297,7 @@
             `/providers/${encodeURIComponent(provider.id)}/models/${encodeURIComponent(m.id)}`,
             { method: "DELETE" },
           );
-          await loadProviders();
+          await loadProviders({ refreshRoutes: false });
         } catch (e) { status(`Error: ${e.message}`); }
       });
       const actions = [sw.wrap];
@@ -378,7 +385,7 @@
         });
       }
       providerDialog.close();
-      await loadProviders();
+      await loadProviders({ refreshRoutes: false });
       status(mode === "create" ? `Provider ${id} created` : `Provider ${id} updated`);
     } catch (e) { status(`Error: ${e.message}`); }
   });
@@ -578,7 +585,7 @@
         );
       }
       modelDialog.close();
-      await loadProviders();
+      await loadProviders({ refreshRoutes: false });
     } catch (e) { status(`Error: ${e.message}`); }
   });
 

@@ -301,6 +301,9 @@ address as the proxy. Authentication is optional: by default the UI has no
 authentication and requires a loopback listen address (`127.0.0.1` or `[::1]`).
 Set `auth_token_env` to protect `/api` with a bearer token read from that
 environment variable; the browser asks for it only if the API returns 401.
+When `auth_token_env` is configured, the named environment variable must be
+present and non-empty at startup (fail closed). Omit the setting entirely for
+unauthenticated loopback access.
 A trusted-network deployment can opt in to remote access explicitly.
 
 ```toml
@@ -341,10 +344,18 @@ bootstrap source of truth; overlays apply on startup whenever the database is
 open. Managed providers created in the UI live entirely in SQLite. Removing a
 TOML-sourced provider or catalog model soft-deletes it via an overlay so it
 stays suppressed across restarts until the overlay row is cleared or the model
-is re-added in the UI. Soft-deleting a catalog model also suppresses its
-upstream alias so live `/models` fetches cannot resurrect it. Enabled model
-overlays reseed `model_routes` at startup so multi-provider routing does not
-require a prior `/v1/models` call after restart.
+is re-added in the UI. Soft-deleting a TOML provider keeps its per-model
+overlay rows so clearing the provider soft-delete can restore prior model
+toggles. Soft-deleting a catalog model also suppresses its upstream alias so
+live `/models` fetches cannot resurrect it. Enabled model overlays reseed
+`model_routes` at startup so multi-provider routing does not require a prior
+`/v1/models` call after restart.
+
+`PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
+keep their current values, and JSON `null` clears optional string fields
+(`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
+re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
+replaces a full catalog entry (with `enabled` defaulting to true when omitted).
 
 Provider overlays never persist `api_key` or request `headers`; use
 `api_key_env` (and TOML headers) for durable secrets.
@@ -360,8 +371,11 @@ codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
 open the SQLite store for overlays and usage recording.
 
 Usage events are recorded from successful proxied responses when the store is
-open. Session grouping prefers `prompt_cache_key`, then `conversation_id`, then
-Responses `conversation` (string or `{ "id": ... }`).
+open, including completed chat and native streams and successful non-stream
+responses even when the upstream omits token usage metadata. Incomplete or
+failed streams are not recorded as successful completions. Session grouping
+prefers `prompt_cache_key`, then `conversation_id`, then Responses
+`conversation` (string or `{ "id": ... }`).
 Events without a session key count as distinct sessions per prompt.
 
 ## Debug Logging

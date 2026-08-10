@@ -464,12 +464,11 @@ impl Store {
     }
 
     pub(crate) fn soft_remove_provider(&self, provider_id: &str) -> anyhow::Result<()> {
+        // Soft-remove only marks the provider overlay. Keep model overlays so
+        // clearing the provider soft-delete can restore prior per-model toggles.
+        // While the provider remains removed, apply_overlays skips those rows
+        // because the provider is absent from config.
         self.upsert_provider_overlay(provider_id, Some(false), true, false, None)?;
-        let db = self.db.lock().expect("sqlite lock poisoned");
-        db.execute(
-            "DELETE FROM model_overlays WHERE provider_id = ?1",
-            params![provider_id],
-        )?;
         Ok(())
     }
 
@@ -1211,36 +1210,6 @@ impl UsageRecorder {
             model,
             session_key,
         })
-    }
-
-    pub(crate) fn record_normalized(&self, usage: &Value) {
-        if usage.is_null() {
-            return;
-        }
-        let input_tokens = usage
-            .get("input_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let output_tokens = usage
-            .get("output_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        let total_tokens = usage
-            .get("total_tokens")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
-        if input_tokens == 0 && output_tokens == 0 && total_tokens == 0 {
-            return;
-        }
-        let event = usage_event_from_normalized(
-            &self.provider_id,
-            &self.model,
-            self.session_key.clone(),
-            usage,
-        );
-        if let Err(err) = self.store.record_usage(&event) {
-            tracing::warn!(error = %err, "failed to record usage analytics");
-        }
     }
 
     /// Record a successfully completed response even when the upstream omits

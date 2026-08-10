@@ -138,7 +138,7 @@ fn upsert_provider_overlay_strips_api_key() {
 }
 
 #[test]
-fn soft_remove_provider_deletes_model_overlays() {
+fn soft_remove_provider_preserves_model_overlays() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-soft-remove-{}",
         SystemTime::now()
@@ -153,7 +153,7 @@ fn soft_remove_provider_deletes_model_overlays() {
             "legacy",
             &ModelCatalogEntry {
                 id: "legacy/model".into(),
-                enabled: true,
+                enabled: false,
                 ..ModelCatalogEntry::default()
             },
             false,
@@ -169,7 +169,99 @@ fn soft_remove_provider_deletes_model_overlays() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(count, 1);
+    let enabled: i64 = db
+        .query_row(
+            "SELECT enabled FROM model_overlays WHERE provider_id = 'legacy' AND model_id = 'legacy/model'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(enabled, 0);
+    let removed: i64 = db
+        .query_row(
+            "SELECT removed FROM provider_overlays WHERE provider_id = 'legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(removed, 1);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn clearing_provider_soft_delete_restores_prior_model_toggles() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-soft-restore-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("restore.db")).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "legacy".into(),
+        ProviderConfig {
+            base_url: "https://legacy.example/v1".into(),
+            model_catalog: vec![ModelCatalogEntry {
+                id: "legacy/model".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    store
+        .set_model_enabled("legacy", "legacy/model", false)
+        .unwrap();
+    store.soft_remove_provider("legacy").unwrap();
+    store.apply_overlays(&mut config).unwrap();
+    assert!(
+        !config.providers.contains_key("legacy"),
+        "soft-removed provider stays suppressed"
+    );
+
+    // Operators restore by clearing the provider soft-delete row while leaving
+    // model overlays intact (manual SQL / DB edit — no Web UI restore yet).
+    {
+        let db = store.db.lock().expect("lock");
+        db.execute(
+            "DELETE FROM provider_overlays WHERE provider_id = ?1",
+            params!["legacy"],
+        )
+        .unwrap();
+    }
+
+    let mut restored = AppConfig::default();
+    restored.providers.insert(
+        "legacy".into(),
+        ProviderConfig {
+            base_url: "https://legacy.example/v1".into(),
+            model_catalog: vec![ModelCatalogEntry {
+                id: "legacy/model".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    store.apply_overlays(&mut restored).unwrap();
+    let entry = restored.providers["legacy"]
+        .model_catalog
+        .iter()
+        .find(|entry| entry.id == "legacy/model")
+        .expect("catalog model restored from TOML");
+    assert!(
+        !entry.enabled,
+        "prior model disable overlay must survive provider soft-delete restore"
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -719,6 +811,37 @@ fn persist_managed_overlay_disable_updates_provider_and_disables_model_overlay()
     config.providers.insert("managed".into(), provider);
     store.apply_overlays(&mut config).unwrap();
     assert!(!config.providers["managed"].model_is_enabled("overlay-only"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn record_completed_counts_prompt_without_usage_metadata() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-record-completed-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = serde_json::json!({
+        "model": "test-model",
+        "prompt_cache_key": "session-a"
+    });
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request)
+        .expect("recorder builds when store is present");
+    // Non-stream and stream completions share this path when upstreams omit usage.
+    recorder.record_completed(None);
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
+    assert_eq!(summary.input_tokens, 0);
+    assert_eq!(summary.output_tokens, 0);
 
     let _ = std::fs::remove_dir_all(dir);
 }

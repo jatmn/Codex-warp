@@ -198,10 +198,13 @@ pub(crate) async fn proxy_chat_responses(
                     }),
                     Some(&value),
                 );
-                if let Some(recorder) = &usage_recorder
-                    && !normalized_usage.is_null()
-                {
-                    recorder.record_normalized(&normalized_usage);
+                if let Some(recorder) = &usage_recorder {
+                    // Successful non-stream responses must count as completed
+                    // prompts/sessions even when the gateway omits usage metadata
+                    // (common when stream_options.include_usage stays opt-in).
+                    recorder.record_completed(
+                        (!normalized_usage.is_null()).then_some(&normalized_usage),
+                    );
                 }
                 Json(chat_json_to_responses_with_policy(
                     value,
@@ -352,9 +355,10 @@ async fn send_native_responses(
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
         && let Some(recorder) = &usage_recorder
-        && !normalized_usage.is_null()
     {
-        recorder.record_normalized(&normalized_usage);
+        // Successful non-stream responses must count as completed prompts/sessions
+        // even when the upstream omits usage metadata.
+        recorder.record_completed((!normalized_usage.is_null()).then_some(&normalized_usage));
     }
 
     let body = if status.is_success() && (!custom_tool_names.is_empty() || tool_policy.enabled) {

@@ -42,10 +42,51 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 }
 
 /// Refresh routes while the caller already holds `AppState::mutation_lock`.
-/// Web UI mutations use this to rebuild overlapping routes before returning;
-/// taking the non-reentrant mutex a second time would deadlock that request.
+/// Prefer [`refresh_model_routes_while_mutation_locked`] for Web UI mutations —
+/// this HTTP-shaped helper exists for tests and rare full rediscovery cases.
 pub(crate) async fn models_while_mutation_locked(state: AppState, headers: HeaderMap) -> Response {
     models_with_publish_lock(state, headers, true).await
+}
+
+/// How Web UI mutations refresh `model_routes` after a config change.
+///
+/// Mutations must not go through the HTTP `/v1/models` response path: that
+/// handler can skip publishing on total upstream failure and forces a full
+/// multi-provider fetch even when only one provider changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutationRouteRefresh {
+    /// Rebuild from catalogs/overlays and retain prior live discovery for every
+    /// still-enabled provider. No upstream fetches.
+    SeedsAndRetain,
+    /// Fetch upstream models for one provider; retain prior discovery for every
+    /// other enabled provider.
+    RefetchOne,
+}
+
+/// Mutation-oriented route refresh. Always publishes a best-effort route map
+/// (seeds + selective discovery + retained prior ownership) and returns a
+/// warning when the focused upstream fetch failed.
+pub(crate) async fn refresh_model_routes_while_mutation_locked(
+    state: &AppState,
+    mode: MutationRouteRefresh,
+    provider_id: Option<&str>,
+) -> Result<(), String> {
+    let revision = state.config_revision.load(Ordering::Acquire);
+    let headers = HeaderMap::new();
+    let (routes, retain_owners, fetch_warning) =
+        discover_routes_for_mutation(state, &headers, mode, provider_id).await;
+
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return Err(
+            "provider configuration changed while refreshing model routes; retry the mutation"
+                .to_string(),
+        );
+    }
+    publish_model_routes(state, routes, &retain_owners).await;
+    match fetch_warning {
+        Some(warning) => Err(warning),
+        None => Ok(()),
+    }
 }
 
 async fn models_with_publish_lock(
@@ -65,6 +106,107 @@ async fn models_with_publish_lock(
         StatusCode::SERVICE_UNAVAILABLE,
         "provider configuration changed while refreshing models; retry the request".to_string(),
     )
+}
+
+async fn discover_routes_for_mutation(
+    state: &AppState,
+    headers: &HeaderMap,
+    mode: MutationRouteRefresh,
+    focus_provider_id: Option<&str>,
+) -> (BTreeMap<String, String>, BTreeSet<String>, Option<String>) {
+    let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
+        .into_iter()
+        .map(|(id, p)| (id.to_string(), p.clone()))
+        .collect();
+
+    let mut routes = state
+        .store
+        .as_ref()
+        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
+        .unwrap_or_default();
+    if state.store.is_none() {
+        let config = state.read_config();
+        for (provider_id, provider) in provider_entries(&config) {
+            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        }
+    }
+
+    let mut retain_owners: BTreeSet<String> =
+        provider_list.iter().map(|(id, _)| id.clone()).collect();
+    let mut fetch_warning = None;
+
+    let fetch_ids: BTreeSet<String> = match mode {
+        MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
+        MutationRouteRefresh::RefetchOne => {
+            focus_provider_id.map(str::to_string).into_iter().collect()
+        }
+    };
+
+    for (provider_id, provider) in &provider_list {
+        if !fetch_ids.contains(provider_id) {
+            continue;
+        }
+        let (provider_models, provider_failures) =
+            fetch_provider_upstream_models(state, headers, provider_id, provider).await;
+        let config = state.read_config().clone();
+        let Some(current) = crate::config::provider_by_id(&config, provider_id).cloned() else {
+            continue;
+        };
+        let mut merged_models = Vec::new();
+        let _added = add_models_for_provider(
+            &mut merged_models,
+            &mut routes,
+            &config,
+            provider_id,
+            &current,
+            provider_models,
+        );
+        if provider_failures.is_empty() {
+            // Successful refetch (including empty catalogs) replaces retained
+            // ownership for this provider; seeds already carry catalog routes.
+            retain_owners.remove(provider_id);
+        } else {
+            fetch_warning = Some(provider_failures.join("; "));
+        }
+    }
+
+    (routes, retain_owners, fetch_warning)
+}
+
+async fn fetch_provider_upstream_models(
+    state: &AppState,
+    headers: &HeaderMap,
+    provider_id: &str,
+    provider: &ProviderConfig,
+) -> (Vec<Value>, Vec<String>) {
+    let mut provider_models = Vec::new();
+    let mut provider_failures = Vec::new();
+    if provider.model_catalog_only {
+        return (provider_models, provider_failures);
+    }
+
+    let config = state.read_config().clone();
+    let url = endpoint_url(provider, &provider.models_path);
+    let mut request = state.client.get(url);
+    request = apply_headers_with_accept(request, provider, headers, "application/json");
+    request = request.timeout(MODEL_CATALOG_TIMEOUT);
+
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.bytes().await.unwrap_or_default();
+            if !status.is_success() {
+                provider_failures.push(format!("{provider_id}: HTTP {status}"));
+            } else if let Some(models) = normalize_models(&body, provider, &config) {
+                provider_models.extend(models);
+            } else {
+                provider_failures.push(format!("{provider_id}: unrecognized model catalog"));
+            }
+        }
+        Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
+    }
+
+    (provider_models, provider_failures)
 }
 
 /// Fetch and publish a model catalog only if configuration stayed stable for the
@@ -89,38 +231,12 @@ async fn models_for_revision(
         let state = state.clone();
         let headers = headers.clone();
         async move {
+            let (mut provider_models, provider_failures) =
+                fetch_provider_upstream_models(&state, &headers, &provider_id, &provider).await;
             let config = state.read_config().clone();
-            let mut provider_models = Vec::new();
-            let mut provider_failures = Vec::new();
-
-            if !provider.model_catalog_only {
-                let url = endpoint_url(&provider, &provider.models_path);
-                let mut request = state.client.get(url);
-                request =
-                    apply_headers_with_accept(request, &provider, &headers, "application/json");
-                request = request.timeout(MODEL_CATALOG_TIMEOUT);
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status();
-                        let body = response.bytes().await.unwrap_or_default();
-                        if !status.is_success() {
-                            provider_failures.push(format!("{provider_id}: HTTP {status}"));
-                        } else if let Some(models) = normalize_models(&body, &provider, &config) {
-                            provider_models.extend(models);
-                        } else {
-                            provider_failures
-                                .push(format!("{provider_id}: unrecognized model catalog"));
-                        }
-                    }
-                    Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
-                }
-            }
-
             if !provider.model_catalog.is_empty() {
                 provider_models.extend(manual_catalog_models(&provider, &config));
             }
-
             (provider_id, provider, provider_models, provider_failures)
         }
     }))

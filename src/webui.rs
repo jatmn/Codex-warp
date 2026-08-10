@@ -227,6 +227,20 @@ struct EnabledBody {
     enabled: bool,
 }
 
+/// Partial model update body. Unlike `ModelCatalogEntry`, omitted fields keep
+/// their existing values so PUT callers cannot accidentally re-enable a model
+/// via `enabled`'s TOML/create default of `true`.
+#[derive(Debug, Deserialize)]
+struct ModelPersist {
+    #[serde(default)]
+    upstream_id: OptionalPatch<String>,
+    #[serde(default)]
+    display_name: OptionalPatch<String>,
+    #[serde(default)]
+    description: OptionalPatch<String>,
+    enabled: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateProviderBody {
     id: String,
@@ -392,7 +406,20 @@ async fn remove_model_routes_and_rebuild(
     upstream_id: Option<&str>,
 ) {
     remove_model_routes(state, provider_id, model_id, upstream_id).await;
-    let _ = models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
+    if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+        state,
+        models::MutationRouteRefresh::SeedsAndRetain,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            provider_id = %provider_id,
+            model_id = %model_id,
+            error = %err,
+            "model route refresh after removal reported a warning"
+        );
+    }
 }
 
 async fn insert_model_route(
@@ -471,17 +498,38 @@ async fn sync_provider_routes_for_enabled(
                 );
             }
         }
-        // Rebuild upstream-discovered routes for API clients that do not call /v1/models.
-        let refresh_state = state.clone();
-        tokio::spawn(async move {
-            let _ = models::models(State(refresh_state), axum::http::HeaderMap::new()).await;
-        });
+        // Mutation-oriented refresh: fetch only this provider's upstream catalog
+        // and retain prior discovery for every other provider. Always publishes.
+        if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+            state,
+            models::MutationRouteRefresh::RefetchOne,
+            Some(provider_id),
+        )
+        .await
+        {
+            tracing::warn!(
+                provider_id = %provider_id,
+                error = %err,
+                "provider enable route refresh could not load upstream models; catalog/overlay routes remain published"
+            );
+        }
     } else {
         remove_provider_model_routes(state, provider_id).await;
-        // Rebuild synchronously so an overlapping live-discovered model can be
-        // reassigned before this mutation reports success.
-        let _ =
-            models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
+        // No upstream fetch: seeds reassign catalog ownership and retained prior
+        // discovery covers other providers' upstream-only slugs.
+        if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+            state,
+            models::MutationRouteRefresh::SeedsAndRetain,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                provider_id = %provider_id,
+                error = %err,
+                "provider disable route refresh reported a warning"
+            );
+        }
     }
     Ok(())
 }
@@ -604,6 +652,12 @@ impl ProviderPersist {
     }
 }
 
+impl ModelPersist {
+    fn apply_to(&self, entry: &mut ModelCatalogEntry) {
+        apply_model_persist(entry, self);
+    }
+}
+
 fn provider_config_mut<'a>(
     config: &'a mut AppConfig,
     provider_id: &str,
@@ -680,6 +734,36 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
+    }
+}
+
+fn apply_model_persist(entry: &mut ModelCatalogEntry, fields: &ModelPersist) {
+    match &fields.upstream_id {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => entry.upstream_id = None,
+        OptionalPatch::Set(upstream_id) => {
+            let trimmed = upstream_id.trim();
+            entry.upstream_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+    }
+    match &fields.display_name {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => entry.display_name = None,
+        OptionalPatch::Set(display_name) => {
+            let trimmed = display_name.trim();
+            entry.display_name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+    }
+    match &fields.description {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => entry.description = None,
+        OptionalPatch::Set(description) => {
+            let trimmed = description.trim();
+            entry.description = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+    }
+    if let Some(enabled) = fields.enabled {
+        entry.enabled = enabled;
     }
 }
 
@@ -881,8 +965,19 @@ async fn update_provider(
         // Endpoint, discovery mode, and catalog edits all invalidate the live
         // discovery ownership previously learned for this provider.
         remove_provider_model_routes(&state, &id).await;
-        let _ =
-            models::models_while_mutation_locked(state.clone(), axum::http::HeaderMap::new()).await;
+        if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+            &state,
+            models::MutationRouteRefresh::RefetchOne,
+            Some(&id),
+        )
+        .await
+        {
+            tracing::warn!(
+                provider_id = %id,
+                error = %err,
+                "provider update route refresh could not load upstream models; catalog/overlay routes remain published"
+            );
+        }
     }
 
     finish_mutation(&state).await?;
@@ -1062,7 +1157,7 @@ async fn add_model(
 async fn update_model(
     State(state): State<AppState>,
     Path((id, model_id)): Path<(String, String)>,
-    Json(entry): Json<ModelCatalogEntry>,
+    Json(fields): Json<ModelPersist>,
 ) -> Result<Json<ModelView>, ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
@@ -1089,7 +1184,8 @@ async fn update_model(
                 ApiError::not_found(format!("model `{model_id}` not found for provider `{id}`"))
             })?;
         let previous_upstream_id = existing.upstream_id.clone();
-        let mut updated = entry;
+        let mut updated = existing.clone();
+        fields.apply_to(&mut updated);
         updated.id = model_id.clone();
         (updated, previous_upstream_id)
     };

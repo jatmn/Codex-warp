@@ -928,6 +928,92 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
 }
 
 #[tokio::test]
+async fn mutation_route_refresh_retains_other_providers_without_refetching() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: false,
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "alpha-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".into(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "beta-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let mut prior = BTreeMap::new();
+    prior.insert("beta-upstream-only".into(), "beta".into());
+    // Stale alpha ownership that disable already cleared from the live map.
+    prior.insert("alpha-stale".into(), "alpha".into());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    // Simulate disable: drop the provider's live routes before refresh.
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.retain(|_, owner| owner != "alpha");
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    let routes = state.model_routes.read().await;
+    assert!(
+        !routes.contains_key("alpha-model"),
+        "disabled providers must not be reseeded"
+    );
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+    assert_eq!(
+        routes.get("beta-upstream-only").map(String::as_str),
+        Some("beta"),
+        "prior discovery for other providers must be retained without refetch"
+    );
+    assert!(
+        !routes.contains_key("alpha-stale"),
+        "removed provider discovery must not be retained"
+    );
+}
+
+#[tokio::test]
 async fn stale_model_discovery_does_not_publish_routes() {
     use std::collections::BTreeMap;
     use std::sync::Arc;

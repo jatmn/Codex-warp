@@ -98,6 +98,56 @@ fn provider_persist_deserializes_omitted_as_absent() {
 }
 
 #[test]
+fn model_persist_omitted_enabled_preserves_existing_value() {
+    let mut entry = ModelCatalogEntry {
+        id: "shared".into(),
+        display_name: Some("Shared".into()),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    };
+    let fields = ModelPersist {
+        upstream_id: OptionalPatch::Absent,
+        display_name: OptionalPatch::Set("Renamed".into()),
+        description: OptionalPatch::Absent,
+        enabled: None,
+    };
+    fields.apply_to(&mut entry);
+    assert!(!entry.enabled);
+    assert_eq!(entry.display_name.as_deref(), Some("Renamed"));
+}
+
+#[test]
+fn model_persist_clear_optional_fields() {
+    let mut entry = ModelCatalogEntry {
+        id: "shared".into(),
+        upstream_id: Some("upstream".into()),
+        display_name: Some("Shared".into()),
+        description: Some("desc".into()),
+        enabled: true,
+    };
+    let fields = ModelPersist {
+        upstream_id: OptionalPatch::Clear,
+        display_name: OptionalPatch::Clear,
+        description: OptionalPatch::Clear,
+        enabled: Some(false),
+    };
+    fields.apply_to(&mut entry);
+    assert!(entry.upstream_id.is_none());
+    assert!(entry.display_name.is_none());
+    assert!(entry.description.is_none());
+    assert!(!entry.enabled);
+}
+
+#[test]
+fn model_persist_deserializes_omitted_enabled_as_none() {
+    let fields: ModelPersist =
+        serde_json::from_str(r#"{"display_name":"Renamed"}"#).expect("deserialize");
+    assert_eq!(fields.enabled, None);
+    assert_eq!(fields.display_name, OptionalPatch::Set("Renamed".into()));
+    assert_eq!(fields.upstream_id, OptionalPatch::Absent);
+}
+
+#[test]
 fn validate_provider_persist_rejects_api_key() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,

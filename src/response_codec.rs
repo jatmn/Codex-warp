@@ -235,10 +235,11 @@ pub(crate) fn native_stream_to_responses(
         }
 
         if completed
-            && let Some(usage) = pending_usage
             && let Some(recorder) = &usage_recorder
         {
-            recorder.record_normalized(&usage);
+            // Mirror chat streams: a successful completion records prompt/session
+            // analytics even when the upstream omitted usage metadata.
+            recorder.record_completed(pending_usage.as_ref());
         }
 
         if !pending.is_empty() {
@@ -293,16 +294,24 @@ fn native_sse_frame_completed(frame: &str) -> bool {
     let Some(data) = sse_data(frame) else {
         return false;
     };
-    serde_json::from_str::<Value>(&data)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .as_deref()
-        == Some("response.completed")
+    let Ok(value) = serde_json::from_str::<Value>(&data) else {
+        return false;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("response.completed") {
+        return false;
+    }
+    // Only treat a successful completion as done. Some upstreams can emit
+    // `response.completed` with a non-success `response.status`; those must not
+    // count as recorded successful prompts/sessions. Missing status is treated
+    // as success for minimal upstream payloads that omit the nested field.
+    match value
+        .get("response")
+        .and_then(|response| response.get("status"))
+        .and_then(Value::as_str)
+    {
+        None | Some("completed") => true,
+        _ => false,
+    }
 }
 
 pub(crate) fn log_native_usage_from_sse_frame(

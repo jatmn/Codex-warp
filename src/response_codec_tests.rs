@@ -42,8 +42,14 @@ fn native_usage_is_recorded_only_after_a_completed_event() {
     let completed =
         "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
     let failed = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_failed_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_cancelled_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"cancelled\"}}\n\n";
     assert!(native_sse_frame_completed(completed));
     assert!(!native_sse_frame_completed(failed));
+    assert!(!native_sse_frame_completed(completed_with_failed_status));
+    assert!(!native_sse_frame_completed(completed_with_cancelled_status));
 }
 
 #[tokio::test]
@@ -79,6 +85,77 @@ async fn native_failed_stream_does_not_record_usage() {
         .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
         .unwrap();
     assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_completed_with_failed_status_does_not_record_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-failed-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_status_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_completed_without_usage_records_prompt_and_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-no-usage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model", "prompt_cache_key": "native-session"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_no_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
     let _ = std::fs::remove_dir_all(dir);
 }
 
