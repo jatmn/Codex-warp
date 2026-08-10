@@ -42,6 +42,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/ui", get(serve_index))
         .route("/ui/", get(serve_index))
         .route("/ui/app.css", get(serve_css))
+        .route("/ui/theme-bootstrap.js", get(serve_theme_bootstrap))
         .route("/ui/app.js", get(serve_js))
         .nest("/api", api_router())
 }
@@ -78,6 +79,19 @@ async fn serve_css() -> impl IntoResponse {
             (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
         ],
         include_str!("webui_static/app.css"),
+    )
+}
+
+async fn serve_theme_bootstrap() -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+        ],
+        include_str!("webui_static/theme-bootstrap.js"),
     )
 }
 

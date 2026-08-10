@@ -8,10 +8,37 @@
   let analyticsModelIds = [];
   let analyticsTimer = null;
   let analyticsInFlight = false;
+  let analyticsSnapshot = null;
   let activeTab = "analytics";
+  const expandedProviderIds = new Set();
+  const VALID_TABS = new Set(["analytics", "providers"]);
 
   const $ = (sel) => document.querySelector(sel);
   const status = (msg) => { $("#status-line").textContent = msg; };
+
+  const themeApi = window.installCodexWarpTheme(window);
+  if (!themeApi) {
+    throw new Error("codex-warp theme bootstrap failed to load");
+  }
+
+  function applyTheme(theme, { persist = false } = {}) {
+    themeApi.apply(theme, { persist });
+  }
+
+  $("#theme-toggle")?.addEventListener("click", () => {
+    const next = themeApi.getApplied() === "dark" ? "light" : "dark";
+    applyTheme(next, { persist: true });
+  });
+
+  function svgIcon(paths) {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+  }
+  const ICONS = {
+    chevron: svgIcon('<path d="M6 9l6 6 6-6"></path>'),
+    trash: svgIcon(
+      '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path>',
+    ),
+  };
 
   async function api(path, opts = {}) {
     const res = await fetch(API + path, {
@@ -31,7 +58,27 @@
     return d.innerHTML;
   }
 
+  function tabFromLocation() {
+    const hash = location.hash.replace(/^#/, "");
+    return VALID_TABS.has(hash) ? hash : "analytics";
+  }
+
+  function tabHash(name) {
+    return name === "analytics" ? "" : `#${name}`;
+  }
+
+  function syncTabHash(name) {
+    const hash = tabHash(name);
+    const url = `${location.pathname}${location.search}${hash}`;
+    if (location.hash !== hash) {
+      history.replaceState(null, "", url);
+    }
+  }
+
   function switchTab(name) {
+    if (!VALID_TABS.has(name)) {
+      return;
+    }
     activeTab = name;
     document.querySelectorAll(".tab").forEach((b) => {
       const on = b.dataset.tab === name;
@@ -43,12 +90,20 @@
       p.classList.toggle("active", on);
       p.hidden = !on;
     });
+    syncTabHash(name);
     if (name === "analytics") startAnalyticsPoll();
     else stopAnalyticsPoll();
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+  });
+
+  window.addEventListener("hashchange", () => {
+    const name = tabFromLocation();
+    if (name !== activeTab) {
+      switchTab(name);
+    }
   });
 
   function toggleSwitch(onChange) {
@@ -112,14 +167,30 @@
       });
       sw.input.checked = p.enabled;
 
+      const isExpanded = expandedProviderIds.has(p.id);
+      const models = document.createElement("div");
+      models.className = isExpanded ? "models" : "models collapsed";
+      if (isExpanded) {
+        card.classList.add("expanded");
+      }
+
       const expandBtn = document.createElement("button");
       expandBtn.type = "button";
-      expandBtn.className = "btn small";
-      expandBtn.textContent = "Models";
-      const models = document.createElement("div");
-      models.className = "models collapsed";
+      expandBtn.className = "btn icon provider-chevron";
+      expandBtn.innerHTML = ICONS.chevron;
+      expandBtn.title = isExpanded ? "Hide models" : "Show models";
+      expandBtn.setAttribute("aria-label", `Toggle models for ${p.display_name || p.id}`);
+      expandBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
       expandBtn.addEventListener("click", () => {
-        models.classList.toggle("collapsed");
+        const collapsed = models.classList.toggle("collapsed");
+        card.classList.toggle("expanded", !collapsed);
+        if (collapsed) {
+          expandedProviderIds.delete(p.id);
+        } else {
+          expandedProviderIds.add(p.id);
+        }
+        expandBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        expandBtn.title = collapsed ? "Show models" : "Hide models";
       });
 
       const editBtn = document.createElement("button");
@@ -136,6 +207,7 @@
         if (!confirm(`Delete provider ${p.id}?`)) return;
         try {
           await api(`/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+          expandedProviderIds.delete(p.id);
           await loadProviders();
         } catch (e) { status(`Error: ${e.message}`); }
       });
@@ -148,9 +220,9 @@
 
       const actions = document.createElement("div");
       actions.className = "provider-actions";
-      actions.append(expandBtn, editBtn, addModelBtn, delBtn);
+      actions.append(editBtn, addModelBtn, delBtn);
 
-      head.append(title, sw.wrap, actions);
+      head.append(title, sw.wrap, actions, expandBtn);
       renderModels(p, models);
       card.append(head, models);
       list.append(card);
@@ -161,9 +233,13 @@
     container.innerHTML = "";
     const models = provider.models || [];
     if (!models.length) {
-      container.innerHTML = "<p class='muted'>No models.</p>";
+      container.innerHTML = "<p class='models-label'>Models</p><p class='muted'>No models.</p>";
       return;
     }
+    const label = document.createElement("p");
+    label.className = "models-label";
+    label.textContent = "Models";
+    container.append(label);
     for (const m of models) {
       const row = document.createElement("div");
       row.className = "model-row";
@@ -185,8 +261,10 @@
       sw.input.checked = m.enabled;
       const del = document.createElement("button");
       del.type = "button";
-      del.className = "btn small danger";
-      del.textContent = "Remove";
+      del.className = "btn icon danger";
+      del.innerHTML = ICONS.trash;
+      del.title = `Remove ${m.id}`;
+      del.setAttribute("aria-label", `Remove model ${m.id}`);
       del.addEventListener("click", async () => {
         if (!confirm(`Remove model ${m.id}?`)) return;
         try {
@@ -572,25 +650,16 @@
         .map((row) => row.key)
         .filter(Boolean);
       fillAnalyticsFilters();
-      renderAnalyticsCards(data);
-      const series = data.series || [];
-      drawLineChart($("#chart-line"), series);
-      // Bar chart shows the same time series as bars so usage-over-time is visible
-      // in both chart styles; breakdowns remain available via provider/model filters.
-      $("#chart-bar-title").textContent = model
-        ? `${model} over time`
-        : provider
-          ? `${provider} over time`
-          : "Usage over time";
-      drawBarChart(
-        $("#chart-bar"),
-        series.map((point) => ({
-          key: formatBucketLabel(point.ts, range),
-          total_tokens: point.total_tokens || 0,
-          prompts: point.prompts || 0,
-          sessions: point.sessions || 0,
-        })),
-      );
+      analyticsSnapshot = {
+        data,
+        range,
+        barTitle: model
+          ? `${model} over time`
+          : provider
+            ? `${provider} over time`
+            : "Usage over time",
+      };
+      renderAnalyticsPresentation();
       status("Analytics updated");
     } catch (e) {
       status(`Analytics error: ${e.message}`);
@@ -611,6 +680,28 @@
     return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   }
 
+  function renderAnalyticsPresentation() {
+    if (!analyticsSnapshot) return;
+    const { data, range, barTitle } = analyticsSnapshot;
+    renderAnalyticsCards(data);
+    const series = data.series || [];
+    drawLineChart($("#chart-line"), series);
+    // Bar chart shows the same time series as bars so usage-over-time is visible
+    // in both chart styles; breakdowns remain available via provider/model filters.
+    $("#chart-bar-title").textContent = barTitle;
+    drawBarChart(
+      $("#chart-bar"),
+      series.map((point) => ({
+        key: formatBucketLabel(point.ts, range),
+        total_tokens: point.total_tokens || 0,
+        prompts: point.prompts || 0,
+        sessions: point.sessions || 0,
+      })),
+    );
+  }
+
+  window.addEventListener("codex-warp-theme-change", () => renderAnalyticsPresentation());
+
   function renderAnalyticsCards(d) {
     const cards = $("#analytics-cards");
     const items = [
@@ -627,6 +718,29 @@
     ).join("");
   }
 
+  const colorProbe = document.createElement("span");
+  colorProbe.hidden = true;
+  document.documentElement.append(colorProbe);
+
+  function cssThemeColor(variable, fallback) {
+    colorProbe.style.color = `var(${variable})`;
+    const resolved = getComputedStyle(colorProbe).color;
+    if (!resolved || resolved === "rgba(0, 0, 0, 0)") {
+      return fallback;
+    }
+    return resolved;
+  }
+
+  function chartColors() {
+    return {
+      muted: cssThemeColor("--muted", "#71717a"),
+      tokens: cssThemeColor("--chart-tokens", "#0f766e"),
+      prompts: cssThemeColor("--chart-prompts", "#d97706"),
+      sessions: cssThemeColor("--chart-sessions", "#16a34a"),
+      bar: cssThemeColor("--chart-tokens", "#0f766e"),
+    };
+  }
+
   function drawLineChart(canvas, series) {
     const ctx = canvas.getContext("2d");
     const w = canvas.width;
@@ -639,6 +753,7 @@
     const tokenVals = series.map((p) => p.total_tokens || 0);
     const max = Math.max(1, ...promptVals, ...sessionVals, ...tokenVals);
     const step = (w - pad * 2) / Math.max(1, series.length - 1);
+    const colors = chartColors();
 
     function strokeSeries(vals, color) {
       ctx.strokeStyle = color;
@@ -653,19 +768,19 @@
       ctx.stroke();
     }
 
-    strokeSeries(tokenVals, "#3d9cdb");
-    strokeSeries(promptVals, "#e8a838");
-    strokeSeries(sessionVals, "#6bc96b");
+    strokeSeries(tokenVals, colors.tokens);
+    strokeSeries(promptVals, colors.prompts);
+    strokeSeries(sessionVals, colors.sessions);
 
-    ctx.fillStyle = "#8b98a8";
+    ctx.fillStyle = colors.muted;
     ctx.font = "11px system-ui";
     ctx.fillText("0", 4, h - pad);
     ctx.fillText(String(max), 4, pad + 4);
-    ctx.fillStyle = "#3d9cdb";
+    ctx.fillStyle = colors.tokens;
     ctx.fillText("tokens", w - 60, pad + 4);
-    ctx.fillStyle = "#e8a838";
+    ctx.fillStyle = colors.prompts;
     ctx.fillText("prompts", w - 60, pad + 18);
-    ctx.fillStyle = "#6bc96b";
+    ctx.fillStyle = colors.sessions;
     ctx.fillText("sessions", w - 60, pad + 32);
   }
 
@@ -679,14 +794,15 @@
     const barGap = 6;
     const max = Math.max(1, ...rows.map((r) => r.total_tokens || 0));
     const barW = (w - pad * 2 - barGap * (rows.length - 1)) / rows.length;
+    const colors = chartColors();
     rows.forEach((r, i) => {
       const val = r.total_tokens || 0;
       const barH = (val / max) * (h - pad * 2);
       const x = pad + i * (barW + barGap);
       const y = h - pad - barH;
-      ctx.fillStyle = "#2a6f9e";
+      ctx.fillStyle = colors.bar;
       ctx.fillRect(x, y, barW, barH);
-      ctx.fillStyle = "#8b98a8";
+      ctx.fillStyle = colors.muted;
       ctx.font = "10px system-ui";
       const label = (r.key || "").slice(0, 8);
       ctx.fillText(label, x, h - 8);
@@ -705,7 +821,7 @@
   }
 
   async function boot() {
-    switchTab("analytics");
+    switchTab(tabFromLocation());
     status("Loading…");
     try {
       await Promise.all([loadProviders(), loadProviderTemplates()]);
