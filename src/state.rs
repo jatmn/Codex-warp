@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 
 use reqwest::Client;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::config::AppConfig;
@@ -16,6 +17,8 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Serializes Web UI mutations so SQLite overlays and live config update together.
+    pub(crate) mutation_lock: Arc<AsyncMutex<()>>,
     pub(crate) debug_log: DebugLog,
     pub(crate) store: Option<Store>,
 }

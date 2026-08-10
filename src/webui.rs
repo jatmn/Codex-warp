@@ -380,6 +380,9 @@ async fn sync_provider_routes_for_enabled(
         });
     } else {
         remove_provider_model_routes(state, provider_id).await;
+        // Rebuild synchronously so an overlapping live-discovered model can be
+        // reassigned before this mutation reports success.
+        let _ = models::models(State(state.clone()), axum::http::HeaderMap::new()).await;
     }
     Ok(())
 }
@@ -614,6 +617,7 @@ async fn create_provider(
     State(state): State<AppState>,
     Json(body): Json<CreateProviderBody>,
 ) -> Result<(StatusCode, Json<ProviderView>), ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_persist(&body.fields)?;
 
     let template_key = body
@@ -745,6 +749,7 @@ async fn update_provider(
     Path(id): Path<String>,
     Json(fields): Json<ProviderPersist>,
 ) -> Result<Json<ProviderView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
@@ -798,6 +803,7 @@ async fn delete_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if id == PRIMARY_PROVIDER_ID {
         return Err(ApiError::bad_request("cannot delete default provider id"));
@@ -824,7 +830,7 @@ async fn delete_provider(
         config.providers.remove(&id);
     }
 
-    remove_provider_model_routes(&state, &id).await;
+    sync_provider_routes_for_enabled(&state, &id, false).await?;
     finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -834,6 +840,7 @@ async fn set_provider_enabled(
     Path(id): Path<String>,
     Json(body): Json<EnabledBody>,
 ) -> Result<Json<ProviderView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
 
@@ -875,6 +882,7 @@ async fn add_model(
     Path(id): Path<String>,
     Json(entry): Json<ModelCatalogEntry>,
 ) -> Result<(StatusCode, Json<ModelView>), ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if entry.id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -888,18 +896,22 @@ async fn add_model(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let already_in_catalog = {
+    let (already_in_catalog, previous_upstream_id) = {
         let config = state.read_config();
         configured_provider_entries(&config)
             .into_iter()
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| {
-                provider
+                let existing = provider
                     .model_catalog
                     .iter()
-                    .any(|catalog| catalog.id == entry.id)
+                    .find(|catalog| catalog.id == entry.id);
+                (
+                    existing.is_some(),
+                    existing.and_then(|catalog| catalog.upstream_id.clone()),
+                )
             })
-            .unwrap_or(false)
+            .unwrap_or((false, None))
     };
 
     store
@@ -922,6 +934,9 @@ async fn add_model(
         }
     }
 
+    if previous_upstream_id.as_deref() != entry.upstream_id.as_deref() {
+        remove_model_routes(&state, &id, &entry.id, previous_upstream_id.as_deref()).await;
+    }
     if entry.enabled {
         insert_model_route(&state, &id, &entry.id, entry.upstream_id.as_deref()).await;
     }
@@ -954,6 +969,7 @@ async fn update_model(
     Path((id, model_id)): Path<(String, String)>,
     Json(entry): Json<ModelCatalogEntry>,
 ) -> Result<Json<ModelView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -1034,6 +1050,7 @@ async fn delete_model(
     State(state): State<AppState>,
     Path((id, model_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -1112,6 +1129,7 @@ async fn set_model_enabled(
     Path((id, model_id)): Path<(String, String)>,
     Json(body): Json<EnabledBody>,
 ) -> Result<Json<ModelView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));

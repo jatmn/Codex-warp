@@ -710,7 +710,7 @@ fn register_catalog_routes_skips_disabled_entries() {
 }
 
 #[tokio::test]
-async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
+async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::RwLock;
@@ -718,6 +718,7 @@ async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
     use axum::extract::State;
     use axum::http::HeaderMap;
     use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
     use tokio::sync::RwLock as AsyncRwLock;
 
     use crate::config::ModelCatalogEntry;
@@ -729,7 +730,7 @@ async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
     let mut provider = ProviderConfig::default();
     provider.base_url = "https://example.test/v1".to_string();
     provider.model_catalog_only = true;
-    // No enabled catalog entries → empty merged models, but prior routes should stick.
+    // A successful empty catalog response must remove stale discovered routes.
     provider.model_catalog.push(ModelCatalogEntry {
         id: "disabled-model".to_string(),
         enabled: false,
@@ -744,6 +745,7 @@ async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
     };
@@ -751,14 +753,11 @@ async fn models_preserves_prior_routes_when_catalog_refresh_is_empty() {
     let response = models(State(state.clone()), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let routes = state.model_routes.read().await;
-    assert_eq!(
-        routes.get("upstream/discovered").map(String::as_str),
-        Some("test")
-    );
+    assert!(!routes.contains_key("upstream/discovered"));
 }
 
 #[tokio::test]
-async fn models_preserves_ui_owner_across_catalog_rebuild() {
+async fn models_uses_current_catalog_owner_across_rebuild() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use std::sync::RwLock;
@@ -766,6 +765,7 @@ async fn models_preserves_ui_owner_across_catalog_rebuild() {
     use axum::extract::State;
     use axum::http::HeaderMap;
     use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
     use tokio::sync::RwLock as AsyncRwLock;
 
     use crate::config::ModelCatalogEntry;
@@ -793,7 +793,7 @@ async fn models_preserves_ui_owner_across_catalog_rebuild() {
     config.providers.insert("alpha".to_string(), alpha);
     config.providers.insert("beta".to_string(), beta);
 
-    // Operator previously enabled on beta; rebuild must keep beta ownership.
+    // A stale in-memory owner must not override the current catalog rebuild.
     let mut prior = BTreeMap::new();
     prior.insert("shared".to_string(), "beta".to_string());
 
@@ -801,6 +801,7 @@ async fn models_preserves_ui_owner_across_catalog_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
     };
@@ -808,7 +809,7 @@ async fn models_preserves_ui_owner_across_catalog_rebuild() {
     let response = models(State(state.clone()), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
     let routes = state.model_routes.read().await;
-    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
 }
 
 #[tokio::test]
@@ -820,6 +821,7 @@ async fn models_returns_empty_list_when_no_providers_configured() {
     use axum::extract::State;
     use axum::http::HeaderMap;
     use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
     use tokio::sync::RwLock as AsyncRwLock;
 
     use crate::debug_log::DebugLog;
@@ -830,6 +832,7 @@ async fn models_returns_empty_list_when_no_providers_configured() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
     };
@@ -852,6 +855,7 @@ async fn models_returns_empty_list_when_all_models_disabled() {
     use axum::extract::State;
     use axum::http::HeaderMap;
     use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
     use tokio::sync::RwLock as AsyncRwLock;
 
     use crate::config::ModelCatalogEntry;
@@ -874,6 +878,7 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
     };

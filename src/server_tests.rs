@@ -8,6 +8,7 @@ use std::sync::RwLock;
 
 use reqwest::Client;
 use serde_json::json;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::config::AppConfig;
@@ -19,6 +20,7 @@ fn test_state(config: AppConfig) -> AppState {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
     }

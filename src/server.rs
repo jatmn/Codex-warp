@@ -15,6 +15,7 @@ use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
 use serde_json::Value;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 use tracing::warn;
@@ -155,6 +156,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(model_routes)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         store: Some(store),
     };
 

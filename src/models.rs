@@ -86,10 +86,15 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     .await;
 
     let mut merged_models = Vec::new();
-    let mut routes = BTreeMap::new();
+    let mut routes = state
+        .store
+        .as_ref()
+        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
+        .unwrap_or_default();
     let mut failures = Vec::new();
+    let mut failed_providers = BTreeSet::new();
 
-    {
+    if state.store.is_none() {
         let config = state.read_config();
         for (provider_id, provider) in provider_entries(&config) {
             register_catalog_routes_for_provider(&mut routes, provider_id, provider);
@@ -97,6 +102,9 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+        if !provider_failures.is_empty() {
+            failed_providers.insert(provider_id.clone());
+        }
         let config = state.read_config().clone();
         let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
             // Provider was disabled/removed while upstream fetch was in flight.
@@ -118,7 +126,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 
     if merged_models.is_empty() {
         if failures.is_empty() {
-            publish_model_routes(&state, routes).await;
+            publish_model_routes(&state, routes, &failed_providers).await;
             return Json(json!({ "models": [] })).into_response();
         }
         // Keep previously discovered routes when upstream catalogs fail transiently.
@@ -135,23 +143,28 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 
-    publish_model_routes(&state, routes).await;
+    publish_model_routes(&state, routes, &failed_providers).await;
     Json(json!({ "models": merged_models })).into_response()
 }
 
-/// Replace `model_routes` while retaining still-valid prior ownership.
+/// Replace `model_routes` while retaining prior discovery only for failed providers.
 ///
-/// Fresh catalog/upstream discovery builds `routes`, then any prior
-/// `(model → provider)` mapping is restored when that provider is still enabled
-/// and the model is still enabled there. This preserves:
-/// - routes for providers that failed or returned empty catalogs this refresh
-/// - UI-inserted upstream-only routes across `/v1/models` rebuilds
-/// - explicit operator ownership from enable/add until the model is disabled
-async fn publish_model_routes(state: &AppState, mut routes: BTreeMap<String, String>) {
+/// Fresh catalog/upstream discovery builds `routes` from configured catalogs and
+/// persisted UI overlays. Prior discovered ownership is restored only when the
+/// owning provider's upstream catalog fetch failed, so a successful response can
+/// remove stale routes while transient failures remain usable.
+async fn publish_model_routes(
+    state: &AppState,
+    mut routes: BTreeMap<String, String>,
+    failed_providers: &BTreeSet<String>,
+) {
     let prior = state.model_routes.read().await.clone();
     {
         let config = state.read_config();
         for (model_id, owner) in prior {
+            if !failed_providers.contains(&owner) {
+                continue;
+            }
             let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
                 continue;
             };
