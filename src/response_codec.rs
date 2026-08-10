@@ -158,11 +158,12 @@ pub(crate) fn native_stream_to_responses(
         let mut debug_pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut pending_usage: Option<Value> = None;
+        let mut completed = false;
 
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
             if custom_tool_names.is_empty() && !tool_policy.enabled {
-                log_native_usage_from_sse_chunk(
+                completed |= log_native_usage_from_sse_chunk(
                     &chunk,
                     &mut debug_pending,
                     &debug_log,
@@ -209,6 +210,7 @@ pub(crate) fn native_stream_to_responses(
                     status,
                     &mut pending_usage,
                 );
+                completed |= native_sse_frame_completed(&frame);
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
                     "id": request_log_id,
@@ -221,7 +223,8 @@ pub(crate) fn native_stream_to_responses(
             }
         }
 
-        if let Some(usage) = pending_usage
+        if completed
+            && let Some(usage) = pending_usage
             && let Some(recorder) = &usage_recorder
         {
             recorder.record_normalized(&usage);
@@ -260,7 +263,8 @@ pub(crate) fn log_native_usage_from_sse_chunk(
     request_log_id: &str,
     status: u16,
     pending_usage: &mut Option<Value>,
-) {
+) -> bool {
+    let mut completed = false;
     pending.extend_from_slice(chunk);
     while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(pending) {
         let frame = pending[..frame_end].to_vec();
@@ -269,7 +273,25 @@ pub(crate) fn log_native_usage_from_sse_chunk(
             continue;
         };
         log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status, pending_usage);
+        completed |= native_sse_frame_completed(&frame);
     }
+    completed
+}
+
+fn native_sse_frame_completed(frame: &str) -> bool {
+    let Some(data) = sse_data(frame) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&data)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .as_deref()
+        == Some("response.completed")
 }
 
 pub(crate) fn log_native_usage_from_sse_frame(

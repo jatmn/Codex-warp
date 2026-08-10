@@ -269,6 +269,42 @@ async fn remove_model_routes_preserves_other_provider_upstream_slug() {
 }
 
 #[tokio::test]
+async fn removing_model_route_reassigns_a_shared_catalog_slug() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        enabled: true,
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+        config
+            .providers
+            .get_mut("alpha")
+            .unwrap()
+            .disable_model("shared");
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("shared".into(), "alpha".into());
+    }
+
+    remove_model_routes_and_rebuild(&state, "alpha", "shared", None).await;
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+}
+
+#[tokio::test]
 async fn insert_model_route_skips_disabled_provider() {
     let state = test_state();
     {

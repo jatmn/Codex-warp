@@ -360,6 +360,45 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
 }
 
 #[test]
+fn apply_overlays_plain_catalog_enable_clears_upstream_disabled_model() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-plain-catalog-enable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("enable.db")).unwrap();
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            enabled: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "friendly".into(),
+                upstream_id: Some("real-model".into()),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            }],
+            disabled_models: vec!["friendly".into(), "real-model".into()],
+            ..ProviderConfig::default()
+        },
+    );
+
+    // A toggle of an existing TOML catalog entry persists no catalog snapshot.
+    store.set_model_enabled("manual", "friendly", true).unwrap();
+    store.apply_overlays(&mut config).unwrap();
+
+    let provider = &config.providers["manual"];
+    assert!(provider.model_is_enabled("friendly"));
+    assert!(provider.model_is_enabled("real-model"));
+    assert!(provider.disabled_models.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn upsert_provider_overlay_strips_custom_headers() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-header-strip-{}",

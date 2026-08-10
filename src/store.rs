@@ -369,8 +369,12 @@ impl Store {
                 .find(|entry| entry.id == model_id)
             {
                 entry.enabled = enabled;
+                let upstream_id = entry.upstream_id.clone();
                 if enabled {
                     provider.clear_disabled_overlapping(&model_id);
+                    if let Some(upstream_id) = upstream_id.as_deref().filter(|id| !id.is_empty()) {
+                        provider.clear_disabled_overlapping(upstream_id);
+                    }
                 } else {
                     provider.disable_model(&model_id);
                 }

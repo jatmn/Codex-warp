@@ -144,12 +144,11 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         .parse()
         .with_context(|| format!("parse listen address {}", config.listen))?;
 
-    if webui_enabled && !is_loopback_addr(&addr) {
-        warn!(
-            "webui routes are enabled but listen address {addr} is not loopback; \
-             the Web UI has no authentication — bind to 127.0.0.1 or disable webui"
-        );
-    }
+    ensure_webui_bind(
+        webui_enabled,
+        config.webui.allow_unauthenticated_remote_access,
+        &addr,
+    )?;
 
     let state = AppState {
         debug_log: DebugLog::new(&config.debug),
@@ -191,6 +190,27 @@ fn is_loopback_addr(addr: &SocketAddr) -> bool {
         SocketAddr::V4(v4) => v4.ip().is_loopback(),
         SocketAddr::V6(v6) => v6.ip().is_loopback(),
     }
+}
+
+fn ensure_webui_bind(
+    webui_enabled: bool,
+    allow_unauthenticated_remote_access: bool,
+    addr: &SocketAddr,
+) -> anyhow::Result<()> {
+    if webui_enabled && !is_loopback_addr(addr) && !allow_unauthenticated_remote_access {
+        anyhow::bail!(
+            "webui routes have no authentication and require a loopback listen address; \
+             bind to 127.0.0.1/[::1], disable the Web UI with --no-webui, or set \
+             webui.allow_unauthenticated_remote_access = true only on a trusted network"
+        );
+    }
+    if webui_enabled && !is_loopback_addr(addr) {
+        warn!(
+            "webui routes are exposed without authentication on {addr}; \
+             remote management is enabled only by explicit configuration"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {

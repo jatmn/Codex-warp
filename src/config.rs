@@ -57,6 +57,8 @@ fn default_true() -> bool {
 pub struct WebUiConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Explicit opt-in for exposing the unauthenticated management API beyond loopback.
+    pub allow_unauthenticated_remote_access: bool,
     pub db_path: PathBuf,
 }
 
@@ -64,6 +66,7 @@ impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            allow_unauthenticated_remote_access: false,
             db_path: PathBuf::from("codex-warp.db"),
         }
     }

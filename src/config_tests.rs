@@ -965,7 +965,20 @@ fn webui_config_partial_toml_keeps_enabled_true() {
     )
     .expect("partial webui config parses");
     assert!(config.webui.enabled);
+    assert!(!config.webui.allow_unauthenticated_remote_access);
     assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
+}
+
+#[test]
+fn webui_remote_access_requires_explicit_opt_in() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        allow_unauthenticated_remote_access = true
+        "#,
+    )
+    .expect("webui remote opt-in parses");
+    assert!(config.webui.allow_unauthenticated_remote_access);
 }
 
 #[test]

@@ -322,6 +322,18 @@ async fn remove_model_routes(
     }
 }
 
+/// Rebuild discovery after a single-model removal so another enabled provider
+/// can immediately claim an overlapping live-only slug.
+async fn remove_model_routes_and_rebuild(
+    state: &AppState,
+    provider_id: &str,
+    model_id: &str,
+    upstream_id: Option<&str>,
+) {
+    remove_model_routes(state, provider_id, model_id, upstream_id).await;
+    let _ = models::models(State(state.clone()), axum::http::HeaderMap::new()).await;
+}
+
 async fn insert_model_route(
     state: &AppState,
     provider_id: &str,
@@ -1020,12 +1032,14 @@ async fn update_model(
     }
 
     if previous_upstream_id.as_deref() != updated.upstream_id.as_deref() {
-        remove_model_routes(&state, &id, &model_id, previous_upstream_id.as_deref()).await;
+        remove_model_routes_and_rebuild(&state, &id, &model_id, previous_upstream_id.as_deref())
+            .await;
     }
     if updated.enabled {
         insert_model_route(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
     } else {
-        remove_model_routes(&state, &id, &model_id, updated.upstream_id.as_deref()).await;
+        remove_model_routes_and_rebuild(&state, &id, &model_id, updated.upstream_id.as_deref())
+            .await;
     }
 
     finish_mutation(&state).await?;
@@ -1119,7 +1133,7 @@ async fn delete_model(
         }
     }
 
-    remove_model_routes(&state, &id, &model_id, upstream_id.as_deref()).await;
+    remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
     finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1186,7 +1200,7 @@ async fn set_model_enabled(
     if body.enabled {
         insert_model_route(&state, &id, &model_id, upstream_id.as_deref()).await;
     } else {
-        remove_model_routes(&state, &id, &model_id, upstream_id.as_deref()).await;
+        remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
     }
 
     finish_mutation(&state).await?;

@@ -8,6 +8,9 @@ listen = "127.0.0.1:8787"
 [webui]
 # Local management UI at http://127.0.0.1:8787/ui/
 # enabled = true
+# WARNING: permits unauthenticated remote management and credential-bearing proxy edits.
+# Set this only when every remote client is trusted and the network is access-controlled.
+# allow_unauthenticated_remote_access = false
 # db_path = "codex-warp.db"
 
 [continue_guard]

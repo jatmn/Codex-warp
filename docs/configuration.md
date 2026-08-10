@@ -296,14 +296,22 @@ before enabling the feature and use it at your own risk.
 
 Codex Warp can serve a lightweight local Web UI for managing providers/models and
 viewing usage analytics. It is enabled by default and listens on the same bind
-address as the proxy. The Web UI has no authentication; bind to loopback
-(`127.0.0.1`) when the UI is enabled.
+address as the proxy. The Web UI has no authentication, so it requires a
+loopback listen address (`127.0.0.1` or `[::1]`) by default. A trusted-network
+deployment can opt in to remote access explicitly, but doing so gives every
+reachable client full provider-management access and can expose credentials.
 
 ```toml
 [webui]
 enabled = true
 db_path = "codex-warp.db"
+# Default false. Set true only on an access-controlled, trusted network.
+allow_unauthenticated_remote_access = false
 ```
+
+When `listen` is non-loopback, startup fails unless
+`allow_unauthenticated_remote_access = true` is set. This is an intentionally
+unsafe compatibility switch for trusted networks, not an authentication layer.
 
 Open `http://127.0.0.1:8787/ui/` while the proxy is running.
 
