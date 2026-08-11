@@ -218,6 +218,33 @@ fn enabling_catalog_model_clears_disabled_models() {
 }
 
 #[test]
+fn adding_disabled_catalog_alias_preserves_upstream_suppression() {
+    let mut provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "named-foo".into(),
+            upstream_id: Some("foo".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    provider.disable_model("foo");
+
+    upsert_model_catalog_entry(
+        &mut provider,
+        ModelCatalogEntry {
+            id: "other-foo".into(),
+            upstream_id: Some("foo".into()),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        },
+    );
+
+    assert!(provider.disabled_models.iter().any(|id| id == "foo"));
+    assert!(!provider.model_is_enabled("foo"));
+}
+
+#[test]
 fn ensure_provider_exists_before_overlay_for_set_provider_enabled() {
     let config = AppConfig::default();
     assert!(ensure_provider_exists(&config, "missing-provider").is_err());
@@ -354,6 +381,60 @@ async fn removing_model_route_reassigns_a_shared_catalog_slug() {
     remove_model_routes_and_rebuild(&state, "alpha", "shared", None).await;
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+}
+
+#[tokio::test]
+async fn removing_model_route_refetches_live_only_fallback_owner() {
+    let app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "shared", "object": "model"}]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    remove_model_routes_and_rebuild(&state, "alpha", "shared", None).await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    server.abort();
 }
 
 #[tokio::test]

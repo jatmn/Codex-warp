@@ -58,6 +58,45 @@ fn store_records_usage_and_aggregates_ranges() {
 }
 
 #[test]
+fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-session-identity-test-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    // The first row's old synthetic identity would have been "prompt-1".
+    for session_key in [None, Some("prompt-1")] {
+        store
+            .record_usage(&UsageEvent {
+                provider_id: "alpha".into(),
+                model: "alpha/model".into(),
+                session_key: session_key.map(str::to_string),
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+            })
+            .unwrap();
+    }
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.sessions, 2);
+    assert_eq!(summary.by_provider[0].sessions, 2);
+    assert_eq!(summary.by_model[0].sessions, 2);
+    assert_eq!(summary.series.last().unwrap().sessions, 2);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn store_applies_provider_and_model_overlays() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-overlay-test-{}",

@@ -398,7 +398,8 @@ async fn remove_model_routes(
 }
 
 /// Rebuild discovery after a single-model removal so another enabled provider
-/// can immediately claim an overlapping live-only slug.
+/// can immediately claim an overlapping live-only slug. Live discovery stores
+/// only the winning owner, so every enabled provider must be refetched here.
 async fn remove_model_routes_and_rebuild(
     state: &AppState,
     provider_id: &str,
@@ -408,7 +409,7 @@ async fn remove_model_routes_and_rebuild(
     remove_model_routes(state, provider_id, model_id, upstream_id).await;
     if let Err(err) = models::refresh_model_routes_while_mutation_locked(
         state,
-        models::MutationRouteRefresh::SeedsAndRetain,
+        models::MutationRouteRefresh::RefetchAll,
         None,
     )
     .await
@@ -767,6 +768,24 @@ fn apply_model_persist(entry: &mut ModelCatalogEntry, fields: &ModelPersist) {
     }
 }
 
+fn upsert_model_catalog_entry(provider: &mut ProviderConfig, entry: ModelCatalogEntry) {
+    // A disabled catalog entry must not clear an existing suppression for the
+    // same upstream slug. Otherwise an older enabled alias can rediscover the
+    // model and defeat the operator's explicit disable.
+    if entry.enabled {
+        clear_catalog_enable_overlaps(provider, &entry.id, entry.upstream_id.as_deref());
+    }
+    if let Some(existing) = provider
+        .model_catalog
+        .iter_mut()
+        .find(|catalog| catalog.id == entry.id)
+    {
+        *existing = entry;
+    } else {
+        provider.model_catalog.push(entry);
+    }
+}
+
 async fn finish_mutation(state: &AppState) -> Result<(), ApiError> {
     // Model discovery works from a provider snapshot while it awaits upstream.
     // Bump the revision only after a mutation has atomically updated config and
@@ -1117,16 +1136,7 @@ async fn add_model(
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        clear_catalog_enable_overlaps(provider, &entry.id, entry.upstream_id.as_deref());
-        if let Some(existing) = provider
-            .model_catalog
-            .iter_mut()
-            .find(|catalog| catalog.id == entry.id)
-        {
-            *existing = entry.clone();
-        } else {
-            provider.model_catalog.push(entry.clone());
-        }
+        upsert_model_catalog_entry(provider, entry.clone());
     }
 
     sync_model_route(&state, &id, &entry, previous_upstream_id.as_deref()).await;
@@ -1198,16 +1208,7 @@ async fn update_model(
         let mut config = state.write_config();
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        if let Some(existing) = provider
-            .model_catalog
-            .iter_mut()
-            .find(|catalog| catalog.id == model_id)
-        {
-            *existing = updated.clone();
-        }
-        if updated.enabled {
-            clear_catalog_enable_overlaps(provider, &model_id, updated.upstream_id.as_deref());
-        }
+        upsert_model_catalog_entry(provider, updated.clone());
     }
 
     sync_model_route(&state, &id, &updated, previous_upstream_id.as_deref()).await;

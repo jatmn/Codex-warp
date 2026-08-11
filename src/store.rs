@@ -21,6 +21,10 @@ use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
 use crate::config::configured_provider_by_id;
 
+// Keep synthetic anonymous-session identities separate from every supplied
+// session key. A caller may legitimately use a value such as "prompt-42".
+const DISTINCT_SESSION_COUNT_SQL: &str = "COUNT(DISTINCT CASE WHEN session_key IS NULL THEN 'anonymous:' || id ELSE 'session:' || session_key END)";
+
 #[derive(Clone)]
 pub(crate) struct Store {
     db: Arc<Mutex<Connection>>,
@@ -819,7 +823,7 @@ impl Store {
         let summary_sql = format!(
             "SELECT
                 COUNT(*),
-                COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
+                {DISTINCT_SESSION_COUNT_SQL},
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(total_tokens), 0),
@@ -864,7 +868,7 @@ impl Store {
             "SELECT
                 (ts / ?{bucket_idx}) * ?{bucket_idx} AS bucket,
                 COUNT(*),
-                COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
+                {DISTINCT_SESSION_COUNT_SQL},
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
                 COALESCE(SUM(total_tokens), 0)
@@ -947,7 +951,7 @@ fn breakdown_query(
         "SELECT
             {column},
             COUNT(*),
-            COUNT(DISTINCT COALESCE(session_key, 'prompt-' || id)),
+            {DISTINCT_SESSION_COUNT_SQL},
             COALESCE(SUM(input_tokens), 0),
             COALESCE(SUM(output_tokens), 0),
             COALESCE(SUM(total_tokens), 0)

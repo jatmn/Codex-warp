@@ -61,6 +61,10 @@ pub(crate) enum MutationRouteRefresh {
     /// Fetch upstream models for one provider; retain prior discovery for every
     /// other enabled provider.
     RefetchOne,
+    /// Fetch upstream models for every enabled provider. This is needed after
+    /// removing a single route owner because the route map only retains the
+    /// winner for a colliding live-only slug.
+    RefetchAll,
 }
 
 /// Mutation-oriented route refresh. Always publishes a best-effort route map
@@ -139,6 +143,9 @@ async fn discover_routes_for_mutation(
         MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
         MutationRouteRefresh::RefetchOne => {
             focus_provider_id.map(str::to_string).into_iter().collect()
+        }
+        MutationRouteRefresh::RefetchAll => {
+            provider_list.iter().map(|(id, _)| id.clone()).collect()
         }
     };
 
