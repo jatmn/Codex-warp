@@ -1041,6 +1041,53 @@ async fn chat_stream_without_done_fails_and_does_not_record_completion() {
 }
 
 #[tokio::test]
+async fn chat_stream_error_frame_followed_by_done_does_not_record_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-error-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    let body = concat!(
+        "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_error".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_error".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.failed")
+    }));
+    assert!(!events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.completed")
+    }));
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn completed_chat_stream_without_usage_records_prompt_and_session() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-chat-complete-{}",

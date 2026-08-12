@@ -190,6 +190,21 @@ fn validate_provider_persist_rejects_empty_base_url() {
 }
 
 #[test]
+fn toml_backed_provider_cannot_change_api_key_env() {
+    let before = ProviderConfig {
+        api_key_env: Some("OLD_KEY".into()),
+        ..ProviderConfig::default()
+    };
+    let mut after = before.clone();
+    after.api_key_env = Some("NEW_KEY".into());
+
+    let err = validate_toml_owned_credential_selector(false, &before, &after).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("TOML-backed"));
+    assert!(validate_toml_owned_credential_selector(true, &before, &after).is_ok());
+}
+
+#[test]
 fn enabling_catalog_model_clears_disabled_models() {
     let mut provider = ProviderConfig::default();
     provider.model_catalog.push(ModelCatalogEntry {

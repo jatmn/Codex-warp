@@ -687,6 +687,24 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// TOML owns the credential selector for a TOML-backed provider.  Persisting a
+/// whole provider snapshot as an overlay cannot distinguish a deliberate UI
+/// credential change from an old snapshot after the operator rotates TOML, so
+/// reject that change instead of accepting an edit which will disappear on
+/// restart.
+fn validate_toml_owned_credential_selector(
+    managed: bool,
+    before: &ProviderConfig,
+    after: &ProviderConfig,
+) -> Result<(), ApiError> {
+    if !managed && before.api_key_env != after.api_key_env {
+        return Err(ApiError::bad_request(
+            "api_key_env for TOML-backed providers is managed in TOML; create a managed provider to configure it in the Web UI",
+        ));
+    }
+    Ok(())
+}
+
 fn clear_catalog_enable_overlaps(
     provider: &mut ProviderConfig,
     model_id: &str,
@@ -970,6 +988,7 @@ async fn update_provider(
         let previous_enabled = provider.enabled;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);
+        validate_toml_owned_credential_selector(managed, provider, &snapshot)?;
         let refresh_discovery = discovery_settings_changed(provider, &snapshot);
         (snapshot, previous_enabled, refresh_discovery)
     };

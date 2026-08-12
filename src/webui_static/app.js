@@ -524,6 +524,11 @@
       providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
       providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
+      const apiKeyEnvInput = providerForm.querySelector("[name=api_key_env]");
+      apiKeyEnvInput.readOnly = !p.managed;
+      apiKeyEnvInput.title = p.managed
+        ? ""
+        : "TOML-backed providers manage api_key_env in TOML.";
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
       providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
       providerForm.querySelector("[name=responses_path]").value = p.responses_path || "/responses";
@@ -534,6 +539,8 @@
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
     } else {
       providerForm.reset();
+      providerForm.querySelector("[name=api_key_env]").readOnly = false;
+      providerForm.querySelector("[name=api_key_env]").title = "";
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;

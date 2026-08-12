@@ -99,6 +99,13 @@ pub(crate) fn chat_stream_to_responses(
                 let Ok(value) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
+                if let Some(message) = chat_stream_error_message(&value) {
+                    yield Ok(Bytes::from(sse("response.failed", json!({
+                        "type": "response.failed",
+                        "response": {"id": response_id, "error": {"message": message}}
+                    }))));
+                    return;
+                }
                 let payload = chat_completion_payload(&value);
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
@@ -153,6 +160,20 @@ pub(crate) fn chat_stream_to_responses(
             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
             yield Ok(Bytes::from(event));
         }
+    }
+}
+
+fn chat_stream_error_message(value: &Value) -> Option<String> {
+    let error = value.get("error")?;
+    match error {
+        Value::String(message) if !message.is_empty() => Some(message.clone()),
+        Value::Object(_) => error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("upstream chat stream returned an error".to_string())),
+        _ => Some("upstream chat stream returned an error".to_string()),
     }
 }
 

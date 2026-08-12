@@ -365,7 +365,9 @@ re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
 
 Provider overlays never persist `api_key` or request `headers`; use
-`api_key_env` (and TOML headers) for durable secrets.
+`api_key_env` (and TOML headers) for durable secrets. For a TOML-backed
+provider, `api_key_env` remains TOML-owned and is read-only in the Web UI so a
+later TOML credential rotation cannot be overwritten by an old SQLite snapshot.
 
 CLI overrides:
 
