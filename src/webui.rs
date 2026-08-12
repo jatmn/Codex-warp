@@ -1032,8 +1032,11 @@ async fn update_provider(
     if snapshot.enabled != previous_enabled {
         sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
     } else if snapshot.enabled && refresh_discovery {
-        // Refetch only when discovery inputs actually changed. Leave live
-        // routes in place so a failed fetch can restore prior ownership.
+        // Live-only routes describe the old discovery identity. Remove them
+        // before refreshing so a failed fetch cannot send an old gateway's
+        // models to the newly edited provider. The refresh immediately reseeds
+        // catalog and overlay routes from the new configuration.
+        remove_provider_model_routes(&state, &id).await;
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
             &state,
             models::MutationRouteRefresh::RefetchOne,

@@ -790,3 +790,46 @@ async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
     );
     assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
 }
+
+#[tokio::test]
+async fn provider_identity_edit_drops_live_routes_when_refetch_fails() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "http://127.0.0.1:1/v1".into(),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-gateway-only-model".into(), "alpha".into());
+
+    let _mutation = state.mutation_lock.lock().await;
+    remove_provider_model_routes(&state, "alpha").await;
+    let result = refresh_model_routes_while_mutation_locked(
+        &state,
+        MutationRouteRefresh::RefetchOne,
+        Some("alpha"),
+    )
+    .await;
+
+    assert!(result.is_err(), "unreachable discovery URL must fail");
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-gateway-only-model"),
+        "a changed provider identity must not retain routes discovered from its old gateway"
+    );
+}

@@ -356,7 +356,8 @@ routing does not require a prior `/v1/models` call after restart.
 
 The SQLite store opens only while the Web UI is enabled. Use
 `--no-webui-store` to keep an enabled UI stateless; its management API then
-returns service-unavailable rather than writing overlays or usage analytics.
+keeps read-only provider/template views available, while mutations and usage
+analytics return service-unavailable rather than writing persistent state.
 
 `PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
 keep their current values, and JSON `null` clears optional string fields
