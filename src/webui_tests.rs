@@ -643,3 +643,110 @@ fn model_catalog_rejects_duplicate_ids_before_persistence() {
     assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(error.message.contains("duplicate model catalog id"));
 }
+
+#[test]
+fn discovery_settings_changed_ignores_name_and_credential_edits() {
+    let before = ProviderConfig {
+        name: Some("Old".into()),
+        base_url: "https://example.test/v1".into(),
+        api_key_env: Some("OLD_KEY".into()),
+        models_path: "/models".into(),
+        model_catalog_only: false,
+        ..ProviderConfig::default()
+    };
+    let fields = ProviderPersist {
+        name: OptionalPatch::Set("Renamed".into()),
+        base_url: Some("https://example.test/v1".into()),
+        enabled: Some(true),
+        api_key_env: OptionalPatch::Set("NEW_KEY".into()),
+        api_key: None,
+        auth_header: Some("authorization".into()),
+        auth_scheme: Some("Bearer".into()),
+        responses_path: Some("/responses".into()),
+        chat_completions_path: Some("/chat/completions".into()),
+        models_path: Some("/models".into()),
+        model_catalog_only: Some(false),
+    };
+    let mut after = before.clone();
+    fields.apply_to(&mut after);
+    assert!(!discovery_settings_changed(&before, &after));
+}
+
+#[test]
+fn discovery_settings_changed_detects_endpoint_and_catalog_mode() {
+    let before = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        models_path: "/models".into(),
+        model_catalog_only: false,
+        ..ProviderConfig::default()
+    };
+
+    let mut url_changed = before.clone();
+    url_changed.base_url = "https://other.example/v1".into();
+    assert!(discovery_settings_changed(&before, &url_changed));
+
+    let mut path_changed = before.clone();
+    path_changed.models_path = "/v1/models".into();
+    assert!(discovery_settings_changed(&before, &path_changed));
+
+    let mut mode_changed = before.clone();
+    mode_changed.model_catalog_only = true;
+    assert!(discovery_settings_changed(&before, &mode_changed));
+}
+
+#[tokio::test]
+async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".into(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "beta-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let state = test_state();
+    {
+        let mut live = state.config.write().expect("config lock");
+        *live = config;
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("alpha-live-only".into(), "alpha".into());
+        routes.insert("beta-model".into(), "beta".into());
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    let result = refresh_model_routes_while_mutation_locked(
+        &state,
+        MutationRouteRefresh::RefetchOne,
+        Some("alpha"),
+    )
+    .await;
+    assert!(result.is_err(), "unreachable discovery URL must fail");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("alpha-live-only").map(String::as_str),
+        Some("alpha"),
+        "failed refetch must retain prior live-only ownership when routes were not wiped"
+    );
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+}

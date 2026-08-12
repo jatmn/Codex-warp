@@ -698,6 +698,12 @@ fn clear_catalog_enable_overlaps(
     }
 }
 
+fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -> bool {
+    before.base_url != after.base_url
+        || before.models_path != after.models_path
+        || before.model_catalog_only != after.model_catalog_only
+}
+
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     match &fields.name {
         OptionalPatch::Absent => {}
@@ -949,13 +955,10 @@ async fn update_provider(
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     validate_provider_persist(&fields)?;
-    let refresh_discovery = fields.base_url.is_some()
-        || fields.models_path.is_some()
-        || fields.model_catalog_only.is_some();
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
 
-    let (snapshot, previous_enabled) = {
+    let (snapshot, previous_enabled, refresh_discovery) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -967,7 +970,8 @@ async fn update_provider(
         let previous_enabled = provider.enabled;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);
-        (snapshot, previous_enabled)
+        let refresh_discovery = discovery_settings_changed(provider, &snapshot);
+        (snapshot, previous_enabled, refresh_discovery)
     };
 
     store
@@ -984,9 +988,8 @@ async fn update_provider(
     if snapshot.enabled != previous_enabled {
         sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
     } else if snapshot.enabled && refresh_discovery {
-        // Endpoint, discovery mode, and catalog edits all invalidate the live
-        // discovery ownership previously learned for this provider.
-        remove_provider_model_routes(&state, &id).await;
+        // Refetch only when discovery inputs actually changed. Leave live
+        // routes in place so a failed fetch can restore prior ownership.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
             &state,
             models::MutationRouteRefresh::RefetchOne,

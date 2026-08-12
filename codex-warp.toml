@@ -6,7 +6,7 @@
 listen = "127.0.0.1:8787"
 
 [webui]
-# Local management UI at http://127.0.0.1:8787/ui/
+# Disabled by default. Uncomment to serve the management UI at /ui/.
 # enabled = true
 # Optional: when set, /api requires a bearer token read from this environment variable.
 # auth_token_env = "CODEX_WARP_WEBUI_TOKEN"

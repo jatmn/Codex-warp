@@ -66,9 +66,8 @@ pub struct WebUiConfig {
 impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
-            // Persistent state is optional infrastructure. Keep the core proxy
-            // stateless unless an operator explicitly enables it, so a normal
-            // launch never depends on the working directory being writable.
+            // Management UI routes are opt-in. SQLite overlays and usage
+            // recording still open unless `--no-webui-store` is set.
             enabled: false,
             auth_token_env: None,
             allow_unauthenticated_remote_access: false,

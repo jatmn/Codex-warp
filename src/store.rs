@@ -569,6 +569,10 @@ impl Store {
     }
 
     /// Atomically persist a newly created managed provider and its catalog overlays.
+    ///
+    /// This replaces any previous overlay identity for `provider_id`, including a
+    /// soft-deleted TOML provider. Leftover model overlay rows are deleted so they
+    /// cannot replay onto the new managed catalog after restart.
     pub(crate) fn create_provider_with_catalog(
         &self,
         provider_id: &str,
@@ -591,6 +595,13 @@ impl Store {
                     managed = excluded.managed,
                     config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
                 params![provider_id, i64::from(provider.enabled), config_json,],
+            )?;
+            // A create replaces any previous overlay identity for this id,
+            // including a soft-deleted TOML provider. Leftover model overlay
+            // rows must not replay onto the new managed catalog.
+            db.execute(
+                "DELETE FROM model_overlays WHERE provider_id = ?1",
+                params![provider_id],
             )?;
             for entry in catalog {
                 let catalog_json = serde_json::to_string(entry)?;

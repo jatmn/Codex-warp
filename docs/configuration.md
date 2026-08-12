@@ -296,9 +296,10 @@ before enabling the feature and use it at your own risk.
 ## Web UI And Analytics
 
 Codex Warp can serve a lightweight local Web UI for managing providers/models and
-viewing usage analytics. It is enabled by default and listens on the same bind
-address as the proxy. Authentication is optional: by default the UI has no
-authentication and requires a loopback listen address (`127.0.0.1` or `[::1]`).
+viewing usage analytics. It is disabled by default. Set `enabled = true` to
+serve it on the same bind address as the proxy. Authentication is optional: by
+default the UI has no authentication and requires a loopback listen address
+(`127.0.0.1` or `[::1]`).
 Set `auth_token_env` to protect `/api` with a bearer token read from that
 environment variable; the browser asks for it only if the API returns 401.
 When `auth_token_env` is configured, the named environment variable must be
@@ -322,7 +323,7 @@ Without `auth_token_env`, it is an intentionally unsafe compatibility switch
 for trusted networks. Codex Warp does not terminate TLS, so authenticated remote
 deployments should still use a trusted network or TLS reverse proxy.
 
-Open `http://127.0.0.1:8787/ui/` while the proxy is running.
+After enabling it, open `http://127.0.0.1:8787/ui/` while the proxy is running.
 
 The UI can:
 
@@ -346,10 +347,12 @@ TOML-sourced provider or catalog model soft-deletes it via an overlay so it
 stays suppressed across restarts until the overlay row is cleared or the model
 is re-added in the UI. Soft-deleting a TOML provider keeps its per-model
 overlay rows so clearing the provider soft-delete can restore prior model
-toggles. Soft-deleting a catalog model also suppresses its upstream alias so
-live `/models` fetches cannot resurrect it. Enabled model overlays reseed
-`model_routes` at startup so multi-provider routing does not require a prior
-`/v1/models` call after restart.
+toggles. Creating a managed provider with the same id (for example adding a
+bundled template after deleting the TOML profile) replaces those leftover
+model overlays with the new catalog. Soft-deleting a catalog model also
+suppresses its upstream alias so live `/models` fetches cannot resurrect it.
+Enabled model overlays reseed `model_routes` at startup so multi-provider
+routing does not require a prior `/v1/models` call after restart.
 
 Use `--no-webui-store` for stateless or read-only-directory deployments. It
 disables both SQLite overlays and usage analytics; combine it with

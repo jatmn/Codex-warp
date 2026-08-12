@@ -789,6 +789,82 @@ fn create_provider_with_catalog_persists_provider_and_models() {
 }
 
 #[test]
+fn create_provider_with_catalog_replaces_leftover_model_overlays() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-replaces-leftover-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("create.db")).unwrap();
+    store
+        .upsert_model_catalog(
+            "legacy",
+            &ModelCatalogEntry {
+                id: "stale-model".into(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            },
+            false,
+        )
+        .unwrap();
+    store.soft_remove_provider("legacy").unwrap();
+
+    let provider = ProviderConfig {
+        base_url: "https://managed.example/v1".into(),
+        enabled: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "fresh-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    store.apply_overlays(&mut config).unwrap();
+    let live = config
+        .providers
+        .get("legacy")
+        .expect("managed provider should be restored");
+    assert!(
+        live.model_catalog
+            .iter()
+            .any(|entry| entry.id == "fresh-model")
+    );
+    assert!(
+        !live
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "stale-model"),
+        "leftover catalog overlays must not replay onto the new managed provider"
+    );
+    assert!(
+        !live.disabled_models.iter().any(|id| id == "stale-model"),
+        "leftover disables must not replay onto the new managed provider"
+    );
+
+    let leftover: i64 = {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.query_row(
+            "SELECT COUNT(*) FROM model_overlays
+             WHERE provider_id = 'legacy' AND model_id = 'stale-model'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(leftover, 0);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn apply_overlays_corrupt_model_overlay_preserves_disabled_models() {
     use rusqlite::params;
 

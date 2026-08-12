@@ -151,8 +151,9 @@ for deployment examples.
 
 **Local Web UI**
 
-Warp serves a lightweight management UI at `/ui/` on the same listen address.
-Use it to add or edit providers and models, toggle them with switches, and chart
+Warp can serve a lightweight management UI at `/ui/` on the same listen address.
+It is disabled by default; set `[webui] enabled = true` to turn it on. Use it to
+add or edit providers and models, toggle them with switches, and chart
 token/session usage from a local SQLite database. See the
 [configuration guide](docs/configuration.md#web-ui-and-analytics).
 
