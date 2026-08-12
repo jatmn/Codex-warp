@@ -354,6 +354,10 @@ async fn send_native_responses(
     );
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
+        && response_body
+            .as_ref()
+            .and_then(|value| value.get("status").and_then(Value::as_str))
+            .is_none_or(|status| status == "completed")
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions

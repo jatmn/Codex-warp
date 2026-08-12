@@ -97,7 +97,10 @@ async fn require_management_auth(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| {
+            let (scheme, token) = value.split_once(' ')?;
+            scheme.eq_ignore_ascii_case("Bearer").then_some(token)
+        })
         .is_some_and(|token| token == auth.token.as_ref());
     if authorized {
         next.run(request).await
