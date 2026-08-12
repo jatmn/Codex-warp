@@ -720,6 +720,9 @@ fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -
     before.base_url != after.base_url
         || before.models_path != after.models_path
         || before.model_catalog_only != after.model_catalog_only
+        || before.api_key_env != after.api_key_env
+        || before.auth_header != after.auth_header
+        || before.auth_scheme != after.auth_scheme
 }
 
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {

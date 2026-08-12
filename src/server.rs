@@ -142,43 +142,27 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     } else {
         None
     };
-    let store = if args.no_webui_store {
-        None
-    } else {
-        let store = Store::open(&config.webui.db_path)
-            .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
-        store.apply_overlays(&mut config)?;
-        Some(store)
-    };
-    let model_routes = store
-        .as_ref()
-        .map(|store| crate::models::seed_model_routes_from_config_and_store(&config, store))
-        .unwrap_or_default();
-
+    let state = initialize_state_with_store(
+        config,
+        webui_store_enabled(webui_enabled, args.no_webui_store),
+    )?;
     // Stored state is configuration-layer input. Command-line flags remain
-    // the final, per-invocation override even when a store is enabled.
-    apply_destination_override(&mut config, destination);
-    let listen = config.listen.clone();
+    // the final, per-invocation override when a store is enabled.
+    apply_destination_override(&mut state.write_config(), destination);
+    let listen = state.read_config().listen.clone();
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("parse listen address {listen}"))?;
 
     ensure_webui_bind(
         webui_enabled,
-        config.webui.allow_unauthenticated_remote_access,
+        state
+            .read_config()
+            .webui
+            .allow_unauthenticated_remote_access,
         management_token.is_some(),
         &addr,
     )?;
-
-    let state = AppState {
-        debug_log: DebugLog::new(&config.debug),
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(model_routes)),
-        config_revision: Arc::new(AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        store,
-    };
 
     let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -208,8 +192,20 @@ fn apply_destination_override(config: &mut crate::config::AppConfig, destination
     }
 }
 
-fn initialize_state(mut config: crate::config::AppConfig) -> anyhow::Result<AppState> {
-    let store = if config.webui.enabled {
+fn initialize_state(config: crate::config::AppConfig) -> anyhow::Result<AppState> {
+    let store_enabled = webui_store_enabled(config.webui.enabled, false);
+    initialize_state_with_store(config, store_enabled)
+}
+
+fn webui_store_enabled(webui_enabled: bool, no_webui_store: bool) -> bool {
+    webui_enabled && !no_webui_store
+}
+
+fn initialize_state_with_store(
+    mut config: crate::config::AppConfig,
+    store_enabled: bool,
+) -> anyhow::Result<AppState> {
+    let store = if store_enabled {
         let store = Store::open(&config.webui.db_path)?;
         store.apply_overlays(&mut config)?;
         Some(store)

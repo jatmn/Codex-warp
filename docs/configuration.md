@@ -354,9 +354,9 @@ suppresses its upstream alias so live `/models` fetches cannot resurrect it.
 Enabled model overlays reseed `model_routes` at startup so multi-provider
 routing does not require a prior `/v1/models` call after restart.
 
-Use `--no-webui-store` for stateless or read-only-directory deployments. It
-disables both SQLite overlays and usage analytics; combine it with
-`--no-webui` to disable all management features.
+The SQLite store opens only while the Web UI is enabled. Use
+`--no-webui-store` to keep an enabled UI stateless; its management API then
+returns service-unavailable rather than writing overlays or usage analytics.
 
 `PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
 keep their current values, and JSON `null` clears optional string fields
@@ -372,12 +372,12 @@ later TOML credential rotation cannot be overwritten by an old SQLite snapshot.
 CLI overrides:
 
 ```bash
-codex-warp --no-webui          # skip /ui and /api routes only
+codex-warp --no-webui          # skip /ui and /api routes and leave SQLite unopened
 codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
 ```
 
-`--no-webui` and `webui.enabled = false` disable the Web UI routes but still
-open the SQLite store for overlays and usage recording.
+`--no-webui` and `webui.enabled = false` disable all Web UI management
+features, including SQLite overlays and usage recording.
 
 Usage events are recorded from successful proxied responses when the store is
 open, including completed chat and native streams and successful non-stream

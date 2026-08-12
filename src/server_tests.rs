@@ -156,6 +156,20 @@ fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
 }
 
 #[test]
+fn initialize_state_keeps_default_proxy_stateless() {
+    let state = initialize_state(AppConfig::default()).expect("initialize default state");
+    assert!(state.store.is_none());
+}
+
+#[test]
+fn webui_store_requires_enabled_ui_and_no_opt_out() {
+    assert!(!webui_store_enabled(false, false));
+    assert!(!webui_store_enabled(false, true));
+    assert!(webui_store_enabled(true, false));
+    assert!(!webui_store_enabled(true, true));
+}
+
+#[test]
 fn destination_override_wins_after_overlay_replay() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-destination-overlay-{}",

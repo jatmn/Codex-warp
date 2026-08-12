@@ -660,7 +660,7 @@ fn model_catalog_rejects_duplicate_ids_before_persistence() {
 }
 
 #[test]
-fn discovery_settings_changed_ignores_name_and_credential_edits() {
+fn discovery_settings_changed_detects_credential_request_edits() {
     let before = ProviderConfig {
         name: Some("Old".into()),
         base_url: "https://example.test/v1".into(),
@@ -684,7 +684,19 @@ fn discovery_settings_changed_ignores_name_and_credential_edits() {
     };
     let mut after = before.clone();
     fields.apply_to(&mut after);
-    assert!(!discovery_settings_changed(&before, &after));
+    assert!(discovery_settings_changed(&before, &after));
+
+    let mut name_only = before.clone();
+    name_only.name = Some("Renamed".into());
+    assert!(!discovery_settings_changed(&before, &name_only));
+
+    let mut auth_header_only = before.clone();
+    auth_header_only.auth_header = "x-api-key".into();
+    assert!(discovery_settings_changed(&before, &auth_header_only));
+
+    let mut auth_scheme_only = before.clone();
+    auth_scheme_only.auth_scheme.clear();
+    assert!(discovery_settings_changed(&before, &auth_scheme_only));
 }
 
 #[test]
