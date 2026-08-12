@@ -661,6 +661,16 @@ fn chat_usage_normalizes_provider_cache_hit_fields() {
 }
 
 #[test]
+fn chat_usage_derived_total_saturates_untrusted_token_counts() {
+    let usage = chat_usage_to_responses_usage(Some(&json!({
+        "input_tokens": i64::MAX,
+        "output_tokens": 1,
+    })));
+
+    assert_eq!(usage["total_tokens"], i64::MAX);
+}
+
+#[test]
 fn wrapped_chat_completion_preserves_reasoning_content() {
     let value = chat_json_to_responses(
         json!({

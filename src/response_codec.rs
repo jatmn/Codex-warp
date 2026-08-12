@@ -1118,8 +1118,13 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         token_count(usage, &["input_tokens"]).or_else(|| token_count(usage, &["prompt_tokens"]));
     let output_tokens = token_count(usage, &["output_tokens"])
         .or_else(|| token_count(usage, &["completion_tokens"]));
-    let total_tokens = token_count(usage, &["total_tokens"])
-        .or_else(|| Some(input_tokens.unwrap_or_default() + output_tokens.unwrap_or_default()));
+    let total_tokens = token_count(usage, &["total_tokens"]).or_else(|| {
+        Some(
+            input_tokens
+                .unwrap_or_default()
+                .saturating_add(output_tokens.unwrap_or_default()),
+        )
+    });
     let cached_tokens = token_count(usage, &["input_tokens_details", "cached_tokens"])
         .or_else(|| token_count(usage, &["prompt_tokens_details", "cached_tokens"]))
         .or_else(|| token_count(usage, &["cached_tokens"]))
