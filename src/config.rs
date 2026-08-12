@@ -286,7 +286,7 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModelCatalogEntry {
     pub id: String,
