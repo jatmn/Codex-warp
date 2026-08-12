@@ -816,6 +816,58 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
 }
 
 #[tokio::test]
+async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    for provider_id in ["alpha", "beta"] {
+        config.providers.insert(
+            provider_id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{provider_id}.example/v1"),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let mut prior = BTreeMap::new();
+    prior.insert("shared".to_string(), "alpha".to_string());
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let mut refreshed = BTreeMap::new();
+    refreshed.insert("shared".to_string(), "beta".to_string());
+    let failed_providers = BTreeSet::from(["alpha".to_string()]);
+
+    publish_model_routes(&state, refreshed, &failed_providers).await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+}
+
+#[tokio::test]
 async fn models_returns_empty_list_when_no_providers_configured() {
     use std::collections::BTreeMap;
     use std::sync::Arc;

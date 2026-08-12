@@ -376,7 +376,11 @@ async fn publish_model_routes(
             if !provider.model_is_enabled(&model_id) {
                 continue;
             }
-            routes.insert(model_id, owner);
+            // A fresh successful discovery owns the route for this refresh.
+            // Retain stale ownership only when no healthy provider supplied
+            // the same model, otherwise `/models` can advertise one provider
+            // while `/responses` is routed to the failed prior owner.
+            routes.entry(model_id).or_insert(owner);
         }
     }
     *state.model_routes.write().await = routes;
