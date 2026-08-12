@@ -1257,10 +1257,11 @@ impl UsageRecorder {
 
 fn truncate_usage_identifier(mut value: String) -> String {
     if value.len() > MAX_USAGE_IDENTIFIER_BYTES {
-        value.truncate(MAX_USAGE_IDENTIFIER_BYTES);
-        while !value.is_char_boundary(value.len()) {
-            value.pop();
+        let mut end = MAX_USAGE_IDENTIFIER_BYTES;
+        while !value.is_char_boundary(end) {
+            end -= 1;
         }
+        value.truncate(end);
     }
     value
 }
