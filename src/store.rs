@@ -1134,6 +1134,11 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     } else {
         overlay.api_key.clone()
     };
+    // Authentication remains TOML-owned for non-managed providers. The
+    // persisted overlay is allowed to change routing/configuration, but must
+    // not roll an operator's later credential-environment rotation back to
+    // the value captured when the overlay was written.
+    let preserved_api_key_env = existing.api_key_env.clone();
     let mut preserved_headers = existing.headers.clone();
     for (name, value) in &overlay.headers {
         preserved_headers.insert(name.clone(), value.clone());
@@ -1151,6 +1156,7 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     }
     *existing = overlay.clone();
     existing.api_key = preserved_api_key;
+    existing.api_key_env = preserved_api_key_env;
     existing.headers = preserved_headers;
     existing.model_catalog = preserved_catalog;
     existing.model_metadata = preserved_metadata;

@@ -345,7 +345,7 @@ fn clearing_provider_soft_delete_restores_prior_model_toggles() {
 }
 
 #[test]
-fn apply_overlays_preserves_api_key_for_non_managed_provider() {
+fn apply_overlays_preserves_toml_auth_for_non_managed_provider() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-api-key-preserve-{}",
         SystemTime::now()
@@ -362,6 +362,7 @@ fn apply_overlays_preserves_api_key_for_non_managed_provider() {
         ProviderConfig {
             base_url: "https://example.test/v1".into(),
             api_key: Some("toml-secret".into()),
+            api_key_env: Some("NEW_TOML_KEY".into()),
             name: Some("TOML".into()),
             ..ProviderConfig::default()
         },
@@ -370,6 +371,7 @@ fn apply_overlays_preserves_api_key_for_non_managed_provider() {
     let overlay = ProviderConfig {
         base_url: "https://overlay.test/v1".into(),
         name: Some("Overlay".into()),
+        api_key_env: Some("STALE_OVERLAY_KEY".into()),
         ..ProviderConfig::default()
     };
     store
@@ -383,6 +385,10 @@ fn apply_overlays_preserves_api_key_for_non_managed_provider() {
     );
     assert_eq!(config.providers["toml"].base_url, "https://overlay.test/v1");
     assert_eq!(config.providers["toml"].name.as_deref(), Some("Overlay"));
+    assert_eq!(
+        config.providers["toml"].api_key_env.as_deref(),
+        Some("NEW_TOML_KEY")
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

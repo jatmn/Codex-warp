@@ -360,10 +360,18 @@ impl ProviderConfig {
         {
             return false;
         }
+        // An explicit catalog id is authoritative. Only fall back to aliases
+        // when no row directly configures this model; otherwise an earlier
+        // enabled alias can accidentally override a later disabled exact row.
         let Some(entry) = self
             .model_catalog
             .iter()
-            .find(|entry| catalog_entry_matches_model(entry, model_id))
+            .find(|entry| entry.id == model_id)
+            .or_else(|| {
+                self.model_catalog
+                    .iter()
+                    .find(|entry| catalog_entry_matches_model(entry, model_id))
+            })
         else {
             return true;
         };
