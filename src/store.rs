@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -243,8 +244,14 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        // `provider` always has a structural slot in AppConfig, even after its
+        // configured value has been soft-removed. Track removals separately so
+        // its retained model overlays cannot be replayed into that empty slot
+        // (or into a later command-line destination override).
+        let mut removed_provider_ids = BTreeSet::new();
         for overlay in overlays {
             if overlay.removed {
+                removed_provider_ids.insert(overlay.provider_id.clone());
                 if overlay.provider_id == PRIMARY_PROVIDER_ID {
                     config.provider = ProviderConfig::default();
                 } else {
@@ -323,6 +330,9 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         for (provider_id, model_id, enabled, _managed, catalog_json, removed) in model_rows {
+            if removed_provider_ids.contains(&provider_id) {
+                continue;
+            }
             let Some(provider) = provider_config_mut(config, &provider_id) else {
                 continue;
             };

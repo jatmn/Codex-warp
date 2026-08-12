@@ -230,6 +230,45 @@ fn soft_remove_provider_preserves_model_overlays() {
 }
 
 #[test]
+fn soft_removed_primary_provider_does_not_replay_retained_model_overlays() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-primary-soft-remove-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_model_catalog(
+            PRIMARY_PROVIDER_ID,
+            &ModelCatalogEntry {
+                id: "stale-model".into(),
+                ..ModelCatalogEntry::default()
+            },
+            false,
+        )
+        .unwrap();
+    store.soft_remove_provider(PRIMARY_PROVIDER_ID).unwrap();
+
+    let mut config = AppConfig {
+        provider: ProviderConfig {
+            base_url: "https://old.example/v1".into(),
+            ..ProviderConfig::default()
+        },
+        ..AppConfig::default()
+    };
+    store.apply_overlays(&mut config).unwrap();
+
+    assert!(config.provider.base_url.is_empty());
+    assert!(config.provider.model_catalog.is_empty());
+    assert!(config.provider.disabled_models.is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn clearing_provider_soft_delete_restores_prior_model_toggles() {
     use rusqlite::params;
 

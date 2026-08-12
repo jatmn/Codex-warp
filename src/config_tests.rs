@@ -344,6 +344,15 @@ fn nested_model_ids_do_not_overlap_a_bare_suffix() {
 }
 
 #[test]
+fn nested_model_ids_do_not_overlap_provider_prefixed_aliases() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("org/model".into());
+
+    assert!(!provider.model_is_enabled("org/model"));
+    assert!(provider.model_is_enabled("provider/org/model"));
+}
+
+#[test]
 fn disabling_upstream_slug_blocks_catalog_alias() {
     let mut provider = ProviderConfig::default();
     provider.model_catalog.push(ModelCatalogEntry {
