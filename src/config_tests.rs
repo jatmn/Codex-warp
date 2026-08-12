@@ -246,7 +246,7 @@ fn reusable_provider_profiles_leave_auto_review_to_model_families() {
 }
 
 #[test]
-fn webui_config_partial_toml_keeps_enabled_true() {
+fn webui_config_partial_toml_keeps_persistence_disabled() {
     let config: AppConfig = toml::from_str(
         r#"
         [webui]
@@ -254,7 +254,7 @@ fn webui_config_partial_toml_keeps_enabled_true() {
         "#,
     )
     .expect("partial webui config parses");
-    assert!(config.webui.enabled);
+    assert!(!config.webui.enabled);
     assert!(config.webui.auth_token_env.is_none());
     assert!(!config.webui.allow_unauthenticated_remote_access);
     assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));

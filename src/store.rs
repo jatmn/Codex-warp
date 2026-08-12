@@ -287,11 +287,14 @@ impl Store {
                         existing.enabled = enabled;
                     }
                 } else {
-                    let mut provider = overlay_provider;
-                    if let Some(enabled) = overlay.enabled {
-                        provider.enabled = enabled;
-                    }
-                    set_provider_config(config, &overlay.provider_id, provider);
+                    // Non-managed records are edits to a TOML-owned provider,
+                    // never an independent source of provider configuration.
+                    // Do not resurrect a provider the operator removed or
+                    // renamed in TOML from an old SQLite snapshot.
+                    tracing::warn!(
+                        provider_id = overlay.provider_id,
+                        "ignoring non-managed provider overlay without TOML provider"
+                    );
                 }
             } else if let Some(enabled) = overlay.enabled {
                 if let Some(provider) = provider_config_mut(config, &overlay.provider_id) {

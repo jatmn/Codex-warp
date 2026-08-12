@@ -119,6 +119,7 @@ fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
     drop(store);
 
     let mut config = AppConfig::default();
+    config.webui.enabled = true;
     config.webui.db_path = db_path;
     let mut provider = crate::config::ProviderConfig {
         base_url: "https://alpha.example/v1".to_string(),
@@ -149,6 +150,51 @@ fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
             .get("shared")
             .map(String::as_str),
         Some("alpha")
+    );
+
+    std::fs::remove_dir_all(dir).expect("remove test directory");
+}
+
+#[test]
+fn initialize_state_keeps_default_proxy_stateless() {
+    let state = initialize_state(AppConfig::default()).expect("initialize default state");
+    assert!(state.store.is_none());
+}
+
+#[test]
+fn destination_override_wins_after_overlay_replay() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-destination-overlay-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let db_path = dir.join("state.db");
+    let store = Store::open(&db_path).expect("open persisted state");
+    store
+        .upsert_provider_overlay(
+            crate::config::PRIMARY_PROVIDER_ID,
+            Some(true),
+            false,
+            false,
+            Some(&crate::config::ProviderConfig {
+                base_url: "https://stored.example/v1".to_string(),
+                ..crate::config::ProviderConfig::default()
+            }),
+        )
+        .expect("persist overlay");
+
+    let mut config = AppConfig::default();
+    config.webui.enabled = true;
+    config.webui.db_path = db_path;
+    config.provider.base_url = "https://toml.example/v1".to_string();
+    let state = initialize_state(config).expect("initialize state");
+    state.write_config().provider.base_url = "https://cli.example/v1".to_string();
+    assert_eq!(
+        state.read_config().provider.base_url,
+        "https://cli.example/v1"
     );
 
     std::fs::remove_dir_all(dir).expect("remove test directory");

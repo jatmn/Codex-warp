@@ -90,9 +90,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let mut config = load_config_layers(&args.config)?;
-    if let Some(destination) = args.destination {
-        config.provider.base_url = destination;
-    }
+    let destination = args.destination;
     if let Some(listen) = args.listen {
         config.listen = listen;
     }
@@ -122,6 +120,11 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     }
 
     let state = initialize_state(config)?;
+    // Stored state is configuration-layer input. Command-line flags remain
+    // the final, per-invocation override even when a store is enabled.
+    if let Some(destination) = destination {
+        state.write_config().provider.base_url = destination;
+    }
     let listen = state.read_config().listen.clone();
     let addr: SocketAddr = listen
         .parse()

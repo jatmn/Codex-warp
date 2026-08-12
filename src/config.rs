@@ -55,7 +55,6 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WebUiConfig {
-    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Optional environment variable containing a bearer token for `/api`.
     pub auth_token_env: Option<String>,
@@ -67,7 +66,10 @@ pub struct WebUiConfig {
 impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Persistent state is optional infrastructure. Keep the core proxy
+            // stateless unless an operator explicitly enables it, so a normal
+            // launch never depends on the working directory being writable.
+            enabled: false,
             auth_token_env: None,
             allow_unauthenticated_remote_access: false,
             db_path: PathBuf::from("codex-warp.db"),

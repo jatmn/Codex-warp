@@ -349,6 +349,35 @@ fn apply_overlays_preserves_api_key_for_non_managed_provider() {
 }
 
 #[test]
+fn apply_overlays_does_not_resurrect_removed_toml_provider() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-stale-provider-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("stale.db")).unwrap();
+    let overlay = ProviderConfig {
+        base_url: "https://stale.example/v1".into(),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("removed", Some(true), false, false, Some(&overlay))
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    store.apply_overlays(&mut config).unwrap();
+    assert!(
+        !config.providers.contains_key("removed"),
+        "a stale non-managed overlay must not recreate a removed TOML provider"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn apply_overlays_skips_corrupt_overlay_json() {
     use rusqlite::params;
 
