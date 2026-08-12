@@ -28,6 +28,7 @@ use crate::response_codec::chat_usage_to_responses_usage;
 use crate::response_codec::morph_native_response_value;
 use crate::response_codec::native_stream_to_responses;
 use crate::response_codec::response_usage_from_bytes;
+use crate::response_codec::upstream_error_message;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::UsageRecorder;
@@ -186,6 +187,18 @@ pub(crate) async fn proxy_chat_responses(
     } else {
         match upstream.json::<Value>().await {
             Ok(value) => {
+                if let Some(message) = upstream_error_message(&value) {
+                    state.debug_log.log_error(
+                        json!({
+                            "event": "upstream_response",
+                            "id": request_log_id,
+                            "status": status.as_u16(),
+                            "success": false
+                        }),
+                        &message,
+                    );
+                    return error_response(StatusCode::BAD_GATEWAY, message);
+                }
                 let normalized_usage = chat_usage_to_responses_usage(value.get("usage"));
                 state.debug_log.log_response(
                     json!({
@@ -342,6 +355,18 @@ async fn send_native_responses(
     };
     let usage = response_usage_from_bytes(&bytes);
     let response_body = serde_json::from_slice::<Value>(&bytes).ok();
+    if let Some(message) = response_body.as_ref().and_then(upstream_error_message) {
+        state.debug_log.log_error(
+            json!({
+                "event": "upstream_response",
+                "id": request_log_id,
+                "status": status.as_u16(),
+                "success": false
+            }),
+            &message,
+        );
+        return error_response(StatusCode::BAD_GATEWAY, message);
+    }
     state.debug_log.log_response(
         json!({
             "event": "upstream_response",
@@ -356,8 +381,7 @@ async fn send_native_responses(
     if status.is_success()
         && response_body
             .as_ref()
-            .and_then(|value| value.get("status").and_then(Value::as_str))
-            .is_none_or(|status| status == "completed")
+            .is_none_or(response_reports_completed)
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions
@@ -381,6 +405,17 @@ async fn send_native_responses(
     *response.status_mut() = status;
     copy_content_type(&upstream_headers, response.headers_mut());
     response
+}
+
+/// A 2xx response can still contain a provider-declared failure. Missing
+/// `status` is accepted for minimal successful Responses payloads, but never
+/// for an OpenAI-style error envelope.
+fn response_reports_completed(value: &Value) -> bool {
+    upstream_error_message(value).is_none()
+        && value
+            .get("status")
+            .and_then(Value::as_str)
+            .is_none_or(|status| status == "completed")
 }
 
 pub(crate) fn should_stream_upstream(stream_response: bool, status: reqwest::StatusCode) -> bool {

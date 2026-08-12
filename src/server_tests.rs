@@ -206,6 +206,51 @@ fn destination_override_wins_after_overlay_replay() {
 }
 
 #[test]
+fn destination_bootstraps_default_provider_before_overlay_replay() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-destination-bootstrap-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let db_path = dir.join("state.db");
+    let store = Store::open(&db_path).expect("open persisted state");
+    store
+        .upsert_provider_overlay(
+            crate::config::PRIMARY_PROVIDER_ID,
+            Some(false),
+            false,
+            false,
+            Some(&crate::config::ProviderConfig {
+                name: Some("Saved destination provider".to_string()),
+                base_url: "https://old.example/v1".to_string(),
+                enabled: false,
+                ..crate::config::ProviderConfig::default()
+            }),
+        )
+        .expect("persist overlay");
+    drop(store);
+
+    let mut config = AppConfig::default();
+    config.webui.enabled = true;
+    config.webui.db_path = db_path;
+    let state =
+        initialize_state_with_destination(config, true, Some("https://cli.example/v1".to_string()))
+            .expect("initialize state");
+    let config = state.read_config();
+    assert_eq!(config.provider.base_url, "https://cli.example/v1");
+    assert_eq!(
+        config.provider.name.as_deref(),
+        Some("Saved destination provider")
+    );
+    assert!(!config.provider.enabled);
+
+    std::fs::remove_dir_all(dir).expect("remove test directory");
+}
+
+#[test]
 fn webui_requires_loopback_unless_remote_access_is_explicitly_enabled() {
     let loopback: std::net::SocketAddr = "127.0.0.1:8787".parse().unwrap();
     let remote: std::net::SocketAddr = "0.0.0.0:8787".parse().unwrap();

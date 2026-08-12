@@ -142,13 +142,11 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     } else {
         None
     };
-    let state = initialize_state_with_store(
+    let state = initialize_state_with_destination(
         config,
         webui_store_enabled(webui_enabled, args.no_webui_store),
+        destination,
     )?;
-    // Stored state is configuration-layer input. Command-line flags remain
-    // the final, per-invocation override when a store is enabled.
-    apply_destination_override(&mut state.write_config(), destination);
     let listen = state.read_config().listen.clone();
     let addr: SocketAddr = listen
         .parse()
@@ -195,6 +193,21 @@ fn apply_destination_override(config: &mut crate::config::AppConfig, destination
 fn initialize_state(config: crate::config::AppConfig) -> anyhow::Result<AppState> {
     let store_enabled = webui_store_enabled(config.webui.enabled, false);
     initialize_state_with_store(config, store_enabled)
+}
+
+/// Make a command-line destination available while persistent overlays replay,
+/// then apply it again as the final per-invocation base-URL override. Without
+/// the first application, a destination-only default provider has no identity
+/// during replay and its valid non-managed UI overlay is discarded as stale.
+fn initialize_state_with_destination(
+    mut config: crate::config::AppConfig,
+    store_enabled: bool,
+    destination: Option<String>,
+) -> anyhow::Result<AppState> {
+    apply_destination_override(&mut config, destination.clone());
+    let state = initialize_state_with_store(config, store_enabled)?;
+    apply_destination_override(&mut state.write_config(), destination);
+    Ok(state)
 }
 
 fn webui_store_enabled(webui_enabled: bool, no_webui_store: bool) -> bool {

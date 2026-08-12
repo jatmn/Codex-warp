@@ -99,14 +99,14 @@ pub(crate) fn chat_stream_to_responses(
                 let Ok(value) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
-                if let Some(message) = chat_stream_error_message(&value) {
+                let payload = chat_completion_payload(&value);
+                if let Some(message) = upstream_error_message(payload) {
                     yield Ok(Bytes::from(sse("response.failed", json!({
                         "type": "response.failed",
                         "response": {"id": response_id, "error": {"message": message}}
                     }))));
                     return;
                 }
-                let payload = chat_completion_payload(&value);
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
                 {
@@ -163,7 +163,10 @@ pub(crate) fn chat_stream_to_responses(
     }
 }
 
-fn chat_stream_error_message(value: &Value) -> Option<String> {
+/// Extract an OpenAI-compatible semantic error body. Gateways sometimes return
+/// these inside a successful HTTP response (and chat stream frames may wrap the
+/// body in `data`), so HTTP status alone cannot establish completion.
+pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     let error = value.get("error")?;
     match error {
         Value::String(message) if !message.is_empty() => Some(message.clone()),

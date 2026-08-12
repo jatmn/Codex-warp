@@ -34,6 +34,16 @@ fn native_forwarding_streams_only_successful_stream_requests() {
 }
 
 #[test]
+fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
+    assert!(!response_reports_completed(&json!({
+        "error": {"message": "quota exceeded"}
+    })));
+    assert!(!response_reports_completed(&json!({"status": "failed"})));
+    assert!(response_reports_completed(&json!({"id": "resp_123"})));
+    assert!(response_reports_completed(&json!({"status": "completed"})));
+}
+
+#[test]
 fn rewrite_model_for_upstream_uses_manual_catalog_alias() {
     let provider = ProviderConfig {
         model_catalog: vec![ModelCatalogEntry {
