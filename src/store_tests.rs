@@ -423,6 +423,72 @@ fn apply_overlays_does_not_resurrect_removed_toml_provider() {
 }
 
 #[test]
+fn apply_overlays_does_not_resurrect_removed_primary_toml_provider() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-stale-primary-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("stale-primary.db")).unwrap();
+    store
+        .upsert_provider_overlay(
+            PRIMARY_PROVIDER_ID,
+            Some(true),
+            false,
+            false,
+            Some(&ProviderConfig {
+                base_url: "https://stale.example/v1".into(),
+                ..ProviderConfig::default()
+            }),
+        )
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    store.apply_overlays(&mut config).unwrap();
+
+    assert!(config.provider.base_url.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_replays_overlapping_model_toggles_in_mutation_order() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-overlapping-model-toggles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("toggles.db")).unwrap();
+    store.set_model_enabled("manual", "gpt-4", false).unwrap();
+    store.set_model_enabled("manual", "friendly", true).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://example.test/v1".into(),
+            model_catalog: vec![ModelCatalogEntry {
+                id: "friendly".into(),
+                upstream_id: Some("gpt-4".into()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    store.apply_overlays(&mut config).unwrap();
+
+    assert!(config.providers["manual"].model_is_enabled("friendly"));
+    assert!(config.providers["manual"].model_is_enabled("gpt-4"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn apply_overlays_skips_corrupt_overlay_json() {
     use rusqlite::params;
 

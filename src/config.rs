@@ -343,6 +343,13 @@ pub(crate) fn catalog_entry_matches_model(entry: &ModelCatalogEntry, model_id: &
         .is_some_and(|upstream_id| model_ids_overlap(upstream_id, model_id))
 }
 
+fn catalog_entry_is_direct_model_id(entry: &ModelCatalogEntry, model_id: &str) -> bool {
+    entry.id == model_id
+        || model_id.split_once('/').is_some_and(|(_provider, suffix)| {
+            !suffix.is_empty() && !suffix.contains('/') && entry.id == suffix
+        })
+}
+
 impl ProviderConfig {
     pub fn is_configured(&self) -> bool {
         !self.base_url.trim().is_empty()
@@ -366,7 +373,11 @@ impl ProviderConfig {
         let Some(entry) = self
             .model_catalog
             .iter()
-            .find(|entry| entry.id == model_id)
+            // Provider-prefixed requests name the same direct catalog entry as
+            // their bare suffix. Resolve that identity before generic alias
+            // matching, so an exact disabled entry cannot be bypassed through
+            // an earlier enabled alias for the same upstream slug.
+            .find(|entry| catalog_entry_is_direct_model_id(entry, model_id))
             .or_else(|| {
                 self.model_catalog
                     .iter()

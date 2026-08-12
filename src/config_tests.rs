@@ -328,6 +328,7 @@ fn exact_disabled_catalog_entry_wins_over_earlier_enabled_alias() {
     ];
 
     assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
     assert!(provider.model_is_enabled("friendly"));
 }
 

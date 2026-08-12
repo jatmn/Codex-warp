@@ -260,6 +260,19 @@ impl Store {
                 continue;
             }
 
+            // The primary provider has a structural slot even when no TOML
+            // provider is configured. Non-managed overlays are only valid
+            // when their TOML-owned provider still exists; otherwise a stale
+            // default overlay could resurrect a removed destination.
+            if !overlay.managed && configured_provider_by_id(config, &overlay.provider_id).is_none()
+            {
+                tracing::warn!(
+                    provider_id = overlay.provider_id,
+                    "ignoring non-managed provider overlay without TOML provider"
+                );
+                continue;
+            }
+
             if let Some(config_json) = &overlay.config_json {
                 let overlay_provider: ProviderConfig = match serde_json::from_str(config_json) {
                     Ok(mut provider) => {
@@ -314,7 +327,8 @@ impl Store {
 
         let mut model_stmt = db.prepare(
             "SELECT provider_id, model_id, enabled, managed, catalog_json, COALESCE(removed, 0)
-             FROM model_overlays",
+             FROM model_overlays
+             ORDER BY route_order ASC, provider_id ASC, model_id ASC",
         )?;
         let model_rows = model_stmt
             .query_map([], |row| {
@@ -528,16 +542,15 @@ impl Store {
             } else {
                 None
             };
-            let route_order = if enabled { next_route_order(&db)? } else { 0 };
+            let route_order = next_route_order(&db)?;
             db.execute(
                 "UPDATE model_overlays SET enabled = ?1, removed = 0,
                     catalog_json = COALESCE(?2, catalog_json),
-                    route_order = CASE WHEN ?3 THEN ?4 ELSE route_order END
-                 WHERE provider_id = ?5 AND model_id = ?6",
+                    route_order = ?3
+                 WHERE provider_id = ?4 AND model_id = ?5",
                 params![
                     i64::from(enabled),
                     catalog_json,
-                    enabled,
                     route_order,
                     provider_id,
                     model_id
@@ -545,7 +558,7 @@ impl Store {
             )?;
             let _ = managed;
         } else {
-            let route_order = if enabled { next_route_order(&db)? } else { 0 };
+            let route_order = next_route_order(&db)?;
             db.execute(
                 "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
                  VALUES (?1, ?2, ?3, 0, NULL, 0, ?4)",
@@ -581,11 +594,7 @@ impl Store {
             )?;
             for entry in catalog {
                 let catalog_json = serde_json::to_string(entry)?;
-                let route_order = if entry.enabled {
-                    next_route_order(&db)?
-                } else {
-                    0
-                };
+                let route_order = next_route_order(&db)?;
                 db.execute(
                     "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
                      VALUES (?1, ?2, ?3, 1, ?4, 0, ?5)
@@ -594,7 +603,7 @@ impl Store {
                         managed = excluded.managed OR model_overlays.managed,
                         catalog_json = excluded.catalog_json,
                         removed = 0,
-                        route_order = CASE WHEN excluded.enabled THEN excluded.route_order ELSE model_overlays.route_order END",
+                        route_order = excluded.route_order",
                     params![
                         provider_id,
                         entry.id,
@@ -626,11 +635,7 @@ impl Store {
     ) -> anyhow::Result<()> {
         let catalog_json = serde_json::to_string(entry)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
-        let route_order = if entry.enabled {
-            next_route_order(&db)?
-        } else {
-            0
-        };
+        let route_order = next_route_order(&db)?;
         db.execute(
             "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
              VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)
@@ -639,7 +644,7 @@ impl Store {
                 managed = excluded.managed OR model_overlays.managed,
                 catalog_json = excluded.catalog_json,
                 removed = 0,
-                route_order = CASE WHEN excluded.enabled THEN excluded.route_order ELSE model_overlays.route_order END",
+                route_order = excluded.route_order",
             params![
                 provider_id,
                 entry.id,
@@ -1028,9 +1033,9 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Monotonic ordering for explicit model-route claims. A route map is rebuilt
-/// by applying claims in ascending order, so the most recent enabled claim wins
-/// both live and after reopening the store.
+/// Monotonic ordering for model-overlay mutations. Overlay replay applies rows
+/// in ascending order, so the most recent mutation wins for overlapping aliases
+/// as well as for enabled route claims after reopening the store.
 fn next_route_order(db: &Connection) -> anyhow::Result<i64> {
     db.query_row(
         "SELECT COALESCE(MAX(route_order), 0) + 1 FROM model_overlays",
