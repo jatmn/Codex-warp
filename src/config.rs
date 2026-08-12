@@ -314,13 +314,15 @@ fn model_ids_overlap(a: &str, b: &str) -> bool {
     }
     // Match unprefixed ids against a single provider-prefixed form (foo ↔ provider/foo),
     // but do not treat distinct prefixes with the same suffix as the same model.
-    if let Some((_, suffix)) = a.rsplit_once('/')
+    if let Some((prefix, suffix)) = a.split_once('/')
+        && !prefix.contains('/')
         && !suffix.is_empty()
         && suffix == b
     {
         return true;
     }
-    if let Some((_, suffix)) = b.rsplit_once('/')
+    if let Some((prefix, suffix)) = b.split_once('/')
+        && !prefix.contains('/')
         && !suffix.is_empty()
         && suffix == a
     {

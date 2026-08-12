@@ -1053,6 +1053,13 @@ fn distinct_prefixed_model_ids_do_not_overlap() {
 }
 
 #[test]
+fn nested_model_ids_do_not_overlap_a_bare_suffix() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+    assert!(provider.model_is_enabled("vendor/family/foo"));
+}
+
+#[test]
 fn disabling_upstream_slug_blocks_catalog_alias() {
     let mut provider = ProviderConfig::default();
     provider.model_catalog.push(ModelCatalogEntry {

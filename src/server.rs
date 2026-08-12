@@ -88,6 +88,9 @@ struct Args {
 
     #[arg(long, help = "SQLite database path for Web UI overlays and analytics")]
     webui_db: Option<PathBuf>,
+
+    #[arg(long, help = "Disable SQLite overlays and usage analytics")]
+    no_webui_store: bool,
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
@@ -140,10 +143,18 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     } else {
         None
     };
-    let store = Store::open(&config.webui.db_path)
-        .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
-    store.apply_overlays(&mut config)?;
-    let model_routes = crate::models::seed_model_routes_from_config_and_store(&config, &store);
+    let store = if args.no_webui_store {
+        None
+    } else {
+        let store = Store::open(&config.webui.db_path)
+            .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
+        store.apply_overlays(&mut config)?;
+        Some(store)
+    };
+    let model_routes = store
+        .as_ref()
+        .map(|store| crate::models::seed_model_routes_from_config_and_store(&config, store))
+        .unwrap_or_default();
 
     let addr: SocketAddr = config
         .listen
@@ -164,7 +175,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         model_routes: Arc::new(AsyncRwLock::new(model_routes)),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
-        store: Some(store),
+        store,
     };
 
     let mut app = Router::new()

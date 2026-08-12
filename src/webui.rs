@@ -458,7 +458,7 @@ async fn sync_model_route(
     previous_upstream_id: Option<&str>,
 ) {
     if previous_upstream_id != entry.upstream_id.as_deref() {
-        remove_model_routes(state, provider_id, &entry.id, previous_upstream_id).await;
+        remove_model_routes_and_rebuild(state, provider_id, &entry.id, previous_upstream_id).await;
     }
     if entry.enabled {
         insert_model_route(state, provider_id, &entry.id, entry.upstream_id.as_deref()).await;

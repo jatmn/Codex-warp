@@ -52,6 +52,7 @@ pub(crate) fn chat_stream_to_responses(
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
+        let usage_recorder = usage_recorder;
 
         'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = match chunk {
@@ -170,11 +171,12 @@ pub(crate) fn native_stream_to_responses(
         let mut bytes = upstream.bytes_stream();
         let mut pending_usage: Option<Value> = None;
         let mut completed = false;
+        let mut usage_recorder = usage_recorder;
 
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
             if custom_tool_names.is_empty() && !tool_policy.enabled {
-                completed |= log_native_usage_from_sse_chunk(
+                let just_completed = log_native_usage_from_sse_chunk(
                     &chunk,
                     &mut debug_pending,
                     &debug_log,
@@ -182,6 +184,12 @@ pub(crate) fn native_stream_to_responses(
                     status,
                     &mut pending_usage,
                 );
+                completed |= just_completed;
+                if just_completed {
+                    if let Some(recorder) = usage_recorder.take() {
+                        recorder.record_completed(pending_usage.as_ref());
+                    }
+                }
                 if debug_pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
                     yield Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
@@ -221,7 +229,13 @@ pub(crate) fn native_stream_to_responses(
                     status,
                     &mut pending_usage,
                 );
-                completed |= native_sse_frame_completed(&frame);
+                let just_completed = native_sse_frame_completed(&frame);
+                completed |= just_completed;
+                if just_completed {
+                    if let Some(recorder) = usage_recorder.take() {
+                        recorder.record_completed(pending_usage.as_ref());
+                    }
+                }
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
                     "id": request_log_id,
@@ -235,7 +249,7 @@ pub(crate) fn native_stream_to_responses(
         }
 
         if completed
-            && let Some(recorder) = &usage_recorder
+            && let Some(recorder) = usage_recorder.take()
         {
             // Mirror chat streams: a successful completion records prompt/session
             // analytics even when the upstream omitted usage metadata.

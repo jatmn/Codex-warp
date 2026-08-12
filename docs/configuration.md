@@ -351,6 +351,10 @@ live `/models` fetches cannot resurrect it. Enabled model overlays reseed
 `model_routes` at startup so multi-provider routing does not require a prior
 `/v1/models` call after restart.
 
+Use `--no-webui-store` for stateless or read-only-directory deployments. It
+disables both SQLite overlays and usage analytics; combine it with
+`--no-webui` to disable all management features.
+
 `PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
 keep their current values, and JSON `null` clears optional string fields
 (`upstream_id`, `display_name`, `description`). Omitting `enabled` does not

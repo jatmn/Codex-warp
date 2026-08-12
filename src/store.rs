@@ -24,6 +24,9 @@ use crate::config::configured_provider_by_id;
 // Keep synthetic anonymous-session identities separate from every supplied
 // session key. A caller may legitimately use a value such as "prompt-42".
 const DISTINCT_SESSION_COUNT_SQL: &str = "COUNT(DISTINCT CASE WHEN session_key IS NULL THEN 'anonymous:' || id ELSE 'session:' || session_key END)";
+const USAGE_RETENTION_DAYS: i64 = 400;
+const MAX_USAGE_EVENTS: i64 = 100_000;
+const MAX_USAGE_IDENTIFIER_BYTES: usize = 512;
 
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -216,7 +219,6 @@ impl Store {
             "ALTER TABLE model_overlays ADD COLUMN route_order INTEGER NOT NULL DEFAULT 0",
             [],
         );
-        const USAGE_RETENTION_DAYS: i64 = 400;
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
         connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
         Ok(Self {
@@ -791,9 +793,12 @@ impl Store {
         // Opportunistic retention so long-lived processes do not grow forever.
         let row_id = db.last_insert_rowid();
         if row_id % 128 == 0 {
-            const USAGE_RETENTION_DAYS: i64 = 400;
             let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
             let _ = db.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff]);
+            let _ = db.execute(
+                "DELETE FROM usage_events WHERE id NOT IN (SELECT id FROM usage_events ORDER BY id DESC LIMIT ?1)",
+                params![MAX_USAGE_EVENTS],
+            );
         }
         Ok(())
     }
@@ -1104,6 +1109,13 @@ fn set_provider_config(config: &mut AppConfig, provider_id: &str, provider: Prov
 }
 
 fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfig) {
+    // A Web UI provider edit is an overlay on TOML, not a frozen replacement
+    // for provider-defined catalogs, metadata, transforms, or disable state.
+    // Model mutations have their own overlay rows and are replayed afterwards.
+    let preserved_catalog = existing.model_catalog.clone();
+    let preserved_metadata = existing.model_metadata.clone();
+    let preserved_transform = existing.transform.clone();
+    let preserved_disabled_models = existing.disabled_models.clone();
     let preserved_api_key = if overlay.api_key.is_none() {
         existing.api_key.clone()
     } else {
@@ -1127,6 +1139,10 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     *existing = overlay.clone();
     existing.api_key = preserved_api_key;
     existing.headers = preserved_headers;
+    existing.model_catalog = preserved_catalog;
+    existing.model_metadata = preserved_metadata;
+    existing.transform = preserved_transform;
+    existing.disabled_models = preserved_disabled_models;
 }
 
 fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
@@ -1187,6 +1203,7 @@ impl UsageRecorder {
             .filter(|model| !model.is_empty())
             .unwrap_or("unknown")
             .to_string();
+        let model = truncate_usage_identifier(model);
         let session_key = request
             .get("prompt_cache_key")
             .and_then(Value::as_str)
@@ -1207,7 +1224,7 @@ impl UsageRecorder {
                     _ => None,
                 })
             })
-            .map(str::to_string);
+            .map(|value| truncate_usage_identifier(value.to_string()));
         Some(Self {
             store,
             provider_id: provider_id.to_string(),
@@ -1236,6 +1253,16 @@ impl UsageRecorder {
             tracing::warn!(error = %err, "failed to record completed response analytics");
         }
     }
+}
+
+fn truncate_usage_identifier(mut value: String) -> String {
+    if value.len() > MAX_USAGE_IDENTIFIER_BYTES {
+        value.truncate(MAX_USAGE_IDENTIFIER_BYTES);
+        while !value.is_char_boundary(value.len()) {
+            value.pop();
+        }
+    }
+    value
 }
 
 pub(crate) fn ensure_provider_exists(config: &AppConfig, provider_id: &str) -> anyhow::Result<()> {
