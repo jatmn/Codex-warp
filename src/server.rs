@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::Context;
 use axum::Json;
@@ -16,6 +16,7 @@ use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
 use serde_json::Value;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 
@@ -27,8 +28,10 @@ use crate::debug_log::DebugLog;
 use crate::http::no_provider_response;
 use crate::http::unknown_model_response;
 use crate::models::models;
+use crate::models::seed_model_routes_from_config_and_store;
 use crate::provider::select_provider;
 use crate::state::AppState;
+use crate::store::Store;
 use crate::upstream::proxy_chat_responses;
 use crate::upstream::proxy_native_responses;
 use crate::version::AGENT_VERSION;
@@ -87,9 +90,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let mut config = load_config_layers(&args.config)?;
-    if let Some(destination) = args.destination {
-        config.provider.base_url = destination;
-    }
+    let destination = args.destination;
     if let Some(listen) = args.listen {
         config.listen = listen;
     }
@@ -118,17 +119,16 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         config.continue_guard.max_followups = max_followups;
     }
 
-    let addr: SocketAddr = config
-        .listen
+    let state = initialize_state(config)?;
+    // Stored state is configuration-layer input. Command-line flags remain
+    // the final, per-invocation override even when a store is enabled.
+    if let Some(destination) = destination {
+        state.write_config().provider.base_url = destination;
+    }
+    let listen = state.read_config().listen.clone();
+    let addr: SocketAddr = listen
         .parse()
-        .with_context(|| format!("parse listen address {}", config.listen))?;
-
-    let state = AppState {
-        debug_log: DebugLog::new(&config.debug),
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-    };
+        .with_context(|| format!("parse listen address {listen}"))?;
 
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -144,6 +144,30 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn initialize_state(mut config: crate::config::AppConfig) -> anyhow::Result<AppState> {
+    let store = if config.webui.enabled {
+        let store = Store::open(&config.webui.db_path)?;
+        store.apply_overlays(&mut config)?;
+        Some(store)
+    } else {
+        None
+    };
+    let model_routes = store
+        .as_ref()
+        .map(|store| seed_model_routes_from_config_and_store(&config, store))
+        .unwrap_or_default();
+
+    Ok(AppState {
+        debug_log: DebugLog::new(&config.debug),
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(model_routes)),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        store,
+    })
 }
 
 async fn shutdown_signal() {

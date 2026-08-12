@@ -6,6 +6,7 @@ use bytes::Bytes;
 use serde_json::json;
 
 use crate::config::AppConfig;
+use crate::config::ModelCatalogEntry;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
 use crate::config::load_config_layers;
@@ -666,4 +667,578 @@ fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
             .iter()
             .any(|model| model["slug"].as_str() == Some("gpt-5.4"))
     );
+}
+
+#[test]
+fn register_catalog_routes_skips_disabled_entries() {
+    let mut routes = BTreeMap::new();
+    let mut provider = ProviderConfig::default();
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "enabled-model".to_string(),
+            enabled: true,
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "disabled-model".to_string(),
+            enabled: false,
+            upstream_id: Some("upstream-disabled".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "alias-model".to_string(),
+            enabled: true,
+            upstream_id: Some("upstream-only".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    provider.disabled_models.push("upstream-only".to_string());
+
+    register_catalog_routes_for_provider(&mut routes, "test", &provider);
+
+    assert_eq!(
+        routes.get("enabled-model").map(String::as_str),
+        Some("test")
+    );
+    assert!(!routes.contains_key("disabled-model"));
+    assert!(!routes.contains_key("upstream-disabled"));
+    assert!(!routes.contains_key("alias-model"));
+    assert!(!routes.contains_key("upstream-only"));
+}
+
+#[tokio::test]
+async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig::default();
+    provider.base_url = "https://example.test/v1".to_string();
+    provider.model_catalog_only = true;
+    // A successful empty catalog response must remove stale discovered routes.
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "disabled-model".to_string(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("test".to_string(), provider);
+
+    let mut prior = BTreeMap::new();
+    prior.insert("upstream/discovered".to_string(), "test".to_string());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("upstream/discovered"));
+}
+
+#[tokio::test]
+async fn models_uses_current_catalog_owner_across_rebuild() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut alpha = ProviderConfig::default();
+    alpha.base_url = "https://alpha.example/v1".to_string();
+    alpha.model_catalog_only = true;
+    alpha.model_catalog.push(ModelCatalogEntry {
+        id: "shared".to_string(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    let mut beta = ProviderConfig::default();
+    beta.base_url = "https://beta.example/v1".to_string();
+    beta.model_catalog_only = true;
+    beta.model_catalog.push(ModelCatalogEntry {
+        id: "shared".to_string(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("alpha".to_string(), alpha);
+    config.providers.insert("beta".to_string(), beta);
+
+    // A stale in-memory owner must not override the current catalog rebuild.
+    let mut prior = BTreeMap::new();
+    prior.insert("shared".to_string(), "beta".to_string());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
+}
+
+#[tokio::test]
+async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    for provider_id in ["alpha", "beta"] {
+        config.providers.insert(
+            provider_id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{provider_id}.example/v1"),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let mut prior = BTreeMap::new();
+    prior.insert("shared".to_string(), "alpha".to_string());
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let mut refreshed = BTreeMap::new();
+    refreshed.insert("shared".to_string(), "beta".to_string());
+    let failed_providers = BTreeSet::from(["alpha".to_string()]);
+
+    publish_model_routes(&state, refreshed, &failed_providers).await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+}
+
+#[tokio::test]
+async fn models_returns_empty_list_when_no_providers_configured() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(AppConfig::default())),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(value["models"], json!([]));
+}
+
+#[tokio::test]
+async fn models_returns_empty_list_when_all_models_disabled() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::config::ModelCatalogEntry;
+    use crate::debug_log::DebugLog;
+    use crate::models::models;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig::default();
+    provider.base_url = "https://example.test/v1".to_string();
+    provider.model_catalog_only = true;
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "disabled-model".to_string(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("test".to_string(), provider);
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let response = models(State(state), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    assert_eq!(value["models"], json!([]));
+}
+
+#[tokio::test]
+async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::models_while_mutation_locked;
+    use crate::state::AppState;
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(AppConfig::default())),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    let response = models_while_mutation_locked(state.clone(), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mutation_route_refresh_retains_other_providers_without_refetching() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: false,
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "alpha-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".into(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "beta-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let mut prior = BTreeMap::new();
+    prior.insert("beta-upstream-only".into(), "beta".into());
+    // Stale alpha ownership that disable already cleared from the live map.
+    prior.insert("alpha-stale".into(), "alpha".into());
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    // Simulate disable: drop the provider's live routes before refresh.
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.retain(|_, owner| owner != "alpha");
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    let routes = state.model_routes.read().await;
+    assert!(
+        !routes.contains_key("alpha-model"),
+        "disabled providers must not be reseeded"
+    );
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+    assert_eq!(
+        routes.get("beta-upstream-only").map(String::as_str),
+        Some("beta"),
+        "prior discovery for other providers must be retained without refetch"
+    );
+    assert!(
+        !routes.contains_key("alpha-stale"),
+        "removed provider discovery must not be retained"
+    );
+}
+
+#[tokio::test]
+async fn stale_model_discovery_does_not_publish_routes() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use axum::http::HeaderMap;
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "alpha-model".into(),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    let mut prior = BTreeMap::new();
+    prior.insert("old-route".into(), "alpha".into());
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(prior)),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    };
+
+    assert!(
+        models_for_revision(state.clone(), HeaderMap::new(), 0, false)
+            .await
+            .is_none()
+    );
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("old-route").map(String::as_str), Some("alpha"));
+    assert!(!routes.contains_key("alpha-model"));
+}
+
+#[test]
+fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-seed-routes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .set_model_enabled("beta", "upstream-only", true)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    let mut alpha = ProviderConfig::default();
+    alpha.base_url = "https://alpha.example/v1".into();
+    alpha.model_catalog_only = true;
+    let mut beta = ProviderConfig::default();
+    beta.base_url = "https://beta.example/v1".into();
+    beta.model_catalog_only = true;
+    config.providers.insert("alpha".into(), alpha);
+    config.providers.insert("beta".into(), beta);
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(
+        routes.get("upstream-only").map(String::as_str),
+        Some("beta")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-overlay-seed-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store.set_model_enabled("disabled", "shared", true).unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "disabled".into(),
+        ProviderConfig {
+            base_url: "https://disabled.example/v1".into(),
+            enabled: false,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "enabled".into(),
+        ProviderConfig {
+            base_url: "https://enabled.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(routes.get("shared").map(String::as_str), Some("enabled"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-claim-order-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("seed.db");
+    {
+        let store = Store::open(&db_path).unwrap();
+        store.set_model_enabled("zeta", "shared", true).unwrap();
+        store.set_model_enabled("alpha", "shared", true).unwrap();
+    }
+    let store = Store::open(&db_path).unwrap();
+
+    let mut config = AppConfig::default();
+    for provider_id in ["alpha", "zeta"] {
+        config.providers.insert(
+            provider_id.into(),
+            ProviderConfig {
+                base_url: format!("https://{provider_id}.example/v1"),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
+
+    let _ = std::fs::remove_dir_all(dir);
 }

@@ -10,6 +10,13 @@ use crate::config::provider_id_for_config_model;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 
+fn provider_accepts_requested_model(provider: &ProviderConfig, model: Option<&str>) -> bool {
+    match model {
+        Some(model) if !model.is_empty() => provider.model_is_enabled(model),
+        _ => true,
+    }
+}
+
 pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<SelectedProvider> {
     let model = body
         .get("model")
@@ -23,6 +30,7 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         let config = state.read_config();
         if let Some(provider_id) = route_id.as_deref()
             && let Some(provider) = provider_by_id(&config, provider_id)
+            && provider_accepts_requested_model(provider, Some(model))
         {
             return Some(selected_provider(
                 &config,
@@ -33,6 +41,7 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         }
         if let Some(provider_id) = provider_id_for_config_model(&config, model)
             && let Some(provider) = provider_by_id(&config, &provider_id)
+            && provider_accepts_requested_model(provider, Some(model))
         {
             return Some(selected_provider(
                 &config,
@@ -44,7 +53,10 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         let providers = provider_entries(&config);
         if providers.len() == 1 {
             let (id, provider) = providers[0];
-            return Some(selected_provider(&config, id, provider, Some(model)));
+            if provider_accepts_requested_model(provider, Some(model)) {
+                return Some(selected_provider(&config, id, provider, Some(model)));
+            }
+            return None;
         }
         return None;
     }

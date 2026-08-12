@@ -1,6 +1,7 @@
 use futures_util::future::join_all;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Json;
@@ -27,6 +28,7 @@ use crate::state::AppState;
 
 const DEFAULT_MODEL_CONTEXT_WINDOW: i64 = 128_000;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
+const MODEL_DISCOVERY_RETRY_LIMIT: usize = 2;
 pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
@@ -36,61 +38,242 @@ pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
 ];
 
 pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    models_with_publish_lock(state, headers, false).await
+}
+
+/// Refresh routes while the caller already holds `AppState::mutation_lock`.
+/// Prefer [`refresh_model_routes_while_mutation_locked`] for Web UI mutations —
+/// this HTTP-shaped helper exists for tests and rare full rediscovery cases.
+pub(crate) async fn models_while_mutation_locked(state: AppState, headers: HeaderMap) -> Response {
+    models_with_publish_lock(state, headers, true).await
+}
+
+/// How Web UI mutations refresh `model_routes` after a config change.
+///
+/// Mutations must not go through the HTTP `/v1/models` response path: that
+/// handler can skip publishing on total upstream failure and forces a full
+/// multi-provider fetch even when only one provider changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MutationRouteRefresh {
+    /// Rebuild from catalogs/overlays and retain prior live discovery for every
+    /// still-enabled provider. No upstream fetches.
+    SeedsAndRetain,
+    /// Fetch upstream models for one provider; retain prior discovery for every
+    /// other enabled provider.
+    RefetchOne,
+    /// Fetch upstream models for every enabled provider. This is needed after
+    /// removing a single route owner because the route map only retains the
+    /// winner for a colliding live-only slug.
+    RefetchAll,
+}
+
+/// Mutation-oriented route refresh. Always publishes a best-effort route map
+/// (seeds + selective discovery + retained prior ownership) and returns a
+/// warning when the focused upstream fetch failed.
+pub(crate) async fn refresh_model_routes_while_mutation_locked(
+    state: &AppState,
+    mode: MutationRouteRefresh,
+    provider_id: Option<&str>,
+) -> Result<(), String> {
+    let revision = state.config_revision.load(Ordering::Acquire);
+    let headers = HeaderMap::new();
+    let (routes, retain_owners, fetch_warning) =
+        discover_routes_for_mutation(state, &headers, mode, provider_id).await;
+
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return Err(
+            "provider configuration changed while refreshing model routes; retry the mutation"
+                .to_string(),
+        );
+    }
+    publish_model_routes(state, routes, &retain_owners).await;
+    match fetch_warning {
+        Some(warning) => Err(warning),
+        None => Ok(()),
+    }
+}
+
+async fn models_with_publish_lock(
+    state: AppState,
+    headers: HeaderMap,
+    mutation_locked: bool,
+) -> Response {
+    for _ in 0..MODEL_DISCOVERY_RETRY_LIMIT {
+        let revision = state.config_revision.load(Ordering::Acquire);
+        if let Some(response) =
+            models_for_revision(state.clone(), headers.clone(), revision, mutation_locked).await
+        {
+            return response;
+        }
+    }
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "provider configuration changed while refreshing models; retry the request".to_string(),
+    )
+}
+
+async fn discover_routes_for_mutation(
+    state: &AppState,
+    headers: &HeaderMap,
+    mode: MutationRouteRefresh,
+    focus_provider_id: Option<&str>,
+) -> (BTreeMap<String, String>, BTreeSet<String>, Option<String>) {
+    let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
+        .into_iter()
+        .map(|(id, p)| (id.to_string(), p.clone()))
+        .collect();
+
+    let mut routes = state
+        .store
+        .as_ref()
+        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
+        .unwrap_or_default();
+    if state.store.is_none() {
+        let config = state.read_config();
+        for (provider_id, provider) in provider_entries(&config) {
+            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        }
+    }
+
+    let mut retain_owners: BTreeSet<String> =
+        provider_list.iter().map(|(id, _)| id.clone()).collect();
+    let mut fetch_warning = None;
+
+    let fetch_ids: BTreeSet<String> = match mode {
+        MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
+        MutationRouteRefresh::RefetchOne => {
+            focus_provider_id.map(str::to_string).into_iter().collect()
+        }
+        MutationRouteRefresh::RefetchAll => {
+            provider_list.iter().map(|(id, _)| id.clone()).collect()
+        }
+    };
+
+    for (provider_id, provider) in &provider_list {
+        if !fetch_ids.contains(provider_id) {
+            continue;
+        }
+        let (provider_models, provider_failures) =
+            fetch_provider_upstream_models(state, headers, provider_id, provider).await;
+        let config = state.read_config().clone();
+        let Some(current) = crate::config::provider_by_id(&config, provider_id).cloned() else {
+            continue;
+        };
+        let mut merged_models = Vec::new();
+        let _added = add_models_for_provider(
+            &mut merged_models,
+            &mut routes,
+            &config,
+            provider_id,
+            &current,
+            provider_models,
+        );
+        if provider_failures.is_empty() {
+            // Successful refetch (including empty catalogs) replaces retained
+            // ownership for this provider; seeds already carry catalog routes.
+            retain_owners.remove(provider_id);
+        } else {
+            fetch_warning = Some(provider_failures.join("; "));
+        }
+    }
+
+    (routes, retain_owners, fetch_warning)
+}
+
+async fn fetch_provider_upstream_models(
+    state: &AppState,
+    headers: &HeaderMap,
+    provider_id: &str,
+    provider: &ProviderConfig,
+) -> (Vec<Value>, Vec<String>) {
+    let mut provider_models = Vec::new();
+    let mut provider_failures = Vec::new();
+    if provider.model_catalog_only {
+        return (provider_models, provider_failures);
+    }
+
     let config = state.read_config().clone();
-    let provider_list: Vec<_> = provider_entries(&config).into_iter().collect();
+    let url = endpoint_url(provider, &provider.models_path);
+    let mut request = state.client.get(url);
+    request = apply_headers_with_accept(request, provider, headers, "application/json");
+    request = request.timeout(MODEL_CATALOG_TIMEOUT);
+
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.bytes().await.unwrap_or_default();
+            if !status.is_success() {
+                provider_failures.push(format!("{provider_id}: HTTP {status}"));
+            } else if let Some(models) = normalize_models(&body, provider, &config) {
+                provider_models.extend(models);
+            } else {
+                provider_failures.push(format!("{provider_id}: unrecognized model catalog"));
+            }
+        }
+        Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
+    }
+
+    (provider_models, provider_failures)
+}
+
+/// Fetch and publish a model catalog only if configuration stayed stable for the
+/// whole fetch. A Web UI provider edit changes both the destination and routes,
+/// so merging a response collected with an earlier snapshot would advertise
+/// models that are subsequently sent to the edited provider.
+async fn models_for_revision(
+    state: AppState,
+    headers: HeaderMap,
+    revision: u64,
+    mutation_locked: bool,
+) -> Option<Response> {
+    let hide_builtins = state.read_config().config.hide_codex_builtin_models;
+    let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
+        .into_iter()
+        .map(|(id, p)| (id.to_string(), p.clone()))
+        .collect();
 
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
     let fetch_results = join_all(provider_list.into_iter().map(|(provider_id, provider)| {
         let state = state.clone();
-        let config = config.clone();
         let headers = headers.clone();
         async move {
-            let mut provider_models = Vec::new();
-            let mut provider_failures = Vec::new();
-
-            if !provider.model_catalog_only {
-                let url = endpoint_url(provider, &provider.models_path);
-                let mut request = state.client.get(url);
-                request =
-                    apply_headers_with_accept(request, provider, &headers, "application/json");
-                request = request.timeout(MODEL_CATALOG_TIMEOUT);
-
-                match request.send().await {
-                    Ok(response) => {
-                        let status = response.status();
-                        let body = response.bytes().await.unwrap_or_default();
-                        if !status.is_success() {
-                            provider_failures.push(format!("{provider_id}: HTTP {status}"));
-                        } else if let Some(models) = normalize_models(&body, provider, &config) {
-                            provider_models.extend(models);
-                        } else {
-                            provider_failures
-                                .push(format!("{provider_id}: unrecognized model catalog"));
-                        }
-                    }
-                    Err(err) => provider_failures.push(format!("{provider_id}: {err}")),
-                }
-            }
-
+            let (mut provider_models, provider_failures) =
+                fetch_provider_upstream_models(&state, &headers, &provider_id, &provider).await;
+            let config = state.read_config().clone();
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(provider, &config));
+                provider_models.extend(manual_catalog_models(&provider, &config));
             }
-
             (provider_id, provider, provider_models, provider_failures)
         }
     }))
     .await;
 
     let mut merged_models = Vec::new();
-    let mut routes = BTreeMap::new();
+    let mut routes = state
+        .store
+        .as_ref()
+        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
+        .unwrap_or_default();
     let mut failures = Vec::new();
+    let mut failed_providers = BTreeSet::new();
 
-    for (provider_id, provider) in provider_entries(&config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    if state.store.is_none() {
+        let config = state.read_config();
+        for (provider_id, provider) in provider_entries(&config) {
+            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        }
     }
 
-    for (provider_id, provider, provider_models, provider_failures) in fetch_results {
+    for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+        if !provider_failures.is_empty() {
+            failed_providers.insert(provider_id.clone());
+        }
+        let config = state.read_config().clone();
+        let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
+            // Provider was disabled/removed while upstream fetch was in flight.
+            continue;
+        };
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,
@@ -106,21 +289,101 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     }
 
     if merged_models.is_empty() {
-        return error_response(
+        if failures.is_empty() {
+            return publish_models_if_current(
+                &state,
+                revision,
+                routes,
+                &failed_providers,
+                Json(json!({ "models": [] })).into_response(),
+                mutation_locked,
+            )
+            .await;
+        }
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return None;
+        }
+        // Keep previously discovered routes when upstream catalogs fail transiently.
+        return Some(error_response(
             StatusCode::BAD_GATEWAY,
             format!(
                 "no provider model catalogs could be loaded: {}",
                 failures.join("; ")
             ),
-        );
+        ));
     }
 
-    if config.config.hide_codex_builtin_models {
+    if hide_builtins {
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 
+    publish_models_if_current(
+        &state,
+        revision,
+        routes,
+        &failed_providers,
+        Json(json!({ "models": merged_models })).into_response(),
+        mutation_locked,
+    )
+    .await
+}
+
+async fn publish_models_if_current(
+    state: &AppState,
+    revision: u64,
+    routes: BTreeMap<String, String>,
+    failed_providers: &BTreeSet<String>,
+    response: Response,
+    mutation_locked: bool,
+) -> Option<Response> {
+    if mutation_locked {
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return None;
+        }
+        publish_model_routes(state, routes, failed_providers).await;
+        return Some(response);
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return None;
+    }
+    publish_model_routes(state, routes, failed_providers).await;
+    Some(response)
+}
+
+/// Replace `model_routes` while retaining prior discovery only for failed providers.
+///
+/// Fresh catalog/upstream discovery builds `routes` from configured catalogs and
+/// persisted UI overlays. Prior discovered ownership is restored only when the
+/// owning provider's upstream catalog fetch failed, so a successful response can
+/// remove stale routes while transient failures remain usable.
+async fn publish_model_routes(
+    state: &AppState,
+    mut routes: BTreeMap<String, String>,
+    failed_providers: &BTreeSet<String>,
+) {
+    let prior = state.model_routes.read().await.clone();
+    {
+        let config = state.read_config();
+        for (model_id, owner) in prior {
+            if !failed_providers.contains(&owner) {
+                continue;
+            }
+            let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
+                continue;
+            };
+            if !provider.model_is_enabled(&model_id) {
+                continue;
+            }
+            // A fresh successful discovery owns the route for this refresh.
+            // Retain stale ownership only when no healthy provider supplied
+            // the same model, otherwise `/models` can advertise one provider
+            // while `/responses` is routed to the failed prior owner.
+            routes.entry(model_id).or_insert(owner);
+        }
+    }
     *state.model_routes.write().await = routes;
-    Json(json!({ "models": merged_models })).into_response()
 }
 
 pub(crate) fn register_catalog_routes_for_provider(
@@ -129,14 +392,94 @@ pub(crate) fn register_catalog_routes_for_provider(
     provider: &ProviderConfig,
 ) {
     for entry in &provider.model_catalog {
+        if !entry.enabled || !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
         if !routes.contains_key(&entry.id) {
             routes.insert(entry.id.clone(), provider_id.to_string());
         }
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
+            && provider.model_is_enabled(upstream_id)
             && !routes.contains_key(upstream_id)
         {
             routes.insert(upstream_id.to_string(), provider_id.to_string());
+        }
+    }
+}
+
+/// Seed `model_routes` from enabled providers and SQLite overlays at startup.
+///
+/// Catalog routes establish baseline ownership. Overlay seeds then claim
+/// ownership for models the operator explicitly enabled (including
+/// upstream-only toggles) so multi-provider headless clients do not need a
+/// prior `/v1/models` refresh after restart.
+pub(crate) fn seed_model_routes_from_config_and_store(
+    config: &AppConfig,
+    store: &crate::store::Store,
+) -> BTreeMap<String, String> {
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(config) {
+        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    }
+    let seeds = match store.enabled_model_route_seeds() {
+        Ok(seeds) => seeds,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "failed to read enabled model route seeds; overlay routes omitted at startup"
+            );
+            return routes;
+        }
+    };
+    for (provider_id, model_id, upstream_id) in seeds {
+        let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
+            continue;
+        };
+        if !provider.enabled || !provider.model_is_enabled(&model_id) {
+            continue;
+        }
+        // Explicit overlay enable claims ownership for colliding slugs.
+        routes.insert(model_id, provider_id.clone());
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+            && provider.model_is_enabled(&upstream_id)
+        {
+            routes.insert(upstream_id, provider_id);
+        }
+    }
+    routes
+}
+
+/// Replay overlay-enabled route seeds for one provider (e.g. after Web UI re-enable).
+pub(crate) fn register_overlay_route_seeds_for_provider(
+    routes: &mut BTreeMap<String, String>,
+    provider_id: &str,
+    provider: &crate::config::ProviderConfig,
+    store: &crate::store::Store,
+) {
+    if !provider.enabled {
+        return;
+    }
+    let seeds = match store.enabled_model_route_seeds_for_provider(provider_id) {
+        Ok(seeds) => seeds,
+        Err(err) => {
+            tracing::warn!(
+                provider_id = %provider_id,
+                error = %err,
+                "failed to read overlay route seeds during provider route sync"
+            );
+            return;
+        }
+    };
+    for (model_id, upstream_id) in seeds {
+        if !provider.model_is_enabled(&model_id) {
+            continue;
+        }
+        routes.insert(model_id, provider_id.to_string());
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+            && provider.model_is_enabled(&upstream_id)
+        {
+            routes.insert(upstream_id, provider_id.to_string());
         }
     }
 }
@@ -156,6 +499,9 @@ pub(crate) fn add_models_for_provider(
     for model in models {
         let mut model = model;
         if let Some(slug) = model.get("slug").and_then(Value::as_str) {
+            if !provider.model_is_enabled(slug) {
+                continue;
+            }
             if let Some(owner) = routes.get(slug).map(String::as_str) {
                 if owner == provider_id {
                     prefix_model_display_name(&mut model, &gateway_name);
@@ -263,6 +609,9 @@ pub(crate) fn normalize_models(
 pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
     let mut models = Vec::new();
     for entry in &provider.model_catalog {
+        if !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
         let mut model = json!({
             "id": entry.id,
             "object": "model"
@@ -280,6 +629,7 @@ pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfi
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
             && upstream_id != entry.id
+            && provider.model_is_enabled(upstream_id)
         {
             let mut alias = json!({
                 "id": upstream_id,

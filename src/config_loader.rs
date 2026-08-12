@@ -165,6 +165,21 @@ pub fn provider_entries(config: &AppConfig) -> Vec<(&str, &ProviderConfig)> {
     providers
 }
 
+pub fn configured_provider_entries(config: &AppConfig) -> Vec<(&str, &ProviderConfig)> {
+    let mut providers = Vec::with_capacity(config.providers.len() + 1);
+    if config.provider.is_configured() {
+        providers.push((PRIMARY_PROVIDER_ID, &config.provider));
+    }
+    providers.extend(
+        config
+            .providers
+            .iter()
+            .filter(|(_, provider)| provider.is_configured())
+            .map(|(id, provider)| (id.as_str(), provider)),
+    );
+    providers
+}
+
 pub fn provider_by_id<'a>(config: &'a AppConfig, id: &str) -> Option<&'a ProviderConfig> {
     let provider = if id == PRIMARY_PROVIDER_ID {
         Some(&config.provider)
@@ -172,6 +187,18 @@ pub fn provider_by_id<'a>(config: &'a AppConfig, id: &str) -> Option<&'a Provide
         config.providers.get(id)
     }?;
     provider.is_enabled().then_some(provider)
+}
+
+pub fn configured_provider_by_id<'a>(
+    config: &'a AppConfig,
+    id: &str,
+) -> Option<&'a ProviderConfig> {
+    let provider = if id == PRIMARY_PROVIDER_ID {
+        Some(&config.provider)
+    } else {
+        config.providers.get(id)
+    }?;
+    provider.is_configured().then_some(provider)
 }
 
 pub fn provider_id_for_config_model(config: &AppConfig, model: &str) -> Option<String> {
@@ -209,6 +236,9 @@ pub(crate) fn resolve_provider_alias(config: &AppConfig, alias: &str) -> Option<
 }
 
 pub(crate) fn provider_matches_model(provider: &ProviderConfig, model: &str) -> bool {
+    if !provider.model_is_enabled(model) {
+        return false;
+    }
     provider.model_metadata.overrides.contains_key(model)
         || provider
             .model_catalog

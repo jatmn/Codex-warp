@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+pub use crate::config_loader::configured_provider_by_id;
+pub use crate::config_loader::configured_provider_entries;
 pub use crate::config_loader::load_config_layers;
 pub use crate::config_loader::matches_model_pattern_for_sort;
 pub use crate::config_loader::matching_model_families;
@@ -21,6 +23,7 @@ pub struct AppConfig {
     pub continue_guard: ContinueGuardConfig,
     pub debug: DebugConfig,
     pub tool_policy: ToolPolicyConfig,
+    pub webui: WebUiConfig,
     pub listen: String,
     pub provider: ProviderConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
@@ -35,11 +38,41 @@ impl Default for AppConfig {
             continue_guard: ContinueGuardConfig::default(),
             debug: DebugConfig::default(),
             tool_policy: ToolPolicyConfig::default(),
+            webui: WebUiConfig::default(),
             listen: "127.0.0.1:8787".to_string(),
             provider: ProviderConfig::default(),
             providers: BTreeMap::new(),
             model_families: BTreeMap::new(),
             transform: TransformConfig::default(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct WebUiConfig {
+    pub enabled: bool,
+    /// Optional environment variable containing a bearer token for `/api`.
+    pub auth_token_env: Option<String>,
+    /// Explicit opt-in for exposing the unauthenticated management API beyond loopback.
+    pub allow_unauthenticated_remote_access: bool,
+    pub db_path: PathBuf,
+}
+
+impl Default for WebUiConfig {
+    fn default() -> Self {
+        Self {
+            // Persistent state is optional infrastructure. Keep the core proxy
+            // stateless unless an operator explicitly enables it, so a normal
+            // launch never depends on the working directory being writable.
+            enabled: false,
+            auth_token_env: None,
+            allow_unauthenticated_remote_access: false,
+            db_path: PathBuf::from("codex-warp.db"),
         }
     }
 }
@@ -230,11 +263,13 @@ impl Default for DebugConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
     pub base_url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub auth_header: String,
@@ -247,6 +282,9 @@ pub struct ProviderConfig {
     pub chat_completions_path: String,
     pub models_path: String,
     pub model_catalog_only: bool,
+    /// Model ids discovered from upstream that should stay hidden from `/models`.
+    #[serde(default)]
+    pub disabled_models: Vec<String>,
 }
 
 impl Default for ProviderConfig {
@@ -254,6 +292,7 @@ impl Default for ProviderConfig {
         Self {
             name: None,
             base_url: String::new(),
+            enabled: true,
             api_key: None,
             api_key_env: None,
             auth_header: "authorization".to_string(),
@@ -266,13 +305,135 @@ impl Default for ProviderConfig {
             chat_completions_path: "/chat/completions".to_string(),
             models_path: "/models".to_string(),
             model_catalog_only: false,
+            disabled_models: Vec::new(),
         }
     }
 }
 
+fn model_ids_overlap(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    // Match unprefixed ids against a single provider-prefixed form (foo ↔ provider/foo),
+    // but do not treat distinct prefixes with the same suffix as the same model.
+    if let Some((_prefix, suffix)) = a.split_once('/')
+        && !suffix.is_empty()
+        && !suffix.contains('/')
+        && suffix == b
+    {
+        return true;
+    }
+    if let Some((_prefix, suffix)) = b.split_once('/')
+        && !suffix.is_empty()
+        && !suffix.contains('/')
+        && suffix == a
+    {
+        return true;
+    }
+    false
+}
+
+pub(crate) fn catalog_entry_matches_model(entry: &ModelCatalogEntry, model_id: &str) -> bool {
+    if model_ids_overlap(&entry.id, model_id) {
+        return true;
+    }
+    entry
+        .upstream_id
+        .as_deref()
+        .is_some_and(|upstream_id| model_ids_overlap(upstream_id, model_id))
+}
+
+fn catalog_entry_is_direct_model_id(entry: &ModelCatalogEntry, model_id: &str) -> bool {
+    entry.id == model_id
+        || model_id.split_once('/').is_some_and(|(_provider, suffix)| {
+            !suffix.is_empty() && !suffix.contains('/') && entry.id == suffix
+        })
+}
+
 impl ProviderConfig {
-    pub fn is_enabled(&self) -> bool {
+    pub fn is_configured(&self) -> bool {
         !self.base_url.trim().is_empty()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.is_configured()
+    }
+
+    pub fn model_is_enabled(&self, model_id: &str) -> bool {
+        if self
+            .disabled_models
+            .iter()
+            .any(|disabled| model_ids_overlap(disabled, model_id))
+        {
+            return false;
+        }
+        // An explicit catalog id is authoritative. Only fall back to aliases
+        // when no row directly configures this model; otherwise an earlier
+        // enabled alias can accidentally override a later disabled exact row.
+        let Some(entry) = self
+            .model_catalog
+            .iter()
+            // Provider-prefixed requests name the same direct catalog entry as
+            // their bare suffix. Resolve that identity before generic alias
+            // matching, so an exact disabled entry cannot be bypassed through
+            // an earlier enabled alias for the same upstream slug.
+            .find(|entry| catalog_entry_is_direct_model_id(entry, model_id))
+            .or_else(|| {
+                self.model_catalog
+                    .iter()
+                    .find(|entry| catalog_entry_matches_model(entry, model_id))
+            })
+        else {
+            return true;
+        };
+        if !entry.enabled {
+            return false;
+        }
+        // Disabling an upstream slug also blocks catalog aliases that resolve to it.
+        if let Some(upstream_id) = entry.upstream_id.as_deref()
+            && !upstream_id.is_empty()
+            && self
+                .disabled_models
+                .iter()
+                .any(|disabled| model_ids_overlap(disabled, upstream_id))
+        {
+            return false;
+        }
+        true
+    }
+
+    pub fn clear_disabled_overlapping(&mut self, model_id: &str) {
+        self.disabled_models
+            .retain(|disabled| !model_ids_overlap(disabled, model_id));
+    }
+
+    /// Suppress a model id so it cannot be rediscovered or routed.
+    ///
+    /// No-ops when an overlapping disable is already present (for example
+    /// `provider/foo` already covers bare `foo`).
+    pub fn disable_model(&mut self, model_id: &str) {
+        if model_id.is_empty() {
+            return;
+        }
+        if self
+            .disabled_models
+            .iter()
+            .any(|disabled| model_ids_overlap(disabled, model_id))
+        {
+            return;
+        }
+        self.disabled_models.push(model_id.to_string());
+    }
+
+    /// Soft-remove a catalog identity: drop the catalog row and suppress the
+    /// catalog id plus any upstream alias so live `/models` fetches cannot
+    /// resurrect the model.
+    pub fn suppress_catalog_model(&mut self, model_id: &str, upstream_id: Option<&str>) {
+        self.model_catalog.retain(|entry| entry.id != model_id);
+        self.disable_model(model_id);
+        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+            self.disable_model(upstream_id);
+        }
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -286,23 +447,37 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModelCatalogEntry {
     pub id: String,
     pub upstream_id: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+impl Default for ModelCatalogEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            upstream_id: None,
+            display_name: None,
+            description: None,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ModelMetadataConfig {
     pub defaults: ModelMetadataFields,
     pub overrides: BTreeMap<String, ModelMetadataFields>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelMetadataFields {
     pub context_window: Option<i64>,
@@ -339,7 +514,7 @@ pub struct ModelFamilyConfig {
     pub transform: TransformConfigPatch,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TransformConfig {
     pub backend: Backend,
@@ -365,6 +540,8 @@ impl Default for TransformConfig {
             reasoning_effort_none_value: None,
             drop_empty_tool_choice: true,
             force_parallel_tool_calls: None,
+            // Some OpenAI-compatible gateways reject stream_options. Providers
+            // that support usage chunks can opt in explicitly.
             request_stream_options_include_usage: false,
             preserve_reasoning_content_history: false,
         }
@@ -465,7 +642,7 @@ fn remove_morphs(morphs: &mut Vec<RequestMorph>, selectors: &[MorphSelector]) {
     });
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestMorph {
     pub from: String,
@@ -476,7 +653,7 @@ pub struct RequestMorph {
     pub kind: RequestMorphKind,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestMorphKind {
     Copy,
@@ -534,7 +711,7 @@ fn default_chat_request_morphs() -> Vec<RequestMorph> {
     ]
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
     OpenAiChat,
@@ -547,7 +724,7 @@ impl Default for Backend {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnsupportedToolStrategy {
     Drop,

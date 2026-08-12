@@ -30,6 +30,12 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("deepseek"));
     assert!(default_config.model_families.contains_key("deepseek_v3_2"));
     assert!(
+        !default_config
+            .transform
+            .request_stream_options_include_usage,
+        "shipped profiles do not force optional stream usage fields"
+    );
+    assert!(
         default_config
             .model_families
             .contains_key("deepseek_v4_pro")
@@ -237,6 +243,185 @@ fn reusable_provider_profiles_leave_auto_review_to_model_families() {
             "{config_path} should not route literal codex-auto-review as a provider model"
         );
     }
+}
+
+#[test]
+fn webui_config_partial_toml_keeps_persistence_disabled() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        db_path = "/tmp/custom.db"
+        "#,
+    )
+    .expect("partial webui config parses");
+    assert!(!config.webui.enabled);
+    assert!(config.webui.auth_token_env.is_none());
+    assert!(!config.webui.allow_unauthenticated_remote_access);
+    assert_eq!(config.webui.db_path, PathBuf::from("/tmp/custom.db"));
+}
+
+#[test]
+fn webui_auth_is_optional_and_config_driven() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        auth_token_env = "MY_WEBUI_TOKEN"
+        "#,
+    )
+    .expect("optional Web UI auth parses");
+    assert_eq!(
+        config.webui.auth_token_env.as_deref(),
+        Some("MY_WEBUI_TOKEN")
+    );
+}
+
+#[test]
+fn webui_remote_access_requires_explicit_opt_in() {
+    let config: AppConfig = toml::from_str(
+        r#"
+        [webui]
+        allow_unauthenticated_remote_access = true
+        "#,
+    )
+    .expect("webui remote opt-in parses");
+    assert!(config.webui.allow_unauthenticated_remote_access);
+}
+
+#[test]
+fn disabling_unprefixed_model_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+    assert!(provider.model_is_enabled("provider/bar"));
+}
+
+#[test]
+fn disabling_catalog_entry_blocks_prefixed_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "foo".into(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+
+    assert!(!provider.model_is_enabled("foo"));
+    assert!(!provider.model_is_enabled("provider/foo"));
+}
+
+#[test]
+fn exact_disabled_catalog_entry_wins_over_earlier_enabled_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog = vec![
+        ModelCatalogEntry {
+            id: "friendly".into(),
+            upstream_id: Some("gpt-4".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        },
+        ModelCatalogEntry {
+            id: "gpt-4".into(),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        },
+    ];
+
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+    assert!(provider.model_is_enabled("friendly"));
+}
+
+#[test]
+fn clear_disabled_overlapping_removes_prefixed_and_unprefixed_ids() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+    provider.disabled_models.push("provider/foo".into());
+    provider.disabled_models.push("provider/bar".into());
+
+    provider.clear_disabled_overlapping("foo");
+
+    assert_eq!(provider.disabled_models, vec!["provider/bar".to_string()]);
+    assert!(provider.model_is_enabled("foo"));
+    assert!(provider.model_is_enabled("provider/foo"));
+    assert!(!provider.model_is_enabled("provider/bar"));
+}
+
+#[test]
+fn distinct_prefixed_model_ids_do_not_overlap() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("team-a/foo".into());
+
+    assert!(!provider.model_is_enabled("team-a/foo"));
+    assert!(provider.model_is_enabled("team-b/foo"));
+    // Bare suffix still overlaps the disabled prefixed id.
+    assert!(!provider.model_is_enabled("foo"));
+}
+
+#[test]
+fn nested_model_ids_do_not_overlap_a_bare_suffix() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("foo".into());
+    assert!(provider.model_is_enabled("vendor/family/foo"));
+}
+
+#[test]
+fn nested_model_ids_do_not_overlap_provider_prefixed_aliases() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("org/model".into());
+
+    assert!(!provider.model_is_enabled("org/model"));
+    assert!(provider.model_is_enabled("provider/org/model"));
+}
+
+#[test]
+fn disabling_upstream_slug_blocks_catalog_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("gpt-4".into());
+
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+}
+
+#[test]
+fn suppress_catalog_model_blocks_rediscovery_without_clearing_prior_disable() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "my-model".into(),
+        upstream_id: Some("gpt-4".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("provider/gpt-4".into());
+
+    provider.suppress_catalog_model("my-model", Some("gpt-4"));
+
+    assert!(provider.model_catalog.is_empty());
+    assert!(!provider.model_is_enabled("my-model"));
+    assert!(!provider.model_is_enabled("gpt-4"));
+    assert!(!provider.model_is_enabled("provider/gpt-4"));
+    // Prior overlapping disable is kept; bare gpt-4 is covered by overlap.
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .any(|id| id == "provider/gpt-4")
+    );
+}
+
+#[test]
+fn disable_model_is_noop_when_overlapping_disable_exists() {
+    let mut provider = ProviderConfig::default();
+    provider.disabled_models.push("provider/foo".into());
+    provider.disable_model("foo");
+    assert_eq!(provider.disabled_models, vec!["provider/foo".to_string()]);
 }
 
 #[test]
