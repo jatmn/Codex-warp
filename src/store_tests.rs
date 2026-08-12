@@ -1104,8 +1104,8 @@ fn record_completed_counts_prompt_without_usage_metadata() {
 #[test]
 fn usage_events_cap_untrusted_token_counts_before_aggregation() {
     assert!(
-        MAX_USAGE_TOKENS_PER_EVENT * MAX_USAGE_EVENTS <= 9_007_199_254_740_991,
-        "every retained aggregate must stay exactly representable in the Web UI"
+        MAX_USAGE_TOKENS_PER_EVENT * MAX_USAGE_EVENTS_BEFORE_TRIM <= 9_007_199_254_740_991,
+        "even the batched-retention overshoot must stay exactly representable in the Web UI"
     );
     let usage = serde_json::json!({
         "input_tokens": i64::MAX,
