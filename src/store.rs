@@ -33,7 +33,7 @@ const MAX_USAGE_IDENTIFIER_BYTES: usize = 512;
 /// Upstream usage is untrusted. This leaves headroom for every retained event
 /// to aggregate in SQLite *and* remain exactly representable by the Web UI's
 /// JavaScript `Number` values.
-const MAX_USAGE_TOKENS_PER_EVENT: i64 = 89_957_746_209;
+const MAX_USAGE_TOKENS_PER_EVENT: i64 = 9_007_199_254_740_991 / MAX_USAGE_EVENTS_BEFORE_TRIM;
 
 #[derive(Clone)]
 pub(crate) struct Store {
