@@ -30,6 +30,7 @@ use crate::response_codec::native_stream_to_responses;
 use crate::response_codec::response_usage_from_bytes;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
+use crate::store::UsageRecorder;
 use crate::transform::native_custom_tool_names;
 use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
@@ -40,8 +41,13 @@ pub(crate) async fn proxy_native_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    let config = state.read_config().clone();
-    rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
+    let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
+    rewrite_model_for_upstream(
+        &*state.read_config(),
+        &selected.id,
+        &selected.provider,
+        &mut body,
+    );
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
     let body = normalize_responses_request(body, &selected.transform);
@@ -68,6 +74,7 @@ pub(crate) async fn proxy_native_responses(
         stream_requested,
         custom_tool_names,
         request_log_id,
+        usage_recorder,
     )
     .await
 }
@@ -78,11 +85,15 @@ pub(crate) async fn proxy_chat_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    let config = state.read_config().clone();
-    rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
+    let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
+    let (continue_guard_config, tool_policy) = {
+        let config = state.read_config();
+        rewrite_model_for_upstream(&*config, &selected.id, &selected.provider, &mut body);
+        (config.continue_guard.clone(), config.tool_policy.clone())
+    };
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
-    let continue_guard = ContinueGuardState::from_request(config.continue_guard.clone(), &body);
+    let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
     let chat_transform = responses_to_chat(body, &selected.transform);
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
@@ -160,10 +171,11 @@ pub(crate) async fn proxy_chat_responses(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
-            config.tool_policy.clone(),
+            tool_policy,
             state.debug_log.clone(),
             request_log_id,
             continue_guard,
+            usage_recorder,
         ));
         let mut response = Response::new(body);
         response.headers_mut().insert(
@@ -174,6 +186,7 @@ pub(crate) async fn proxy_chat_responses(
     } else {
         match upstream.json::<Value>().await {
             Ok(value) => {
+                let normalized_usage = chat_usage_to_responses_usage(value.get("usage"));
                 state.debug_log.log_response(
                     json!({
                         "event": "upstream_response",
@@ -181,14 +194,22 @@ pub(crate) async fn proxy_chat_responses(
                         "status": status.as_u16(),
                         "success": true,
                         "usage": value.get("usage").cloned().unwrap_or(Value::Null),
-                        "normalized_usage": chat_usage_to_responses_usage(value.get("usage"))
+                        "normalized_usage": normalized_usage.clone()
                     }),
                     Some(&value),
                 );
+                if let Some(recorder) = &usage_recorder {
+                    // Successful non-stream responses must count as completed
+                    // prompts/sessions even when the gateway omits usage metadata
+                    // (common when stream_options.include_usage stays opt-in).
+                    recorder.record_completed(
+                        (!normalized_usage.is_null()).then_some(&normalized_usage),
+                    );
+                }
                 Json(chat_json_to_responses_with_policy(
                     value,
                     &chat_transform.custom_tool_names,
-                    &config.tool_policy,
+                    &tool_policy,
                 ))
                 .into_response()
             }
@@ -245,8 +266,9 @@ async fn send_native_responses(
     stream_response: bool,
     custom_tool_names: BTreeSet<String>,
     request_log_id: String,
+    usage_recorder: Option<UsageRecorder>,
 ) -> Response {
-    let config = state.read_config().clone();
+    let tool_policy = state.read_config().tool_policy.clone();
     let request = match build_upstream_json_request(
         &state.client,
         url,
@@ -291,10 +313,11 @@ async fn send_native_responses(
         let body = Body::from_stream(native_stream_to_responses(
             upstream,
             custom_tool_names,
-            config.tool_policy.clone(),
+            tool_policy,
             state.debug_log.clone(),
             request_log_id,
             status.as_u16(),
+            usage_recorder,
         ));
         let mut response = Response::new(body);
         *response.status_mut() = status;
@@ -317,6 +340,7 @@ async fn send_native_responses(
             return error_response(StatusCode::BAD_GATEWAY, err.to_string());
         }
     };
+    let usage = response_usage_from_bytes(&bytes);
     let response_body = serde_json::from_slice::<Value>(&bytes).ok();
     state.debug_log.log_response(
         json!({
@@ -324,17 +348,27 @@ async fn send_native_responses(
             "id": request_log_id,
             "status": status.as_u16(),
             "success": status.is_success(),
-            "usage": response_usage_from_bytes(&bytes)
+            "usage": usage.clone()
         }),
         response_body.as_ref(),
     );
-
-    let body = if status.is_success()
-        && (!custom_tool_names.is_empty() || config.tool_policy.enabled)
+    let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
+    if status.is_success()
+        && response_body
+            .as_ref()
+            .and_then(|value| value.get("status").and_then(Value::as_str))
+            .is_none_or(|status| status == "completed")
+        && let Some(recorder) = &usage_recorder
     {
+        // Successful non-stream responses must count as completed prompts/sessions
+        // even when the upstream omits usage metadata.
+        recorder.record_completed((!normalized_usage.is_null()).then_some(&normalized_usage));
+    }
+
+    let body = if status.is_success() && (!custom_tool_names.is_empty() || tool_policy.enabled) {
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(mut value) => {
-                morph_native_response_value(&mut value, &custom_tool_names, &config.tool_policy);
+                morph_native_response_value(&mut value, &custom_tool_names, &tool_policy);
                 Body::from(Bytes::from(value.to_string()))
             }
             Err(_) => Body::from(bytes),

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
+use crate::store::Store;
 
 fn completed_end_turn(events: &[String]) -> bool {
     let completed = events
@@ -34,6 +35,128 @@ fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
 fn next_sse_frame_accepts_lf_and_crlf() {
     assert_eq!(next_sse_frame_bytes(b"data: one\n\nrest"), Some((9, 2)));
     assert_eq!(next_sse_frame_bytes(b"data: one\r\n\r\nrest"), Some((9, 4)));
+}
+
+#[test]
+fn native_usage_is_recorded_only_after_a_completed_event() {
+    let completed =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+    let failed = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_failed_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_cancelled_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"cancelled\"}}\n\n";
+    assert!(native_sse_frame_completed(completed));
+    assert!(!native_sse_frame_completed(failed));
+    assert!(!native_sse_frame_completed(completed_with_failed_status));
+    assert!(!native_sse_frame_completed(completed_with_cancelled_status));
+}
+
+#[tokio::test]
+async fn native_failed_stream_does_not_record_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-usage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let failed = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(failed.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_completed_with_failed_status_does_not_record_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-failed-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_status_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_completed_without_usage_records_prompt_and_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-no-usage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model", "prompt_cache_key": "native-session"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_no_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -676,10 +799,26 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     let chunk_b = Bytes::from_static(b":{\"cached_tokens\":5}}}}\n\n");
 
-    log_native_usage_from_sse_chunk(&chunk_a, &mut pending, &debug_log, "dbg_test", 200);
+    let mut pending_usage = None;
+    log_native_usage_from_sse_chunk(
+        &chunk_a,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(!pending.is_empty());
-    log_native_usage_from_sse_chunk(&chunk_b, &mut pending, &debug_log, "dbg_test", 200);
+    log_native_usage_from_sse_chunk(
+        &chunk_b,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(pending.is_empty());
+    assert!(pending_usage.is_some());
 }
 
 #[test]
@@ -845,6 +984,7 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         ContinueGuardState::default(),
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -855,6 +995,86 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         .find(|event| event.contains("response.failed"))
         .expect("overflow emits response.failed");
     assert!(failed.contains("upstream SSE frame buffer exceeded maximum size"));
+}
+
+#[tokio::test]
+async fn chat_stream_without_done_fails_and_does_not_record_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-incomplete-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}],",
+        "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n"
+    );
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_incomplete".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.failed")
+    }));
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn completed_chat_stream_without_usage_records_prompt_and_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-complete-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    chat_stream_to_responses(
+        upstream_response_with_body(b"data: [DONE]\n\n".to_vec()),
+        "resp_complete".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_complete".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]
@@ -869,6 +1089,7 @@ async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -894,6 +1115,7 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;

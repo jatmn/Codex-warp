@@ -156,12 +156,6 @@ fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
 }
 
 #[test]
-fn initialize_state_keeps_default_proxy_stateless() {
-    let state = initialize_state(AppConfig::default()).expect("initialize default state");
-    assert!(state.store.is_none());
-}
-
-#[test]
 fn destination_override_wins_after_overlay_replay() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-destination-overlay-{}",
@@ -190,12 +184,22 @@ fn destination_override_wins_after_overlay_replay() {
     config.webui.enabled = true;
     config.webui.db_path = db_path;
     config.provider.base_url = "https://toml.example/v1".to_string();
-    let state = initialize_state(config).expect("initialize state");
-    state.write_config().provider.base_url = "https://cli.example/v1".to_string();
-    assert_eq!(
-        state.read_config().provider.base_url,
-        "https://cli.example/v1"
-    );
+    store.apply_overlays(&mut config).expect("replay overlay");
+    apply_destination_override(&mut config, Some("https://cli.example/v1".to_string()));
+    assert_eq!(config.provider.base_url, "https://cli.example/v1");
 
     std::fs::remove_dir_all(dir).expect("remove test directory");
+}
+
+#[test]
+fn webui_requires_loopback_unless_remote_access_is_explicitly_enabled() {
+    let loopback: std::net::SocketAddr = "127.0.0.1:8787".parse().unwrap();
+    let remote: std::net::SocketAddr = "0.0.0.0:8787".parse().unwrap();
+    assert!(ensure_webui_bind(true, false, false, &loopback).is_ok());
+    assert!(ensure_webui_bind(true, false, true, &loopback).is_ok());
+    assert!(ensure_webui_bind(true, false, false, &remote).is_err());
+    assert!(ensure_webui_bind(true, false, true, &remote).is_err());
+    assert!(ensure_webui_bind(true, true, false, &remote).is_ok());
+    assert!(ensure_webui_bind(true, true, true, &remote).is_ok());
+    assert!(ensure_webui_bind(false, false, false, &remote).is_ok());
 }

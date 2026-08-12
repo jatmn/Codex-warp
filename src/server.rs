@@ -19,6 +19,7 @@ use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
+use tracing::warn;
 
 use crate::config::Backend;
 use crate::config::ContinueGuardMode;
@@ -35,6 +36,7 @@ use crate::store::Store;
 use crate::upstream::proxy_chat_responses;
 use crate::upstream::proxy_native_responses;
 use crate::version::AGENT_VERSION;
+use crate::webui;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -81,6 +83,15 @@ struct Args {
 
     #[arg(long, help = "Max automatic follow-ups per prompt cache key")]
     continue_guard_max_followups: Option<u8>,
+
+    #[arg(long, help = "Disable the Web UI")]
+    no_webui: bool,
+
+    #[arg(long, help = "SQLite database path for Web UI overlays and analytics")]
+    webui_db: Option<PathBuf>,
+
+    #[arg(long, help = "Disable SQLite overlays and usage analytics")]
+    no_webui_store: bool,
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
@@ -118,32 +129,83 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     if let Some(max_followups) = args.continue_guard_max_followups {
         config.continue_guard.max_followups = max_followups;
     }
+    if args.no_webui {
+        config.webui.enabled = false;
+    }
+    if let Some(db_path) = args.webui_db {
+        config.webui.db_path = db_path;
+    }
 
-    let state = initialize_state(config)?;
+    let webui_enabled = config.webui.enabled;
+    let management_token = if webui_enabled {
+        load_optional_webui_token(config.webui.auth_token_env.as_deref())?
+    } else {
+        None
+    };
+    let store = if args.no_webui_store {
+        None
+    } else {
+        let store = Store::open(&config.webui.db_path)
+            .with_context(|| format!("open webui store {}", config.webui.db_path.display()))?;
+        store.apply_overlays(&mut config)?;
+        Some(store)
+    };
+    let model_routes = store
+        .as_ref()
+        .map(|store| crate::models::seed_model_routes_from_config_and_store(&config, store))
+        .unwrap_or_default();
+
     // Stored state is configuration-layer input. Command-line flags remain
     // the final, per-invocation override even when a store is enabled.
-    if let Some(destination) = destination {
-        state.write_config().provider.base_url = destination;
-    }
-    let listen = state.read_config().listen.clone();
+    apply_destination_override(&mut config, destination);
+    let listen = config.listen.clone();
     let addr: SocketAddr = listen
         .parse()
         .with_context(|| format!("parse listen address {listen}"))?;
 
-    let app = Router::new()
+    ensure_webui_bind(
+        webui_enabled,
+        config.webui.allow_unauthenticated_remote_access,
+        management_token.is_some(),
+        &addr,
+    )?;
+
+    let state = AppState {
+        debug_log: DebugLog::new(&config.debug),
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(model_routes)),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        store,
+    };
+
+    let mut app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/responses", post(responses))
         .route("/v1/responses", post(responses))
         .route("/models", get(models))
-        .route("/v1/models", get(models))
-        .with_state(state);
+        .route("/v1/models", get(models));
+    if webui_enabled {
+        app = app.merge(webui::router(management_token));
+    }
+    let app = app.with_state(state);
 
     info!("listening on http://{addr}");
+    if webui_enabled {
+        info!("webui available at http://{addr}/ui/");
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn apply_destination_override(config: &mut crate::config::AppConfig, destination: Option<String>) {
+    if let Some(destination) = destination {
+        config.provider.base_url = destination;
+    }
 }
 
 fn initialize_state(mut config: crate::config::AppConfig) -> anyhow::Result<AppState> {
@@ -174,8 +236,54 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+fn is_loopback_addr(addr: &SocketAddr) -> bool {
+    match addr {
+        SocketAddr::V4(v4) => v4.ip().is_loopback(),
+        SocketAddr::V6(v6) => v6.ip().is_loopback(),
+    }
+}
+
+fn ensure_webui_bind(
+    webui_enabled: bool,
+    allow_unauthenticated_remote_access: bool,
+    authentication_enabled: bool,
+    addr: &SocketAddr,
+) -> anyhow::Result<()> {
+    if webui_enabled && !is_loopback_addr(addr) && !allow_unauthenticated_remote_access {
+        anyhow::bail!(
+            "webui remote access requires explicit configuration; bind to \
+             127.0.0.1/[::1], disable the Web UI with --no-webui, or set \
+             webui.allow_unauthenticated_remote_access = true only on a trusted network"
+        );
+    }
+    if webui_enabled && !is_loopback_addr(addr) && !authentication_enabled {
+        warn!(
+            "webui routes are exposed without authentication on {addr}; \
+             remote management is enabled only by explicit configuration"
+        );
+    } else if webui_enabled && !is_loopback_addr(addr) {
+        warn!(
+            "webui routes are exposed on {addr} with bearer authentication but no TLS; \
+             use only on a trusted network or behind a TLS reverse proxy"
+        );
+    }
+    Ok(())
+}
+
+fn load_optional_webui_token(env_name: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(env_name) = env_name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(None);
+    };
+    let token = std::env::var(env_name)
+        .with_context(|| format!("read optional Web UI auth token from {env_name}"))?;
+    if token.trim().is_empty() {
+        anyhow::bail!("Web UI auth token environment variable {env_name} is empty");
+    }
+    Ok(Some(token))
+}
+
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {
-    if provider_entries(&state.read_config()).is_empty() {
+    if provider_entries(&*state.read_config()).is_empty() {
         return no_provider_response();
     }
     if let Some(model) = body
