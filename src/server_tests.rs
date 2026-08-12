@@ -4,10 +4,13 @@ use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use reqwest::Client;
 use serde_json::json;
-use tokio::sync::RwLock;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::config::AppConfig;
 use crate::debug_log::DebugLog;
@@ -15,10 +18,13 @@ use crate::state::AppState;
 
 fn test_state(config: AppConfig) -> AppState {
     AppState {
-        config: Arc::new(std::sync::RwLock::new(config)),
+        config: Arc::new(RwLock::new(config)),
         client: Client::new(),
-        model_routes: Arc::new(RwLock::new(BTreeMap::new())),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        store: None,
     }
 }
 

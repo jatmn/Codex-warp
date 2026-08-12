@@ -41,6 +41,7 @@ fn rewrite_model_for_upstream_uses_manual_catalog_alias() {
             upstream_id: Some("kimi-k2.7-code".to_string()),
             display_name: None,
             description: None,
+            enabled: true,
         }],
         ..ProviderConfig::default()
     };
@@ -62,6 +63,7 @@ fn rewrite_model_for_upstream_uses_catalog_alias_for_review_model() {
             upstream_id: Some("kimi-k2.6".to_string()),
             display_name: None,
             description: None,
+            enabled: true,
         }],
         ..ProviderConfig::default()
     };
@@ -83,6 +85,7 @@ fn rewrite_model_for_upstream_preserves_prefixed_catalog_id_without_upstream_id(
             upstream_id: None,
             display_name: None,
             description: None,
+            enabled: true,
         }],
         ..ProviderConfig::default()
     };

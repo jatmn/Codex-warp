@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::Context;
 use axum::Json;
@@ -16,6 +17,7 @@ use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
 use serde_json::Value;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 
@@ -128,6 +130,9 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        store: None,
     };
 
     let app = Router::new()
