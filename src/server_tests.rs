@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 fn test_state(config: AppConfig) -> AppState {
     AppState {
-        config: Arc::new(config),
+        config: Arc::new(std::sync::RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(RwLock::new(BTreeMap::new())),
         debug_log: DebugLog::disabled(),
