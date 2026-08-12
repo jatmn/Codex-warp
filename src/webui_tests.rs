@@ -792,9 +792,22 @@ async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
 }
 
 #[tokio::test]
-async fn provider_identity_edit_drops_live_routes_when_refetch_fails() {
+async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
+
+    let app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "shared", "object": "model"}]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
     let state = test_state();
     {
@@ -807,29 +820,36 @@ async fn provider_identity_edit_drops_live_routes_when_refetch_fails() {
                 ..ProviderConfig::default()
             },
         );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: format!("http://{address}"),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
     }
     state
         .model_routes
         .write()
         .await
-        .insert("old-gateway-only-model".into(), "alpha".into());
+        .insert("shared".into(), "alpha".into());
 
     let _mutation = state.mutation_lock.lock().await;
     remove_provider_model_routes(&state, "alpha").await;
-    let result = refresh_model_routes_while_mutation_locked(
-        &state,
-        MutationRouteRefresh::RefetchOne,
-        Some("alpha"),
-    )
-    .await;
+    let result =
+        refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::RefetchAll, None)
+            .await;
 
     assert!(result.is_err(), "unreachable discovery URL must fail");
     assert!(
-        !state
+        state
             .model_routes
             .read()
             .await
-            .contains_key("old-gateway-only-model"),
-        "a changed provider identity must not retain routes discovered from its old gateway"
+            .get("shared")
+            .is_some_and(|owner| owner == "beta"),
+        "a healthy provider must immediately reclaim a live-only route after the old owner changes identity"
     );
+    server.abort();
 }

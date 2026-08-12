@@ -29,8 +29,9 @@ const USAGE_RETENTION_DAYS: i64 = 400;
 const MAX_USAGE_EVENTS: i64 = 100_000;
 const MAX_USAGE_IDENTIFIER_BYTES: usize = 512;
 /// Upstream usage is untrusted. This leaves headroom for every retained event
-/// to aggregate in SQLite without overflowing a signed 64-bit SUM.
-const MAX_USAGE_TOKENS_PER_EVENT: i64 = 1_000_000_000_000;
+/// to aggregate in SQLite *and* remain exactly representable by the Web UI's
+/// JavaScript `Number` values.
+const MAX_USAGE_TOKENS_PER_EVENT: i64 = 90_071_992_547;
 
 #[derive(Clone)]
 pub(crate) struct Store {

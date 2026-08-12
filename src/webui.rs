@@ -1034,13 +1034,14 @@ async fn update_provider(
     } else if snapshot.enabled && refresh_discovery {
         // Live-only routes describe the old discovery identity. Remove them
         // before refreshing so a failed fetch cannot send an old gateway's
-        // models to the newly edited provider. The refresh immediately reseeds
-        // catalog and overlay routes from the new configuration.
+        // models to the newly edited provider. Because routes retain only the
+        // winner for a colliding live-only slug, rebuild every provider so an
+        // unchanged provider can reclaim a removed route immediately.
         remove_provider_model_routes(&state, &id).await;
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
             &state,
-            models::MutationRouteRefresh::RefetchOne,
-            Some(&id),
+            models::MutationRouteRefresh::RefetchAll,
+            None,
         )
         .await
         {
