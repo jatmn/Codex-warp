@@ -884,3 +884,14 @@ fn record_completed_counts_prompt_without_usage_metadata() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn usage_identifiers_truncate_on_utf8_boundaries() {
+    let identifier = "é".repeat(257);
+
+    let truncated = truncate_usage_identifier(identifier);
+
+    assert!(truncated.len() <= MAX_USAGE_IDENTIFIER_BYTES);
+    assert!(truncated.is_char_boundary(truncated.len()));
+    assert_eq!(truncated, "é".repeat(256));
+}
