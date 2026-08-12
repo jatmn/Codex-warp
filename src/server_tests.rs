@@ -13,8 +13,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::config::AppConfig;
+use crate::config::ModelCatalogEntry;
 use crate::debug_log::DebugLog;
 use crate::state::AppState;
+use crate::store::Store;
 
 fn test_state(config: AppConfig) -> AppState {
     AppState {
@@ -96,4 +98,58 @@ fn args_parse_config_overrides_and_debug_flags() {
     assert!(args.continue_guard);
     assert_eq!(args.continue_guard_mode.as_deref(), Some("end_turn_false"));
     assert_eq!(args.continue_guard_max_followups, Some(2));
+}
+
+#[test]
+fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-server-store-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create test directory");
+    let db_path = dir.join("state.db");
+
+    let store = Store::open(&db_path).expect("open persisted state");
+    store
+        .set_model_enabled("alpha", "shared", true)
+        .expect("persist model overlay");
+    drop(store);
+
+    let mut config = AppConfig::default();
+    config.webui.db_path = db_path;
+    let mut provider = crate::config::ProviderConfig {
+        base_url: "https://alpha.example/v1".to_string(),
+        model_catalog_only: true,
+        ..crate::config::ProviderConfig::default()
+    };
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "shared".to_string(),
+        enabled: false,
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("alpha".to_string(), provider);
+
+    let state = initialize_state(config).expect("initialize state");
+    assert!(state.store.is_some());
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("alpha")
+            .expect("provider exists")
+            .model_is_enabled("shared")
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .blocking_read()
+            .get("shared")
+            .map(String::as_str),
+        Some("alpha")
+    );
+
+    std::fs::remove_dir_all(dir).expect("remove test directory");
 }
