@@ -36,12 +36,14 @@ pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
 ];
 
 pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let provider_list: Vec<_> = provider_entries(&state.config).into_iter().collect();
+    let config = state.read_config().clone();
+    let provider_list: Vec<_> = provider_entries(&config).into_iter().collect();
 
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
     let fetch_results = join_all(provider_list.into_iter().map(|(provider_id, provider)| {
         let state = state.clone();
+        let config = config.clone();
         let headers = headers.clone();
         async move {
             let mut provider_models = Vec::new();
@@ -60,9 +62,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
                         let body = response.bytes().await.unwrap_or_default();
                         if !status.is_success() {
                             provider_failures.push(format!("{provider_id}: HTTP {status}"));
-                        } else if let Some(models) =
-                            normalize_models(&body, provider, &state.config)
-                        {
+                        } else if let Some(models) = normalize_models(&body, provider, &config) {
                             provider_models.extend(models);
                         } else {
                             provider_failures
@@ -74,7 +74,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
             }
 
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(provider, &state.config));
+                provider_models.extend(manual_catalog_models(provider, &config));
             }
 
             (provider_id, provider, provider_models, provider_failures)
@@ -86,7 +86,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
     let mut routes = BTreeMap::new();
     let mut failures = Vec::new();
 
-    for (provider_id, provider) in provider_entries(&state.config) {
+    for (provider_id, provider) in provider_entries(&config) {
         register_catalog_routes_for_provider(&mut routes, provider_id, provider);
     }
 
@@ -94,7 +94,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         let provider_added = add_models_for_provider(
             &mut merged_models,
             &mut routes,
-            &state.config,
+            &config,
             &provider_id,
             &provider,
             provider_models,
@@ -115,7 +115,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
         );
     }
 
-    if state.config.config.hide_codex_builtin_models {
+    if config.config.hide_codex_builtin_models {
         append_hidden_codex_builtin_model_overrides(&mut merged_models);
     }
 

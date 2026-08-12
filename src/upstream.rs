@@ -40,7 +40,8 @@ pub(crate) async fn proxy_native_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    rewrite_model_for_upstream(&state.config, &selected.id, &selected.provider, &mut body);
+    let config = state.read_config().clone();
+    rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
     let body = normalize_responses_request(body, &selected.transform);
@@ -77,11 +78,11 @@ pub(crate) async fn proxy_chat_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    rewrite_model_for_upstream(&state.config, &selected.id, &selected.provider, &mut body);
+    let config = state.read_config().clone();
+    rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
-    let continue_guard =
-        ContinueGuardState::from_request(state.config.continue_guard.clone(), &body);
+    let continue_guard = ContinueGuardState::from_request(config.continue_guard.clone(), &body);
     let chat_transform = responses_to_chat(body, &selected.transform);
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
@@ -159,7 +160,7 @@ pub(crate) async fn proxy_chat_responses(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
-            state.config.tool_policy.clone(),
+            config.tool_policy.clone(),
             state.debug_log.clone(),
             request_log_id,
             continue_guard,
@@ -187,7 +188,7 @@ pub(crate) async fn proxy_chat_responses(
                 Json(chat_json_to_responses_with_policy(
                     value,
                     &chat_transform.custom_tool_names,
-                    &state.config.tool_policy,
+                    &config.tool_policy,
                 ))
                 .into_response()
             }
@@ -245,6 +246,7 @@ async fn send_native_responses(
     custom_tool_names: BTreeSet<String>,
     request_log_id: String,
 ) -> Response {
+    let config = state.read_config().clone();
     let request = match build_upstream_json_request(
         &state.client,
         url,
@@ -289,7 +291,7 @@ async fn send_native_responses(
         let body = Body::from_stream(native_stream_to_responses(
             upstream,
             custom_tool_names,
-            state.config.tool_policy.clone(),
+            config.tool_policy.clone(),
             state.debug_log.clone(),
             request_log_id,
             status.as_u16(),
@@ -328,15 +330,11 @@ async fn send_native_responses(
     );
 
     let body = if status.is_success()
-        && (!custom_tool_names.is_empty() || state.config.tool_policy.enabled)
+        && (!custom_tool_names.is_empty() || config.tool_policy.enabled)
     {
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(mut value) => {
-                morph_native_response_value(
-                    &mut value,
-                    &custom_tool_names,
-                    &state.config.tool_policy,
-                );
+                morph_native_response_value(&mut value, &custom_tool_names, &config.tool_policy);
                 Body::from(Bytes::from(value.to_string()))
             }
             Err(_) => Body::from(bytes),

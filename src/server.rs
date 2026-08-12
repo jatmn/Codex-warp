@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use anyhow::Context;
 use axum::Json;
@@ -15,7 +16,7 @@ use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 
 use crate::config::Backend;
@@ -124,9 +125,9 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
     let state = AppState {
         debug_log: DebugLog::new(&config.debug),
-        config: Arc::new(config),
+        config: Arc::new(RwLock::new(config)),
         client: Client::new(),
-        model_routes: Arc::new(RwLock::new(BTreeMap::new())),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
     };
 
     let app = Router::new()
@@ -150,7 +151,7 @@ async fn shutdown_signal() {
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {
-    if provider_entries(&state.config).is_empty() {
+    if provider_entries(&state.read_config()).is_empty() {
         return no_provider_response();
     }
     if let Some(model) = body
