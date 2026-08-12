@@ -532,6 +532,19 @@ fn authenticated_router_builds_without_panicking() {
 }
 
 #[tokio::test]
+async fn management_ui_responses_cannot_be_framed() {
+    let response = serve_index().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_SECURITY_POLICY),
+        Some(&header::HeaderValue::from_static("frame-ancestors 'none'"))
+    );
+    assert_eq!(
+        response.headers().get(header::X_FRAME_OPTIONS),
+        Some(&header::HeaderValue::from_static("DENY"))
+    );
+}
+
+#[tokio::test]
 async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
     use std::time::{SystemTime, UNIX_EPOCH};
 

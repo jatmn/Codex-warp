@@ -28,6 +28,9 @@ const DISTINCT_SESSION_COUNT_SQL: &str = "COUNT(DISTINCT CASE WHEN session_key I
 const USAGE_RETENTION_DAYS: i64 = 400;
 const MAX_USAGE_EVENTS: i64 = 100_000;
 const MAX_USAGE_IDENTIFIER_BYTES: usize = 512;
+/// Upstream usage is untrusted. This leaves headroom for every retained event
+/// to aggregate in SQLite without overflowing a signed 64-bit SUM.
+const MAX_USAGE_TOKENS_PER_EVENT: i64 = 1_000_000_000_000;
 
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -1188,7 +1191,7 @@ fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
 }
 
 fn non_negative_tokens(value: Option<i64>) -> i64 {
-    value.unwrap_or(0).max(0)
+    value.unwrap_or(0).clamp(0, MAX_USAGE_TOKENS_PER_EVENT)
 }
 
 pub(crate) fn usage_event_from_normalized(

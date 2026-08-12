@@ -1102,6 +1102,25 @@ fn record_completed_counts_prompt_without_usage_metadata() {
 }
 
 #[test]
+fn usage_events_cap_untrusted_token_counts_before_aggregation() {
+    let usage = serde_json::json!({
+        "input_tokens": i64::MAX,
+        "output_tokens": i64::MAX,
+        "total_tokens": i64::MAX,
+        "input_tokens_details": {"cached_tokens": i64::MAX},
+        "output_tokens_details": {"reasoning_tokens": i64::MAX}
+    });
+
+    let event = usage_event_from_normalized("alpha", "model", None, &usage);
+
+    assert_eq!(event.input_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.output_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.total_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.cached_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.reasoning_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+}
+
+#[test]
 fn usage_identifiers_truncate_on_utf8_boundaries() {
     let identifier = "é".repeat(257);
 

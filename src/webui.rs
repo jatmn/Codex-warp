@@ -114,8 +114,24 @@ async fn require_management_auth(
     }
 }
 
-async fn serve_index() -> Html<&'static str> {
-    Html(include_str!("webui_static/index.html"))
+async fn serve_index() -> impl IntoResponse {
+    (
+        management_ui_security_headers(),
+        Html(include_str!("webui_static/index.html")),
+    )
+}
+
+fn management_ui_security_headers() -> [(header::HeaderName, header::HeaderValue); 2] {
+    [
+        (
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static("frame-ancestors 'none'"),
+        ),
+        (
+            header::X_FRAME_OPTIONS,
+            header::HeaderValue::from_static("DENY"),
+        ),
+    ]
 }
 
 async fn serve_css() -> impl IntoResponse {
@@ -123,6 +139,8 @@ async fn serve_css() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
             (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+            (header::X_FRAME_OPTIONS, "DENY"),
         ],
         include_str!("webui_static/app.css"),
     )
@@ -136,6 +154,8 @@ async fn serve_theme_bootstrap() -> impl IntoResponse {
                 "application/javascript; charset=utf-8",
             ),
             (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+            (header::X_FRAME_OPTIONS, "DENY"),
         ],
         include_str!("webui_static/theme-bootstrap.js"),
     )
@@ -149,6 +169,8 @@ async fn serve_js() -> impl IntoResponse {
                 "application/javascript; charset=utf-8",
             ),
             (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+            (header::X_FRAME_OPTIONS, "DENY"),
         ],
         include_str!("webui_static/app.js"),
     )
