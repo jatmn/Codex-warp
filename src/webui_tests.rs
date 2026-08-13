@@ -30,6 +30,23 @@ fn test_state() -> AppState {
 }
 
 #[test]
+fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
+    let state = test_state();
+    let before = state
+        .config_revision
+        .load(std::sync::atomic::Ordering::Acquire);
+
+    invalidate_model_discovery(&state);
+
+    assert_eq!(
+        state
+            .config_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        before + 1
+    );
+}
+
+#[test]
 fn provider_persist_apply_to_preserves_api_key_when_not_set() {
     let mut provider = ProviderConfig {
         base_url: "https://example.test/v1".into(),

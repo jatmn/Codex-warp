@@ -840,13 +840,12 @@ fn upsert_model_catalog_entry(provider: &mut ProviderConfig, entry: ModelCatalog
     }
 }
 
-async fn finish_mutation(state: &AppState) -> Result<(), ApiError> {
+fn invalidate_model_discovery(state: &AppState) {
     // Model discovery works from a provider snapshot while it awaits upstream.
-    // Bump the revision only after a mutation has atomically updated config and
-    // persistence, so stale discovery results can never publish routes for old
-    // provider settings.
+    // Invalidate that snapshot as soon as persistence and config agree, before
+    // route refreshes await upstream, so an older discovery cannot publish
+    // routes for the newly edited provider configuration.
     state.config_revision.fetch_add(1, Ordering::AcqRel);
-    Ok(())
 }
 
 async fn list_providers(
@@ -972,12 +971,12 @@ async fn create_provider(
             .providers
             .insert(provider_id.clone(), provider.clone());
     }
+    invalidate_model_discovery(&state);
 
     if provider.enabled {
         sync_provider_routes_for_enabled(&state, &provider_id, true).await?;
     }
 
-    finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
         config
@@ -1030,6 +1029,7 @@ async fn update_provider(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clone_from(&snapshot);
     }
+    invalidate_model_discovery(&state);
 
     if snapshot.enabled != previous_enabled {
         sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
@@ -1055,7 +1055,6 @@ async fn update_provider(
         }
     }
 
-    finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
         configured_provider_entries(&config)
@@ -1099,9 +1098,9 @@ async fn delete_provider(
         let mut config = state.write_config();
         config.providers.remove(&id);
     }
+    invalidate_model_discovery(&state);
 
     sync_provider_routes_for_enabled(&state, &id, false).await?;
-    finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1130,10 +1129,10 @@ async fn set_provider_enabled(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.enabled = body.enabled;
     }
+    invalidate_model_discovery(&state);
 
     sync_provider_routes_for_enabled(&state, &id, body.enabled).await?;
 
-    finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
         configured_provider_entries(&config)
@@ -1194,10 +1193,10 @@ async fn add_model(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         upsert_model_catalog_entry(provider, entry.clone());
     }
+    invalidate_model_discovery(&state);
 
     sync_model_route(&state, &id, &entry, previous_upstream_id.as_deref()).await;
 
-    finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
         configured_provider_entries(&config)
@@ -1266,10 +1265,10 @@ async fn update_model(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         upsert_model_catalog_entry(provider, updated.clone());
     }
+    invalidate_model_discovery(&state);
 
     sync_model_route(&state, &id, &updated, previous_upstream_id.as_deref()).await;
 
-    finish_mutation(&state).await?;
     let provider = {
         let config = state.read_config();
         configured_provider_entries(&config)
@@ -1359,9 +1358,9 @@ async fn delete_model(
             provider.disable_model(&model_id);
         }
     }
+    invalidate_model_discovery(&state);
 
     remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
-    finish_mutation(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1433,6 +1432,7 @@ async fn set_model_enabled(
             provider.disable_model(&model_id);
         }
     }
+    invalidate_model_discovery(&state);
 
     if body.enabled {
         insert_model_route(&state, &id, &model_id, upstream_id.as_deref()).await;
@@ -1440,7 +1440,6 @@ async fn set_model_enabled(
         remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
     }
 
-    finish_mutation(&state).await?;
     let config = state.read_config();
     let provider = configured_provider_entries(&config)
         .into_iter()
