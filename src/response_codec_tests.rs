@@ -91,6 +91,7 @@ async fn native_failed_stream_does_not_record_usage() {
 #[tokio::test]
 async fn native_stream_semantic_error_becomes_response_failed() {
     let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
         "data: {\"error\":{\"message\":\"quota exceeded\"}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
     );
@@ -106,9 +107,11 @@ async fn native_stream_semantic_error_becomes_response_failed() {
     .collect::<Vec<_>>()
     .await;
 
-    assert_eq!(events.len(), 1, "the semantic error terminates the stream");
-    let event = String::from_utf8_lossy(events[0].as_ref().expect("stream item succeeds"));
+    assert_eq!(events.len(), 2, "the semantic error terminates the stream");
+    let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
     assert!(event.contains("response.failed"));
+    assert!(event.contains("resp_native"));
+    assert!(event.contains("\"status\":\"failed\""));
     assert!(event.contains("quota exceeded"));
 }
 

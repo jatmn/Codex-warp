@@ -166,7 +166,8 @@ pub(crate) async fn proxy_chat_responses(
         return error_response(status, text);
     }
 
-    if should_stream_upstream(stream_requested, status, upstream.headers()) {
+    let upstream_is_sse = should_stream_upstream(stream_requested, status, upstream.headers());
+    if upstream_is_sse {
         let response_id = generated_id("resp");
         let body = Body::from_stream(chat_stream_to_responses(
             upstream,
@@ -185,6 +186,13 @@ pub(crate) async fn proxy_chat_responses(
         );
         response
     } else {
+        if stream_requested {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "upstream accepted a streaming request but did not return an SSE response"
+                    .to_string(),
+            );
+        }
         match upstream.json::<Value>().await {
             Ok(value) => {
                 if let Some(message) = upstream_error_message(&value) {
@@ -322,7 +330,8 @@ async fn send_native_responses(
 
     let status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    if should_stream_upstream(stream_response, status, &upstream_headers) {
+    let upstream_is_sse = should_stream_upstream(stream_response, status, &upstream_headers);
+    if upstream_is_sse {
         let body = Body::from_stream(native_stream_to_responses(
             upstream,
             custom_tool_names,
@@ -336,6 +345,13 @@ async fn send_native_responses(
         *response.status_mut() = status;
         copy_content_type(&upstream_headers, response.headers_mut());
         return response;
+    }
+
+    if stream_response {
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "upstream accepted a streaming request but did not return an SSE response".to_string(),
+        );
     }
 
     let bytes = match upstream.bytes().await {
