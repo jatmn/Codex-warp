@@ -615,13 +615,33 @@ async fn insert_model_route_skips_disabled_provider() {
 #[test]
 fn router_builds_without_panicking() {
     let state = test_state();
-    let _router: axum::Router<AppState> = router(None).with_state(state);
+    let _router: axum::Router<AppState> = router(None, true).with_state(state);
 }
 
 #[test]
 fn authenticated_router_builds_without_panicking() {
     let state = test_state();
-    let _router: axum::Router<AppState> = router(Some("test-token".into())).with_state(state);
+    let _router: axum::Router<AppState> =
+        router(Some("test-token".into()), false).with_state(state);
+}
+
+#[test]
+fn unauthenticated_local_api_rejects_dns_rebinding_hosts() {
+    let local = Request::builder()
+        .header(header::HOST, "127.0.0.1:8787")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let localhost = Request::builder()
+        .header(header::HOST, "localhost:8787")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let attacker = Request::builder()
+        .header(header::HOST, "attacker.example:8787")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    assert!(request_host_is_loopback(&local));
+    assert!(request_host_is_loopback(&localhost));
+    assert!(!request_host_is_loopback(&attacker));
 }
 
 #[tokio::test]

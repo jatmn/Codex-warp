@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
 use bytes::Bytes;
+use futures_util::StreamExt;
 use serde_json::Value;
 use serde_json::json;
 
@@ -36,6 +37,26 @@ use crate::store::UsageRecorder;
 use crate::transform::native_custom_tool_names;
 use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
+
+const NON_SSE_STREAM_BODY_MAX_BYTES: usize = 16 * 1024 * 1024;
+const NON_SSE_STREAM_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn bounded_non_sse_stream_body(upstream: reqwest::Response) -> Result<Bytes, String> {
+    tokio::time::timeout(NON_SSE_STREAM_BODY_TIMEOUT, async move {
+        let mut body = Vec::new();
+        let mut stream = upstream.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| err.to_string())?;
+            if body.len().saturating_add(chunk.len()) > NON_SSE_STREAM_BODY_MAX_BYTES {
+                return Err("upstream non-SSE streaming response exceeded 16 MiB".to_string());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(body))
+    })
+    .await
+    .map_err(|_| "upstream non-SSE streaming response timed out".to_string())?
+}
 
 pub(crate) async fn proxy_native_responses(
     state: AppState,
@@ -187,7 +208,17 @@ pub(crate) async fn proxy_chat_responses(
         );
         response
     } else {
-        match upstream.json::<Value>().await {
+        let parsed = if stream_requested {
+            bounded_non_sse_stream_body(upstream)
+                .await
+                .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|err| err.to_string()))
+        } else {
+            upstream
+                .json::<Value>()
+                .await
+                .map_err(|err| err.to_string())
+        };
+        match parsed {
             Ok(value) => {
                 // Gateways may wrap chat-completion payloads in `data`; use the
                 // same normalized payload for validation, analytics, and the
@@ -204,6 +235,12 @@ pub(crate) async fn proxy_chat_responses(
                         &message,
                     );
                     return error_response(StatusCode::BAD_GATEWAY, message);
+                }
+                if !chat_response_reports_completed(payload) {
+                    return error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "upstream returned an invalid chat completion payload".to_string(),
+                    );
                 }
                 if stream_requested {
                     return error_response(
@@ -247,13 +284,13 @@ pub(crate) async fn proxy_chat_responses(
                         "status": StatusCode::BAD_GATEWAY.as_u16(),
                         "success": false
                     }),
-                    &err.to_string(),
+                    &err,
                 );
                 let message = if stream_requested {
                     "upstream accepted a streaming request but did not return an SSE response"
                         .to_string()
                 } else {
-                    err.to_string()
+                    err
                 };
                 error_response(StatusCode::BAD_GATEWAY, message)
             }
@@ -358,7 +395,11 @@ async fn send_native_responses(
         return response;
     }
 
-    let bytes = match upstream.bytes().await {
+    let bytes = match if stream_response && status.is_success() {
+        bounded_non_sse_stream_body(upstream).await
+    } else {
+        upstream.bytes().await.map_err(|err| err.to_string())
+    } {
         Ok(bytes) => bytes,
         Err(err) => {
             state.debug_log.log_error(
@@ -368,9 +409,9 @@ async fn send_native_responses(
                     "status": StatusCode::BAD_GATEWAY.as_u16(),
                     "success": false
                 }),
-                &err.to_string(),
+                &err,
             );
-            return error_response(StatusCode::BAD_GATEWAY, err.to_string());
+            return error_response(StatusCode::BAD_GATEWAY, err);
         }
     };
     let usage = response_usage_from_bytes(&bytes);
@@ -452,11 +493,25 @@ fn native_response_payload(value: &Value) -> &Value {
     value.get("response").unwrap_or(value)
 }
 
+fn chat_response_reports_completed(value: &Value) -> bool {
+    value.as_object().is_some()
+        && upstream_error_message(value).is_none()
+        && value.get("choices").and_then(Value::as_array).is_some()
+}
+
 /// A 2xx response can still contain a provider-declared failure. Missing
 /// `status` is accepted for minimal successful Responses payloads, but never
 /// for an OpenAI-style error envelope.
 fn response_reports_completed(value: &Value) -> bool {
-    upstream_error_message(value).is_none()
+    let valid_shape = value.as_object().is_some()
+        && (value
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+            || value.get("object").and_then(Value::as_str) == Some("response")
+            || value.get("output").and_then(Value::as_array).is_some());
+    valid_shape
+        && upstream_error_message(value).is_none()
         && value
             .get("status")
             .and_then(Value::as_str)

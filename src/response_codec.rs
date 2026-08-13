@@ -1458,7 +1458,9 @@ fn sse(event: &str, data: Value) -> String {
 }
 
 pub(crate) fn sse_data(frame: &str) -> Option<String> {
-    let data = frame
+    // Event streams permit CRLF, LF, or CR line endings.
+    let normalized = frame.replace("\r\n", "\n").replace('\r', "\n");
+    let data = normalized
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim_start)
@@ -1474,13 +1476,14 @@ pub(crate) fn next_sse_frame_bytes(buffer: &[u8]) -> Option<(usize, usize)> {
             .position(|window| window == needle)
     }
 
-    match (find_bytes(buffer, b"\n\n"), find_bytes(buffer, b"\r\n\r\n")) {
-        (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
-        (Some(lf), Some(_)) => Some((lf, 2)),
-        (Some(lf), None) => Some((lf, 2)),
-        (None, Some(crlf)) => Some((crlf, 4)),
-        (None, None) => None,
-    }
+    [
+        find_bytes(buffer, b"\n\n").map(|index| (index, 2)),
+        find_bytes(buffer, b"\r\n\r\n").map(|index| (index, 4)),
+        find_bytes(buffer, b"\r\r").map(|index| (index, 2)),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|(index, _)| *index)
 }
 
 #[cfg(test)]

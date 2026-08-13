@@ -169,7 +169,8 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         .route("/models", get(models))
         .route("/v1/models", get(models));
     if webui_enabled {
-        app = app.merge(webui::router(management_token));
+        let require_local_host = management_token.is_none() && is_loopback_addr(&addr);
+        app = app.merge(webui::router(management_token, require_local_host));
     }
     let app = app.with_state(state);
 

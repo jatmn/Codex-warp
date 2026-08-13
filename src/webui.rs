@@ -47,18 +47,21 @@ struct ManagementAuth {
     token: Arc<str>,
 }
 
-pub(crate) fn router(management_token: Option<String>) -> Router<AppState> {
+pub(crate) fn router(
+    management_token: Option<String>,
+    require_local_host: bool,
+) -> Router<AppState> {
     Router::new()
         .route("/ui", get(serve_index))
         .route("/ui/", get(serve_index))
         .route("/ui/app.css", get(serve_css))
         .route("/ui/theme-bootstrap.js", get(serve_theme_bootstrap))
         .route("/ui/app.js", get(serve_js))
-        .nest("/api", api_router(management_token))
+        .nest("/api", api_router(management_token, require_local_host))
 }
 
-fn api_router(management_token: Option<String>) -> Router<AppState> {
-    let router = Router::new()
+fn api_router(management_token: Option<String>, require_local_host: bool) -> Router<AppState> {
+    let mut router = Router::new()
         .route("/providers", get(list_providers).post(create_provider))
         .route(
             "/providers/{id}",
@@ -77,15 +80,41 @@ fn api_router(management_token: Option<String>) -> Router<AppState> {
         .route("/provider-templates", get(list_provider_templates))
         .route("/analytics", get(get_analytics));
     if let Some(token) = management_token {
-        router.layer(middleware::from_fn_with_state(
+        router = router.layer(middleware::from_fn_with_state(
             ManagementAuth {
                 token: Arc::from(token),
             },
             require_management_auth,
-        ))
-    } else {
-        router
+        ));
+    } else if require_local_host {
+        // Loopback binding is not sufficient against browser DNS rebinding:
+        // reject attacker-controlled Host names before they reach mutations.
+        router = router.layer(middleware::from_fn(require_loopback_host));
     }
+    router
+}
+
+async fn require_loopback_host(request: Request, next: Next) -> Response {
+    if request_host_is_loopback(&request) {
+        next.run(request).await
+    } else {
+        StatusCode::MISDIRECTED_REQUEST.into_response()
+    }
+}
+
+fn request_host_is_loopback(request: &Request) -> bool {
+    request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
+        .is_some_and(|authority| {
+            let host = authority.host().trim_end_matches('.');
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 async fn require_management_auth(
@@ -1485,9 +1514,6 @@ async fn get_analytics(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if let Some(provider_id) = provider {
-        validate_provider_id(provider_id)?;
-    }
     let summary = store
         .analytics(range, provider, model)
         .map_err(|err| ApiError::internal(err.to_string()))?;

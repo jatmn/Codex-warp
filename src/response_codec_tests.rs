@@ -35,6 +35,8 @@ fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
 fn next_sse_frame_accepts_lf_and_crlf() {
     assert_eq!(next_sse_frame_bytes(b"data: one\n\nrest"), Some((9, 2)));
     assert_eq!(next_sse_frame_bytes(b"data: one\r\n\r\nrest"), Some((9, 4)));
+    assert_eq!(next_sse_frame_bytes(b"data: one\r\rrest"), Some((9, 2)));
+    assert_eq!(sse_data("event: message\rdata: one"), Some("one".into()));
 }
 
 #[test]

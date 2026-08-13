@@ -87,7 +87,19 @@ fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
     })));
     assert!(!response_reports_completed(&json!({"status": "failed"})));
     assert!(response_reports_completed(&json!({"id": "resp_123"})));
-    assert!(response_reports_completed(&json!({"status": "completed"})));
+    assert!(response_reports_completed(&json!({
+        "id": "resp_123",
+        "status": "completed"
+    })));
+    assert!(!response_reports_completed(&json!({})));
+    assert!(!response_reports_completed(&Value::Null));
+}
+
+#[test]
+fn chat_completion_requires_choices_array() {
+    assert!(chat_response_reports_completed(&json!({"choices": []})));
+    assert!(!chat_response_reports_completed(&json!({})));
+    assert!(!chat_response_reports_completed(&Value::Null));
 }
 
 #[test]

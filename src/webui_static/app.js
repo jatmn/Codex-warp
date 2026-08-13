@@ -19,6 +19,7 @@
   let selectedTemplateCatalog = [];
   let analyticsProviderIds = [];
   let analyticsModelIds = [];
+  let analyticsModelProvider = null;
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
@@ -170,23 +171,40 @@
   }
 
   async function refreshModelRoutes() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      await fetch("/v1/models");
+      await fetch("/v1/models", { signal: controller.signal });
+      return true;
     } catch {
       // Best-effort: populate server model_routes for discovered upstream models.
+      return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   async function loadProviders({ refreshRoutes = true } = {}) {
     status("Loading providers…");
-    // Mutations that already refreshed server routes should skip this — GET
-    // /v1/models rediscovers every provider and can take seconds.
-    if (refreshRoutes) {
-      await refreshModelRoutes();
-    }
+    // Local persisted/configured providers must render before live discovery:
+    // a stalled upstream must not block the controls needed to disable it.
     providers = await api("/providers");
     renderProviders();
     fillAnalyticsFilters();
+    if (refreshRoutes) {
+      // Mutations refresh routes server-side. Initial discovery is best-effort
+      // background enrichment and republishes the provider view when complete.
+      void refreshModelRoutes().then(async (refreshed) => {
+        if (!refreshed) return;
+        try {
+          providers = await api("/providers");
+          renderProviders();
+          fillAnalyticsFilters();
+        } catch {
+          // The already-rendered local management view remains usable.
+        }
+      });
+    }
   }
 
   function renderProviders() {
@@ -687,7 +705,8 @@
         modelSel.append(o);
       }
     }
-    for (const id of prov ? [] : analyticsModelIds) {
+    const inventoryMatches = analyticsModelProvider === provSel.value;
+    for (const id of inventoryMatches ? analyticsModelIds : []) {
       if (!seen.has(id)) {
         seen.add(id);
         const o = document.createElement("option");
@@ -738,6 +757,7 @@
         analyticsModelIds = (data.by_model || [])
           .map((row) => row.key)
           .filter(Boolean);
+        analyticsModelProvider = provider;
       }
       fillAnalyticsFilters();
       analyticsSnapshot = {
