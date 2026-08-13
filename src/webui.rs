@@ -304,6 +304,9 @@ struct ModelView {
     display_name: Option<String>,
     upstream_id: Option<String>,
     description: Option<String>,
+    /// The model's persisted setting. Provider enablement is represented by
+    /// `ProviderView.enabled` and must not be folded into this value: clients
+    /// use model views as partial-update input.
     enabled: bool,
     managed: bool,
     catalog: bool,
@@ -601,7 +604,7 @@ fn build_model_views(
             display_name: entry.display_name.clone(),
             upstream_id: entry.upstream_id.clone(),
             description: entry.description.clone(),
-            enabled: provider.enabled && provider.model_is_enabled(&entry.id),
+            enabled: provider.model_is_enabled(&entry.id),
             managed: managed_provider,
             catalog: true,
         });
@@ -639,7 +642,7 @@ fn build_model_views(
             display_name: None,
             upstream_id: None,
             description: None,
-            enabled: provider.enabled && provider.model_is_enabled(routed_id),
+            enabled: provider.model_is_enabled(routed_id),
             managed: false,
             catalog: false,
         });
@@ -1446,7 +1449,7 @@ async fn set_model_enabled(
         .find(|(provider_id, _)| *provider_id == id)
         .map(|(_, provider)| provider)
         .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-    let enabled = provider.enabled && provider.model_is_enabled(&model_id);
+    let enabled = provider.model_is_enabled(&model_id);
     let catalog_entry = provider
         .model_catalog
         .iter()

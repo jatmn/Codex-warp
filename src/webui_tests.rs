@@ -324,7 +324,7 @@ fn build_model_views_skips_routed_upstream_alias_for_catalog_entry() {
 }
 
 #[test]
-fn build_model_views_marks_models_disabled_when_provider_disabled() {
+fn build_model_views_keeps_intrinsic_model_enablement_when_provider_disabled() {
     let state = test_state();
     let mut provider = ProviderConfig {
         base_url: "https://example.test/v1".into(),
@@ -337,7 +337,22 @@ fn build_model_views_marks_models_disabled_when_provider_disabled() {
         ..ModelCatalogEntry::default()
     });
     let models = build_model_views(&state, "alpha", &provider, &["routed".into()]);
-    assert!(models.iter().all(|model| !model.enabled));
+    let catalog = models
+        .iter()
+        .find(|model| model.id == "catalog-model")
+        .expect("catalog model is listed");
+    assert!(
+        catalog.enabled,
+        "provider state must not overwrite model state"
+    );
+    let routed = models
+        .iter()
+        .find(|model| model.id == "routed")
+        .expect("routed model is listed");
+    assert!(
+        routed.enabled,
+        "provider state must not overwrite model state"
+    );
 }
 
 #[tokio::test]
