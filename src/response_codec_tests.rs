@@ -89,6 +89,30 @@ async fn native_failed_stream_does_not_record_usage() {
 }
 
 #[tokio::test]
+async fn native_stream_semantic_error_becomes_response_failed() {
+    let body = concat!(
+        "data: {\"error\":{\"message\":\"quota exceeded\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_semantic_error".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 1, "the semantic error terminates the stream");
+    let event = String::from_utf8_lossy(events[0].as_ref().expect("stream item succeeds"));
+    assert!(event.contains("response.failed"));
+    assert!(event.contains("quota exceeded"));
+}
+
+#[tokio::test]
 async fn native_completed_with_failed_status_does_not_record_usage() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-native-failed-status-{}",

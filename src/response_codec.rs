@@ -192,7 +192,6 @@ pub(crate) fn native_stream_to_responses(
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let mut pending = Vec::new();
-        let mut debug_pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut pending_usage: Option<Value> = None;
         let mut completed = false;
@@ -200,35 +199,6 @@ pub(crate) fn native_stream_to_responses(
 
         while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
-            if custom_tool_names.is_empty() && !tool_policy.enabled {
-                let just_completed = log_native_usage_from_sse_chunk(
-                    &chunk,
-                    &mut debug_pending,
-                    &debug_log,
-                    &request_log_id,
-                    status,
-                    &mut pending_usage,
-                );
-                completed |= just_completed;
-                if just_completed {
-                    if let Some(recorder) = usage_recorder.take() {
-                        recorder.record_completed(pending_usage.as_ref());
-                    }
-                }
-                if debug_pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                    yield Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        SSE_FRAME_BUFFER_EXCEEDED_MESSAGE,
-                    ));
-                    return;
-                }
-                if debug_log.include_stream_bodies {
-                    log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
-                }
-                yield Ok(chunk);
-                continue;
-            }
-
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
                 yield Err(std::io::Error::new(
@@ -247,6 +217,15 @@ pub(crate) fn native_stream_to_responses(
                         return;
                     }
                 };
+                if let Some(message) = native_sse_error_message(&frame) {
+                    let failed = sse("response.failed", json!({
+                        "type": "response.failed",
+                        "response": {"status": "failed", "error": {"message": message}}
+                    }));
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
+                    yield Ok(Bytes::from(failed));
+                    return;
+                }
                 log_native_usage_from_sse_frame(
                     &frame,
                     &debug_log,
@@ -289,6 +268,12 @@ pub(crate) fn native_stream_to_responses(
             yield Ok(chunk);
         }
     }
+}
+
+fn native_sse_error_message(frame: &str) -> Option<String> {
+    let data = sse_data(frame)?;
+    let value = serde_json::from_str::<Value>(&data).ok()?;
+    upstream_error_message(&value)
 }
 
 pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
