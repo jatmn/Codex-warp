@@ -292,6 +292,7 @@ pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
         .unwrap_or(Value::Null)
 }
 
+#[cfg(test)]
 pub(crate) fn log_native_usage_from_sse_chunk(
     chunk: &Bytes,
     pending: &mut Vec<u8>,
