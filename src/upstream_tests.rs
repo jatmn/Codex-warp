@@ -97,6 +97,20 @@ fn semantic_completion_requires_a_json_response_payload() {
 }
 
 #[test]
+fn nested_native_response_drives_error_and_completion_validation() {
+    let failed = json!({"response": {
+        "status": "failed",
+        "error": {"message": "quota exceeded"}
+    }});
+    let payload = native_response_payload(&failed);
+    assert_eq!(
+        semantic_error_message_for_success(reqwest::StatusCode::OK, Some(payload)),
+        Some("quota exceeded".to_string())
+    );
+    assert!(!response_reports_completed(payload));
+}
+
+#[test]
 fn semantic_error_normalization_applies_only_to_successful_native_responses() {
     let error = json!({"error": {"message": "rate limited"}});
 
@@ -177,6 +191,49 @@ async fn native_stream_request_preserves_upstream_json_error_status_and_body() {
         serde_json::from_slice::<Value>(&body).expect("response body is JSON"),
         json!({"error": {"message": "rate limited"}})
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_stream_json_error_surfaces_provider_message_before_framing_error() {
+    let app = axum::Router::new().route(
+        "/responses",
+        axum::routing::post(|| async {
+            (
+                reqwest::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                axum::Json(json!({"error": {"message": "quota exceeded"}})),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+
+    let response = send_native_responses(
+        test_state(),
+        &ProviderConfig::default(),
+        HeaderMap::new(),
+        format!("http://{addr}/responses"),
+        json!({"model": "test-model", "stream": true}),
+        true,
+        BTreeSet::new(),
+        "dbg_native_json_error".to_string(),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body reads");
+    assert!(String::from_utf8_lossy(&body).contains("quota exceeded"));
     server.abort();
 }
 

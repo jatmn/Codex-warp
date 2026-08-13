@@ -87,8 +87,15 @@ pub(crate) fn chat_stream_to_responses(
                     completed = true;
                     break 'upstream;
                 }
-                let Ok(value) = serde_json::from_str::<Value>(&data) else {
-                    continue;
+                let value = match serde_json::from_str::<Value>(&data) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        yield Ok(Bytes::from(chat_failed_event(
+                            &response_id,
+                            "upstream chat stream contained invalid JSON",
+                        )));
+                        return;
+                    }
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {

@@ -3,11 +3,21 @@
 
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
-  let managementToken = sessionStorage.getItem(TOKEN_KEY) || "";
+  function readStoredToken() {
+    try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+  }
+  function storeToken(token) {
+    try { sessionStorage.setItem(TOKEN_KEY, token); } catch { /* optional persistence */ }
+  }
+  function clearStoredToken() {
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* optional persistence */ }
+  }
+  let managementToken = readStoredToken();
   let managementTokenPrompt = null;
   let providers = [];
   let providerTemplates = [];
   let selectedTemplateCatalog = [];
+  let analyticsProviderIds = [];
   let analyticsModelIds = [];
   let analyticsTimer = null;
   let analyticsInFlight = false;
@@ -52,7 +62,7 @@
         .then((token) => {
           if (token) {
             managementToken = token;
-            sessionStorage.setItem(TOKEN_KEY, token);
+            storeToken(token);
           }
           return token;
         })
@@ -87,7 +97,7 @@
       // Do not let a stale in-flight request erase a newer valid credential.
       if (res.status === 401 && managementToken === tokenUsed) {
         managementToken = "";
-        sessionStorage.removeItem(TOKEN_KEY);
+        clearStoredToken();
       }
       throw new Error(data?.error || res.statusText);
     }
@@ -265,7 +275,10 @@
 
       const actions = document.createElement("div");
       actions.className = "provider-actions";
-      actions.append(editBtn, addModelBtn, delBtn);
+      actions.append(editBtn, addModelBtn);
+      // The primary provider is process/bootstrap configuration and the API
+      // intentionally does not support deleting that identity.
+      if (p.id !== "default") actions.append(delBtn);
 
       head.append(title, sw.wrap, actions, expandBtn);
       renderModels(p, models);
@@ -651,6 +664,14 @@
       o.textContent = p.display_name || p.id;
       provSel.append(o);
     }
+    for (const id of analyticsProviderIds) {
+      if (![...provSel.options].some((option) => option.value === id)) {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = id;
+        provSel.append(o);
+      }
+    }
     provSel.value = cur;
     const modelSel = $("#analytics-model");
     const mcur = modelSel.value;
@@ -666,7 +687,7 @@
         modelSel.append(o);
       }
     }
-    for (const id of analyticsModelIds) {
+    for (const id of prov ? [] : analyticsModelIds) {
       if (!seen.has(id)) {
         seen.add(id);
         const o = document.createElement("option");
@@ -681,6 +702,7 @@
   let analyticsPending = { queued: false };
 
   $("#analytics-provider").addEventListener("change", () => {
+    $("#analytics-model").value = "";
     fillAnalyticsFilters();
     loadAnalytics();
   });
@@ -702,6 +724,13 @@
     if (model) qs.set("model", model);
     try {
       const data = await api(`/analytics?${qs}`);
+      // Preserve provider identities from retained usage even after their live
+      // configuration is removed. Filtered responses omit this breakdown.
+      if (!provider) {
+        analyticsProviderIds = (data.by_provider || [])
+          .map((row) => row.key)
+          .filter(Boolean);
+      }
       // A model-filtered response deliberately omits the by-model breakdown.
       // Keep the independent option inventory so the active filter survives
       // this response and subsequent polling.

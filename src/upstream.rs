@@ -187,13 +187,6 @@ pub(crate) async fn proxy_chat_responses(
         );
         response
     } else {
-        if stream_requested {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "upstream accepted a streaming request but did not return an SSE response"
-                    .to_string(),
-            );
-        }
         match upstream.json::<Value>().await {
             Ok(value) => {
                 // Gateways may wrap chat-completion payloads in `data`; use the
@@ -211,6 +204,13 @@ pub(crate) async fn proxy_chat_responses(
                         &message,
                     );
                     return error_response(StatusCode::BAD_GATEWAY, message);
+                }
+                if stream_requested {
+                    return error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "upstream accepted a streaming request but did not return an SSE response"
+                            .to_string(),
+                    );
                 }
                 let normalized_usage = chat_usage_to_responses_usage(payload.get("usage"));
                 state.debug_log.log_response(
@@ -249,7 +249,13 @@ pub(crate) async fn proxy_chat_responses(
                     }),
                     &err.to_string(),
                 );
-                error_response(StatusCode::BAD_GATEWAY, err.to_string())
+                let message = if stream_requested {
+                    "upstream accepted a streaming request but did not return an SSE response"
+                        .to_string()
+                } else {
+                    err.to_string()
+                };
+                error_response(StatusCode::BAD_GATEWAY, message)
             }
         }
     }
@@ -352,15 +358,6 @@ async fn send_native_responses(
         return response;
     }
 
-    // A streaming request only requires SSE after the upstream has accepted it.
-    // Transport-level failures retain their original status and body below.
-    if stream_response && status.is_success() {
-        return error_response(
-            StatusCode::BAD_GATEWAY,
-            "upstream accepted a streaming request but did not return an SSE response".to_string(),
-        );
-    }
-
     let bytes = match upstream.bytes().await {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -378,7 +375,8 @@ async fn send_native_responses(
     };
     let usage = response_usage_from_bytes(&bytes);
     let response_body = serde_json::from_slice::<Value>(&bytes).ok();
-    if let Some(message) = semantic_error_message_for_success(status, response_body.as_ref()) {
+    let semantic_body = response_body.as_ref().map(native_response_payload);
+    if let Some(message) = semantic_error_message_for_success(status, semantic_body) {
         state.debug_log.log_error(
             json!({
                 "event": "upstream_response",
@@ -389,6 +387,14 @@ async fn send_native_responses(
             &message,
         );
         return error_response(StatusCode::BAD_GATEWAY, message);
+    }
+    // Once a successful JSON error envelope has been surfaced above, every
+    // other successful non-SSE response is a representation mismatch.
+    if stream_response && status.is_success() {
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "upstream accepted a streaming request but did not return an SSE response".to_string(),
+        );
     }
     state.debug_log.log_response(
         json!({
@@ -402,9 +408,7 @@ async fn send_native_responses(
     );
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
-        && response_body
-            .as_ref()
-            .is_some_and(response_reports_completed)
+        && semantic_body.is_some_and(response_reports_completed)
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions
@@ -442,6 +446,10 @@ fn semantic_error_message_for_success(
         .is_success()
         .then(|| response_body.and_then(upstream_error_message))
         .flatten()
+}
+
+fn native_response_payload(value: &Value) -> &Value {
+    value.get("response").unwrap_or(value)
 }
 
 /// A 2xx response can still contain a provider-declared failure. Missing
