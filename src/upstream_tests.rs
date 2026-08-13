@@ -24,7 +24,7 @@ fn openrouter_config() -> AppConfig {
 }
 
 #[test]
-fn native_forwarding_streams_only_successful_stream_requests() {
+fn streaming_requires_successful_sse_upstream_response() {
     let sse_headers = axum::http::HeaderMap::from_iter([(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("text/event-stream; charset=utf-8"),
@@ -51,7 +51,7 @@ fn native_forwarding_streams_only_successful_stream_requests() {
     ));
     assert!(
         !should_stream_upstream(true, reqwest::StatusCode::OK, &json_headers),
-        "a 2xx JSON error body must reach semantic-error handling instead of the SSE path"
+        "a 2xx JSON body must reach normal response handling instead of the SSE path"
     );
 }
 

@@ -166,7 +166,7 @@ pub(crate) async fn proxy_chat_responses(
         return error_response(status, text);
     }
 
-    if stream_requested {
+    if should_stream_upstream(stream_requested, status, upstream.headers()) {
         let response_id = generated_id("resp");
         let body = Body::from_stream(chat_stream_to_responses(
             upstream,
