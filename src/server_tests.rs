@@ -170,6 +170,13 @@ fn webui_store_requires_enabled_ui_and_no_opt_out() {
 }
 
 #[test]
+fn blank_webui_auth_environment_name_fails_closed() {
+    assert!(load_optional_webui_token(Some("")).is_err());
+    assert!(load_optional_webui_token(Some("   ")).is_err());
+    assert_eq!(load_optional_webui_token(None).unwrap(), None);
+}
+
+#[test]
 fn destination_override_wins_after_overlay_replay() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-destination-overlay-{}",

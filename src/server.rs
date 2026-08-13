@@ -281,9 +281,13 @@ fn ensure_webui_bind(
 }
 
 fn load_optional_webui_token(env_name: Option<&str>) -> anyhow::Result<Option<String>> {
-    let Some(env_name) = env_name.map(str::trim).filter(|name| !name.is_empty()) else {
+    let Some(env_name) = env_name else {
         return Ok(None);
     };
+    let env_name = env_name.trim();
+    if env_name.is_empty() {
+        anyhow::bail!("Web UI auth token environment variable name is empty");
+    }
     let token = std::env::var(env_name)
         .with_context(|| format!("read optional Web UI auth token from {env_name}"))?;
     if token.trim().is_empty() {

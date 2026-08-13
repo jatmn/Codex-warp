@@ -499,11 +499,10 @@ fn chat_response_reports_completed(value: &Value) -> bool {
         && value
             .get("choices")
             .and_then(Value::as_array)
-            .is_some_and(|choices| {
-                choices
-                    .iter()
-                    .any(|choice| choice.get("message").and_then(Value::as_object).is_some())
-            })
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(Value::as_object)
+            .is_some()
 }
 
 /// A 2xx response can still contain a provider-declared failure. Missing

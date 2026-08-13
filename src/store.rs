@@ -491,15 +491,28 @@ impl Store {
 
     pub(crate) fn delete_provider_overlay(&self, provider_id: &str) -> anyhow::Result<()> {
         let db = self.db.lock().expect("sqlite lock poisoned");
-        db.execute(
-            "DELETE FROM provider_overlays WHERE provider_id = ?1",
-            params![provider_id],
-        )?;
-        db.execute(
-            "DELETE FROM model_overlays WHERE provider_id = ?1",
-            params![provider_id],
-        )?;
-        Ok(())
+        db.execute("BEGIN IMMEDIATE", [])?;
+        let result: anyhow::Result<()> = (|| {
+            db.execute(
+                "DELETE FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+            )?;
+            db.execute(
+                "DELETE FROM model_overlays WHERE provider_id = ?1",
+                params![provider_id],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = db.execute("ROLLBACK", []);
+                Err(err)
+            }
+        }
     }
 
     pub(crate) fn soft_remove_provider(&self, provider_id: &str) -> anyhow::Result<()> {

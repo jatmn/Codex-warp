@@ -1302,7 +1302,9 @@ async fn completed_chat_stream_without_usage_records_prompt_and_session() {
         &json!({"model": "test-model", "prompt_cache_key": "session"}),
     );
     chat_stream_to_responses(
-        upstream_response_with_body(b"data: [DONE]\n\n".to_vec()),
+        upstream_response_with_body(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n".to_vec(),
+        ),
         "resp_complete".to_string(),
         BTreeSet::new(),
         crate::config::ToolPolicyConfig::default(),
@@ -1320,6 +1322,33 @@ async fn completed_chat_stream_without_usage_records_prompt_and_session() {
     assert_eq!(summary.sessions, 1);
     assert_eq!(summary.total_tokens, 0);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn done_only_chat_stream_is_not_a_completed_response() {
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(b"data: [DONE]\n\n".to_vec()),
+        "resp_empty".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_empty".to_string(),
+        ContinueGuardState::default(),
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().unwrap()).contains("response.failed")
+    }));
+}
+
+#[test]
+fn native_completed_requires_response_object() {
+    assert_eq!(
+        native_sse_terminal("data: {\"type\":\"response.completed\"}\n\n"),
+        None
+    );
 }
 
 #[tokio::test]

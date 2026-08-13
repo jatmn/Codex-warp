@@ -52,6 +52,7 @@ pub(crate) fn chat_stream_to_responses(
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
+        let mut response_observed = false;
         let usage_recorder = usage_recorder;
 
         'upstream: while let Some(chunk) = bytes.next().await {
@@ -102,6 +103,10 @@ pub(crate) fn chat_stream_to_responses(
                     yield Ok(Bytes::from(chat_failed_event(&response_id, message)));
                     return;
                 }
+                response_observed |= payload
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .is_some_and(|choices| !choices.is_empty());
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
                 {
@@ -131,7 +136,7 @@ pub(crate) fn chat_stream_to_responses(
             }
         }
 
-        if !completed {
+        if !completed || !response_observed {
             yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream chat stream ended before [DONE]")));
             return;
         }
@@ -292,14 +297,13 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
     match value.get("type").and_then(Value::as_str)? {
-        "response.completed" => match value
-            .get("response")
-            .and_then(|response| response.get("status"))
-            .and_then(Value::as_str)
-        {
-            None | Some("completed") => Some(NativeSseTerminal::Completed),
-            _ => Some(NativeSseTerminal::NonSuccess),
-        },
+        "response.completed" => {
+            let response = value.get("response")?.as_object()?;
+            match response.get("status").and_then(Value::as_str) {
+                None | Some("completed") => Some(NativeSseTerminal::Completed),
+                _ => Some(NativeSseTerminal::NonSuccess),
+            }
+        }
         "response.failed" | "response.cancelled" | "response.incomplete" => {
             Some(NativeSseTerminal::NonSuccess)
         }

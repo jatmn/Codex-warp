@@ -101,6 +101,9 @@ fn chat_completion_requires_choices_array() {
         "choices": [{"message": {"role": "assistant", "content": "ok"}}]
     })));
     assert!(!chat_response_reports_completed(&json!({"choices": []})));
+    assert!(!chat_response_reports_completed(&json!({
+        "choices": [{}, {"message": {"role": "assistant", "content": "ok"}}]
+    })));
     assert!(!chat_response_reports_completed(&json!({})));
     assert!(!chat_response_reports_completed(&Value::Null));
 }
