@@ -241,8 +241,13 @@ pub(crate) fn native_stream_to_responses(
             recorder.record_completed(pending_usage.as_ref());
         }
 
-        if !pending.is_empty() {
-            let failed = native_failed_event(response_id.as_deref(), "upstream Responses stream ended with an incomplete SSE frame");
+        if !completed {
+            let message = if pending.is_empty() {
+                "upstream Responses stream ended before response.completed"
+            } else {
+                "upstream Responses stream ended with an incomplete SSE frame"
+            };
+            let failed = native_failed_event(response_id.as_deref(), message);
             log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
             yield Ok(Bytes::from(failed));
         }

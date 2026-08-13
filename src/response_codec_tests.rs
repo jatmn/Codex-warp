@@ -116,6 +116,28 @@ async fn native_stream_semantic_error_becomes_response_failed() {
 }
 
 #[tokio::test]
+async fn native_stream_without_completed_event_becomes_response_failed() {
+    let body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n";
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_incomplete".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 2);
+    let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(event.contains("response.failed"));
+    assert!(event.contains("resp_native"));
+    assert!(event.contains("before response.completed"));
+}
+
+#[tokio::test]
 async fn native_completed_with_failed_status_does_not_record_usage() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-native-failed-status-{}",
