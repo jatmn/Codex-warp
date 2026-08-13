@@ -67,8 +67,7 @@ impl Default for WebUiConfig {
     fn default() -> Self {
         Self {
             // Persistent state is optional infrastructure. Keep the core proxy
-            // stateless unless an operator explicitly enables it, so a normal
-            // launch never depends on the working directory being writable.
+            // stateless unless an operator explicitly enables the Web UI.
             enabled: false,
             auth_token_env: None,
             allow_unauthenticated_remote_access: false,

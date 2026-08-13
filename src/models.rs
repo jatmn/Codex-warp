@@ -149,14 +149,23 @@ async fn discover_routes_for_mutation(
         }
     };
 
-    for (provider_id, provider) in &provider_list {
-        if !fetch_ids.contains(provider_id) {
-            continue;
-        }
-        let (provider_models, provider_failures) =
-            fetch_provider_upstream_models(state, headers, provider_id, provider).await;
+    // The mutation lock protects publication order, but upstream I/O need not
+    // be serialized under it. Bound total lock hold to one provider timeout.
+    let fetch_results = join_all(
+        provider_list
+            .iter()
+            .filter(|(provider_id, _)| fetch_ids.contains(provider_id))
+            .map(|(provider_id, provider)| async move {
+                let result =
+                    fetch_provider_upstream_models(state, headers, provider_id, provider).await;
+                (provider_id.clone(), result)
+            }),
+    )
+    .await;
+
+    for (provider_id, (provider_models, provider_failures)) in fetch_results {
         let config = state.read_config().clone();
-        let Some(current) = crate::config::provider_by_id(&config, provider_id).cloned() else {
+        let Some(current) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
             continue;
         };
         let mut merged_models = Vec::new();
@@ -164,14 +173,14 @@ async fn discover_routes_for_mutation(
             &mut merged_models,
             &mut routes,
             &config,
-            provider_id,
+            &provider_id,
             &current,
             provider_models,
         );
         if provider_failures.is_empty() {
             // Successful refetch (including empty catalogs) replaces retained
             // ownership for this provider; seeds already carry catalog routes.
-            retain_owners.remove(provider_id);
+            retain_owners.remove(&provider_id);
         } else {
             fetch_warning = Some(provider_failures.join("; "));
         }

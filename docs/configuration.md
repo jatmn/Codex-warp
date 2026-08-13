@@ -12,6 +12,7 @@ top of it, so provider profiles can stay small and provider-specific.
 - [Request Morphs](#request-morphs)
 - [Continue Guard](#continue-guard)
 - [Tool Approval Policy](#tool-approval-policy)
+- [Web UI And Analytics](#web-ui-and-analytics)
 - [Debug Logging](#debug-logging)
 
 ## Baseline Includes
@@ -170,10 +171,11 @@ The main transform knobs are:
   example `custom`.
 - `transform.unsupported_tool_strategy`: `drop`, `as_function`, or
   `passthrough`.
-- `transform.request_stream_options_include_usage`: when `true`, streamed
-  chat-completions requests that do not already include `stream_options` get
-  `stream_options.include_usage = true`. Use this only for gateways that
-  document support for that field.
+- `transform.request_stream_options_include_usage`: defaults to `false` because
+  some OpenAI-compatible gateways reject `stream_options`. Set it to `true` for
+  a provider that documents `stream_options.include_usage`; requests that do
+  not already include `stream_options` then receive
+  `stream_options.include_usage = true` for local token analytics.
 
 Supported request morph kinds:
 
@@ -290,6 +292,103 @@ for the TOML rule shape and GitHub policy table.
 **Notice:** tool approval policy can change what Codex is told to approve,
 prompt for, or block. Misconfigured rules are your responsibility. Review them
 before enabling the feature and use it at your own risk.
+
+## Web UI And Analytics
+
+Codex Warp can serve a lightweight local Web UI for managing providers/models and
+viewing usage analytics. It is disabled by default. Set `enabled = true` to
+serve it on the same bind address as the proxy. Authentication is optional: by
+default the UI has no authentication and requires a loopback listen address
+(`127.0.0.1` or `[::1]`).
+Set `auth_token_env` to protect `/api` with a bearer token read from that
+environment variable; the browser asks for it only if the API returns 401.
+When `auth_token_env` is configured, the named environment variable must be
+present and non-empty at startup (fail closed). Omit the setting entirely for
+unauthenticated loopback access.
+A trusted-network deployment can opt in to remote access explicitly.
+
+```toml
+[webui]
+enabled = true
+auth_token_env = "CODEX_WARP_WEBUI_TOKEN" # Optional; omit for no authentication.
+db_path = "codex-warp.db"
+# Default false. Set true only on an access-controlled, trusted network.
+allow_unauthenticated_remote_access = false
+```
+
+When `listen` is non-loopback, startup fails unless
+`allow_unauthenticated_remote_access = true` is set. The existing setting remains
+the explicit LAN-exposure gate whether authentication is configured or not.
+Without `auth_token_env`, it is an intentionally unsafe compatibility switch
+for trusted networks. Codex Warp does not terminate TLS, so authenticated remote
+deployments should still use a trusted network or TLS reverse proxy.
+
+After enabling it, open `http://<configured-listen-address>/ui/` while the
+proxy is running (the startup log prints the exact URL). With the default
+`listen` setting, this is `http://127.0.0.1:8787/ui/`.
+
+The UI can:
+
+- add providers from bundled example templates (OpenRouter, Kimi Code, OpenCode Go,
+  ClinePass, Xiaomi Token Plan, or a blank OpenAI-compatible profile)
+- edit and remove providers and model catalog entries
+- toggle providers on/off (disabled providers are omitted from `/v1/models`)
+- toggle models on/off per provider
+- chart token usage, prompts, and sessions over time with a line chart, plus
+  token usage over time with a bar chart (global, per provider, and per model)
+
+The Analytics tab is the default landing view.
+
+Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
+`week`, `30d`, `yearly`.
+
+SQLite (`db_path`) stores overlays and usage analytics. TOML remains the
+bootstrap source of truth; overlays apply on startup whenever the database is
+open. Managed providers created in the UI live entirely in SQLite. Removing a
+TOML-sourced provider or catalog model soft-deletes it via an overlay so it
+stays suppressed across restarts until the overlay row is cleared or the model
+is re-added in the UI. Soft-deleting a TOML provider keeps its per-model
+overlay rows so clearing the provider soft-delete can restore prior model
+toggles. Creating a managed provider with the same id (for example adding a
+bundled template after deleting the TOML profile) replaces those leftover
+model overlays with the new catalog. Soft-deleting a catalog model also
+suppresses its upstream alias so live `/models` fetches cannot resurrect it.
+Enabled model overlays reseed `model_routes` at startup so multi-provider
+routing does not require a prior `/v1/models` call after restart.
+
+The SQLite store opens only while the Web UI is enabled. Use
+`--no-webui-store` to keep an enabled UI stateless; its management API then
+keeps read-only provider/template views available, while mutations and usage
+analytics return service-unavailable rather than writing persistent state.
+
+`PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
+keep their current values, and JSON `null` clears optional string fields
+(`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
+re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
+replaces a full catalog entry (with `enabled` defaulting to true when omitted).
+
+Provider overlays never persist `api_key` or request `headers`; use
+`api_key_env` (and TOML headers) for durable secrets. For a TOML-backed
+provider, `api_key_env` remains TOML-owned and is read-only in the Web UI so a
+later TOML credential rotation cannot be overwritten by an old SQLite snapshot.
+
+CLI overrides:
+
+```bash
+codex-warp --no-webui          # skip /ui and /api routes and leave SQLite unopened
+codex-warp --webui-db /var/lib/codex-warp/codex-warp.db
+```
+
+`--no-webui` and `webui.enabled = false` disable all Web UI management
+features, including SQLite overlays and usage recording.
+
+Usage events are recorded from successful proxied responses when the store is
+open, including completed chat and native streams and successful non-stream
+responses even when the upstream omits token usage metadata. Incomplete or
+failed streams are not recorded as successful completions. Session grouping
+prefers `prompt_cache_key`, then `conversation_id`, then Responses
+`conversation` (string or `{ "id": ... }`).
+Events without a session key count as distinct sessions per prompt.
 
 ## Debug Logging
 

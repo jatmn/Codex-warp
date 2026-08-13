@@ -15,6 +15,7 @@ mod transform;
 mod transform_morph;
 mod upstream;
 mod version;
+mod webui;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

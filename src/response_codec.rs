@@ -16,6 +16,7 @@ use crate::config::ToolPolicyConfig;
 use crate::debug_log::DebugLog;
 use crate::debug_log::text_fingerprint;
 use crate::ids::generated_id;
+use crate::store::UsageRecorder;
 use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
@@ -37,6 +38,7 @@ pub(crate) fn chat_stream_to_responses(
     debug_log: DebugLog,
     request_log_id: String,
     continue_guard: ContinueGuardState,
+    usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
@@ -49,24 +51,21 @@ pub(crate) fn chat_stream_to_responses(
         let mut state = ChatAccum::default();
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
+        let mut completed = false;
+        let mut response_observed = false;
+        let usage_recorder = usage_recorder;
 
-        while let Some(chunk) = bytes.next().await {
+        'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    yield Ok(Bytes::from(sse("response.failed", json!({
-                        "type": "response.failed",
-                        "response": {"id": response_id, "error": {"message": err.to_string()}}
-                    }))));
+                    yield Ok(Bytes::from(chat_failed_event(&response_id, err.to_string())));
                     return;
                 }
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                yield Ok(Bytes::from(sse("response.failed", json!({
-                    "type": "response.failed",
-                    "response": {"id": response_id, "error": {"message": "upstream SSE frame buffer exceeded maximum size"}}
-                }))));
+                yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream SSE frame buffer exceeded maximum size")));
                 return;
             }
 
@@ -74,10 +73,7 @@ pub(crate) fn chat_stream_to_responses(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
-                    yield Ok(Bytes::from(sse("response.failed", json!({
-                        "type": "response.failed",
-                        "response": {"id": response_id, "error": {"message": "upstream SSE frame was not valid UTF-8"}}
-                    }))));
+                    yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream SSE frame was not valid UTF-8")));
                     return;
                 };
                 debug_log.log_stream_frame(json!({
@@ -89,22 +85,44 @@ pub(crate) fn chat_stream_to_responses(
                     continue;
                 };
                 if data == "[DONE]" {
-                    break;
+                    completed = true;
+                    break 'upstream;
                 }
-                let Ok(value) = serde_json::from_str::<Value>(&data) else {
-                    continue;
+                let value = match serde_json::from_str::<Value>(&data) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        yield Ok(Bytes::from(chat_failed_event(
+                            &response_id,
+                            "upstream chat stream contained invalid JSON",
+                        )));
+                        return;
+                    }
                 };
                 let payload = chat_completion_payload(&value);
+                if let Some(message) = upstream_error_message(payload) {
+                    yield Ok(Bytes::from(chat_failed_event(&response_id, message)));
+                    return;
+                }
+                response_observed |= payload
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(Value::as_object)
+                    .is_some_and(|choice| {
+                        choice.get("delta").and_then(Value::as_object).is_some()
+                            || choice.get("finish_reason").and_then(Value::as_str).is_some()
+                    });
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
                 {
+                    let normalized = chat_usage_to_responses_usage(Some(usage));
                     debug_log.log(json!({
                         "event": "upstream_response",
                         "id": request_log_id,
                         "status": 200,
                         "success": true,
                         "usage": usage,
-                        "normalized_usage": chat_usage_to_responses_usage(Some(usage))
+                        "normalized_usage": normalized.clone()
                     }));
                 }
                 let events = state.apply_chat_chunk(payload);
@@ -123,6 +141,15 @@ pub(crate) fn chat_stream_to_responses(
             }
         }
 
+        if !completed || !response_observed {
+            yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream chat stream ended before [DONE]")));
+            return;
+        }
+
+        if let Some(recorder) = &usage_recorder {
+            recorder.record_completed(state.usage.as_ref());
+        }
+
         for event in state.finish(
             &response_id,
             &custom_tool_names,
@@ -135,6 +162,24 @@ pub(crate) fn chat_stream_to_responses(
     }
 }
 
+/// Extract an OpenAI-compatible semantic error body. Gateways sometimes return
+/// these inside a successful HTTP response (and chat stream frames may wrap the
+/// body in `data`), so HTTP status alone cannot establish completion.
+pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
+    let error = value.get("error")?;
+    match error {
+        Value::Null => None,
+        Value::String(message) if !message.is_empty() => Some(message.clone()),
+        Value::Object(_) => error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some("upstream chat stream returned an error".to_string())),
+        _ => Some("upstream chat stream returned an error".to_string()),
+    }
+}
+
 pub(crate) fn native_stream_to_responses(
     upstream: reqwest::Response,
     custom_tool_names: BTreeSet<String>,
@@ -142,36 +187,18 @@ pub(crate) fn native_stream_to_responses(
     debug_log: DebugLog,
     request_log_id: String,
     status: u16,
+    usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let mut pending = Vec::new();
-        let mut debug_pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
+        let mut pending_usage: Option<Value> = None;
+        let mut terminal_received = false;
+        let mut usage_recorder = usage_recorder;
+        let mut response_id = None;
 
-        while let Some(chunk) = bytes.next().await {
+        'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
-            if custom_tool_names.is_empty() && !tool_policy.enabled {
-                log_native_usage_from_sse_chunk(
-                    &chunk,
-                    &mut debug_pending,
-                    &debug_log,
-                    &request_log_id,
-                    status,
-                );
-                if debug_pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                    yield Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        SSE_FRAME_BUFFER_EXCEEDED_MESSAGE,
-                    ));
-                    return;
-                }
-                if debug_log.include_stream_bodies {
-                    log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
-                }
-                yield Ok(chunk);
-                continue;
-            }
-
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
                 yield Err(std::io::Error::new(
@@ -190,7 +217,27 @@ pub(crate) fn native_stream_to_responses(
                         return;
                     }
                 };
-                log_native_usage_from_sse_frame(&frame, &debug_log, &request_log_id, status);
+                response_id = native_sse_response_id(&frame).or(response_id);
+                if let Some(message) = native_sse_error_message(&frame) {
+                    let failed = native_failed_event(response_id.as_deref(), message);
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
+                    yield Ok(Bytes::from(failed));
+                    return;
+                }
+                log_native_usage_from_sse_frame(
+                    &frame,
+                    &debug_log,
+                    &request_log_id,
+                    status,
+                    &mut pending_usage,
+                );
+                let terminal = native_sse_terminal(&frame);
+                terminal_received |= terminal.is_some();
+                if terminal == Some(NativeSseTerminal::Completed) {
+                    if let Some(recorder) = usage_recorder.take() {
+                        recorder.record_completed(pending_usage.as_ref());
+                    }
+                }
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
                     "id": request_log_id,
@@ -200,16 +247,96 @@ pub(crate) fn native_stream_to_responses(
                 let morphed = morph_native_sse_frame(&frame, &custom_tool_names, &tool_policy);
                 log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
                 yield Ok(Bytes::from(morphed));
+                if terminal.is_some() {
+                    break 'upstream;
+                }
             }
         }
 
-        if !pending.is_empty() {
-            let chunk = Bytes::from(pending);
-            if debug_log.include_stream_bodies {
-                log_raw_sse_chunk(&debug_log, &request_log_id, "responses", &chunk);
-            }
-            yield Ok(chunk);
+        if !terminal_received {
+            let message = if pending.is_empty() {
+                "upstream Responses stream ended before a terminal response event"
+            } else {
+                "upstream Responses stream ended with an incomplete SSE frame"
+            };
+            let failed = native_failed_event(response_id.as_deref(), message);
+            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
+            yield Ok(Bytes::from(failed));
         }
+    }
+}
+
+fn native_sse_error_message(frame: &str) -> Option<String> {
+    let data = sse_data(frame)?;
+    let value = serde_json::from_str::<Value>(&data).ok()?;
+    upstream_error_message(&value).or_else(|| {
+        (value.get("type").and_then(Value::as_str) == Some("error"))
+            .then(|| value.get("message").and_then(Value::as_str))
+            .flatten()
+            .filter(|message| !message.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn native_sse_response_id(frame: &str) -> Option<String> {
+    let data = sse_data(frame)?;
+    let value = serde_json::from_str::<Value>(&data).ok()?;
+    value
+        .get("response")?
+        .get("id")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSseTerminal {
+    Completed,
+    NonSuccess,
+}
+
+/// Classify response-level terminal events independently from success. Native
+/// streams can finish successfully, fail, be cancelled, or be incomplete; all
+/// of those outcomes make EOF expected, but only a completed response records
+/// successful usage analytics.
+fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
+    let data = sse_data(frame)?;
+    let value = serde_json::from_str::<Value>(&data).ok()?;
+    match value.get("type").and_then(Value::as_str)? {
+        "response.completed" => {
+            let response = value.get("response")?.as_object()?;
+            match response.get("status").and_then(Value::as_str) {
+                None | Some("completed") => Some(NativeSseTerminal::Completed),
+                _ => Some(NativeSseTerminal::NonSuccess),
+            }
+        }
+        "response.failed" | "response.cancelled" | "response.incomplete" => {
+            Some(NativeSseTerminal::NonSuccess)
+        }
+        _ => None,
+    }
+}
+
+fn chat_failed_event(response_id: &str, message: impl Into<String>) -> String {
+    sse(
+        "response.failed",
+        json!({
+            "type": "response.failed",
+            "response": {"id": response_id, "object": "response", "status": "failed", "error": {"message": message.into()}}
+        }),
+    )
+}
+
+fn native_failed_event(response_id: Option<&str>, message: impl Into<String>) -> String {
+    let message = message.into();
+    match response_id {
+        Some(response_id) => sse(
+            "response.failed",
+            json!({
+                "type": "response.failed",
+                "response": {"id": response_id, "object": "response", "status": "failed", "error": {"message": message}}
+            }),
+        ),
+        None => sse("error", json!({"type": "error", "message": message})),
     }
 }
 
@@ -229,13 +356,16 @@ pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
         .unwrap_or(Value::Null)
 }
 
+#[cfg(test)]
 pub(crate) fn log_native_usage_from_sse_chunk(
     chunk: &Bytes,
     pending: &mut Vec<u8>,
     debug_log: &DebugLog,
     request_log_id: &str,
     status: u16,
-) {
+    pending_usage: &mut Option<Value>,
+) -> bool {
+    let mut completed = false;
     pending.extend_from_slice(chunk);
     while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(pending) {
         let frame = pending[..frame_end].to_vec();
@@ -243,8 +373,15 @@ pub(crate) fn log_native_usage_from_sse_chunk(
         let Ok(frame) = String::from_utf8(frame) else {
             continue;
         };
-        log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status);
+        log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status, pending_usage);
+        completed |= native_sse_terminal(&frame) == Some(NativeSseTerminal::Completed);
     }
+    completed
+}
+
+#[cfg(test)]
+fn native_sse_frame_completed(frame: &str) -> bool {
+    native_sse_terminal(frame) == Some(NativeSseTerminal::Completed)
 }
 
 pub(crate) fn log_native_usage_from_sse_frame(
@@ -252,6 +389,7 @@ pub(crate) fn log_native_usage_from_sse_frame(
     debug_log: &DebugLog,
     request_log_id: &str,
     status: u16,
+    pending_usage: &mut Option<Value>,
 ) {
     let Some(data) = sse_data(frame) else {
         return;
@@ -286,6 +424,10 @@ pub(crate) fn log_native_usage_from_sse_frame(
             "success": true,
             "usage": usage
         }));
+        let normalized = chat_usage_to_responses_usage(Some(usage));
+        if !normalized.is_null() {
+            *pending_usage = Some(normalized);
+        }
     }
 }
 
@@ -305,28 +447,6 @@ fn log_downstream_sse_frame(
         return;
     }
     debug_log.log_stream_frame(event.take(), frame);
-}
-
-fn log_raw_sse_chunk(debug_log: &DebugLog, request_log_id: &str, backend: &str, chunk: &Bytes) {
-    let frame = String::from_utf8_lossy(chunk);
-    debug_log.log_stream_frame(
-        json!({
-            "event": "upstream_stream_frame",
-            "id": request_log_id,
-            "backend": backend,
-            "raw_chunk": true
-        }),
-        &frame,
-    );
-    debug_log.log_stream_frame(
-        json!({
-            "event": "downstream_stream_frame",
-            "id": request_log_id,
-            "backend": backend,
-            "raw_chunk": true
-        }),
-        &frame,
-    );
 }
 
 pub(crate) fn downstream_stream_debug_summary(frame: &str) -> Value {
@@ -1011,8 +1131,13 @@ pub(crate) fn chat_usage_to_responses_usage(usage: Option<&Value>) -> Value {
         token_count(usage, &["input_tokens"]).or_else(|| token_count(usage, &["prompt_tokens"]));
     let output_tokens = token_count(usage, &["output_tokens"])
         .or_else(|| token_count(usage, &["completion_tokens"]));
-    let total_tokens = token_count(usage, &["total_tokens"])
-        .or_else(|| Some(input_tokens.unwrap_or_default() + output_tokens.unwrap_or_default()));
+    let total_tokens = token_count(usage, &["total_tokens"]).or_else(|| {
+        Some(
+            input_tokens
+                .unwrap_or_default()
+                .saturating_add(output_tokens.unwrap_or_default()),
+        )
+    });
     let cached_tokens = token_count(usage, &["input_tokens_details", "cached_tokens"])
         .or_else(|| token_count(usage, &["prompt_tokens_details", "cached_tokens"]))
         .or_else(|| token_count(usage, &["cached_tokens"]))
@@ -1199,7 +1324,8 @@ pub(crate) fn morph_native_sse_frame(
     let mut event_lines = Vec::new();
     let mut data_lines = Vec::new();
 
-    for line in frame.lines() {
+    let normalized = frame.replace("\r\n", "\n").replace('\r', "\n");
+    for line in normalized.lines() {
         if let Some(data) = line.strip_prefix("data:") {
             data_lines.push(data.trim_start());
         } else {
@@ -1342,7 +1468,9 @@ fn sse(event: &str, data: Value) -> String {
 }
 
 pub(crate) fn sse_data(frame: &str) -> Option<String> {
-    let data = frame
+    // Event streams permit CRLF, LF, or CR line endings.
+    let normalized = frame.replace("\r\n", "\n").replace('\r', "\n");
+    let data = normalized
         .lines()
         .filter_map(|line| line.strip_prefix("data:"))
         .map(str::trim_start)
@@ -1358,13 +1486,14 @@ pub(crate) fn next_sse_frame_bytes(buffer: &[u8]) -> Option<(usize, usize)> {
             .position(|window| window == needle)
     }
 
-    match (find_bytes(buffer, b"\n\n"), find_bytes(buffer, b"\r\n\r\n")) {
-        (Some(lf), Some(crlf)) if crlf < lf => Some((crlf, 4)),
-        (Some(lf), Some(_)) => Some((lf, 2)),
-        (Some(lf), None) => Some((lf, 2)),
-        (None, Some(crlf)) => Some((crlf, 4)),
-        (None, None) => None,
-    }
+    [
+        find_bytes(buffer, b"\n\n").map(|index| (index, 2)),
+        find_bytes(buffer, b"\r\n\r\n").map(|index| (index, 4)),
+        find_bytes(buffer, b"\r\r").map(|index| (index, 2)),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|(index, _)| *index)
 }
 
 #[cfg(test)]

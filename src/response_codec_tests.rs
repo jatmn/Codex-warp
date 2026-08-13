@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
+use crate::store::Store;
 
 fn completed_end_turn(events: &[String]) -> bool {
     let completed = events
@@ -34,6 +35,216 @@ fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
 fn next_sse_frame_accepts_lf_and_crlf() {
     assert_eq!(next_sse_frame_bytes(b"data: one\n\nrest"), Some((9, 2)));
     assert_eq!(next_sse_frame_bytes(b"data: one\r\n\r\nrest"), Some((9, 4)));
+    assert_eq!(next_sse_frame_bytes(b"data: one\r\rrest"), Some((9, 2)));
+    assert_eq!(sse_data("event: message\rdata: one"), Some("one".into()));
+}
+
+#[test]
+fn native_usage_is_recorded_only_after_a_completed_event() {
+    let completed =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+    let failed = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_failed_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\"}}\n\n";
+    let completed_with_cancelled_status =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"cancelled\"}}\n\n";
+    assert!(native_sse_frame_completed(completed));
+    assert!(!native_sse_frame_completed(failed));
+    assert!(!native_sse_frame_completed(completed_with_failed_status));
+    assert!(!native_sse_frame_completed(completed_with_cancelled_status));
+}
+
+#[tokio::test]
+async fn native_failed_stream_does_not_record_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-usage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let failed = concat!(
+        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(failed.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(
+        events.len(),
+        1,
+        "a terminal failure is forwarded exactly once"
+    );
+    assert!(String::from_utf8_lossy(events[0].as_ref().unwrap()).contains("response.failed"));
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_stream_is_forwarded_once_without_transport_failure() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_native\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_incomplete_terminal".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 2);
+    let terminal = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(terminal.contains("response.incomplete"));
+    assert!(!terminal.contains("response.failed"));
+}
+
+#[tokio::test]
+async fn native_stream_semantic_error_becomes_response_failed() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"error\":{\"message\":\"quota exceeded\"}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_semantic_error".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 2, "the semantic error terminates the stream");
+    let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(event.contains("response.failed"));
+    assert!(event.contains("resp_native"));
+    assert!(event.contains("\"status\":\"failed\""));
+    assert!(event.contains("quota exceeded"));
+}
+
+#[tokio::test]
+async fn native_stream_without_completed_event_becomes_response_failed() {
+    let body = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n";
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_incomplete".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 2);
+    let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(event.contains("response.failed"));
+    assert!(event.contains("resp_native"));
+    assert!(event.contains("before a terminal response event"));
+}
+
+#[tokio::test]
+async fn native_completed_with_failed_status_does_not_record_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-failed-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_status_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(
+        events.len(),
+        1,
+        "a non-success terminal event must not gain a synthetic transport failure"
+    );
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_completed_without_usage_records_prompt_and_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-no-usage-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model", "prompt_cache_key": "native-session"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let body =
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_no_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -538,6 +749,16 @@ fn chat_usage_normalizes_provider_cache_hit_fields() {
 }
 
 #[test]
+fn chat_usage_derived_total_saturates_untrusted_token_counts() {
+    let usage = chat_usage_to_responses_usage(Some(&json!({
+        "input_tokens": i64::MAX,
+        "output_tokens": 1,
+    })));
+
+    assert_eq!(usage["total_tokens"], i64::MAX);
+}
+
+#[test]
 fn wrapped_chat_completion_preserves_reasoning_content() {
     let value = chat_json_to_responses(
         json!({
@@ -676,10 +897,26 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     let chunk_b = Bytes::from_static(b":{\"cached_tokens\":5}}}}\n\n");
 
-    log_native_usage_from_sse_chunk(&chunk_a, &mut pending, &debug_log, "dbg_test", 200);
+    let mut pending_usage = None;
+    log_native_usage_from_sse_chunk(
+        &chunk_a,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(!pending.is_empty());
-    log_native_usage_from_sse_chunk(&chunk_b, &mut pending, &debug_log, "dbg_test", 200);
+    log_native_usage_from_sse_chunk(
+        &chunk_b,
+        &mut pending,
+        &debug_log,
+        "dbg_test",
+        200,
+        &mut pending_usage,
+    );
     assert!(pending.is_empty());
+    assert!(pending_usage.is_some());
 }
 
 #[test]
@@ -744,6 +981,23 @@ fn native_function_calls_for_morphed_custom_tools_are_restored() {
     assert_eq!(value["item"]["name"], "apply_patch");
     assert_eq!(value["item"]["input"], "*** Begin Patch\n*** End Patch\n");
     assert!(value["item"].get("arguments").is_none());
+}
+
+#[test]
+fn cr_only_native_sse_frames_are_morphed() {
+    let frame = concat!(
+        "event: response.output_item.done\r",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"type\":\"function_call\",\"name\":\"apply_patch\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["apply_patch".to_string()]),
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("custom_tool_call"));
+    assert!(morphed.contains("\"input\":\"patch\""));
 }
 
 #[test]
@@ -845,6 +1099,7 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         ContinueGuardState::default(),
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -855,6 +1110,281 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         .find(|event| event.contains("response.failed"))
         .expect("overflow emits response.failed");
     assert!(failed.contains("upstream SSE frame buffer exceeded maximum size"));
+}
+
+#[tokio::test]
+async fn chat_stream_without_done_fails_and_does_not_record_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-incomplete-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}],",
+        "\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12}}\n\n"
+    );
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_incomplete".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.failed")
+    }));
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn malformed_chat_frame_followed_by_done_fails_without_recording_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-malformed-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder =
+        UsageRecorder::from_request(Some(&store), "alpha", &json!({"model": "test-model"}));
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(b"data: {bad json}\n\ndata: [DONE]\n\n".to_vec()),
+        "resp_malformed".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_malformed".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("invalid JSON")
+    }));
+    assert_eq!(
+        store
+            .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+            .unwrap()
+            .prompts,
+        0
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn chat_stream_error_frame_followed_by_done_does_not_record_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-error-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    let body = concat!(
+        "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_error".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_error".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.failed")
+    }));
+    assert!(!events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.completed")
+    }));
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn wrapped_chat_stream_error_does_not_record_completion() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-wrapped-chat-error-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    let body = concat!(
+        "data: {\"data\":{\"error\":{\"message\":\"quota exceeded\"}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_wrapped_error".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_wrapped_error".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+            .contains("response.failed")
+    }));
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upstream_error_message_accepts_openai_error_shapes() {
+    assert_eq!(
+        upstream_error_message(&json!({"error": {"message": "quota exceeded"}})),
+        Some("quota exceeded".to_string())
+    );
+    assert_eq!(
+        upstream_error_message(&json!({"error": "upstream failed"})),
+        Some("upstream failed".to_string())
+    );
+    assert_eq!(
+        upstream_error_message(&json!({"id": "resp_123", "error": null})),
+        None,
+        "successful Responses payloads commonly include an explicit null error field"
+    );
+}
+
+#[tokio::test]
+async fn completed_chat_stream_without_usage_records_prompt_and_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-chat-complete-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder = UsageRecorder::from_request(
+        Some(&store),
+        "alpha",
+        &json!({"model": "test-model", "prompt_cache_key": "session"}),
+    );
+    chat_stream_to_responses(
+        upstream_response_with_body(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n".to_vec(),
+        ),
+        "resp_complete".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_complete".to_string(),
+        ContinueGuardState::default(),
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(summary.sessions, 1);
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn done_only_chat_stream_is_not_a_completed_response() {
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(b"data: [DONE]\n\n".to_vec()),
+        "resp_empty".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_empty".to_string(),
+        ContinueGuardState::default(),
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().unwrap()).contains("response.failed")
+    }));
+}
+
+#[tokio::test]
+async fn malformed_choice_does_not_complete_chat_stream() {
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(b"data: {\"choices\":[null]}\n\ndata: [DONE]\n\n".to_vec()),
+        "resp_bad_choice".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_bad_choice".to_string(),
+        ContinueGuardState::default(),
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().unwrap()).contains("response.failed")
+    }));
+}
+
+#[test]
+fn native_completed_requires_response_object() {
+    assert_eq!(
+        native_sse_terminal("data: {\"type\":\"response.completed\"}\n\n"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -869,6 +1399,7 @@ async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;
@@ -894,6 +1425,7 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
         200,
+        None,
     )
     .collect::<Vec<_>>()
     .await;

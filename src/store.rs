@@ -27,7 +27,13 @@ use crate::config::configured_provider_by_id;
 const DISTINCT_SESSION_COUNT_SQL: &str = "COUNT(DISTINCT CASE WHEN session_key IS NULL THEN 'anonymous:' || id ELSE 'session:' || session_key END)";
 const USAGE_RETENTION_DAYS: i64 = 400;
 const MAX_USAGE_EVENTS: i64 = 100_000;
+const USAGE_RETENTION_BATCH_SIZE: i64 = 128;
+const MAX_USAGE_EVENTS_BEFORE_TRIM: i64 = MAX_USAGE_EVENTS + USAGE_RETENTION_BATCH_SIZE - 1;
 const MAX_USAGE_IDENTIFIER_BYTES: usize = 512;
+/// Upstream usage is untrusted. This leaves headroom for every retained event
+/// to aggregate in SQLite *and* remain exactly representable by the Web UI's
+/// JavaScript `Number` values.
+const MAX_USAGE_TOKENS_PER_EVENT: i64 = 9_007_199_254_740_991 / MAX_USAGE_EVENTS_BEFORE_TRIM;
 
 #[derive(Clone)]
 pub(crate) struct Store {
@@ -485,15 +491,28 @@ impl Store {
 
     pub(crate) fn delete_provider_overlay(&self, provider_id: &str) -> anyhow::Result<()> {
         let db = self.db.lock().expect("sqlite lock poisoned");
-        db.execute(
-            "DELETE FROM provider_overlays WHERE provider_id = ?1",
-            params![provider_id],
-        )?;
-        db.execute(
-            "DELETE FROM model_overlays WHERE provider_id = ?1",
-            params![provider_id],
-        )?;
-        Ok(())
+        db.execute("BEGIN IMMEDIATE", [])?;
+        let result: anyhow::Result<()> = (|| {
+            db.execute(
+                "DELETE FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+            )?;
+            db.execute(
+                "DELETE FROM model_overlays WHERE provider_id = ?1",
+                params![provider_id],
+            )?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                db.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = db.execute("ROLLBACK", []);
+                Err(err)
+            }
+        }
     }
 
     pub(crate) fn soft_remove_provider(&self, provider_id: &str) -> anyhow::Result<()> {
@@ -569,6 +588,10 @@ impl Store {
     }
 
     /// Atomically persist a newly created managed provider and its catalog overlays.
+    ///
+    /// This replaces any previous overlay identity for `provider_id`, including a
+    /// soft-deleted TOML provider. Leftover model overlay rows are deleted so they
+    /// cannot replay onto the new managed catalog after restart.
     pub(crate) fn create_provider_with_catalog(
         &self,
         provider_id: &str,
@@ -591,6 +614,13 @@ impl Store {
                     managed = excluded.managed,
                     config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
                 params![provider_id, i64::from(provider.enabled), config_json,],
+            )?;
+            // A create replaces any previous overlay identity for this id,
+            // including a soft-deleted TOML provider. Leftover model overlay
+            // rows must not replay onto the new managed catalog.
+            db.execute(
+                "DELETE FROM model_overlays WHERE provider_id = ?1",
+                params![provider_id],
             )?;
             for entry in catalog {
                 let catalog_json = serde_json::to_string(entry)?;
@@ -810,7 +840,7 @@ impl Store {
         )?;
         // Opportunistic retention so long-lived processes do not grow forever.
         let row_id = db.last_insert_rowid();
-        if row_id % 128 == 0 {
+        if row_id % USAGE_RETENTION_BATCH_SIZE == 0 {
             let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
             let _ = db.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff]);
             let _ = db.execute(
@@ -1177,7 +1207,7 @@ fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
 }
 
 fn non_negative_tokens(value: Option<i64>) -> i64 {
-    value.unwrap_or(0).max(0)
+    value.unwrap_or(0).clamp(0, MAX_USAGE_TOKENS_PER_EVENT)
 }
 
 pub(crate) fn usage_event_from_normalized(

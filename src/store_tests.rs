@@ -789,6 +789,82 @@ fn create_provider_with_catalog_persists_provider_and_models() {
 }
 
 #[test]
+fn create_provider_with_catalog_replaces_leftover_model_overlays() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-replaces-leftover-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("create.db")).unwrap();
+    store
+        .upsert_model_catalog(
+            "legacy",
+            &ModelCatalogEntry {
+                id: "stale-model".into(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            },
+            false,
+        )
+        .unwrap();
+    store.soft_remove_provider("legacy").unwrap();
+
+    let provider = ProviderConfig {
+        base_url: "https://managed.example/v1".into(),
+        enabled: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "fresh-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    store.apply_overlays(&mut config).unwrap();
+    let live = config
+        .providers
+        .get("legacy")
+        .expect("managed provider should be restored");
+    assert!(
+        live.model_catalog
+            .iter()
+            .any(|entry| entry.id == "fresh-model")
+    );
+    assert!(
+        !live
+            .model_catalog
+            .iter()
+            .any(|entry| entry.id == "stale-model"),
+        "leftover catalog overlays must not replay onto the new managed provider"
+    );
+    assert!(
+        !live.disabled_models.iter().any(|id| id == "stale-model"),
+        "leftover disables must not replay onto the new managed provider"
+    );
+
+    let leftover: i64 = {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.query_row(
+            "SELECT COUNT(*) FROM model_overlays
+             WHERE provider_id = 'legacy' AND model_id = 'stale-model'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(leftover, 0);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn apply_overlays_corrupt_model_overlay_preserves_disabled_models() {
     use rusqlite::params;
 
@@ -1023,6 +1099,29 @@ fn record_completed_counts_prompt_without_usage_metadata() {
     assert_eq!(summary.output_tokens, 0);
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn usage_events_cap_untrusted_token_counts_before_aggregation() {
+    assert!(
+        MAX_USAGE_TOKENS_PER_EVENT * MAX_USAGE_EVENTS_BEFORE_TRIM <= 9_007_199_254_740_991,
+        "even the batched-retention overshoot must stay exactly representable in the Web UI"
+    );
+    let usage = serde_json::json!({
+        "input_tokens": i64::MAX,
+        "output_tokens": i64::MAX,
+        "total_tokens": i64::MAX,
+        "input_tokens_details": {"cached_tokens": i64::MAX},
+        "output_tokens_details": {"reasoning_tokens": i64::MAX}
+    });
+
+    let event = usage_event_from_normalized("alpha", "model", None, &usage);
+
+    assert_eq!(event.input_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.output_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.total_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.cached_tokens, MAX_USAGE_TOKENS_PER_EVENT);
+    assert_eq!(event.reasoning_tokens, MAX_USAGE_TOKENS_PER_EVENT);
 }
 
 #[test]
