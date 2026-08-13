@@ -322,7 +322,7 @@ async fn send_native_responses(
 
     let status = upstream.status();
     let upstream_headers = upstream.headers().clone();
-    if should_stream_upstream(stream_response, status) {
+    if should_stream_upstream(stream_response, status, &upstream_headers) {
         let body = Body::from_stream(native_stream_to_responses(
             upstream,
             custom_tool_names,
@@ -432,8 +432,25 @@ fn response_reports_completed(value: &Value) -> bool {
             .is_none_or(|status| status == "completed")
 }
 
-pub(crate) fn should_stream_upstream(stream_response: bool, status: reqwest::StatusCode) -> bool {
-    stream_response && status.is_success()
+/// Stream only when both sides agreed on SSE. A gateway can accept a streaming
+/// request yet return a regular JSON success or error payload; treating that
+/// payload as an SSE stream bypasses semantic-error handling and gives clients
+/// an invalid response representation.
+pub(crate) fn should_stream_upstream(
+    stream_response: bool,
+    status: reqwest::StatusCode,
+    headers: &HeaderMap,
+) -> bool {
+    stream_response
+        && status.is_success()
+        && headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.split(';').next().is_some_and(|media_type| {
+                    media_type.trim().eq_ignore_ascii_case("text/event-stream")
+                })
+            })
 }
 
 #[cfg(test)]
