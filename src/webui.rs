@@ -109,7 +109,11 @@ fn request_host_is_loopback(request: &Request) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
         .is_some_and(|authority| {
-            let host = authority.host().trim_end_matches('.');
+            let host = authority
+                .host()
+                .trim_end_matches('.')
+                .trim_start_matches('[')
+                .trim_end_matches(']');
             host.eq_ignore_ascii_case("localhost")
                 || host
                     .parse::<std::net::IpAddr>()

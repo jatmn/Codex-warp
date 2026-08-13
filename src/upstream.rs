@@ -496,7 +496,14 @@ fn native_response_payload(value: &Value) -> &Value {
 fn chat_response_reports_completed(value: &Value) -> bool {
     value.as_object().is_some()
         && upstream_error_message(value).is_none()
-        && value.get("choices").and_then(Value::as_array).is_some()
+        && value
+            .get("choices")
+            .and_then(Value::as_array)
+            .is_some_and(|choices| {
+                choices
+                    .iter()
+                    .any(|choice| choice.get("message").and_then(Value::as_object).is_some())
+            })
 }
 
 /// A 2xx response can still contain a provider-declared failure. Missing

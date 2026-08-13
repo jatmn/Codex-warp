@@ -635,12 +635,17 @@ fn unauthenticated_local_api_rejects_dns_rebinding_hosts() {
         .header(header::HOST, "localhost:8787")
         .body(axum::body::Body::empty())
         .unwrap();
+    let ipv6 = Request::builder()
+        .header(header::HOST, "[::1]:8787")
+        .body(axum::body::Body::empty())
+        .unwrap();
     let attacker = Request::builder()
         .header(header::HOST, "attacker.example:8787")
         .body(axum::body::Body::empty())
         .unwrap();
     assert!(request_host_is_loopback(&local));
     assert!(request_host_is_loopback(&localhost));
+    assert!(request_host_is_loopback(&ipv6));
     assert!(!request_host_is_loopback(&attacker));
 }
 
