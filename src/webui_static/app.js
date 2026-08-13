@@ -4,6 +4,7 @@
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
   let managementToken = sessionStorage.getItem(TOKEN_KEY) || "";
+  let managementTokenPrompt = null;
   let providers = [];
   let providerTemplates = [];
   let selectedTemplateCatalog = [];
@@ -42,18 +43,40 @@
     ),
   };
 
+  function promptForManagementToken() {
+    if (!managementTokenPrompt) {
+      // Publish the promise before prompting so every concurrent 401 joins the
+      // same authentication challenge instead of opening its own dialog.
+      managementTokenPrompt = Promise.resolve()
+        .then(() => window.prompt("This Codex Warp server requires a Web UI token."))
+        .then((token) => {
+          if (token) {
+            managementToken = token;
+            sessionStorage.setItem(TOKEN_KEY, token);
+          }
+          return token;
+        })
+        .finally(() => { managementTokenPrompt = null; });
+    }
+    return managementTokenPrompt;
+  }
+
   async function api(path, opts = {}, allowAuthRetry = true) {
     const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
-    if (managementToken) headers.Authorization = `Bearer ${managementToken}`;
+    const tokenUsed = managementToken;
+    if (tokenUsed) headers.Authorization = `Bearer ${tokenUsed}`;
     const res = await fetch(API + path, {
       ...opts,
       headers,
     });
     if (res.status === 401 && allowAuthRetry) {
-      const token = window.prompt("This Codex Warp server requires a Web UI token.");
+      // Another request may already have completed the shared challenge while
+      // this tokenless request was in flight.
+      if (managementToken && managementToken !== tokenUsed) {
+        return api(path, opts, false);
+      }
+      const token = await promptForManagementToken();
       if (token) {
-        managementToken = token;
-        sessionStorage.setItem(TOKEN_KEY, token);
         return api(path, opts, false);
       }
     }
@@ -61,7 +84,8 @@
     let data = null;
     try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
     if (!res.ok) {
-      if (res.status === 401) {
+      // Do not let a stale in-flight request erase a newer valid credential.
+      if (res.status === 401 && managementToken === tokenUsed) {
         managementToken = "";
         sessionStorage.removeItem(TOKEN_KEY);
       }
@@ -678,9 +702,14 @@
     if (model) qs.set("model", model);
     try {
       const data = await api(`/analytics?${qs}`);
-      analyticsModelIds = (data.by_model || [])
-        .map((row) => row.key)
-        .filter(Boolean);
+      // A model-filtered response deliberately omits the by-model breakdown.
+      // Keep the independent option inventory so the active filter survives
+      // this response and subsequent polling.
+      if (!model) {
+        analyticsModelIds = (data.by_model || [])
+          .map((row) => row.key)
+          .filter(Boolean);
+      }
       fillAnalyticsFilters();
       analyticsSnapshot = {
         data,

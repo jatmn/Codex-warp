@@ -12,6 +12,9 @@ use crate::config::AppConfig;
 use crate::config::ModelCatalogEntry;
 use crate::debug_log::DebugLog;
 use crate::state::AppState;
+use crate::store::AnalyticsRange;
+use crate::store::Store;
+use crate::store::UsageRecorder;
 
 fn test_state() -> AppState {
     AppState {
@@ -88,6 +91,12 @@ fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
 }
 
 #[test]
+fn semantic_completion_requires_a_json_response_payload() {
+    let invalid: Option<&Value> = None;
+    assert!(!invalid.is_some_and(response_reports_completed));
+}
+
+#[test]
 fn semantic_error_normalization_applies_only_to_successful_native_responses() {
     let error = json!({"error": {"message": "rate limited"}});
 
@@ -99,6 +108,25 @@ fn semantic_error_normalization_applies_only_to_successful_native_responses() {
         semantic_error_message_for_success(reqwest::StatusCode::TOO_MANY_REQUESTS, Some(&error)),
         None,
         "native non-success responses must preserve their upstream status and body"
+    );
+}
+
+#[test]
+fn wrapped_chat_payload_drives_error_and_usage_inspection() {
+    let wrapped_error = json!({"data": {"error": {"message": "quota exceeded"}}});
+    assert_eq!(
+        upstream_error_message(chat_completion_payload(&wrapped_error)),
+        Some("quota exceeded".to_string())
+    );
+
+    let wrapped_usage = json!({"data": {"usage": {
+        "prompt_tokens": 7,
+        "completion_tokens": 3,
+        "total_tokens": 10
+    }}});
+    assert_eq!(
+        chat_usage_to_responses_usage(chat_completion_payload(&wrapped_usage).get("usage"))["total_tokens"],
+        10
     );
 }
 
@@ -150,6 +178,65 @@ async fn native_stream_request_preserves_upstream_json_error_status_and_body() {
         json!({"error": {"message": "rate limited"}})
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn native_invalid_success_body_is_not_recorded_as_completed() {
+    let app = axum::Router::new().route(
+        "/responses",
+        axum::routing::post(|| async {
+            (
+                reqwest::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                "not a Responses payload",
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-invalid-success-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let recorder =
+        UsageRecorder::from_request(Some(&store), "alpha", &json!({"model": "test-model"}));
+
+    let response = send_native_responses(
+        test_state(),
+        &ProviderConfig::default(),
+        HeaderMap::new(),
+        format!("http://{addr}/responses"),
+        json!({"model": "test-model"}),
+        false,
+        BTreeSet::new(),
+        "dbg_native_invalid_success".to_string(),
+        recorder,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        store
+            .analytics(AnalyticsRange::Last24Hours, None, None)
+            .unwrap()
+            .prompts,
+        0
+    );
+    server.abort();
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

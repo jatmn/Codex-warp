@@ -22,6 +22,7 @@ use crate::http::error_response;
 use crate::ids::generated_id;
 use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
+use crate::response_codec::chat_completion_payload;
 use crate::response_codec::chat_json_to_responses_with_policy;
 use crate::response_codec::chat_stream_to_responses;
 use crate::response_codec::chat_usage_to_responses_usage;
@@ -195,7 +196,11 @@ pub(crate) async fn proxy_chat_responses(
         }
         match upstream.json::<Value>().await {
             Ok(value) => {
-                if let Some(message) = upstream_error_message(&value) {
+                // Gateways may wrap chat-completion payloads in `data`; use the
+                // same normalized payload for validation, analytics, and the
+                // downstream conversion so those paths cannot disagree.
+                let payload = chat_completion_payload(&value);
+                if let Some(message) = upstream_error_message(payload) {
                     state.debug_log.log_error(
                         json!({
                             "event": "upstream_response",
@@ -207,14 +212,14 @@ pub(crate) async fn proxy_chat_responses(
                     );
                     return error_response(StatusCode::BAD_GATEWAY, message);
                 }
-                let normalized_usage = chat_usage_to_responses_usage(value.get("usage"));
+                let normalized_usage = chat_usage_to_responses_usage(payload.get("usage"));
                 state.debug_log.log_response(
                     json!({
                         "event": "upstream_response",
                         "id": request_log_id,
                         "status": status.as_u16(),
                         "success": true,
-                        "usage": value.get("usage").cloned().unwrap_or(Value::Null),
+                        "usage": payload.get("usage").cloned().unwrap_or(Value::Null),
                         "normalized_usage": normalized_usage.clone()
                     }),
                     Some(&value),
@@ -399,7 +404,7 @@ async fn send_native_responses(
     if status.is_success()
         && response_body
             .as_ref()
-            .is_none_or(response_reports_completed)
+            .is_some_and(response_reports_completed)
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions
