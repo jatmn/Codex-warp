@@ -347,7 +347,9 @@ async fn send_native_responses(
         return response;
     }
 
-    if stream_response {
+    // A streaming request only requires SSE after the upstream has accepted it.
+    // Transport-level failures retain their original status and body below.
+    if stream_response && status.is_success() {
         return error_response(
             StatusCode::BAD_GATEWAY,
             "upstream accepted a streaming request but did not return an SSE response".to_string(),

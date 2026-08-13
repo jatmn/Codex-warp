@@ -1,7 +1,29 @@
 use super::*;
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
+
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::RwLock as AsyncRwLock;
+
 use crate::config::AppConfig;
 use crate::config::ModelCatalogEntry;
+use crate::debug_log::DebugLog;
+use crate::state::AppState;
+
+fn test_state() -> AppState {
+    AppState {
+        config: Arc::new(RwLock::new(AppConfig::default())),
+        client: reqwest::Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        config_revision: Arc::new(AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        store: None,
+    }
+}
 
 fn hicap_config() -> AppConfig {
     toml::from_str(
@@ -78,6 +100,56 @@ fn semantic_error_normalization_applies_only_to_successful_native_responses() {
         None,
         "native non-success responses must preserve their upstream status and body"
     );
+}
+
+#[tokio::test]
+async fn native_stream_request_preserves_upstream_json_error_status_and_body() {
+    let app = axum::Router::new().route(
+        "/responses",
+        axum::routing::post(|| async {
+            (
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                axum::Json(json!({"error": {"message": "rate limited"}})),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+
+    let response = send_native_responses(
+        test_state(),
+        &ProviderConfig::default(),
+        HeaderMap::new(),
+        format!("http://{addr}/responses"),
+        json!({"model": "test-model", "stream": true}),
+        true,
+        BTreeSet::new(),
+        "dbg_native_http_error".to_string(),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.headers().get(axum::http::header::CONTENT_TYPE),
+        Some(&HeaderValue::from_static("application/json"))
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body reads");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).expect("response body is JSON"),
+        json!({"error": {"message": "rate limited"}})
+    );
+    server.abort();
 }
 
 #[test]

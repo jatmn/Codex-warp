@@ -69,7 +69,7 @@ async fn native_failed_stream_does_not_record_usage() {
         "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
         "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
     );
-    native_stream_to_responses(
+    let events = native_stream_to_responses(
         upstream_response_with_body(failed.as_bytes().to_vec()),
         BTreeSet::new(),
         crate::config::ToolPolicyConfig::default(),
@@ -81,11 +81,42 @@ async fn native_failed_stream_does_not_record_usage() {
     .collect::<Vec<_>>()
     .await;
 
+    assert_eq!(
+        events.len(),
+        1,
+        "a terminal failure is forwarded exactly once"
+    );
+    assert!(String::from_utf8_lossy(events[0].as_ref().unwrap()).contains("response.failed"));
+
     let summary = store
         .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
         .unwrap();
     assert_eq!(summary.prompts, 0);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_stream_is_forwarded_once_without_transport_failure() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_native\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_incomplete_terminal".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(events.len(), 2);
+    let terminal = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(terminal.contains("response.incomplete"));
+    assert!(!terminal.contains("response.failed"));
 }
 
 #[tokio::test]
@@ -134,7 +165,7 @@ async fn native_stream_without_completed_event_becomes_response_failed() {
     let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
     assert!(event.contains("response.failed"));
     assert!(event.contains("resp_native"));
-    assert!(event.contains("before response.completed"));
+    assert!(event.contains("before a terminal response event"));
 }
 
 #[tokio::test]
@@ -154,7 +185,7 @@ async fn native_completed_with_failed_status_does_not_record_usage() {
         "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"failed\",",
         "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
     );
-    native_stream_to_responses(
+    let events = native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
         crate::config::ToolPolicyConfig::default(),
@@ -165,6 +196,12 @@ async fn native_completed_with_failed_status_does_not_record_usage() {
     )
     .collect::<Vec<_>>()
     .await;
+
+    assert_eq!(
+        events.len(),
+        1,
+        "a non-success terminal event must not gain a synthetic transport failure"
+    );
 
     let summary = store
         .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)

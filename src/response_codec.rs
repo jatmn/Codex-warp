@@ -176,11 +176,11 @@ pub(crate) fn native_stream_to_responses(
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut pending_usage: Option<Value> = None;
-        let mut completed = false;
+        let mut terminal_received = false;
         let mut usage_recorder = usage_recorder;
         let mut response_id = None;
 
-        while let Some(chunk) = bytes.next().await {
+        'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
@@ -214,9 +214,9 @@ pub(crate) fn native_stream_to_responses(
                     status,
                     &mut pending_usage,
                 );
-                let just_completed = native_sse_frame_completed(&frame);
-                completed |= just_completed;
-                if just_completed {
+                let terminal = native_sse_terminal(&frame);
+                terminal_received |= terminal.is_some();
+                if terminal == Some(NativeSseTerminal::Completed) {
                     if let Some(recorder) = usage_recorder.take() {
                         recorder.record_completed(pending_usage.as_ref());
                     }
@@ -230,20 +230,15 @@ pub(crate) fn native_stream_to_responses(
                 let morphed = morph_native_sse_frame(&frame, &custom_tool_names, &tool_policy);
                 log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
                 yield Ok(Bytes::from(morphed));
+                if terminal.is_some() {
+                    break 'upstream;
+                }
             }
         }
 
-        if completed
-            && let Some(recorder) = usage_recorder.take()
-        {
-            // Mirror chat streams: a successful completion records prompt/session
-            // analytics even when the upstream omitted usage metadata.
-            recorder.record_completed(pending_usage.as_ref());
-        }
-
-        if !completed {
+        if !terminal_received {
             let message = if pending.is_empty() {
-                "upstream Responses stream ended before response.completed"
+                "upstream Responses stream ended before a terminal response event"
             } else {
                 "upstream Responses stream ended with an incomplete SSE frame"
             };
@@ -274,6 +269,35 @@ fn native_sse_response_id(frame: &str) -> Option<String> {
         .get("id")?
         .as_str()
         .map(ToOwned::to_owned)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeSseTerminal {
+    Completed,
+    NonSuccess,
+}
+
+/// Classify response-level terminal events independently from success. Native
+/// streams can finish successfully, fail, be cancelled, or be incomplete; all
+/// of those outcomes make EOF expected, but only a completed response records
+/// successful usage analytics.
+fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
+    let data = sse_data(frame)?;
+    let value = serde_json::from_str::<Value>(&data).ok()?;
+    match value.get("type").and_then(Value::as_str)? {
+        "response.completed" => match value
+            .get("response")
+            .and_then(|response| response.get("status"))
+            .and_then(Value::as_str)
+        {
+            None | Some("completed") => Some(NativeSseTerminal::Completed),
+            _ => Some(NativeSseTerminal::NonSuccess),
+        },
+        "response.failed" | "response.cancelled" | "response.incomplete" => {
+            Some(NativeSseTerminal::NonSuccess)
+        }
+        _ => None,
+    }
 }
 
 fn chat_failed_event(response_id: &str, message: impl Into<String>) -> String {
@@ -334,33 +358,14 @@ pub(crate) fn log_native_usage_from_sse_chunk(
             continue;
         };
         log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status, pending_usage);
-        completed |= native_sse_frame_completed(&frame);
+        completed |= native_sse_terminal(&frame) == Some(NativeSseTerminal::Completed);
     }
     completed
 }
 
+#[cfg(test)]
 fn native_sse_frame_completed(frame: &str) -> bool {
-    let Some(data) = sse_data(frame) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&data) else {
-        return false;
-    };
-    if value.get("type").and_then(Value::as_str) != Some("response.completed") {
-        return false;
-    }
-    // Only treat a successful completion as done. Some upstreams can emit
-    // `response.completed` with a non-success `response.status`; those must not
-    // count as recorded successful prompts/sessions. Missing status is treated
-    // as success for minimal upstream payloads that omit the nested field.
-    match value
-        .get("response")
-        .and_then(|response| response.get("status"))
-        .and_then(Value::as_str)
-    {
-        None | Some("completed") => true,
-        _ => false,
-    }
+    native_sse_terminal(frame) == Some(NativeSseTerminal::Completed)
 }
 
 pub(crate) fn log_native_usage_from_sse_frame(
