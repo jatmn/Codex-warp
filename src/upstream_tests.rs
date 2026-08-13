@@ -44,6 +44,21 @@ fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
 }
 
 #[test]
+fn semantic_error_normalization_applies_only_to_successful_native_responses() {
+    let error = json!({"error": {"message": "rate limited"}});
+
+    assert_eq!(
+        semantic_error_message_for_success(reqwest::StatusCode::OK, Some(&error)),
+        Some("rate limited".to_string())
+    );
+    assert_eq!(
+        semantic_error_message_for_success(reqwest::StatusCode::TOO_MANY_REQUESTS, Some(&error)),
+        None,
+        "native non-success responses must preserve their upstream status and body"
+    );
+}
+
+#[test]
 fn rewrite_model_for_upstream_uses_manual_catalog_alias() {
     let provider = ProviderConfig {
         model_catalog: vec![ModelCatalogEntry {

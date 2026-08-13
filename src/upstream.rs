@@ -355,7 +355,7 @@ async fn send_native_responses(
     };
     let usage = response_usage_from_bytes(&bytes);
     let response_body = serde_json::from_slice::<Value>(&bytes).ok();
-    if let Some(message) = response_body.as_ref().and_then(upstream_error_message) {
+    if let Some(message) = semantic_error_message_for_success(status, response_body.as_ref()) {
         state.debug_log.log_error(
             json!({
                 "event": "upstream_response",
@@ -405,6 +405,20 @@ async fn send_native_responses(
     *response.status_mut() = status;
     copy_content_type(&upstream_headers, response.headers_mut());
     response
+}
+
+/// Error envelopes from a successful transport response are protocol failures,
+/// but a non-success transport response must retain its upstream HTTP status
+/// and body so clients can distinguish validation, authentication, and rate
+/// limit failures from a proxy failure.
+fn semantic_error_message_for_success(
+    status: reqwest::StatusCode,
+    response_body: Option<&Value>,
+) -> Option<String> {
+    status
+        .is_success()
+        .then(|| response_body.and_then(upstream_error_message))
+        .flatten()
 }
 
 /// A 2xx response can still contain a provider-declared failure. Missing
