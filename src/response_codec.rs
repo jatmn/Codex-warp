@@ -106,7 +106,12 @@ pub(crate) fn chat_stream_to_responses(
                 response_observed |= payload
                     .get("choices")
                     .and_then(Value::as_array)
-                    .is_some_and(|choices| !choices.is_empty());
+                    .and_then(|choices| choices.first())
+                    .and_then(Value::as_object)
+                    .is_some_and(|choice| {
+                        choice.get("delta").and_then(Value::as_object).is_some()
+                            || choice.get("finish_reason").and_then(Value::as_str).is_some()
+                    });
                 if let Some(usage) = payload.get("usage")
                     && !usage.is_null()
                 {

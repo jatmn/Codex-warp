@@ -1343,6 +1343,25 @@ async fn done_only_chat_stream_is_not_a_completed_response() {
     }));
 }
 
+#[tokio::test]
+async fn malformed_choice_does_not_complete_chat_stream() {
+    let events = chat_stream_to_responses(
+        upstream_response_with_body(b"data: {\"choices\":[null]}\n\ndata: [DONE]\n\n".to_vec()),
+        "resp_bad_choice".to_string(),
+        BTreeSet::new(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_bad_choice".to_string(),
+        ContinueGuardState::default(),
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().unwrap()).contains("response.failed")
+    }));
+}
+
 #[test]
 fn native_completed_requires_response_object() {
     assert_eq!(
