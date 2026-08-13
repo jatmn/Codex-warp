@@ -1150,6 +1150,11 @@ fn upstream_error_message_accepts_openai_error_shapes() {
         upstream_error_message(&json!({"error": "upstream failed"})),
         Some("upstream failed".to_string())
     );
+    assert_eq!(
+        upstream_error_message(&json!({"id": "resp_123", "error": null})),
+        None,
+        "successful Responses payloads commonly include an explicit null error field"
+    );
 }
 
 #[tokio::test]

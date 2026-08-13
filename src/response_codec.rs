@@ -169,6 +169,7 @@ pub(crate) fn chat_stream_to_responses(
 pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     let error = value.get("error")?;
     match error {
+        Value::Null => None,
         Value::String(message) if !message.is_empty() => Some(message.clone()),
         Value::Object(_) => error
             .get("message")
