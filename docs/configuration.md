@@ -323,7 +323,9 @@ Without `auth_token_env`, it is an intentionally unsafe compatibility switch
 for trusted networks. Codex Warp does not terminate TLS, so authenticated remote
 deployments should still use a trusted network or TLS reverse proxy.
 
-After enabling it, open `http://127.0.0.1:8787/ui/` while the proxy is running.
+After enabling it, open `http://<configured-listen-address>/ui/` while the
+proxy is running (the startup log prints the exact URL). With the default
+`listen` setting, this is `http://127.0.0.1:8787/ui/`.
 
 The UI can:
 
