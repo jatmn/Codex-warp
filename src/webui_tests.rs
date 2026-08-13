@@ -453,6 +453,67 @@ async fn removing_model_route_refetches_live_only_fallback_owner() {
 }
 
 #[tokio::test]
+async fn disabling_provider_refetches_live_only_fallback_owner() {
+    let app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "shared", "object": "model"}]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                enabled: false,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: format!("http://{address}"),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let _mutation = state.mutation_lock.lock().await;
+    assert!(
+        sync_provider_routes_for_enabled(&state, "alpha", false)
+            .await
+            .is_ok()
+    );
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn catalog_upsert_disabling_model_rebuilds_its_route() {
     let state = test_state();
     {

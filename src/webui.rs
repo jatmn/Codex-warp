@@ -541,11 +541,13 @@ async fn sync_provider_routes_for_enabled(
         }
     } else {
         remove_provider_model_routes(state, provider_id).await;
-        // No upstream fetch: seeds reassign catalog ownership and retained prior
-        // discovery covers other providers' upstream-only slugs.
+        // `model_routes` retains only the winning owner for a discovered slug,
+        // so another provider's colliding live-only model cannot be recovered
+        // from seeds or retained routes. Rebuild discovery to let it claim the
+        // route immediately after this provider is disabled.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
             state,
-            models::MutationRouteRefresh::SeedsAndRetain,
+            models::MutationRouteRefresh::RefetchAll,
             None,
         )
         .await
