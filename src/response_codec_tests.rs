@@ -984,6 +984,23 @@ fn native_function_calls_for_morphed_custom_tools_are_restored() {
 }
 
 #[test]
+fn cr_only_native_sse_frames_are_morphed() {
+    let frame = concat!(
+        "event: response.output_item.done\r",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"type\":\"function_call\",\"name\":\"apply_patch\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["apply_patch".to_string()]),
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("custom_tool_call"));
+    assert!(morphed.contains("\"input\":\"patch\""));
+}
+
+#[test]
 fn complete_sse_frame_decodes_split_utf8_without_loss() {
     let frame = "data: {\"text\":\"hello 🌊\"}\n\n";
     let split = frame.find('🌊').expect("emoji is present") + 1;

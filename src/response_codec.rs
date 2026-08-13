@@ -1324,7 +1324,8 @@ pub(crate) fn morph_native_sse_frame(
     let mut event_lines = Vec::new();
     let mut data_lines = Vec::new();
 
-    for line in frame.lines() {
+    let normalized = frame.replace("\r\n", "\n").replace('\r', "\n");
+    for line in normalized.lines() {
         if let Some(data) = line.strip_prefix("data:") {
             data_lines.push(data.trim_start());
         } else {
