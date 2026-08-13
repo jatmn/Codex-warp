@@ -152,7 +152,7 @@ fn initialize_state_replays_persisted_overlays_and_seeds_routes() {
         Some("alpha")
     );
 
-    std::fs::remove_dir_all(dir).expect("remove test directory");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn destination_override_wins_after_overlay_replay() {
     apply_destination_override(&mut config, Some("https://cli.example/v1".to_string()));
     assert_eq!(config.provider.base_url, "https://cli.example/v1");
 
-    std::fs::remove_dir_all(dir).expect("remove test directory");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -254,7 +254,7 @@ fn destination_bootstraps_default_provider_before_overlay_replay() {
     );
     assert!(!config.provider.enabled);
 
-    std::fs::remove_dir_all(dir).expect("remove test directory");
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

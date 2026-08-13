@@ -311,7 +311,7 @@ async fn native_invalid_success_body_is_not_recorded_as_completed() {
         0
     );
     server.abort();
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
