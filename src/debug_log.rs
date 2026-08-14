@@ -594,6 +594,11 @@ pub(crate) fn request_debug_summary(body: &Value) -> Value {
         "messages": messages_debug_summary(body),
         "input": input_debug_summary(body),
         "tools": tools_debug_summary(body),
+        "response_format_type": body
+            .get("response_format")
+            .and_then(|format| format.get("type"))
+            .cloned()
+            .unwrap_or(Value::Null),
         "body_fingerprint": stable_fingerprint(body)
     })
 }

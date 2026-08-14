@@ -1,6 +1,7 @@
 mod config;
 mod config_loader;
 mod debug_log;
+mod guardian_compat;
 mod http;
 mod ids;
 mod models;
@@ -10,6 +11,7 @@ mod response_codec;
 mod server;
 mod state;
 mod store;
+mod structured_output;
 mod tool_policy;
 mod transform;
 mod transform_morph;

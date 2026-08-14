@@ -141,8 +141,42 @@ pub(crate) fn chat_stream_to_responses(
             }
         }
 
-        if !completed || !response_observed {
-            yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream chat stream ended before [DONE]")));
+        if completed {
+            if !response_observed {
+                debug_log.log(json!({
+                    "event": "upstream_stream_complete",
+                    "id": request_log_id,
+                    "backend": "open_ai_chat",
+                    "completion": "truncated_eof"
+                }));
+                let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
+                log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
+                yield Ok(Bytes::from(failed));
+                return;
+            }
+            debug_log.log(json!({
+                "event": "upstream_stream_complete",
+                "id": request_log_id,
+                "backend": "open_ai_chat",
+                "completion": "upstream_done"
+            }));
+        } else if state.has_semantic_terminal_finish_reason() {
+            debug_log.log(json!({
+                "event": "upstream_stream_complete",
+                "id": request_log_id,
+                "backend": "open_ai_chat",
+                "completion": "semantic_terminal_eof"
+            }));
+        } else {
+            debug_log.log(json!({
+                "event": "upstream_stream_complete",
+                "id": request_log_id,
+                "backend": "open_ai_chat",
+                "completion": "truncated_eof"
+            }));
+            let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
+            log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
+            yield Ok(Bytes::from(failed));
             return;
         }
 
@@ -484,6 +518,13 @@ pub(crate) fn downstream_stream_debug_summary(frame: &str) -> Value {
     })
 }
 
+fn is_terminal_chat_finish_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "stop" | "length" | "tool_calls" | "content_filter" | "function_call"
+    )
+}
+
 #[derive(Default)]
 pub(crate) struct ChatAccum {
     pub(crate) message_item_id: Option<String>,
@@ -631,6 +672,12 @@ impl ChatAccum {
             }
         }
         events
+    }
+
+    fn has_semantic_terminal_finish_reason(&self) -> bool {
+        self.finish_reason
+            .as_deref()
+            .is_some_and(is_terminal_chat_finish_reason)
     }
 
     pub(crate) fn finish(

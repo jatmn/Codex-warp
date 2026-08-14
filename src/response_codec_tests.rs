@@ -6,6 +6,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use serde_json::json;
 
+use crate::config::DebugConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
 use crate::store::Store;
@@ -1503,5 +1504,214 @@ fn chat_reasoning_text_handles_non_array_reasoning_details() {
     assert_eq!(
         chat_reasoning_text(&json!({ "reasoning_details": { "type": "other" } })),
         None
+    );
+}
+
+fn collect_chat_stream_text(events: Vec<Result<Bytes, std::io::Error>>) -> Vec<String> {
+    events
+        .into_iter()
+        .map(|event| String::from_utf8(event.expect("stream item succeeds").to_vec()).unwrap())
+        .collect()
+}
+
+fn temp_debug_log(label: &str) -> (DebugLog, std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-{label}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("debug.jsonl");
+    let debug_log = DebugLog::new(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        ..DebugConfig::default()
+    });
+    (debug_log, path, dir)
+}
+
+fn debug_completion_kinds(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "upstream_stream_complete")
+        .filter_map(|event| event["completion"].as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn chat_stream_done_marker_still_completes() {
+    let (debug_log, path, dir) = temp_debug_log("chat-done");
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream_response_with_body(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec(),
+            ),
+            "resp_done".to_string(),
+            BTreeSet::new(),
+            crate::config::ToolPolicyConfig::default(),
+            debug_log,
+            "dbg_done".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("response.completed"))
+    );
+    assert!(events.iter().any(|event| event.contains("data: [DONE]")));
+    assert_eq!(
+        debug_completion_kinds(&path),
+        vec!["upstream_done".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn chat_stream_stop_without_done_completes() {
+    let (debug_log, path, dir) = temp_debug_log("chat-stop-eof");
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream_response_with_body(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n".to_vec(),
+            ),
+            "resp_stop_eof".to_string(),
+            BTreeSet::new(),
+            crate::config::ToolPolicyConfig::default(),
+            debug_log,
+            "dbg_stop_eof".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("response.output_item.done"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("response.completed"))
+    );
+    assert!(events.iter().any(|event| event.contains("data: [DONE]")));
+    assert!(!events.iter().any(|event| event.contains("response.failed")));
+    assert_eq!(
+        debug_completion_kinds(&path),
+        vec!["semantic_terminal_eof".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn chat_stream_tool_calls_without_done_completes() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",",
+        "\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+    );
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream_response_with_body(body.as_bytes().to_vec()),
+            "resp_tools_eof".to_string(),
+            BTreeSet::new(),
+            crate::config::ToolPolicyConfig::default(),
+            DebugLog::disabled(),
+            "dbg_tools_eof".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("\"name\":\"shell\""))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("response.completed"))
+    );
+    assert!(events.iter().any(|event| event.contains("data: [DONE]")));
+    assert!(!events.iter().any(|event| event.contains("response.failed")));
+}
+
+#[tokio::test]
+async fn chat_stream_content_without_finish_reason_or_done_fails() {
+    let (debug_log, path, dir) = temp_debug_log("chat-truncated");
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream_response_with_body(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_vec(),
+            ),
+            "resp_truncated".to_string(),
+            BTreeSet::new(),
+            crate::config::ToolPolicyConfig::default(),
+            debug_log,
+            "dbg_truncated".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(events.iter().any(|event| event.contains("response.failed")));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.contains("response.completed"))
+    );
+    assert_eq!(
+        debug_completion_kinds(&path),
+        vec!["truncated_eof".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn chat_stream_transport_error_still_fails() {
+    let stream = futures_util::stream::iter([
+        Ok::<Bytes, std::io::Error>(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        )),
+        Err(std::io::Error::other("connection reset")),
+    ]);
+    let upstream = axum::http::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .body(reqwest::Body::wrap_stream(stream))
+        .expect("test response builds")
+        .into();
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream,
+            "resp_transport".to_string(),
+            BTreeSet::new(),
+            crate::config::ToolPolicyConfig::default(),
+            DebugLog::disabled(),
+            "dbg_transport".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(events.iter().any(|event| event.contains("response.failed")));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.contains("response.completed"))
     );
 }

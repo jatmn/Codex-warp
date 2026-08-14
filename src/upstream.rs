@@ -16,6 +16,8 @@ use crate::config::AppConfig;
 use crate::config::ProviderConfig;
 use crate::config_loader::resolve_provider_alias;
 use crate::debug_log::request_debug_summary;
+use crate::guardian_compat::apply_guardian_compat_shim_from_source;
+use crate::guardian_compat::guardian_compat_debug_event;
 use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
 use crate::http::endpoint_url;
@@ -34,6 +36,15 @@ use crate::response_codec::upstream_error_message;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::UsageRecorder;
+use crate::structured_output::FallbackOutcome;
+use crate::structured_output::STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE;
+use crate::structured_output::StructuredOutputCapability;
+use crate::structured_output::chat_json_schema_requested;
+use crate::structured_output::is_unsupported_response_format_error;
+use crate::structured_output::json_object_fallback_body;
+use crate::structured_output::json_schema_debug_summary;
+use crate::structured_output::structured_output_cache_key;
+use crate::structured_output::structured_output_compat_event;
 use crate::transform::native_custom_tool_names;
 use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
@@ -117,9 +128,55 @@ pub(crate) async fn proxy_chat_responses(
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
-    let chat_transform = responses_to_chat(body, &selected.transform);
+    let chat_transform = responses_to_chat(body.clone(), &selected.transform);
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
+    let mut original_chat_body = chat_transform.body;
+    let guardian_compat_applied =
+        apply_guardian_compat_shim_from_source(&mut original_chat_body, &body);
+    if guardian_compat_applied {
+        state
+            .debug_log
+            .log(guardian_compat_debug_event(&request_log_id, true));
+    }
+    let cache_key = structured_output_cache_key(
+        &selected.provider.base_url,
+        original_chat_body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    let json_schema_requested = chat_json_schema_requested(&original_chat_body);
+    let cached_capability = json_schema_requested
+        .then(|| state.structured_output.lookup(&cache_key))
+        .flatten();
+    if cached_capability == Some(StructuredOutputCapability::Unsupported) {
+        log_structured_output_compat(
+            &state,
+            &request_log_id,
+            false,
+            false,
+            FallbackOutcome::NotAttempted,
+            cached_capability,
+        );
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
+        );
+    }
+
+    let mut outbound_body = if cached_capability == Some(StructuredOutputCapability::JsonObjectOnly)
+    {
+        json_object_fallback_body(&original_chat_body)
+    } else {
+        original_chat_body.clone()
+    };
+    let json_schema_attempted = json_schema_requested
+        && cached_capability != Some(StructuredOutputCapability::JsonObjectOnly);
+    let mut fallback_retry = false;
+    let mut fallback_outcome = FallbackOutcome::NotAttempted;
+    let mut cache_capability = cached_capability;
+
     state.debug_log.log_request(
         json!({
             "event": "upstream_request",
@@ -129,63 +186,174 @@ pub(crate) async fn proxy_chat_responses(
             "provider_name": provider_display_name(&selected.id, &selected.provider),
             "url": url,
             "original_request": original_summary,
-            "request": request_debug_summary(&chat_transform.body),
-            "transform": chat_transform.diagnostics
+            "request": request_debug_summary(&outbound_body),
+            "transform": chat_transform.diagnostics,
+            "json_schema_attempted": json_schema_attempted,
+            "guardian_compat_applied": guardian_compat_applied,
+            "response_format": json_schema_debug_summary(&outbound_body)
         }),
-        &chat_transform.body,
+        &outbound_body,
     );
-    let request = match build_upstream_json_request(
-        &state.client,
-        url,
-        &chat_transform.body,
+    let upstream = match send_chat_completions(
+        &state,
+        url.clone(),
+        &outbound_body,
         &selected.provider,
         &headers,
-        "text/event-stream",
-    ) {
-        Ok(request) => request,
-        Err(err) => {
-            state.debug_log.log_error(
-                json!({
-                    "event": "upstream_response",
-                    "id": request_log_id,
-                    "status": StatusCode::BAD_GATEWAY.as_u16(),
-                    "success": false
-                }),
-                &err,
-            );
-            return error_response(StatusCode::BAD_GATEWAY, err);
-        }
+        &request_log_id,
+    )
+    .await
+    {
+        Ok(upstream) => upstream,
+        Err(response) => return response,
     };
 
-    let upstream = match state.client.execute(request).await {
-        Ok(response) => response,
-        Err(err) => {
-            state.debug_log.log_error(
-                json!({
-                    "event": "upstream_response",
-                    "id": request_log_id,
-                    "status": StatusCode::BAD_GATEWAY.as_u16(),
-                    "success": false
-                }),
-                &err.to_string(),
-            );
-            return error_response(StatusCode::BAD_GATEWAY, err.to_string());
+    let mut status = upstream.status();
+    let upstream = if status.is_success() {
+        if json_schema_attempted {
+            cache_capability = Some(StructuredOutputCapability::JsonSchema);
+            state
+                .structured_output
+                .remember(cache_key.clone(), StructuredOutputCapability::JsonSchema);
         }
-    };
-
-    let status = upstream.status();
-    if !status.is_success() {
+        upstream
+    } else {
         let text = upstream.text().await.unwrap_or_default();
         state.debug_log.log_error(
             json!({
                 "event": "upstream_response",
                 "id": request_log_id,
                 "status": status.as_u16(),
-                "success": false
+                "success": false,
+                "json_schema_attempted": json_schema_attempted,
+                "fallback_retry": false
             }),
             &text,
         );
-        return error_response(status, text);
+        let format_rejected = is_unsupported_response_format_error(status, &text);
+        // Classify from the format that was sent, not from whether this request
+        // started as a json_schema probe. Cached JsonObjectOnly requests already
+        // send json_object; a format rejection there is the same incompatibility
+        // as a rejected json_object retry.
+        if cached_capability == Some(StructuredOutputCapability::JsonObjectOnly) && format_rejected
+        {
+            return structured_output_incompatible_response(
+                &state,
+                &request_log_id,
+                cache_key,
+                json_schema_attempted,
+                false,
+            );
+        }
+        if !(json_schema_attempted && format_rejected) {
+            if json_schema_requested {
+                log_structured_output_compat(
+                    &state,
+                    &request_log_id,
+                    json_schema_attempted,
+                    false,
+                    FallbackOutcome::NotAttempted,
+                    cache_capability,
+                );
+            }
+            return error_response(status, text);
+        }
+
+        fallback_retry = true;
+        outbound_body = json_object_fallback_body(&original_chat_body);
+        state.debug_log.log_request(
+            json!({
+                "event": "upstream_request",
+                "id": request_log_id,
+                "backend": "open_ai_chat",
+                "provider_id": selected.id.clone(),
+                "provider_name": provider_display_name(&selected.id, &selected.provider),
+                "url": url,
+                "request": request_debug_summary(&outbound_body),
+                "json_schema_attempted": true,
+                "fallback_retry": true,
+                "guardian_compat_applied": guardian_compat_applied,
+                "response_format": json_schema_debug_summary(&outbound_body)
+            }),
+            &outbound_body,
+        );
+        let retry = match send_chat_completions(
+            &state,
+            url,
+            &outbound_body,
+            &selected.provider,
+            &headers,
+            &request_log_id,
+        )
+        .await
+        {
+            Ok(retry) => retry,
+            Err(response) => {
+                fallback_outcome = FallbackOutcome::Failed;
+                log_structured_output_compat(
+                    &state,
+                    &request_log_id,
+                    true,
+                    true,
+                    fallback_outcome,
+                    cache_capability,
+                );
+                return response;
+            }
+        };
+        status = retry.status();
+        if !status.is_success() {
+            let retry_text = retry.text().await.unwrap_or_default();
+            fallback_outcome = FallbackOutcome::Failed;
+            let format_rejected = is_unsupported_response_format_error(status, &retry_text);
+            state.debug_log.log_error(
+                json!({
+                    "event": "upstream_response",
+                    "id": request_log_id,
+                    "status": status.as_u16(),
+                    "success": false,
+                    "json_schema_attempted": true,
+                    "fallback_retry": true,
+                    "fallback_outcome": fallback_outcome.as_str()
+                }),
+                &retry_text,
+            );
+            if format_rejected {
+                return structured_output_incompatible_response(
+                    &state,
+                    &request_log_id,
+                    cache_key,
+                    true,
+                    true,
+                );
+            }
+            log_structured_output_compat(
+                &state,
+                &request_log_id,
+                true,
+                true,
+                fallback_outcome,
+                cache_capability,
+            );
+            return error_response(status, retry_text);
+        }
+        fallback_outcome = FallbackOutcome::Success;
+        cache_capability = Some(StructuredOutputCapability::JsonObjectOnly);
+        state
+            .structured_output
+            .remember(cache_key, StructuredOutputCapability::JsonObjectOnly);
+        retry
+    };
+
+    if json_schema_requested {
+        log_structured_output_compat(
+            &state,
+            &request_log_id,
+            json_schema_attempted,
+            fallback_retry,
+            fallback_outcome,
+            cache_capability,
+        );
     }
 
     let upstream_is_sse = should_stream_upstream(stream_requested, status, upstream.headers());
@@ -296,6 +464,94 @@ pub(crate) async fn proxy_chat_responses(
             }
         }
     }
+}
+
+async fn send_chat_completions(
+    state: &AppState,
+    url: String,
+    body: &Value,
+    provider: &ProviderConfig,
+    headers: &HeaderMap,
+    request_log_id: &str,
+) -> Result<reqwest::Response, Response> {
+    let request = match build_upstream_json_request(
+        &state.client,
+        url,
+        body,
+        provider,
+        headers,
+        "text/event-stream",
+    ) {
+        Ok(request) => request,
+        Err(err) => {
+            state.debug_log.log_error(
+                json!({
+                    "event": "upstream_response",
+                    "id": request_log_id,
+                    "status": StatusCode::BAD_GATEWAY.as_u16(),
+                    "success": false
+                }),
+                &err,
+            );
+            return Err(error_response(StatusCode::BAD_GATEWAY, err));
+        }
+    };
+    match state.client.execute(request).await {
+        Ok(response) => Ok(response),
+        Err(err) => {
+            state.debug_log.log_error(
+                json!({
+                    "event": "upstream_response",
+                    "id": request_log_id,
+                    "status": StatusCode::BAD_GATEWAY.as_u16(),
+                    "success": false
+                }),
+                &err.to_string(),
+            );
+            Err(error_response(StatusCode::BAD_GATEWAY, err.to_string()))
+        }
+    }
+}
+
+fn structured_output_incompatible_response(
+    state: &AppState,
+    request_log_id: &str,
+    cache_key: String,
+    json_schema_attempted: bool,
+    fallback_retry: bool,
+) -> Response {
+    state
+        .structured_output
+        .remember(cache_key, StructuredOutputCapability::Unsupported);
+    log_structured_output_compat(
+        state,
+        request_log_id,
+        json_schema_attempted,
+        fallback_retry,
+        FallbackOutcome::Failed,
+        Some(StructuredOutputCapability::Unsupported),
+    );
+    error_response(
+        StatusCode::BAD_REQUEST,
+        STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
+    )
+}
+
+fn log_structured_output_compat(
+    state: &AppState,
+    request_log_id: &str,
+    json_schema_attempted: bool,
+    fallback_retry: bool,
+    fallback_outcome: FallbackOutcome,
+    cache_capability: Option<StructuredOutputCapability>,
+) {
+    state.debug_log.log(structured_output_compat_event(
+        request_log_id,
+        json_schema_attempted,
+        fallback_retry,
+        fallback_outcome,
+        cache_capability,
+    ));
 }
 
 pub(crate) fn rewrite_model_for_upstream(

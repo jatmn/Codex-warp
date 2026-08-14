@@ -18,15 +18,15 @@ use crate::store::AnalyticsRange;
 use crate::store::ensure_provider_exists;
 
 fn test_state() -> AppState {
-    AppState {
-        config: Arc::new(RwLock::new(AppConfig::default())),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        store: None,
-    }
+    AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        None,
+    )
 }
 
 #[test]
@@ -677,15 +677,15 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&dir.join("overlay.db")).unwrap();
-    let state = AppState {
-        config: Arc::new(RwLock::new(AppConfig::default())),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        store: Some(store),
-    };
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        Some(store),
+    );
     {
         let mut config = state.config.write().expect("config lock");
         config.providers.insert(

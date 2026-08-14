@@ -182,6 +182,8 @@ file:
 | `src/config_loader.rs` | Config includes, TOML merging, and provider lookup. |
 | `src/models.rs` | `/models` catalog fetching, sorting, and metadata shaping. |
 | `src/upstream.rs` | Upstream request dispatch and response plumbing. |
+| `src/structured_output.rs` | Chat Completions JSON Schema compatibility fallback. |
+| `src/guardian_compat.rs` | Guardian auto-review prompt compatibility shim. |
 | `src/response_codec.rs` | SSE, chat/responses conversion, and usage normalization. |
 | `src/transform.rs` | Responses-to-chat request/tool/history conversion. |
 | `src/transform_morph.rs` | Configured request morphs and dotted-path edits. |
