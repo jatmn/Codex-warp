@@ -70,14 +70,17 @@ an agent action may self-approve. That request uses Responses `text.format` with
 `response_format.type = "json_schema"` first, so gateways that support strict
 structured output keep it.
 
-If the upstream returns HTTP 400 and the error is clearly about
-`response_format`, JSON Schema, or unavailable structured output, Warp retries
-the same request once with `response_format.type = "json_object"` and a concise
-system instruction to return one JSON object matching the original schema. The
-retry is global Chat Completions behavior, not a per-provider workaround and not
-a tool-policy decision. Unrelated 400s, authentication errors, rate limits, and
-timeouts are not retried. If `json_object` also fails, Warp returns a structured
-output incompatibility error so Codex can require manual approval.
+If the upstream returns HTTP 400 and the error object is clearly about an
+unsupported `response_format` type, JSON Schema, or unavailable structured
+output, Warp retries the same request once with
+`response_format.type = "json_object"` and a concise system instruction to
+return one JSON object matching the original schema. The retry is global Chat
+Completions behavior, not a per-provider workaround and not a tool-policy
+decision. Unrelated 400s, authentication errors, rate limits, and timeouts are
+not retried. If `json_object` is also rejected as an unsupported response
+format, Warp returns a structured-output incompatibility error so Codex can
+require manual approval. Other fallback failures are forwarded and do not mark
+the model as incompatible.
 
 A short-lived in-memory cache keyed by upstream base URL plus model remembers
 whether that pair supports `json_schema`, only `json_object`, or no structured

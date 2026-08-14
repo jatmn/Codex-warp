@@ -179,63 +179,103 @@ pub(crate) fn is_unsupported_response_format_error(status: StatusCode, body: &st
     if status != StatusCode::BAD_REQUEST {
         return false;
     }
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if error_value_indicates_unsupported_response_format(&value) {
-            return true;
-        }
-        if let Some(error) = value.get("error")
-            && error_value_indicates_unsupported_response_format(error)
-        {
-            return true;
-        }
-        if let Some(error) = value.get("data").and_then(|data| data.get("error"))
-            && error_value_indicates_unsupported_response_format(error)
-        {
-            return true;
-        }
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) => structured_error_indicates_unsupported_response_format(&value),
+        Err(_) => text_indicates_unsupported_response_format(body),
     }
-    text_indicates_unsupported_response_format(body)
+}
+
+fn structured_error_indicates_unsupported_response_format(value: &Value) -> bool {
+    if error_value_indicates_unsupported_response_format(value) {
+        return true;
+    }
+    if let Some(error) = value.get("error")
+        && error_value_indicates_unsupported_response_format(error)
+    {
+        return true;
+    }
+    if let Some(error) = value.get("data").and_then(|data| data.get("error"))
+        && error_value_indicates_unsupported_response_format(error)
+    {
+        return true;
+    }
+    false
 }
 
 fn error_value_indicates_unsupported_response_format(error: &Value) -> bool {
-    let param = error.get("param").and_then(Value::as_str).unwrap_or("");
-    if param_indicates_response_format(param) {
-        return true;
+    if let Some(text) = error.as_str() {
+        return text_indicates_unsupported_response_format(text);
     }
-    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
-    if text_indicates_unsupported_response_format(code) {
-        return true;
+    let param = error
+        .get("param")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let diagnostic = error_diagnostic_text(error);
+    let lower = diagnostic.to_ascii_lowercase();
+    if param_indicates_format_type_field(&param) {
+        return indicates_format_field_rejection(&lower);
     }
-    let message = error.get("message").and_then(Value::as_str).unwrap_or("");
-    text_indicates_unsupported_response_format(message)
+    if param_indicates_schema_contents(&param) {
+        return indicates_format_type_unavailability(&lower);
+    }
+    text_indicates_unsupported_response_format(&diagnostic)
 }
 
-fn param_indicates_response_format(param: &str) -> bool {
-    let param = param.to_ascii_lowercase();
-    param == "response_format"
-        || param == "text.format"
-        || param == "json_schema"
+fn error_diagnostic_text(error: &Value) -> String {
+    let code = error.get("code").and_then(Value::as_str).unwrap_or("");
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("");
+    match (code.is_empty(), message.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => message.to_string(),
+        (false, true) => code.to_string(),
+        (false, false) => format!("{code} {message}"),
+    }
+}
+
+fn param_indicates_format_type_field(param: &str) -> bool {
+    matches!(
+        param,
+        "response_format" | "response_format.type" | "text.format" | "text.format.type"
+    )
+}
+
+fn param_indicates_schema_contents(param: &str) -> bool {
+    param == "json_schema"
+        || param == "json_object"
         || param.starts_with("response_format.")
+        || param.starts_with("text.format.")
 }
 
 fn text_indicates_unsupported_response_format(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    let mentions_structured_output = lower.contains("response_format")
-        || lower.contains("json_schema")
+    let mentions_response_format =
+        lower.contains("response_format") || lower.contains("text.format");
+    let mentions_schema_type = lower.contains("json_schema")
         || lower.contains("json schema")
+        || lower.contains("json_object")
         || lower.contains("structured output")
         || lower.contains("structured_output");
-    if !mentions_structured_output {
-        return false;
+    if mentions_response_format {
+        return indicates_format_field_rejection(&lower);
     }
+    mentions_schema_type && indicates_format_type_unavailability(&lower)
+}
+
+fn indicates_format_field_rejection(lower: &str) -> bool {
+    indicates_format_type_unavailability(lower) || lower.contains("invalid")
+}
+
+fn indicates_format_type_unavailability(lower: &str) -> bool {
     lower.contains("unavailable")
         || lower.contains("unsupported")
         || lower.contains("not supported")
         || lower.contains("not available")
-        || lower.contains("invalid")
         || lower.contains("unknown")
         || lower.contains("not allowed")
         || lower.contains("disabled")
+        || lower.contains("not a valid")
+        || lower.contains("supported values")
 }
 
 pub(crate) fn json_object_fallback_body(original: &Value) -> Value {

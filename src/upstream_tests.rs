@@ -748,6 +748,163 @@ async fn json_object_fallback_failure_returns_structured_output_error() {
 }
 
 #[tokio::test]
+async fn json_object_fallback_unrelated_failure_is_forwarded() {
+    let (base_url, bodies, server) = spawn_chat_script(vec![
+        (
+            400,
+            json!({"error": {"message": "This response_format type is unavailable now"}}),
+        ),
+        (429, json!({"error": {"message": "rate limited"}})),
+        (200, successful_chat_completion()),
+    ])
+    .await;
+    let state = test_state();
+    let selected = selected_provider_at(&base_url);
+    let first = proxy_chat_responses(
+        state.clone(),
+        selected.clone(),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+    let first_body = response_json(first).await;
+    let first_message = first_body["error"]["message"]
+        .as_str()
+        .expect("error message");
+    assert!(first_message.contains("rate limited"));
+    assert_ne!(first_message, STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE);
+
+    let second = proxy_chat_responses(
+        state,
+        selected,
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(seen[0]["response_format"]["type"], "json_schema");
+    assert_eq!(seen[1]["response_format"]["type"], "json_object");
+    assert_eq!(seen[2]["response_format"]["type"], "json_schema");
+    server.abort();
+}
+
+#[tokio::test]
+async fn unsupported_structured_output_cache_skips_later_requests() {
+    let (base_url, bodies, server) = spawn_chat_script(vec![
+        (
+            400,
+            json!({"error": {"message": "This response_format type is unavailable now"}}),
+        ),
+        (
+            400,
+            json!({"error": {"message": "json_object is not supported"}}),
+        ),
+        (200, successful_chat_completion()),
+    ])
+    .await;
+    let state = test_state();
+    let selected = selected_provider_at(&base_url);
+    let first = proxy_chat_responses(
+        state.clone(),
+        selected.clone(),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(first).await["error"]["message"],
+        STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE
+    );
+
+    let second = proxy_chat_responses(
+        state,
+        selected,
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(second).await["error"]["message"],
+        STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE
+    );
+    assert_eq!(bodies.lock().expect("bodies lock").len(), 2);
+    server.abort();
+}
+
+#[tokio::test]
+async fn invalid_tool_json_schema_does_not_retry_structured_output() {
+    let (base_url, bodies, server) = spawn_chat_script(vec![(
+        400,
+        json!({"error": {"message": "invalid json_schema in tools[0].function.parameters"}}),
+    )])
+    .await;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(bodies.lock().expect("bodies lock").len(), 1);
+    let body = response_json(response).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("invalid json_schema in tools[0].function.parameters")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn response_format_param_with_unrelated_message_does_not_retry() {
+    let (base_url, bodies, server) = spawn_chat_script(vec![(
+        400,
+        json!({"error": {"param": "response_format", "message": "messages must be an array"}}),
+    )])
+    .await;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(bodies.lock().expect("bodies lock").len(), 1);
+    let body = response_json(response).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("messages must be an array")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn response_format_param_without_diagnostic_does_not_retry() {
+    let (base_url, bodies, server) =
+        spawn_chat_script(vec![(400, json!({"error": {"param": "response_format"}}))]).await;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(bodies.lock().expect("bodies lock").len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
 async fn guardian_text_format_uses_structured_output_fallback() {
     let (base_url, bodies, server) = spawn_chat_script(vec![
         (

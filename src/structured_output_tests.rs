@@ -48,6 +48,30 @@ fn compatibility_400_for_unavailable_response_format_is_detected() {
         StatusCode::BAD_REQUEST,
         "json_schema is not supported"
     ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":"json_schema is not supported"}"#
+    ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"Invalid value: 'json_schema'. Supported values are: 'text' and 'json_object'."}}"#
+    ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"json_object is not supported"}}"#
+    ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"response_format.type","message":"invalid value"}}"#
+    ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"json_schema","message":"not supported"}}"#
+    ));
+    assert!(is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"code":"unsupported_value","message":"json_schema"}}"#
+    ));
 }
 
 #[test]
@@ -67,6 +91,38 @@ fn generic_or_unrelated_errors_do_not_qualify_for_fallback() {
     assert!(!is_unsupported_response_format_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         r#"{"error":{"message":"This response_format type is unavailable now"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"invalid json_schema in tools[0].function.parameters"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"invalid json_schema: missing name"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"invalid tools"},"request":{"response_format":{"type":"json_schema"}}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"response_format","message":"messages must be an array"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"json_schema","message":"missing name"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"response_format.json_schema","message":"invalid schema: missing name"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"response_format"}}"#
+    ));
+    assert!(!is_unsupported_response_format_error(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"param":"response_format.type"}}"#
     ));
 }
 

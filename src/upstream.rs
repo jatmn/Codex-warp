@@ -292,7 +292,8 @@ pub(crate) async fn proxy_chat_responses(
         if !status.is_success() {
             let retry_text = retry.text().await.unwrap_or_default();
             fallback_outcome = FallbackOutcome::Failed;
-            if is_unsupported_response_format_error(status, &retry_text) {
+            let format_rejected = is_unsupported_response_format_error(status, &retry_text);
+            if format_rejected {
                 cache_capability = Some(StructuredOutputCapability::Unsupported);
                 state
                     .structured_output
@@ -318,10 +319,14 @@ pub(crate) async fn proxy_chat_responses(
                 fallback_outcome,
                 cache_capability,
             );
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
-            );
+            return if format_rejected {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
+                )
+            } else {
+                error_response(status, retry_text)
+            };
         }
         fallback_outcome = FallbackOutcome::Success;
         cache_capability = Some(StructuredOutputCapability::JsonObjectOnly);
