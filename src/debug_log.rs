@@ -702,7 +702,8 @@ fn missing_jsonl_tail(path: PathBuf, enabled: bool) -> JsonlTail {
     }
 }
 
-pub(crate) fn read_jsonl_tail(
+#[cfg(test)]
+fn read_jsonl_tail(
     path: &Path,
     limit: usize,
     query: Option<&str>,

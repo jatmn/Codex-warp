@@ -108,7 +108,6 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     if let Some(listen) = args.listen.clone() {
         config.listen = listen;
     }
-    apply_cli_debug(&mut config, &cli_debug);
     if args.continue_guard {
         config.continue_guard.enabled = true;
     }
