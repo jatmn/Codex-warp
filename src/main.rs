@@ -1,6 +1,7 @@
 mod config;
 mod config_loader;
 mod debug_log;
+mod guardian_compat;
 mod http;
 mod ids;
 mod models;

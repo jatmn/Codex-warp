@@ -10,6 +10,7 @@ metadata and request compatibility once they start a model turn.
 - [Checked Source Paths](#checked-source-paths)
 - [What Codex Warp Must Preserve](#what-codex-warp-must-preserve)
 - [Structured Output And Chat Stream Compatibility](#structured-output-and-chat-stream-compatibility)
+- [Guardian Auto-Review Compatibility](#guardian-auto-review-compatibility)
 - [Codex App Server Model Refresh](#codex-app-server-model-refresh)
 - [Configurable Codex Model Metadata](#configurable-codex-model-metadata)
 
@@ -88,6 +89,24 @@ requires `[DONE]` when that terminal reason is missing, but it synthesizes the
 normal Responses completion sequence when the stream ends cleanly after a
 documented terminal `finish_reason`. Truncated streams and mid-stream transport
 errors still fail.
+
+## Guardian Auto-Review Compatibility
+
+Codex sends a separate Guardian request when reviewing whether an agent action
+should be approved. Those requests use a `prompt_cache_key` that starts with
+`guardian:`.
+
+Warp does not decide allow or deny locally. It still forwards Codex's Guardian
+policy, transcript, planned action, schema, tools, and model. For Guardian
+Chat Completions requests only, it appends a short system clarification that
+the Guardian's own read-only and no-network restrictions do not forbid the
+coding agent from requesting escalation. Ordinary coding turns, tool
+continuations, and non-Guardian Responses requests do not receive that
+clarification.
+
+If the Guardian request also needs structured output, the JSON Schema fallback
+still applies independently. The prompt shim is about decision semantics; the
+fallback is about making the JSON response parseable.
 
 ## Codex App Server Model Refresh
 

@@ -16,6 +16,8 @@ use crate::config::AppConfig;
 use crate::config::ProviderConfig;
 use crate::config_loader::resolve_provider_alias;
 use crate::debug_log::request_debug_summary;
+use crate::guardian_compat::apply_guardian_compat_shim_from_source;
+use crate::guardian_compat::guardian_compat_debug_event;
 use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
 use crate::http::endpoint_url;
@@ -126,10 +128,17 @@ pub(crate) async fn proxy_chat_responses(
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
-    let chat_transform = responses_to_chat(body, &selected.transform);
+    let chat_transform = responses_to_chat(body.clone(), &selected.transform);
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
-    let original_chat_body = chat_transform.body;
+    let mut original_chat_body = chat_transform.body;
+    let guardian_compat_applied =
+        apply_guardian_compat_shim_from_source(&mut original_chat_body, &body);
+    if guardian_compat_applied {
+        state
+            .debug_log
+            .log(guardian_compat_debug_event(&request_log_id, true));
+    }
     let cache_key = structured_output_cache_key(
         &selected.provider.base_url,
         original_chat_body
@@ -180,6 +189,7 @@ pub(crate) async fn proxy_chat_responses(
             "request": request_debug_summary(&outbound_body),
             "transform": chat_transform.diagnostics,
             "json_schema_attempted": json_schema_attempted,
+            "guardian_compat_applied": guardian_compat_applied,
             "response_format": json_schema_debug_summary(&outbound_body)
         }),
         &outbound_body,
@@ -249,6 +259,7 @@ pub(crate) async fn proxy_chat_responses(
                 "request": request_debug_summary(&outbound_body),
                 "json_schema_attempted": true,
                 "fallback_retry": true,
+                "guardian_compat_applied": guardian_compat_applied,
                 "response_format": json_schema_debug_summary(&outbound_body)
             }),
             &outbound_body,

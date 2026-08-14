@@ -20,6 +20,7 @@ use crate::config::ModelCatalogEntry;
 use crate::config::ProviderConfig;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
+use crate::guardian_compat::GUARDIAN_COMPAT_CLARIFICATION;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::AnalyticsRange;
@@ -442,11 +443,12 @@ fn guardian_responses_request(stream: bool) -> Value {
         "model": "deepseek-v4-flash",
         "stream": stream,
         "prompt_cache_key": "guardian:test",
+        "instructions": "Evaluate the planned action under the Guardian policy.",
         "tools": [{"type": "function", "name": "shell", "parameters": {"type": "object"}}],
         "input": [{
             "type": "message",
             "role": "user",
-            "content": [{"type": "input_text", "text": "may I self-approve?"}]
+            "content": [{"type": "input_text", "text": "{\"command\":\"git clone\",\"sandbox_permissions\":\"require_escalated\"}"}]
         }],
         "text": {
             "format": {
@@ -455,12 +457,24 @@ fn guardian_responses_request(stream: bool) -> Value {
                 "strict": true,
                 "schema": {
                     "type": "object",
-                    "properties": {"ok": {"type": "boolean"}},
-                    "required": ["ok"]
+                    "properties": {"outcome": {"type": "string"}},
+                    "required": ["outcome"]
                 }
             }
         }
     })
+}
+
+fn has_guardian_clarification(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message.get("role").and_then(Value::as_str) == Some("system")
+                    && message.get("content").and_then(Value::as_str)
+                        == Some(GUARDIAN_COMPAT_CLARIFICATION)
+            })
+        })
 }
 
 fn selected_provider_at(base_url: &str) -> SelectedProvider {
@@ -565,6 +579,11 @@ async fn json_schema_capable_upstream_is_not_retried() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0]["response_format"]["type"], "json_schema");
     assert_eq!(seen[0]["model"], "deepseek-v4-flash");
+    assert!(has_guardian_clarification(&seen[0]));
+    assert_eq!(
+        seen[0]["messages"][0]["content"],
+        "Evaluate the planned action under the Guardian policy."
+    );
     server.abort();
 }
 
@@ -647,7 +666,10 @@ async fn unavailable_json_schema_retries_once_with_json_object() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!debug_text.contains("guardian_decision"));
-    assert!(!debug_text.contains("may I self-approve?"));
+    assert!(!debug_text.contains("git clone"));
+    assert!(!debug_text.contains("require_escalated"));
+    assert!(has_guardian_clarification(&seen[0]));
+    assert!(has_guardian_clarification(&seen[1]));
     server.abort();
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -769,6 +791,7 @@ async fn ordinary_chat_request_without_schema_is_unchanged() {
     let seen = bodies.lock().expect("bodies lock").clone();
     assert_eq!(seen.len(), 1);
     assert!(seen[0].get("response_format").is_none());
+    assert!(!has_guardian_clarification(&seen[0]));
     server.abort();
 }
 
@@ -806,5 +829,101 @@ async fn json_object_capability_cache_skips_known_failing_json_schema() {
     assert_eq!(seen[0]["response_format"]["type"], "json_schema");
     assert_eq!(seen[1]["response_format"]["type"], "json_object");
     assert_eq!(seen[2]["response_format"]["type"], "json_object");
+    assert!(has_guardian_clarification(&seen[0]));
+    assert!(has_guardian_clarification(&seen[1]));
+    assert!(has_guardian_clarification(&seen[2]));
+    server.abort();
+}
+
+#[tokio::test]
+async fn guardian_request_receives_compatibility_clarification() {
+    let (base_url, bodies, server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-guardian-shim-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("debug.jsonl");
+    let response = proxy_chat_responses(
+        test_state_with_debug(log_path.clone()),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen.len(), 1);
+    assert!(has_guardian_clarification(&seen[0]));
+    assert_eq!(
+        seen[0]["messages"][0]["content"],
+        "Evaluate the planned action under the Guardian policy."
+    );
+    assert_eq!(
+        seen[0]["messages"][2]["content"],
+        "{\"command\":\"git clone\",\"sandbox_permissions\":\"require_escalated\"}"
+    );
+    assert_eq!(seen[0]["model"], "deepseek-v4-flash");
+    assert_eq!(seen[0]["stream"], false);
+    assert_eq!(seen[0]["prompt_cache_key"], "guardian:test");
+    assert_eq!(seen[0]["response_format"]["type"], "json_schema");
+    assert!(seen[0].get("tools").is_some());
+    let events = debug_events(&log_path);
+    let compat = events
+        .iter()
+        .find(|event| event["event"] == "guardian_compat")
+        .expect("guardian debug event");
+    assert_eq!(compat["applied"], true);
+    assert_eq!(compat["prompt_cache_key_prefix"], "guardian:");
+    let debug_text = events
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!debug_text.contains("git clone"));
+    assert!(!debug_text.contains("require_escalated"));
+    assert!(!debug_text.contains("Guardian compatibility clarification"));
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn guardian_shim_does_not_override_upstream_deny_outcome() {
+    let deny = json!({
+        "id": "chatcmpl_deny",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "{\"outcome\":\"deny\",\"rationale\":\"intrinsic risk\"}"
+            }
+        }]
+    });
+    let (base_url, bodies, server) = spawn_chat_script(vec![(200, deny)]).await;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        guardian_responses_request(false),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(has_guardian_clarification(
+        &bodies.lock().expect("bodies lock")[0]
+    ));
+    let body = response_json(response).await;
+    let output = body["output"].as_array().expect("responses output");
+    let text = output
+        .iter()
+        .flat_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(text.contains("\"outcome\":\"deny\""));
+    assert!(!text.contains("\"outcome\":\"allow\""));
     server.abort();
 }
