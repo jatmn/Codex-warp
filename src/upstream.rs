@@ -230,9 +230,22 @@ pub(crate) async fn proxy_chat_responses(
             }),
             &text,
         );
-        let can_fallback =
-            json_schema_attempted && is_unsupported_response_format_error(status, &text);
-        if !can_fallback {
+        let format_rejected = is_unsupported_response_format_error(status, &text);
+        // Classify from the format that was sent, not from whether this request
+        // started as a json_schema probe. Cached JsonObjectOnly requests already
+        // send json_object; a format rejection there is the same incompatibility
+        // as a rejected json_object retry.
+        if cached_capability == Some(StructuredOutputCapability::JsonObjectOnly) && format_rejected
+        {
+            return structured_output_incompatible_response(
+                &state,
+                &request_log_id,
+                cache_key,
+                json_schema_attempted,
+                false,
+            );
+        }
+        if !(json_schema_attempted && format_rejected) {
             if json_schema_requested {
                 log_structured_output_compat(
                     &state,
@@ -293,12 +306,6 @@ pub(crate) async fn proxy_chat_responses(
             let retry_text = retry.text().await.unwrap_or_default();
             fallback_outcome = FallbackOutcome::Failed;
             let format_rejected = is_unsupported_response_format_error(status, &retry_text);
-            if format_rejected {
-                cache_capability = Some(StructuredOutputCapability::Unsupported);
-                state
-                    .structured_output
-                    .remember(cache_key, StructuredOutputCapability::Unsupported);
-            }
             state.debug_log.log_error(
                 json!({
                     "event": "upstream_response",
@@ -311,6 +318,15 @@ pub(crate) async fn proxy_chat_responses(
                 }),
                 &retry_text,
             );
+            if format_rejected {
+                return structured_output_incompatible_response(
+                    &state,
+                    &request_log_id,
+                    cache_key,
+                    true,
+                    true,
+                );
+            }
             log_structured_output_compat(
                 &state,
                 &request_log_id,
@@ -319,14 +335,7 @@ pub(crate) async fn proxy_chat_responses(
                 fallback_outcome,
                 cache_capability,
             );
-            return if format_rejected {
-                error_response(
-                    StatusCode::BAD_REQUEST,
-                    STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
-                )
-            } else {
-                error_response(status, retry_text)
-            };
+            return error_response(status, retry_text);
         }
         fallback_outcome = FallbackOutcome::Success;
         cache_capability = Some(StructuredOutputCapability::JsonObjectOnly);
@@ -502,6 +511,30 @@ async fn send_chat_completions(
             Err(error_response(StatusCode::BAD_GATEWAY, err.to_string()))
         }
     }
+}
+
+fn structured_output_incompatible_response(
+    state: &AppState,
+    request_log_id: &str,
+    cache_key: String,
+    json_schema_attempted: bool,
+    fallback_retry: bool,
+) -> Response {
+    state
+        .structured_output
+        .remember(cache_key, StructuredOutputCapability::Unsupported);
+    log_structured_output_compat(
+        state,
+        request_log_id,
+        json_schema_attempted,
+        fallback_retry,
+        FallbackOutcome::Failed,
+        Some(StructuredOutputCapability::Unsupported),
+    );
+    error_response(
+        StatusCode::BAD_REQUEST,
+        STRUCTURED_OUTPUT_INCOMPATIBLE_MESSAGE.to_string(),
+    )
 }
 
 fn log_structured_output_compat(
