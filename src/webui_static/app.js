@@ -1040,7 +1040,6 @@
     form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
     const hint = $("#logging-persist-hint");
     if (hint) hint.textContent = loggingHint(settings);
-    setLoggingFormHydrated(true);
     return settings;
   }
 
@@ -1129,10 +1128,12 @@
 
   async function startLogsPoll({ updateFooter = false, epoch = tabEpoch } = {}) {
     stopLogsPoll();
+    setLoggingFormHydrated(false);
     syncProcessLevelControl();
     try {
       const settings = await loadLoggingSettings();
       if (epoch !== tabEpoch || activeTab !== "logs") return settings;
+      setLoggingFormHydrated(true);
       if (updateFooter) status(loggingReadyStatus(settings));
       loadLogs();
       logsTimer = setInterval(loadLogs, 2500);
@@ -1186,11 +1187,13 @@
         }),
       });
       await loadLoggingSettings();
+      setLoggingFormHydrated(true);
       await loadLogs();
       status(loggingSaveStatus(saved));
     } catch (e) {
       try {
         await loadLoggingSettings();
+        setLoggingFormHydrated(true);
         await loadLogs();
       } catch {
         /* still report the save error */
@@ -1212,6 +1215,11 @@
     } catch (e) {
       bootComplete = true;
       status(`Error: ${e.message}`);
+      try {
+        await activateTabPolls(activeTab);
+      } catch {
+        /* keep the boot error in the footer */
+      }
     }
   }
 

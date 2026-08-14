@@ -396,6 +396,11 @@ impl DebugLog {
         let mut config = config.clone();
         normalize_debug_config(&mut config);
         validate_debug_settings(&config)?;
+        if config.enabled
+            && let Some(path) = config.log_path.as_ref()
+        {
+            config.log_path = Some(validate_debug_log_path(path)?);
+        }
         let path = self.commit_inner(&config)?;
         // Rotation also runs on the next write. Failing it here must not roll
         // back a snapshot that already passed validation: a later write retries
@@ -583,7 +588,7 @@ pub(crate) fn validate_debug_settings(config: &DebugConfig) -> Result<(), String
     Ok(())
 }
 
-pub(crate) fn validate_debug_log_path(path: &Path) -> Result<(), String> {
+pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("debug log_path is required".to_string());
     }
@@ -647,8 +652,8 @@ pub(crate) fn validate_debug_log_path(path: &Path) -> Result<(), String> {
         Ok(metadata) if !metadata.is_file() => {
             Err("debug log_path must be a regular file".to_string())
         }
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Ok(_) => Ok(resolved),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(resolved),
         Err(err) => Err(format!(
             "debug log_path {} is not usable: {err}",
             resolved.display()

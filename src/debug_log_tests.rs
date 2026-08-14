@@ -781,10 +781,10 @@ fn apply_config_fills_default_path_when_enabled_without_path() {
         ..DebugConfig::default()
     })
     .expect("enable with default path");
-    assert_eq!(
-        log.current_path().as_deref(),
-        Some(Path::new(DEFAULT_DEBUG_LOG_PATH))
-    );
+    let expected = std::env::current_dir()
+        .expect("cwd")
+        .join(DEFAULT_DEBUG_LOG_PATH);
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
 }
 
 #[test]

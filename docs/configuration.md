@@ -467,9 +467,11 @@ poll; events are still in the rotated backup. Debug `log_path`
 values are validated for TOML, CLI, overlays, and the Web UI when debug logging
 is enabled: the path must end in `.jsonl`, must not contain `..`, the log file
 itself must not be a symlink, its parent directory must already exist, and the
-resolved destination cannot use system roots such as `/etc`. Relative paths are
-resolved against the process working directory before that check, so a relative
-`log_path` is rejected when Warp's cwd is a restricted root. A path stored while
+resolved destination cannot use system roots such as `/etc`. Relative
+paths are resolved against the process working directory at apply time, and the
+live snapshot stores that destination so later writes and tails do not depend
+on a later cwd change. A relative `log_path` is rejected when Warp's cwd is a
+restricted root. A path stored while
 logging is disabled is not opened and does not fail startup. Warp does not
 follow a symlink at the log file itself when writing or tailing
 (`O_NOFOLLOW` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` on Windows). Parent
