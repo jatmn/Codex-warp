@@ -424,6 +424,10 @@ impl DebugLog {
         let Ok(_guard) = self.writer_lock.lock() else {
             return Err("failed to lock debug log writer while applying config".to_string());
         };
+        if let Some(path) = path.as_ref() {
+            open_debug_log(path, true)
+                .map_err(|err| format!("cannot open debug log {}: {err}", path.display()))?;
+        }
         let mut inner = self.write_inner();
         inner.snapshot = config.clone();
         Ok(path)
@@ -595,15 +599,72 @@ pub(crate) fn validate_debug_log_path(path: &Path) -> Result<(), String> {
     if is_restricted_log_path(path) {
         return Err("debug log_path is not in an allowed location".to_string());
     }
-    match fs::symlink_metadata(path) {
+    let absolute = absolute_debug_log_path(path)?;
+    if is_restricted_log_path(&absolute) {
+        return Err("debug log_path is not in an allowed location".to_string());
+    }
+    let Some(parent) = absolute
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Err("debug log_path must include a file name".to_string());
+    };
+    match fs::symlink_metadata(parent) {
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Err("debug log_path parent directory must exist".to_string());
+        }
+        Err(err) => {
+            return Err(format!(
+                "debug log_path parent {} is not usable: {err}",
+                parent.display()
+            ));
+        }
+        Ok(metadata) if !metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            return Err("debug log_path parent must be a directory".to_string());
+        }
+        Ok(_) => {}
+    }
+    let canonical_parent = fs::canonicalize(parent).map_err(|err| {
+        format!(
+            "debug log_path parent {} is not usable: {err}",
+            parent.display()
+        )
+    })?;
+    if !canonical_parent.is_dir() {
+        return Err("debug log_path parent must be a directory".to_string());
+    }
+    let Some(file_name) = absolute.file_name() else {
+        return Err("debug log_path must include a file name".to_string());
+    };
+    let resolved = canonical_parent.join(file_name);
+    if is_restricted_log_path(&resolved) {
+        return Err("debug log_path is not in an allowed location".to_string());
+    }
+    match fs::symlink_metadata(&resolved) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err("debug log_path must not be a symlink".to_string())
         }
         Ok(metadata) if !metadata.is_file() => {
             Err("debug log_path must be a regular file".to_string())
         }
-        Ok(_) | Err(_) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!(
+            "debug log_path {} is not usable: {err}",
+            resolved.display()
+        )),
     }
+}
+
+fn absolute_debug_log_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|err| {
+            format!("resolve debug log_path against the process working directory: {err}")
+        })
 }
 
 fn is_restricted_log_path(path: &Path) -> bool {

@@ -625,10 +625,11 @@ fn read_tail_reports_enabled_from_the_writer_snapshot() {
         ..DebugConfig::default()
     })
     .expect("enable debug log");
-    let missing = log.read_tail(10, None, None).expect("enabled missing file");
-    assert!(missing.enabled);
-    assert!(missing.missing);
-    assert_eq!(missing.path, path);
+    let created = log.read_tail(10, None, None).expect("enabled created file");
+    assert!(created.enabled);
+    assert!(!created.missing);
+    assert_eq!(created.path, path);
+    assert!(path.is_file());
 
     log.log(json!({"event": "upstream_request", "id": "dbg_tail"}));
     let present = log.read_tail(10, None, None).expect("enabled present file");
@@ -695,6 +696,53 @@ fn validate_debug_log_path_rejects_escape_and_system_paths() {
         })
         .is_ok()
     );
+}
+
+#[test]
+fn validate_debug_log_path_rejects_missing_parent_directory() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-missing-parent-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("nested").join("debug.jsonl");
+    let err = validate_debug_log_path(&path).expect_err("missing parent");
+    assert!(err.contains("parent directory must exist"), "{err}");
+}
+
+#[test]
+fn validate_debug_log_path_rejects_parent_symlink_into_restricted_root() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-parent-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let link = dir.join("link");
+    std::os::unix::fs::symlink("/etc", &link).expect("symlink parent");
+    let path = link.join("codex-warp-debug.jsonl");
+    let err = validate_debug_log_path(&path).expect_err("restricted via parent symlink");
+    assert!(err.contains("allowed location"), "{err}");
+}
+
+#[test]
+fn apply_config_rejects_missing_parent_without_enabling_writer() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-missing-parent-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("nested").join("debug.jsonl");
+    let log = DebugLog::disabled();
+    let err = log
+        .apply_config(&DebugConfig {
+            enabled: true,
+            log_path: Some(path),
+            ..DebugConfig::default()
+        })
+        .expect_err("missing parent");
+    assert!(err.contains("parent directory must exist"), "{err}");
+    assert!(log.current_path().is_none());
+    assert!(!log.live_snapshot().enabled);
 }
 
 #[test]

@@ -118,6 +118,52 @@ fn provider_persist_deserializes_omitted_as_absent() {
 }
 
 #[test]
+fn logging_persist_deserializes_omitted_as_absent() {
+    let fields: LoggingPersist = serde_json::from_str(r#"{"enabled":true}"#).expect("deserialize");
+    assert_eq!(fields.enabled, Some(true));
+    assert_eq!(fields.log_path, OptionalPatch::Absent);
+    assert_eq!(fields.include_bodies, None);
+    assert_eq!(fields.include_stream_bodies, None);
+    assert_eq!(fields.max_log_mb, OptionalPatch::Absent);
+    assert_eq!(fields.max_log_age_days, OptionalPatch::Absent);
+    assert_eq!(fields.tracing_filter, OptionalPatch::Absent);
+}
+
+#[test]
+fn logging_persist_omitted_fields_preserve_live_snapshot() {
+    let mut debug = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(std::path::PathBuf::from("keep.jsonl")),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=debug".into()),
+        max_log_mb: Some(64),
+        ..crate::config::DebugConfig::default()
+    };
+    apply_logging_persist(
+        &mut debug,
+        serde_json::from_str(r#"{"enabled":true}"#).expect("deserialize"),
+        None,
+    )
+    .expect("partial logging persist");
+    assert!(debug.enabled);
+    assert_eq!(
+        debug.log_path.as_deref(),
+        Some(std::path::Path::new("keep.jsonl"))
+    );
+    assert!(debug.include_bodies);
+    assert_eq!(debug.tracing_filter.as_deref(), Some("codex_warp=debug"));
+    assert_eq!(debug.max_log_mb, Some(64));
+}
+
+#[test]
+fn logging_persist_deserializes_null_as_clear() {
+    let fields: LoggingPersist =
+        serde_json::from_str(r#"{"log_path":null,"tracing_filter":null}"#).expect("deserialize");
+    assert_eq!(fields.log_path, OptionalPatch::Clear);
+    assert_eq!(fields.tracing_filter, OptionalPatch::Clear);
+}
+
+#[test]
 fn model_persist_omitted_enabled_preserves_existing_value() {
     let mut entry = ModelCatalogEntry {
         id: "shared".into(),

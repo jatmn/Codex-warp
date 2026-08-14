@@ -27,6 +27,7 @@
   let logsInFlight = false;
   let logsPending = false;
   let logsExpanded = new Set();
+  let loggingSettingsHydrated = false;
   let activeTab = "analytics";
   let bootComplete = false;
   let tabEpoch = 0;
@@ -1039,7 +1040,14 @@
     form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
     const hint = $("#logging-persist-hint");
     if (hint) hint.textContent = loggingHint(settings);
+    setLoggingFormHydrated(true);
     return settings;
+  }
+
+  function setLoggingFormHydrated(hydrated) {
+    loggingSettingsHydrated = hydrated;
+    const fields = $("#logging-settings-fields");
+    if (fields) fields.disabled = !hydrated;
   }
 
   function tracingLagNote(settings) {
@@ -1158,6 +1166,9 @@
   $("#log-refresh")?.addEventListener("click", loadLogs);
   $("#logging-settings")?.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!loggingSettingsHydrated) {
+      return;
+    }
     const form = event.currentTarget;
     const tracingFilter = form.tracing_filter.value.trim();
     try {

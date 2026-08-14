@@ -221,6 +221,10 @@ async fn serve_js() -> impl IntoResponse {
     )
 }
 
+/// Partial-update field. JSON `null` is `Clear`. Omitted keys are `Absent`
+/// only when the struct field has `#[serde(default)]`: this type deserializes
+/// through `deserialize_option`, so serde otherwise treats a missing key as
+/// `null` and this visitor maps that to `Clear`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum OptionalPatch<T> {
     #[default]
@@ -397,11 +401,15 @@ struct LoggingSettingsView {
 #[derive(Debug, Deserialize)]
 struct LoggingPersist {
     enabled: Option<bool>,
+    #[serde(default)]
     log_path: OptionalPatch<String>,
     include_bodies: Option<bool>,
     include_stream_bodies: Option<bool>,
+    #[serde(default)]
     max_log_mb: OptionalPatch<u64>,
+    #[serde(default)]
     max_log_age_days: OptionalPatch<u64>,
+    #[serde(default)]
     tracing_filter: OptionalPatch<String>,
 }
 

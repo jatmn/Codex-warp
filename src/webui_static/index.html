@@ -158,7 +158,8 @@
       </div>
       <form id="logging-settings" class="log-settings">
         <h3>Logging settings</h3>
-        <p class="hint muted" id="logging-persist-hint">Changes apply immediately. SQLite keeps them across restarts when the store is open. Command-line debug flags still win for that process.</p>
+        <p class="hint muted" id="logging-persist-hint">Loading live logging settings…</p>
+        <fieldset id="logging-settings-fields" disabled>
         <div class="log-settings-grid">
           <label class="checkbox-row">
             <input type="checkbox" name="enabled">
@@ -193,6 +194,7 @@
         <div class="form-actions">
           <button type="submit" class="btn primary">Save logging settings</button>
         </div>
+        </fieldset>
       </form>
       <div id="log-meta" class="hint muted"></div>
       <div id="log-viewer" class="log-viewer" role="log" aria-live="polite"></div>

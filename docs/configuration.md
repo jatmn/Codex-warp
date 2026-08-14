@@ -465,11 +465,18 @@ that pin, not a later config read and not “file exists”. If the file rotates
 during that parse, the response may show the previous segment until the next
 poll; events are still in the rotated backup. Debug `log_path`
 values are validated for TOML, CLI, overlays, and the Web UI when debug logging
-is enabled: the path must end in `.jsonl`, must not contain `..`, must not be a
-symlink, and cannot use system roots such as `/etc`. A path stored while logging
-is disabled is not opened and does not fail startup. Warp never follows
-symlinks when writing or tailing the debug log (`O_NOFOLLOW` on Unix,
-`FILE_FLAG_OPEN_REPARSE_POINT` on Windows). When `debug.enabled` is true and
+is enabled: the path must end in `.jsonl`, must not contain `..`, the log file
+itself must not be a symlink, its parent directory must already exist, and the
+resolved destination cannot use system roots such as `/etc`. Relative paths are
+resolved against the process working directory before that check, so a relative
+`log_path` is rejected when Warp's cwd is a restricted root. A path stored while
+logging is disabled is not opened and does not fail startup. Warp does not
+follow a symlink at the log file itself when writing or tailing
+(`O_NOFOLLOW` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` on Windows). Parent
+directories are resolved to their real location so a symlink parent cannot place
+the log under a restricted root. Enabling debug logging opens (and creates) the
+log file immediately; a missing parent or unwritable path fails that apply
+instead of reporting enabled while writes silently drop. When `debug.enabled` is true and
 `log_path` is omitted, Warp uses `codex-warp-debug.jsonl` in the process working
 directory. `max_log_mb` and `max_log_age_days` of `0` are invalid at every entry
 point: the Web UI rejects them, startup fails, and overlays that contain them
