@@ -287,7 +287,7 @@ fn initialize_state_with_store(
     apply_cli_debug(&mut config, &cli_debug);
     crate::debug_log::normalize_debug_config(&mut config.debug);
     crate::process_log::validate_debug_live_config_or(
-        &config.debug,
+        &mut config.debug,
         tracing_reload
             .as_ref()
             .map(crate::process_log::TracingReload::fallback_filter),

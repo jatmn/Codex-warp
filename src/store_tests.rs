@@ -1,6 +1,17 @@
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn insert_raw_debug_overlay(store: &Store, debug: &crate::config::DebugConfig) {
+    let config_json = serde_json::to_string(debug).expect("serialize raw debug overlay");
+    let db = store.db.lock().expect("sqlite lock poisoned");
+    db.execute(
+        "INSERT INTO debug_overlay(id, config_json) VALUES (1, ?1)
+         ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json",
+        rusqlite::params![config_json],
+    )
+    .expect("insert raw debug overlay");
+}
+
 #[test]
 fn store_records_usage_and_aggregates_ranges() {
     let dir = std::env::temp_dir().join(format!(
@@ -1191,8 +1202,98 @@ fn debug_overlay_replays_into_config() {
     store
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
-    assert_eq!(config.debug, debug);
+    let expected = crate::debug_log::validate_debug_log_path(&dir.join("debug.jsonl"))
+        .expect("pin overlay path");
+    let mut pinned = debug.clone();
+    pinned.log_path = Some(expected);
+    assert_eq!(config.debug, pinned);
 
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upsert_debug_overlay_pins_relative_log_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-upsert-relative-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("overlay-relative.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        })
+        .unwrap();
+
+    let stored: String = {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.query_row(
+            "SELECT config_json FROM debug_overlay WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let stored: crate::config::DebugConfig = serde_json::from_str(&stored).unwrap();
+    let expected =
+        crate::debug_log::validate_debug_log_path(std::path::Path::new("overlay-relative.jsonl"))
+            .expect("pin relative overlay");
+    assert_eq!(stored.log_path.as_deref(), Some(expected.as_path()));
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
+    let _ = std::fs::remove_file(&expected);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_heals_legacy_relative_log_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-legacy-relative-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("overlay-legacy-relative.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new(
+        "overlay-legacy-relative.jsonl",
+    ))
+    .expect("pin legacy relative overlay");
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
+
+    let mut replayed = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .unwrap();
+    assert_eq!(
+        replayed.debug.log_path.as_deref(),
+        Some(expected.as_path()),
+        "healed overlay must store the pinned destination"
+    );
+    let _ = std::fs::remove_file(&expected);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1207,13 +1308,23 @@ fn debug_overlay_skips_restricted_log_path() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&dir.join("overlay.db")).unwrap();
-    store
+    let err = store
         .upsert_debug_overlay(&crate::config::DebugConfig {
             enabled: true,
             log_path: Some("/etc/passwd.jsonl".into()),
             ..crate::config::DebugConfig::default()
         })
-        .unwrap();
+        .expect_err("upsert must refuse a restricted path");
+    assert!(err.to_string().contains("allowed location"), "{err}");
+
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("/etc/passwd.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
 
     let mut config = AppConfig::default();
     store
@@ -1249,12 +1360,11 @@ fn debug_overlay_fills_default_path_when_enabled_without_path() {
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
     assert!(config.debug.enabled);
-    assert_eq!(
-        config.debug.log_path.as_deref(),
-        Some(std::path::Path::new(
-            crate::debug_log::DEFAULT_DEBUG_LOG_PATH
-        ))
-    );
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new(
+        crate::debug_log::DEFAULT_DEBUG_LOG_PATH,
+    ))
+    .expect("pin default overlay path");
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1277,7 +1387,16 @@ fn debug_overlay_skips_zero_rotation_limits() {
             max_log_mb: Some(0),
             ..crate::config::DebugConfig::default()
         })
-        .unwrap();
+        .expect_err("upsert must refuse a zero rotation limit");
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some(dir.join("debug.jsonl")),
+            max_log_mb: Some(0),
+            ..crate::config::DebugConfig::default()
+        },
+    );
 
     let mut config = AppConfig::default();
     store
@@ -1339,13 +1458,17 @@ fn debug_overlay_accepts_unset_tracing_filter_with_pinned_fallback() {
     store
         .apply_overlays_with_tracing_fallback(&mut config, Some("codex_warp=warn"))
         .unwrap();
-    assert_eq!(config.debug, debug);
+    let expected = crate::debug_log::validate_debug_log_path(&dir.join("debug.jsonl"))
+        .expect("pin overlay path");
+    let mut pinned = debug.clone();
+    pinned.log_path = Some(expected);
+    assert_eq!(config.debug, pinned);
 
     let mut via_default = AppConfig::default();
     store
         .apply_overlays_with_tracing_fallback(&mut via_default, None)
         .unwrap();
-    assert_eq!(via_default.debug, debug);
+    assert_eq!(via_default.debug, pinned);
 
     let _ = std::fs::remove_dir_all(dir);
 }

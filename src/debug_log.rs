@@ -395,12 +395,7 @@ impl DebugLog {
     pub(crate) fn apply_config(&self, config: &DebugConfig) -> Result<(), String> {
         let mut config = config.clone();
         normalize_debug_config(&mut config);
-        validate_debug_settings(&config)?;
-        if config.enabled
-            && let Some(path) = config.log_path.as_ref()
-        {
-            config.log_path = Some(validate_debug_log_path(path)?);
-        }
+        validate_debug_settings(&mut config)?;
         let path = self.commit_inner(&config)?;
         // Rotation also runs on the next write. Failing it here must not roll
         // back a snapshot that already passed validation: a later write retries
@@ -572,12 +567,22 @@ pub(crate) fn clamp_log_tail_limit(limit: Option<usize>) -> usize {
         .clamp(1, MAX_LOG_TAIL_LIMIT)
 }
 
-pub(crate) fn validate_debug_settings(config: &DebugConfig) -> Result<(), String> {
-    if config.enabled {
-        let Some(path) = config.log_path.as_ref() else {
-            return Err("debug.log_path is required when debug.enabled is true".to_string());
-        };
-        validate_debug_log_path(path)?;
+/// Validate rotation limits and pin `log_path` to a cwd-independent destination.
+///
+/// Enabled paths must be openable (parent exists, not restricted). Disabled
+/// paths still pin through the same resolver when the parent can be resolved,
+/// but missing parents and restricted destinations do not fail: a disabled
+/// snapshot is not opened and must not fail startup. `..` in a disabled path
+/// is left unchanged so enable-time validation can reject it.
+pub(crate) fn validate_debug_settings(config: &mut DebugConfig) -> Result<(), String> {
+    if let Some(path) = config.log_path.clone() {
+        match pin_debug_log_path(&path, config.enabled) {
+            Ok(pinned) => config.log_path = Some(pinned),
+            Err(err) if config.enabled => return Err(err),
+            Err(_) => {}
+        }
+    } else if config.enabled {
+        return Err("debug.log_path is required when debug.enabled is true".to_string());
     }
     if config.max_log_mb == Some(0) {
         return Err("debug.max_log_mb must be greater than 0".to_string());
@@ -589,6 +594,10 @@ pub(crate) fn validate_debug_settings(config: &DebugConfig) -> Result<(), String
 }
 
 pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
+    pin_debug_log_path(path, true)
+}
+
+fn pin_debug_log_path(path: &Path, require_usable: bool) -> Result<PathBuf, String> {
     if path.as_os_str().is_empty() {
         return Err("debug log_path is required".to_string());
     }
@@ -598,14 +607,14 @@ pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
     {
         return Err("debug log_path must not contain '..'".to_string());
     }
-    if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+    if require_usable && path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
         return Err("debug log_path must end with .jsonl".to_string());
     }
-    if is_restricted_log_path(path) {
+    if require_usable && is_restricted_log_path(path) {
         return Err("debug log_path is not in an allowed location".to_string());
     }
     let absolute = absolute_debug_log_path(path)?;
-    if is_restricted_log_path(&absolute) {
+    if require_usable && is_restricted_log_path(&absolute) {
         return Err("debug log_path is not in an allowed location".to_string());
     }
     let Some(parent) = absolute
@@ -616,34 +625,57 @@ pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
     };
     match fs::symlink_metadata(parent) {
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            return Err("debug log_path parent directory must exist".to_string());
+            return if require_usable {
+                Err("debug log_path parent directory must exist".to_string())
+            } else {
+                Ok(absolute)
+            };
         }
         Err(err) => {
+            return if require_usable {
+                Err(format!(
+                    "debug log_path parent {} is not usable: {err}",
+                    parent.display()
+                ))
+            } else {
+                Ok(absolute)
+            };
+        }
+        Ok(metadata) if !metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            return if require_usable {
+                Err("debug log_path parent must be a directory".to_string())
+            } else {
+                Ok(absolute)
+            };
+        }
+        Ok(_) => {}
+    }
+    let canonical_parent = match fs::canonicalize(parent) {
+        Ok(parent) => parent,
+        Err(err) if require_usable => {
             return Err(format!(
                 "debug log_path parent {} is not usable: {err}",
                 parent.display()
             ));
         }
-        Ok(metadata) if !metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            return Err("debug log_path parent must be a directory".to_string());
-        }
-        Ok(_) => {}
-    }
-    let canonical_parent = fs::canonicalize(parent).map_err(|err| {
-        format!(
-            "debug log_path parent {} is not usable: {err}",
-            parent.display()
-        )
-    })?;
+        Err(_) => return Ok(absolute),
+    };
     if !canonical_parent.is_dir() {
-        return Err("debug log_path parent must be a directory".to_string());
+        return if require_usable {
+            Err("debug log_path parent must be a directory".to_string())
+        } else {
+            Ok(absolute)
+        };
     }
     let Some(file_name) = absolute.file_name() else {
         return Err("debug log_path must include a file name".to_string());
     };
     let resolved = canonical_parent.join(file_name);
-    if is_restricted_log_path(&resolved) {
+    if require_usable && is_restricted_log_path(&resolved) {
         return Err("debug log_path is not in an allowed location".to_string());
+    }
+    if !require_usable {
+        return Ok(resolved);
     }
     match fs::symlink_metadata(&resolved) {
         Ok(metadata) if metadata.file_type().is_symlink() => {

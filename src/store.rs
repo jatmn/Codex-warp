@@ -454,14 +454,24 @@ impl Store {
                     // default from tracing init, or `info` when that pin is
                     // unavailable here.
                     let fallback = tracing_filter_fallback.unwrap_or("info");
-                    if let Err(err) =
-                        crate::process_log::validate_debug_live_config_or(&debug, Some(fallback))
-                    {
+                    let path_before_pin = debug.log_path.clone();
+                    if let Err(err) = crate::process_log::validate_debug_live_config_or(
+                        &mut debug,
+                        Some(fallback),
+                    ) {
                         tracing::warn!(
                             error = %err,
                             "skipping invalid debug overlay"
                         );
                     } else {
+                        if debug.log_path != path_before_pin
+                            && let Err(err) = Self::write_debug_overlay(&db, &debug)
+                        {
+                            tracing::warn!(
+                                error = %err,
+                                "live debug overlay path was pinned but could not be saved"
+                            );
+                        }
                         config.debug = debug;
                     }
                 }
@@ -474,8 +484,15 @@ impl Store {
     }
 
     pub(crate) fn upsert_debug_overlay(&self, debug: &DebugConfig) -> anyhow::Result<()> {
-        let config_json = serde_json::to_string(debug).context("serialize debug overlay")?;
+        let mut debug = debug.clone();
+        crate::debug_log::normalize_debug_config(&mut debug);
+        crate::debug_log::validate_debug_settings(&mut debug).map_err(anyhow::Error::msg)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
+        Self::write_debug_overlay(&db, &debug)
+    }
+
+    fn write_debug_overlay(db: &Connection, debug: &DebugConfig) -> anyhow::Result<()> {
+        let config_json = serde_json::to_string(debug).context("serialize debug overlay")?;
         db.execute(
             "INSERT INTO debug_overlay(id, config_json) VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json",

@@ -146,10 +146,9 @@ fn logging_persist_omitted_fields_preserve_live_snapshot() {
     )
     .expect("partial logging persist");
     assert!(debug.enabled);
-    assert_eq!(
-        debug.log_path.as_deref(),
-        Some(std::path::Path::new("keep.jsonl"))
-    );
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new("keep.jsonl"))
+        .expect("pin keep.jsonl");
+    assert_eq!(debug.log_path.as_deref(), Some(expected.as_path()));
     assert!(debug.include_bodies);
     assert_eq!(debug.tracing_filter.as_deref(), Some("codex_warp=debug"));
     assert_eq!(debug.max_log_mb, Some(64));
@@ -161,6 +160,12 @@ fn logging_persist_deserializes_null_as_clear() {
         serde_json::from_str(r#"{"log_path":null,"tracing_filter":null}"#).expect("deserialize");
     assert_eq!(fields.log_path, OptionalPatch::Clear);
     assert_eq!(fields.tracing_filter, OptionalPatch::Clear);
+}
+
+#[test]
+fn logging_persist_rejects_non_integer_rotation_limits() {
+    assert!(serde_json::from_str::<LoggingPersist>(r#"{"max_log_mb":"abc"}"#).is_err());
+    assert!(serde_json::from_str::<LoggingPersist>(r#"{"max_log_age_days":1.5}"#).is_err());
 }
 
 #[test]
@@ -1276,12 +1281,11 @@ fn apply_logging_persist_fills_default_path_when_enabled_without_path() {
     )
     .expect("enable with default path");
     assert!(debug.enabled);
-    assert_eq!(
-        debug.log_path.as_deref(),
-        Some(std::path::Path::new(
-            crate::debug_log::DEFAULT_DEBUG_LOG_PATH
-        ))
-    );
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new(
+        crate::debug_log::DEFAULT_DEBUG_LOG_PATH,
+    ))
+    .expect("pin default path");
+    assert_eq!(debug.log_path.as_deref(), Some(expected.as_path()));
 }
 
 #[tokio::test]

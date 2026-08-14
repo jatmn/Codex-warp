@@ -317,7 +317,7 @@ pub(crate) fn tracing_filter_from_debug_or(
 /// Unset `tracing_filter` uses `fallback`, or `info` when that pin is absent.
 /// Never re-reads `RUST_LOG`; that value is captured only when tracing starts.
 pub(crate) fn validate_debug_live_config_or(
-    config: &crate::config::DebugConfig,
+    config: &mut crate::config::DebugConfig,
     fallback: Option<&str>,
 ) -> Result<(), String> {
     crate::debug_log::validate_debug_settings(config)?;

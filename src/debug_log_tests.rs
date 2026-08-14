@@ -682,14 +682,14 @@ fn validate_debug_log_path_rejects_escape_and_system_paths() {
     assert!(validate_debug_log_path(Path::new("//etc/passwd.jsonl")).is_err());
     assert!(validate_debug_log_path(Path::new("debug.log")).is_err());
     assert!(
-        validate_debug_settings(&DebugConfig {
+        validate_debug_settings(&mut DebugConfig {
             max_log_mb: Some(0),
             ..DebugConfig::default()
         })
         .is_err()
     );
     assert!(
-        validate_debug_settings(&DebugConfig {
+        validate_debug_settings(&mut DebugConfig {
             enabled: false,
             log_path: Some(PathBuf::from("/etc/passwd.jsonl")),
             ..DebugConfig::default()
@@ -756,7 +756,9 @@ fn normalize_debug_config_fills_default_path_when_enabled() {
         config.log_path.as_deref(),
         Some(Path::new(DEFAULT_DEBUG_LOG_PATH))
     );
-    validate_debug_settings(&config).expect("normalized enabled config");
+    validate_debug_settings(&mut config).expect("normalized enabled config");
+    let expected = validate_debug_log_path(Path::new(DEFAULT_DEBUG_LOG_PATH)).expect("pin default");
+    assert_eq!(config.log_path.as_deref(), Some(expected.as_path()));
 }
 
 #[test]
@@ -769,7 +771,7 @@ fn normalize_debug_config_does_not_rewrite_zero_rotation_limits() {
     normalize_debug_config(&mut config);
     assert_eq!(config.max_log_mb, Some(0));
     assert_eq!(config.max_log_age_days, Some(0));
-    assert!(validate_debug_settings(&config).is_err());
+    assert!(validate_debug_settings(&mut config).is_err());
 }
 
 #[test]
@@ -781,10 +783,77 @@ fn apply_config_fills_default_path_when_enabled_without_path() {
         ..DebugConfig::default()
     })
     .expect("enable with default path");
+    let expected = validate_debug_log_path(Path::new(DEFAULT_DEBUG_LOG_PATH)).expect("pin default");
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+    let _ = fs::remove_file(&expected);
+}
+
+#[test]
+fn apply_config_stores_relative_log_path_as_the_resolved_destination() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(PathBuf::from("relative-debug.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("apply relative");
+    let expected = validate_debug_log_path(Path::new("relative-debug.jsonl")).expect("resolve");
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
+    let _ = fs::remove_file(&expected);
+}
+
+#[test]
+fn apply_config_pins_relative_log_path_while_disabled() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: false,
+        log_path: Some(PathBuf::from("disabled-relative.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("pin disabled relative");
     let expected = std::env::current_dir()
         .expect("cwd")
-        .join(DEFAULT_DEBUG_LOG_PATH);
-    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+        .canonicalize()
+        .expect("canonical cwd")
+        .join("disabled-relative.jsonl");
+    assert!(log.current_path().is_none());
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
+}
+
+#[test]
+fn apply_config_pins_disabled_path_through_parent_symlink() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-disabled-parent-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let real = dir.join("real");
+    fs::create_dir(&real).expect("real parent");
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink parent");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: false,
+        log_path: Some(link.join("debug.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("pin disabled via symlink parent");
+    let expected = real
+        .canonicalize()
+        .expect("canonical parent")
+        .join("debug.jsonl");
+    assert!(log.current_path().is_none());
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
 }
 
 #[test]
@@ -804,9 +873,12 @@ fn apply_config_stores_the_live_snapshot() {
     };
     let log = DebugLog::disabled();
     log.apply_config(&config).expect("apply");
-    assert_eq!(log.live_snapshot(), config);
+    let expected = validate_debug_log_path(&path).expect("pin absolute");
+    let mut pinned = config.clone();
+    pinned.log_path = Some(expected.clone());
+    assert_eq!(log.live_snapshot(), pinned);
     assert!(log.include_bodies());
-    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
 }
 
 #[test]

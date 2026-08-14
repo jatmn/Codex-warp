@@ -37,6 +37,22 @@
   const $ = (sel) => document.querySelector(sel);
   const status = (msg) => { $("#status-line").textContent = msg; };
 
+  // Empty → JSON null (clear to defaults). Invalid input must not become
+  // `Number(...)` NaN: JSON.stringify(NaN) is `null`, which the API treats as
+  // Clear and silently resets rotation limits.
+  function optionalPositiveInt(raw, label) {
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+    if (!/^[0-9]+$/.test(text)) {
+      throw new Error(`${label} must be a positive integer`);
+    }
+    const value = Number(text);
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`${label} must be a positive integer`);
+    }
+    return value;
+  }
+
   const themeApi = window.installCodexWarpTheme(window);
   if (!themeApi) {
     throw new Error("codex-warp theme bootstrap failed to load");
@@ -1173,6 +1189,8 @@
     const form = event.currentTarget;
     const tracingFilter = form.tracing_filter.value.trim();
     try {
+      const maxLogMb = optionalPositiveInt(form.max_log_mb.value, "Max log size (MB)");
+      const maxLogAgeDays = optionalPositiveInt(form.max_log_age_days.value, "Max log age (days)");
       status("Saving logging settings…");
       const saved = await api("/logging", {
         method: "PUT",
@@ -1181,8 +1199,8 @@
           log_path: form.log_path.value.trim() || null,
           include_bodies: form.include_bodies.checked,
           include_stream_bodies: form.include_stream_bodies.checked,
-          max_log_mb: form.max_log_mb.value ? Number(form.max_log_mb.value) : null,
-          max_log_age_days: form.max_log_age_days.value ? Number(form.max_log_age_days.value) : null,
+          max_log_mb: maxLogMb,
+          max_log_age_days: maxLogAgeDays,
           tracing_filter: tracingFilter ? tracingFilter : null,
         }),
       });

@@ -100,8 +100,8 @@ fn tracing_filter_from_debug_uses_config_or_stable_info() {
 
 #[test]
 fn validate_debug_live_config_or_without_pin_uses_info() {
-    let debug = crate::config::DebugConfig::default();
-    validate_debug_live_config_or(&debug, None).expect("unset filter with info");
+    let mut debug = crate::config::DebugConfig::default();
+    validate_debug_live_config_or(&mut debug, None).expect("unset filter with info");
     assert_eq!(
         tracing_filter_from_debug_or(&debug, ""),
         "info",
@@ -140,9 +140,9 @@ fn tracing_reload_pins_fallback_filter_at_construction() {
 #[test]
 fn validate_debug_live_config_parses_the_effective_filter() {
     let mut debug = crate::config::DebugConfig::default();
-    validate_debug_live_config_or(&debug, None).expect("default live config");
+    validate_debug_live_config_or(&mut debug, None).expect("default live config");
     debug.tracing_filter = Some("codex_warp=not-a-level".into());
-    assert!(validate_debug_live_config_or(&debug, None).is_err());
+    assert!(validate_debug_live_config_or(&mut debug, None).is_err());
 }
 
 #[test]

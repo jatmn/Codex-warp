@@ -488,7 +488,10 @@ fn apply_logging_persist(
     Ok(())
 }
 
-fn validate_logging_config(debug: &DebugConfig, fallback: Option<&str>) -> Result<(), ApiError> {
+fn validate_logging_config(
+    debug: &mut DebugConfig,
+    fallback: Option<&str>,
+) -> Result<(), ApiError> {
     validate_debug_live_config_or(debug, fallback).map_err(ApiError::bad_request)
 }
 
@@ -545,7 +548,7 @@ fn sync_tracing_to_snapshot(state: &AppState, debug: &DebugConfig) {
 fn set_live_logging(state: &AppState, debug: &DebugConfig) -> Result<(), String> {
     let mut debug = debug.clone();
     normalize_debug_config(&mut debug);
-    validate_debug_live_config_or(&debug, tracing_fallback(state))?;
+    validate_debug_live_config_or(&mut debug, tracing_fallback(state))?;
     state.debug_log.apply_config(&debug)?;
     sync_tracing_to_snapshot(state, &debug);
     Ok(())
