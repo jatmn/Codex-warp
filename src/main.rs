@@ -10,6 +10,7 @@ mod response_codec;
 mod server;
 mod state;
 mod store;
+mod structured_output;
 mod tool_policy;
 mod transform;
 mod transform_morph;

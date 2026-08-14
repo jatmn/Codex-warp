@@ -113,6 +113,7 @@ Keep source changes near their domain:
 - `src/upstream.rs`: upstream request dispatch and response plumbing
 - `src/response_codec.rs`: SSE, chat/responses conversion, usage normalization
 - `src/store.rs`: SQLite overlays and usage analytics
+- `src/structured_output.rs`: Chat Completions JSON Schema compatibility fallback
 - `src/webui.rs`: embedded Web UI routes and config/analytics API
 - `src/provider_templates.rs`: bundled example provider profiles for the Web UI
 - `src/webui_static/`: embedded HTML/CSS/JS for the Web UI

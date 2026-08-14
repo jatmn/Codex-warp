@@ -16,15 +16,15 @@ use crate::debug_log::DebugLog;
 use crate::transform::responses_to_chat;
 
 fn test_state(config: AppConfig) -> AppState {
-    AppState {
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        store: None,
-    }
+    AppState::from_parts(
+        Arc::new(RwLock::new(config)),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        None,
+    )
 }
 
 #[test]

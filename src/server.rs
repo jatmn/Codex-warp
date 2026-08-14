@@ -230,16 +230,17 @@ fn initialize_state_with_store(
         .as_ref()
         .map(|store| seed_model_routes_from_config_and_store(&config, store))
         .unwrap_or_default();
+    let debug_log = DebugLog::new(&config.debug);
 
-    Ok(AppState {
-        debug_log: DebugLog::new(&config.debug),
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(model_routes)),
-        config_revision: Arc::new(AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
+    Ok(AppState::from_parts(
+        Arc::new(RwLock::new(config)),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(model_routes)),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        debug_log,
         store,
-    })
+    ))
 }
 
 async fn shutdown_signal() {

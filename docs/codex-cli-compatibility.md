@@ -9,6 +9,7 @@ metadata and request compatibility once they start a model turn.
 
 - [Checked Source Paths](#checked-source-paths)
 - [What Codex Warp Must Preserve](#what-codex-warp-must-preserve)
+- [Structured Output And Chat Stream Compatibility](#structured-output-and-chat-stream-compatibility)
 - [Codex App Server Model Refresh](#codex-app-server-model-refresh)
 - [Configurable Codex Model Metadata](#configurable-codex-model-metadata)
 
@@ -59,6 +60,34 @@ Responses request. Context and compaction metadata are configurable through
 `/model` uses the normalized model catalog. Codex Warp merges provider `/models`
 results with provider and model-family metadata so models from multiple
 providers can appear in one catalog.
+
+## Structured Output And Chat Stream Compatibility
+
+Recent Codex CLI versions send a separate guardian request when deciding whether
+an agent action may self-approve. That request uses Responses `text.format` with
+`type = "json_schema"`. Warp still converts that field to Chat Completions
+`response_format.type = "json_schema"` first, so gateways that support strict
+structured output keep it.
+
+If the upstream returns HTTP 400 and the error is clearly about
+`response_format`, JSON Schema, or unavailable structured output, Warp retries
+the same request once with `response_format.type = "json_object"` and a concise
+system instruction to return one JSON object matching the original schema. The
+retry is global Chat Completions behavior, not a per-provider workaround and not
+a tool-policy decision. Unrelated 400s, authentication errors, rate limits, and
+timeouts are not retried. If `json_object` also fails, Warp returns a structured
+output incompatibility error so Codex can require manual approval.
+
+A short-lived in-memory cache keyed by upstream base URL plus model remembers
+whether that pair supports `json_schema`, only `json_object`, or no structured
+output, then expires so later requests can probe again.
+
+Some OpenAI-compatible chat streams omit the terminal `[DONE]` marker even after
+they emit a semantic `finish_reason` such as `stop` or `tool_calls`. Warp still
+requires `[DONE]` when that terminal reason is missing, but it synthesizes the
+normal Responses completion sequence when the stream ends cleanly after a
+documented terminal `finish_reason`. Truncated streams and mid-stream transport
+errors still fail.
 
 ## Codex App Server Model Refresh
 

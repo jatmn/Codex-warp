@@ -750,6 +750,9 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let response = models(State(state.clone()), HeaderMap::new()).await;
@@ -807,6 +810,9 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let response = models(State(state.clone()), HeaderMap::new()).await;
@@ -848,6 +854,9 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let mut refreshed = BTreeMap::new();
@@ -891,6 +900,9 @@ async fn models_returns_empty_list_when_no_providers_configured() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let response = models(State(state), HeaderMap::new()).await;
@@ -938,6 +950,9 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let response = models(State(state), HeaderMap::new()).await;
@@ -972,6 +987,9 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     let _mutation = state.mutation_lock.lock().await;
@@ -1035,6 +1053,9 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     // Simulate disable: drop the provider's live routes before refresh.
@@ -1103,6 +1124,9 @@ async fn stale_model_discovery_does_not_publish_routes() {
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
         store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
     };
 
     assert!(

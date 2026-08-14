@@ -46,7 +46,26 @@ fn request_debug_summary_keeps_cache_fields_without_prompt_text() {
     assert!(summary["messages"][0]["content_chars"].as_u64().unwrap() > 0);
     assert!(summary["messages"][0].get("content").is_none());
     assert_eq!(summary["tools"]["count"], 1);
+    assert_eq!(summary["response_format_type"], serde_json::Value::Null);
     assert!(summary["body_fingerprint"].as_str().is_some());
+}
+
+#[test]
+fn request_debug_summary_records_response_format_type_without_schema() {
+    let summary = request_debug_summary(&json!({
+        "model": "deepseek-v4-flash",
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "guardian_decision",
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+            }
+        }
+    }));
+    assert_eq!(summary["response_format_type"], "json_schema");
+    let text = summary.to_string();
+    assert!(!text.contains("guardian_decision"));
+    assert!(!text.contains("properties"));
 }
 
 #[test]

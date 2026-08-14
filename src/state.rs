@@ -12,6 +12,7 @@ use crate::config::ProviderConfig;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
 use crate::store::Store;
+use crate::structured_output::StructuredOutputCache;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -24,6 +25,7 @@ pub(crate) struct AppState {
     pub(crate) mutation_lock: Arc<AsyncMutex<()>>,
     pub(crate) debug_log: DebugLog,
     pub(crate) store: Option<Store>,
+    pub(crate) structured_output: Arc<StructuredOutputCache>,
 }
 
 impl AppState {
@@ -33,6 +35,27 @@ impl AppState {
 
     pub(crate) fn write_config(&self) -> std::sync::RwLockWriteGuard<'_, AppConfig> {
         self.config.write().expect("config lock poisoned")
+    }
+
+    pub(crate) fn from_parts(
+        config: Arc<RwLock<AppConfig>>,
+        client: Client,
+        model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+        config_revision: Arc<AtomicU64>,
+        mutation_lock: Arc<AsyncMutex<()>>,
+        debug_log: DebugLog,
+        store: Option<Store>,
+    ) -> Self {
+        Self {
+            config,
+            client,
+            model_routes,
+            config_revision,
+            mutation_lock,
+            debug_log,
+            store,
+            structured_output: Arc::new(StructuredOutputCache::default()),
+        }
     }
 }
 
