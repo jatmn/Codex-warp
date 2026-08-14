@@ -37,6 +37,8 @@ fn test_state() -> AppState {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
         None,
     )
 }
@@ -558,7 +560,10 @@ fn test_state_with_debug(path: std::path::PathBuf) -> AppState {
             enabled: true,
             log_path: Some(path),
             ..DebugConfig::default()
-        }),
+        })
+        .expect("debug log"),
+        crate::process_log::ProcessLog::disabled(),
+        None,
         None,
     )
 }

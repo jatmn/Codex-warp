@@ -3,6 +3,7 @@ use std::env;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde::Serialize;
 
 pub use crate::config_loader::configured_provider_by_id;
 pub use crate::config_loader::configured_provider_entries;
@@ -238,7 +239,7 @@ impl Default for ContinueGuardMode {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugConfig {
     pub enabled: bool,
@@ -247,6 +248,10 @@ pub struct DebugConfig {
     pub include_stream_bodies: bool,
     pub max_log_mb: Option<u64>,
     pub max_log_age_days: Option<u64>,
+    /// Optional tracing-subscriber filter, for example `codex_warp=debug`.
+    /// When unset, Warp uses the process default captured from `RUST_LOG`
+    /// (or `info`) when tracing started.
+    pub tracing_filter: Option<String>,
 }
 
 impl Default for DebugConfig {
@@ -258,6 +263,7 @@ impl Default for DebugConfig {
             include_stream_bodies: false,
             max_log_mb: None,
             max_log_age_days: None,
+            tracing_filter: None,
         }
     }
 }

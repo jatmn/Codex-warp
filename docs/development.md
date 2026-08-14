@@ -189,6 +189,7 @@ file:
 | `src/transform_morph.rs` | Configured request morphs and dotted-path edits. |
 | `src/tool_policy.rs` | Optional downstream tool-call approval policy. |
 | `src/debug_log.rs` | Sanitized debug log events and fingerprints. |
+| `src/process_log.rs` | In-memory process log buffer and tracing filter reload. |
 | `src/http.rs` | Shared HTTP headers, endpoint URLs, and proxy errors. |
 | `src/ids.rs` | Generated Responses item/call ids. |
 | `src/version.rs` | Agent name and version reporting. |
@@ -217,7 +218,11 @@ cargo run -- --destination https://provider.example/v1
 
 ## Useful Environment Variables
 
-- `RUST_LOG=codex_warp=debug`: enables debug logging for this crate.
+- `RUST_LOG=codex_warp=debug`: enables debug logging for this crate when
+  `debug.tracing_filter` is unset. Warp captures this value when tracing
+  starts; changing `RUST_LOG` later in the same process does not change the
+  live filter. The Web UI Logs tab can override it at runtime through
+  `debug.tracing_filter`.
 - Provider-specific API keys such as `XIAOMI_TOKEN_PLAN_API_KEY`.
 
 Example:

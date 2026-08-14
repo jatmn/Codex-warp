@@ -18,6 +18,7 @@ use crate::store::AnalyticsRange;
 use crate::store::ensure_provider_exists;
 
 fn test_state() -> AppState {
+    let process_log = crate::process_log::ProcessLog::disabled();
     AppState::from_parts(
         Arc::new(RwLock::new(AppConfig::default())),
         Client::new(),
@@ -25,6 +26,8 @@ fn test_state() -> AppState {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         DebugLog::disabled(),
+        process_log.clone(),
+        Some(crate::process_log::TracingReload::for_tests(process_log)),
         None,
     )
 }
@@ -684,6 +687,8 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
         Some(store),
     );
     {
@@ -970,4 +975,822 @@ async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
         "a healthy provider must immediately reclaim a live-only route after the old owner changes identity"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn logging_update_applies_without_store() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-nostore-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("debug.jsonl");
+    let state = test_state();
+    let Json(before) = get_logging(State(state.clone())).await;
+    assert!(!before.persist_available);
+    assert!(!before.persisted);
+
+    let Json(updated) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Set(log_path.display().to_string()),
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        }),
+    )
+    .await
+    .expect("live apply without store");
+    assert!(updated.enabled);
+    assert!(!updated.persist_available);
+    assert!(!updated.persisted);
+    assert!(updated.tracing_applied);
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(log_path.as_path())
+    );
+    assert!(state.debug_log.live_snapshot().enabled);
+    state
+        .debug_log
+        .log(serde_json::json!({"event": "upstream_request", "id": "dbg_nostore"}));
+    let Json(debug_events) = get_logging_events(
+        State(state.clone()),
+        axum::extract::Query(LoggingEventsQuery {
+            source: Some("debug".into()),
+            limit: Some(20),
+            q: None,
+            level: None,
+            event: Some("upstream_request".into()),
+        }),
+    )
+    .await
+    .expect("enabled debug events");
+    assert_eq!(debug_events["enabled"], true);
+    assert_eq!(
+        debug_events["path"],
+        serde_json::Value::String(log_path.display().to_string())
+    );
+    assert_eq!(debug_events["events"][0]["id"], "dbg_nostore");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn get_logging_reads_live_snapshot_without_waiting_for_mutation_lock() {
+    let state = test_state();
+    state
+        .debug_log
+        .apply_config(&crate::config::DebugConfig {
+            enabled: true,
+            ..crate::config::DebugConfig::default()
+        })
+        .expect("publish live snapshot");
+    let _mutation = state.mutation_lock.lock().await;
+    let Json(view) = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        get_logging(State(state.clone())),
+    )
+    .await
+    .expect("GET /api/logging must not wait for overlay/mutation lock");
+    assert!(view.enabled);
+}
+
+#[tokio::test]
+async fn logging_update_rejects_zero_rotation_limits() {
+    let state = test_state();
+    let err = update_logging(
+        State(state),
+        Json(LoggingPersist {
+            enabled: None,
+            log_path: OptionalPatch::Absent,
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Set(0),
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        }),
+    )
+    .await
+    .expect_err("zero max_log_mb");
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn logging_settings_apply_live_and_persist() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::process_log::ProcessLog;
+    use crate::process_log::ProcessLogEvent;
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("debug.jsonl");
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let process_log = ProcessLog::new(8);
+    process_log.push(ProcessLogEvent {
+        ts: 1,
+        level: "INFO".into(),
+        target: "codex_warp::server".into(),
+        message: "listening on http://127.0.0.1:8787".into(),
+    });
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        process_log.clone(),
+        Some(crate::process_log::TracingReload::for_tests(process_log)),
+        Some(store),
+    );
+
+    let Json(before) = get_logging(State(state.clone())).await;
+    assert!(!before.enabled);
+    assert!(before.persist_available);
+    assert!(!before.persisted);
+
+    let Json(updated) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Set(log_path.display().to_string()),
+            include_bodies: Some(true),
+            include_stream_bodies: Some(false),
+            max_log_mb: OptionalPatch::Set(32),
+            max_log_age_days: OptionalPatch::Set(7),
+            tracing_filter: OptionalPatch::Set("codex_warp=debug".into()),
+        }),
+    )
+    .await
+    .expect("update logging");
+    assert!(updated.enabled);
+    assert_eq!(updated.max_log_mb, 32);
+    assert!(updated.persisted);
+    assert_eq!(updated.tracing_filter.as_deref(), Some("codex_warp=debug"));
+    assert_eq!(updated.tracing_filter_wanted, "codex_warp=debug");
+    assert_eq!(updated.tracing_filter_effective, "codex_warp=debug");
+    assert!(updated.tracing_applied);
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(log_path.as_path())
+    );
+    assert!(state.debug_log.include_bodies());
+    let mut replayed = AppConfig::default();
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .unwrap();
+    assert_eq!(replayed.debug, state.debug_log.live_snapshot());
+
+    state
+        .debug_log
+        .log(serde_json::json!({"event": "upstream_request", "id": "dbg_ui"}));
+
+    let Json(debug_events) = get_logging_events(
+        State(state.clone()),
+        axum::extract::Query(LoggingEventsQuery {
+            source: Some("debug".into()),
+            limit: Some(20),
+            q: None,
+            level: None,
+            event: Some("upstream_request".into()),
+        }),
+    )
+    .await
+    .expect("read debug events");
+    assert_eq!(debug_events["source"], "debug");
+    assert_eq!(debug_events["enabled"], true);
+    assert_eq!(debug_events["events"][0]["id"], "dbg_ui");
+
+    let Json(process_events) = get_logging_events(
+        State(state.clone()),
+        axum::extract::Query(LoggingEventsQuery {
+            source: Some("process".into()),
+            limit: Some(20),
+            q: Some("listening".into()),
+            level: Some("info".into()),
+            event: None,
+        }),
+    )
+    .await
+    .expect("read process events");
+    assert_eq!(process_events["events"].as_array().unwrap().len(), 1);
+
+    let err = update_logging(
+        State(state),
+        Json(LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Set("/etc/passwd.jsonl".into()),
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        }),
+    )
+    .await
+    .expect_err("restricted path");
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_logging_persist_fills_default_path_when_enabled_without_path() {
+    let mut debug = crate::config::DebugConfig::default();
+    apply_logging_persist(
+        &mut debug,
+        LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Clear,
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        },
+        None,
+    )
+    .expect("enable with default path");
+    assert!(debug.enabled);
+    assert_eq!(
+        debug.log_path.as_deref(),
+        Some(std::path::Path::new(
+            crate::debug_log::DEFAULT_DEBUG_LOG_PATH
+        ))
+    );
+}
+
+#[tokio::test]
+async fn logging_update_keeps_applied_live_settings_when_overlay_persist_fails() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-persist-fail-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("overlay.db");
+    let log_path = dir.join("debug.jsonl");
+    let store = Store::open(&db_path).unwrap();
+    let process_log = crate::process_log::ProcessLog::disabled();
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        process_log.clone(),
+        Some(crate::process_log::TracingReload::for_tests(process_log)),
+        Some(store),
+    );
+
+    let Json(updated) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Set(log_path.display().to_string()),
+            include_bodies: Some(false),
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        }),
+    )
+    .await
+    .expect("initial persist");
+    assert!(updated.persisted);
+    assert!(!state.debug_log.include_bodies());
+
+    rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .execute_batch(
+            "
+            CREATE TRIGGER fail_debug_overlay_insert BEFORE INSERT ON debug_overlay
+            BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END;
+            CREATE TRIGGER fail_debug_overlay_update BEFORE UPDATE ON debug_overlay
+            BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END;
+            ",
+        )
+        .unwrap();
+
+    let Json(live) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: None,
+            log_path: OptionalPatch::Absent,
+            include_bodies: Some(true),
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Absent,
+        }),
+    )
+    .await
+    .expect("live apply succeeds when overlay persist fails");
+    assert!(live.persist_available);
+    assert!(!live.persisted);
+    assert!(live.include_bodies);
+    assert!(state.debug_log.include_bodies());
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(log_path.as_path())
+    );
+    assert!(state.debug_log.live_snapshot().include_bodies);
+    let mut replayed = AppConfig::default();
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .unwrap();
+    assert!(!replayed.debug.include_bodies);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_logging_persist_rejects_invalid_tracing_filter() {
+    let mut debug = crate::config::DebugConfig::default();
+    let err = apply_logging_persist(
+        &mut debug,
+        LoggingPersist {
+            enabled: None,
+            log_path: OptionalPatch::Absent,
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Set("codex_warp=not-a-level".into()),
+        },
+        None,
+    )
+    .expect_err("invalid tracing filter");
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn set_live_logging_commits_the_live_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-set-live-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let previous_path = dir.join("previous.jsonl");
+    let next_path = dir.join("next.jsonl");
+    let previous = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(previous_path.clone()),
+        include_bodies: false,
+        ..crate::config::DebugConfig::default()
+    };
+    let next = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(next_path.clone()),
+        include_bodies: true,
+        ..crate::config::DebugConfig::default()
+    };
+    let state = test_state();
+    set_live_logging(&state, &previous).expect("apply previous");
+    set_live_logging(&state, &next).expect("apply next");
+    assert!(state.debug_log.include_bodies());
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(next_path.as_path())
+    );
+    assert_eq!(state.debug_log.live_snapshot(), next);
+
+    set_live_logging(&state, &previous).expect("apply previous");
+    assert!(!state.debug_log.include_bodies());
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(previous_path.as_path())
+    );
+    assert_eq!(state.debug_log.live_snapshot(), previous);
+    assert_eq!(
+        state.read_config().debug,
+        crate::config::DebugConfig::default()
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_live_logging_rejects_restricted_path_without_mutating_state() {
+    let state = test_state();
+    let previous = state.debug_log.live_snapshot();
+    let err = set_live_logging(
+        &state,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("/etc/passwd.jsonl".into()),
+            include_bodies: true,
+            ..crate::config::DebugConfig::default()
+        },
+    )
+    .expect_err("restricted path");
+    assert!(err.contains("not in an allowed location"), "{err}");
+    assert!(state.debug_log.current_path().is_none());
+    assert!(!state.debug_log.include_bodies());
+    assert_eq!(state.debug_log.live_snapshot(), previous);
+}
+
+#[test]
+fn set_live_logging_skips_tracing_reload_when_filter_unchanged() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-set-live-skip-reload-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("debug.jsonl");
+    let previous = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: false,
+        ..crate::config::DebugConfig::default()
+    };
+    let next = crate::config::DebugConfig {
+        include_bodies: true,
+        ..previous.clone()
+    };
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    set_live_logging(&state, &previous).expect("apply previous");
+    set_live_logging(&state, &next).expect("apply next");
+    state.tracing_reload.as_ref().unwrap().disconnect_layer();
+
+    set_live_logging(&state, &previous).expect("apply previous without tracing reload");
+    assert!(!state.debug_log.include_bodies());
+    assert_eq!(state.debug_log.live_snapshot(), previous);
+    assert_eq!(
+        state.read_config().debug,
+        crate::config::DebugConfig::default()
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_live_logging_keeps_snapshot_when_tracing_reload_fails() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-apply-reload-fail-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let previous_path = dir.join("previous.jsonl");
+    let next_path = dir.join("next.jsonl");
+    let previous = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(previous_path.clone()),
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    let next = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(next_path.clone()),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=trace".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    set_live_logging(&state, &previous).expect("apply previous");
+    state.tracing_reload.as_ref().unwrap().disconnect_layer();
+
+    set_live_logging(&state, &next).expect("snapshot publish does not depend on tracing");
+    assert!(state.debug_log.include_bodies());
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(next_path.as_path())
+    );
+    assert_eq!(state.debug_log.live_snapshot(), next);
+    assert_eq!(
+        state.read_config().debug,
+        crate::config::DebugConfig::default()
+    );
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=debug"
+    );
+    let view = logging_settings_view(&state, false);
+    assert_eq!(view.tracing_filter.as_deref(), Some("codex_warp=trace"));
+    assert_eq!(view.tracing_filter_wanted, "codex_warp=trace");
+    assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
+    assert!(!view.tracing_applied);
+    assert!(view.include_bodies);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn logging_settings_report_tracing_lag_when_requested_filter_is_cleared() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-clear-filter-lag-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("debug.jsonl");
+    let previous = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    let next = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        tracing_filter: None,
+        ..crate::config::DebugConfig::default()
+    };
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    set_live_logging(&state, &previous).expect("apply previous");
+    state.tracing_reload.as_ref().unwrap().disconnect_layer();
+
+    set_live_logging(&state, &next).expect("cleared filter still publishes");
+    let wanted = state.tracing_reload.as_ref().unwrap().wanted_filter(&next);
+    let view = logging_settings_view(&state, false);
+    assert!(view.tracing_filter.is_none());
+    assert_eq!(view.tracing_filter_wanted, wanted);
+    assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
+    assert!(!view.tracing_applied);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_live_logging_rejects_restricted_path_without_reloading_tracing() {
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    let previous = crate::config::DebugConfig {
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    set_live_logging(&state, &previous).expect("apply previous");
+
+    let err = set_live_logging(
+        &state,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("/etc/passwd.jsonl".into()),
+            include_bodies: true,
+            tracing_filter: Some("codex_warp=trace".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    )
+    .expect_err("restricted path");
+    assert!(err.contains("not in an allowed location"), "{err}");
+    assert!(state.debug_log.current_path().is_none());
+    assert!(!state.debug_log.include_bodies());
+    assert_eq!(state.debug_log.live_snapshot(), previous);
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=debug"
+    );
+}
+
+#[test]
+fn set_live_logging_does_not_publish_when_writer_apply_fails() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-writer-fail-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let previous_path = dir.join("previous.jsonl");
+    let next_path = dir.join("next.jsonl");
+    let previous = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(previous_path.clone()),
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    let next = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(next_path.clone()),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=trace".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    set_live_logging(&state, &previous).expect("apply previous");
+    state.debug_log.fail_next_commit();
+
+    let err = set_live_logging(&state, &next).expect_err("injected writer commit failure");
+    assert!(err.contains("injected debug log commit failure"), "{err}");
+    assert!(!state.debug_log.include_bodies());
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(previous_path.as_path())
+    );
+    assert_eq!(state.debug_log.live_snapshot(), previous);
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=debug"
+    );
+    let view = logging_settings_view(&state, false);
+    assert_eq!(view.tracing_filter.as_deref(), Some("codex_warp=debug"));
+    assert_eq!(view.tracing_filter_wanted, "codex_warp=debug");
+    assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
+    assert!(view.tracing_applied);
+    assert!(!view.include_bodies);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn logging_update_keeps_applied_tracing_filter_when_overlay_persist_fails() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-webui-logging-persist-fail-filter-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("overlay.db");
+    let log_path = dir.join("debug.jsonl");
+    let store = Store::open(&db_path).unwrap();
+    let process_log = crate::process_log::ProcessLog::disabled();
+    let tracing_reload =
+        crate::process_log::TracingReload::for_tests(crate::process_log::ProcessLog::disabled());
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        process_log,
+        Some(tracing_reload),
+        Some(store),
+    );
+
+    let Json(updated) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: Some(true),
+            log_path: OptionalPatch::Set(log_path.display().to_string()),
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Set("codex_warp=debug".into()),
+        }),
+    )
+    .await
+    .expect("initial persist");
+    assert!(updated.persisted);
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=debug"
+    );
+
+    rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .execute_batch(
+            "
+            CREATE TRIGGER fail_debug_overlay_insert BEFORE INSERT ON debug_overlay
+            BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END;
+            CREATE TRIGGER fail_debug_overlay_update BEFORE UPDATE ON debug_overlay
+            BEGIN SELECT RAISE(ABORT, 'injected persist failure'); END;
+            ",
+        )
+        .unwrap();
+
+    let Json(live) = update_logging(
+        State(state.clone()),
+        Json(LoggingPersist {
+            enabled: None,
+            log_path: OptionalPatch::Absent,
+            include_bodies: None,
+            include_stream_bodies: None,
+            max_log_mb: OptionalPatch::Absent,
+            max_log_age_days: OptionalPatch::Absent,
+            tracing_filter: OptionalPatch::Set("codex_warp=trace".into()),
+        }),
+    )
+    .await
+    .expect("live apply succeeds when overlay persist fails");
+    assert!(live.persist_available);
+    assert!(!live.persisted);
+    assert_eq!(live.tracing_filter.as_deref(), Some("codex_warp=trace"));
+    assert_eq!(live.tracing_filter_wanted, "codex_warp=trace");
+    assert_eq!(live.tracing_filter_effective, "codex_warp=trace");
+    assert!(live.tracing_applied);
+    assert_eq!(
+        state.debug_log.live_snapshot().tracing_filter.as_deref(),
+        Some("codex_warp=trace")
+    );
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=trace"
+    );
+    let mut replayed = AppConfig::default();
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .unwrap();
+    assert_eq!(
+        replayed.debug.tracing_filter.as_deref(),
+        Some("codex_warp=debug")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn logging_settings_report_tracing_unapplied_without_reload_handle() {
+    let mut state = test_state();
+    state.tracing_reload = None;
+    let view = logging_settings_view(&state, false);
+    assert_eq!(view.tracing_filter_wanted, "info");
+    assert_eq!(view.tracing_filter_effective, "");
+    assert!(!view.tracing_applied);
+}
+
+#[test]
+fn logging_settings_use_pinned_fallback_when_snapshot_filter_is_unset() {
+    let tracing_reload = crate::process_log::TracingReload::for_tests_with_filter(
+        crate::process_log::ProcessLog::disabled(),
+        "codex_warp=warn",
+    );
+    let mut state = test_state();
+    state.tracing_reload = Some(tracing_reload);
+    let view = logging_settings_view(&state, false);
+    assert!(view.tracing_filter.is_none());
+    assert_eq!(view.tracing_filter_wanted, "codex_warp=warn");
+    assert_eq!(view.tracing_filter_effective, "codex_warp=warn");
+    assert!(view.tracing_applied);
+
+    set_live_logging(&state, &crate::config::DebugConfig::default()).expect("apply unset filter");
+    let after = logging_settings_view(&state, false);
+    assert!(after.tracing_filter.is_none());
+    assert_eq!(after.tracing_filter_wanted, "codex_warp=warn");
+    assert_eq!(after.tracing_filter_effective, "codex_warp=warn");
+    assert!(after.tracing_applied);
 }

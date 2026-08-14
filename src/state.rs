@@ -11,6 +11,8 @@ use crate::config::AppConfig;
 use crate::config::ProviderConfig;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
+use crate::process_log::ProcessLog;
+use crate::process_log::TracingReload;
 use crate::store::Store;
 use crate::structured_output::StructuredOutputCache;
 
@@ -21,9 +23,14 @@ pub(crate) struct AppState {
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
     /// Monotonically changes after a Web UI mutation updates live configuration.
     pub(crate) config_revision: Arc<AtomicU64>,
-    /// Serializes Web UI mutations so SQLite overlays and live config update together.
+    /// Serializes Web UI mutations so live config and SQLite overlays update
+    /// without overlapping writes. Live logging reads the debug-log snapshot
+    /// and does not wait for overlay persist. `AppConfig.debug` is unused after
+    /// startup; boot `[debug]` is applied into `debug_log` and then cleared.
     pub(crate) mutation_lock: Arc<AsyncMutex<()>>,
     pub(crate) debug_log: DebugLog,
+    pub(crate) process_log: ProcessLog,
+    pub(crate) tracing_reload: Option<TracingReload>,
     pub(crate) store: Option<Store>,
     pub(crate) structured_output: Arc<StructuredOutputCache>,
 }
@@ -44,6 +51,8 @@ impl AppState {
         config_revision: Arc<AtomicU64>,
         mutation_lock: Arc<AsyncMutex<()>>,
         debug_log: DebugLog,
+        process_log: ProcessLog,
+        tracing_reload: Option<TracingReload>,
         store: Option<Store>,
     ) -> Self {
         Self {
@@ -53,6 +62,8 @@ impl AppState {
             config_revision,
             mutation_lock,
             debug_log,
+            process_log,
+            tracing_reload,
             store,
             structured_output: Arc::new(StructuredOutputCache::default()),
         }

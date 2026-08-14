@@ -3,6 +3,7 @@ use super::*;
 use clap::Parser;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
@@ -26,6 +27,8 @@ fn test_state(config: AppConfig) -> AppState {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
         None,
     )
 }
@@ -162,6 +165,144 @@ fn initialize_state_keeps_default_proxy_stateless() {
 }
 
 #[test]
+fn initialize_state_rejects_zero_rotation_limits() {
+    let mut config = AppConfig::default();
+    config.debug.max_log_mb = Some(0);
+    let err = initialize_state(config)
+        .err()
+        .expect("zero max_log_mb")
+        .to_string();
+    assert!(err.contains("greater than 0"));
+}
+
+#[test]
+fn initialize_state_allows_disabled_restricted_log_path() {
+    let mut config = AppConfig::default();
+    config.debug.enabled = false;
+    config.debug.log_path = Some(PathBuf::from("/etc/passwd.jsonl"));
+    let state = initialize_state(config).expect("disabled restricted path");
+    assert!(!state.debug_log.live_snapshot().enabled);
+    assert!(state.debug_log.current_path().is_none());
+    assert_eq!(
+        state.read_config().debug,
+        crate::config::DebugConfig::default()
+    );
+}
+
+#[test]
+fn initialize_state_keeps_live_debug_on_the_writer_not_app_config() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-init-debug-snapshot-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("debug.jsonl");
+    let mut config = AppConfig::default();
+    config.debug.enabled = true;
+    config.debug.log_path = Some(log_path.clone());
+    config.debug.tracing_filter = Some("codex_warp=debug".into());
+    let state = initialize_state(config).expect("initialize enabled debug");
+    assert!(state.debug_log.live_snapshot().enabled);
+    assert_eq!(
+        state.debug_log.current_path().as_deref(),
+        Some(log_path.as_path())
+    );
+    assert_eq!(
+        state.debug_log.live_snapshot().tracing_filter.as_deref(),
+        Some("codex_warp=debug")
+    );
+    assert_eq!(
+        state.read_config().debug,
+        crate::config::DebugConfig::default()
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_configured_tracing_filter_uses_pinned_fallback() {
+    let process_log = crate::process_log::ProcessLog::disabled();
+    let tracing_reload = crate::process_log::TracingReload::for_tests_with_filter(
+        process_log.clone(),
+        "codex_warp=warn",
+    );
+    let state = initialize_state_with_store(
+        AppConfig::default(),
+        false,
+        process_log,
+        Some(tracing_reload),
+        CliDebugOverrides::default(),
+    )
+    .expect("initialize");
+    apply_configured_tracing_filter(&state).expect("apply tracing");
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .current_filter()
+            .as_str(),
+        "codex_warp=warn"
+    );
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .wanted_filter(&state.debug_log.live_snapshot()),
+        "codex_warp=warn"
+    );
+}
+
+#[test]
+fn initialize_state_replays_unset_tracing_filter_with_pinned_fallback() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-init-unset-filter-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("state.db");
+    let log_path = dir.join("debug.jsonl");
+    let store = Store::open(&db_path).expect("open store");
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some(log_path.clone()),
+            tracing_filter: None,
+            ..crate::config::DebugConfig::default()
+        })
+        .expect("persist unset filter overlay");
+    drop(store);
+
+    let process_log = crate::process_log::ProcessLog::disabled();
+    let tracing_reload = crate::process_log::TracingReload::for_tests_with_filter(
+        process_log.clone(),
+        "codex_warp=warn",
+    );
+    let mut config = AppConfig::default();
+    config.webui.enabled = true;
+    config.webui.db_path = db_path;
+    let state = initialize_state_with_store(
+        config,
+        true,
+        process_log,
+        Some(tracing_reload),
+        CliDebugOverrides::default(),
+    )
+    .expect("initialize with overlay");
+    assert!(state.debug_log.live_snapshot().enabled);
+    assert!(state.debug_log.live_snapshot().tracing_filter.is_none());
+    assert_eq!(
+        state
+            .tracing_reload
+            .as_ref()
+            .unwrap()
+            .wanted_filter(&state.debug_log.live_snapshot()),
+        "codex_warp=warn"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn webui_store_requires_enabled_ui_and_no_opt_out() {
     assert!(!webui_store_enabled(false, false));
     assert!(!webui_store_enabled(false, true));
@@ -205,7 +346,9 @@ fn destination_override_wins_after_overlay_replay() {
     config.webui.enabled = true;
     config.webui.db_path = db_path;
     config.provider.base_url = "https://toml.example/v1".to_string();
-    store.apply_overlays(&mut config).expect("replay overlay");
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .expect("replay overlay");
     apply_destination_override(&mut config, Some("https://cli.example/v1".to_string()));
     assert_eq!(config.provider.base_url, "https://cli.example/v1");
 
@@ -243,9 +386,15 @@ fn destination_bootstraps_default_provider_before_overlay_replay() {
     let mut config = AppConfig::default();
     config.webui.enabled = true;
     config.webui.db_path = db_path;
-    let state =
-        initialize_state_with_destination(config, true, Some("https://cli.example/v1".to_string()))
-            .expect("initialize state");
+    let state = initialize_state_with_destination(
+        config,
+        true,
+        Some("https://cli.example/v1".to_string()),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        CliDebugOverrides::default(),
+    )
+    .expect("initialize state");
     let config = state.read_config();
     assert_eq!(config.provider.base_url, "https://cli.example/v1");
     assert_eq!(

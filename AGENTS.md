@@ -121,6 +121,7 @@ Keep source changes near their domain:
 - `src/transform_morph.rs`: configured request morphs and dotted-path edits
 - `src/tool_policy.rs`: optional downstream tool-call approval policy
 - `src/debug_log.rs`: sanitized debug log events and fingerprints
+- `src/process_log.rs`: in-memory process log buffer and tracing filter reload
 - `src/http.rs`: shared HTTP headers, endpoint URLs, and proxy errors
 - `src/ids.rs`: generated Responses item/call ids
 - `src/version.rs`: agent name and version reporting

@@ -1528,7 +1528,8 @@ fn temp_debug_log(label: &str) -> (DebugLog, std::path::PathBuf, std::path::Path
         enabled: true,
         log_path: Some(path.clone()),
         ..DebugConfig::default()
-    });
+    })
+    .expect("debug log");
     (debug_log, path, dir)
 }
 

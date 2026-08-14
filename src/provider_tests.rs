@@ -23,6 +23,8 @@ fn test_state(config: AppConfig) -> AppState {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
         None,
     )
 }

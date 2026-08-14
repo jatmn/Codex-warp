@@ -23,9 +23,15 @@
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
+  let logsTimer = null;
+  let logsInFlight = false;
+  let logsPending = false;
+  let logsExpanded = new Set();
   let activeTab = "analytics";
+  let bootComplete = false;
+  let tabEpoch = 0;
   const expandedProviderIds = new Set();
-  const VALID_TABS = new Set(["analytics", "providers"]);
+  const VALID_TABS = new Set(["analytics", "providers", "logs"]);
 
   const $ = (sel) => document.querySelector(sel);
   const status = (msg) => { $("#status-line").textContent = msg; };
@@ -128,7 +134,7 @@
     }
   }
 
-  function switchTab(name) {
+  function showTabPanel(name) {
     if (!VALID_TABS.has(name)) {
       return;
     }
@@ -144,8 +150,31 @@
       p.hidden = !on;
     });
     syncTabHash(name);
-    if (name === "analytics") startAnalyticsPoll();
-    else stopAnalyticsPoll();
+  }
+
+  async function activateTabPolls(name) {
+    const epoch = ++tabEpoch;
+    stopAnalyticsPoll();
+    stopLogsPoll();
+    if (name === "analytics") {
+      await startAnalyticsPoll(epoch);
+      return;
+    }
+    if (name === "logs") {
+      await startLogsPoll({ updateFooter: true, epoch });
+      return;
+    }
+    if (epoch === tabEpoch) status("Ready");
+  }
+
+  function switchTab(name) {
+    if (!VALID_TABS.has(name)) {
+      return;
+    }
+    showTabPanel(name);
+    if (bootComplete) {
+      void activateTabPolls(name);
+    }
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -184,8 +213,8 @@
     }
   }
 
-  async function loadProviders({ refreshRoutes = true } = {}) {
-    status("Loading providers…");
+  async function loadProviders({ refreshRoutes = true, updateStatus = true } = {}) {
+    if (updateStatus) status("Loading providers…");
     // Local persisted/configured providers must render before live discovery:
     // a stalled upstream must not block the controls needed to disable it.
     providers = await api("/providers");
@@ -770,12 +799,12 @@
             : "Usage over time",
       };
       renderAnalyticsPresentation();
-      status("Analytics updated");
+      if (activeTab === "analytics") status("Analytics updated");
     } catch (e) {
-      status(`Analytics error: ${e.message}`);
+      if (activeTab === "analytics") status(`Analytics error: ${e.message}`);
     } finally {
       analyticsInFlight = false;
-      if (analyticsPending.queued) {
+      if (analyticsPending.queued && activeTab === "analytics") {
         loadAnalytics();
       }
     }
@@ -919,9 +948,10 @@
     });
   }
 
-  function startAnalyticsPoll() {
+  async function startAnalyticsPoll(epoch = tabEpoch) {
     stopAnalyticsPoll();
-    loadAnalytics();
+    await loadAnalytics();
+    if (epoch !== tabEpoch || activeTab !== "analytics") return;
     analyticsTimer = setInterval(loadAnalytics, 5000);
   }
 
@@ -930,13 +960,246 @@
     analyticsTimer = null;
   }
 
+  function formatLogTime(ts) {
+    if (!ts) return "";
+    const date = new Date(Number(ts));
+    if (Number.isNaN(date.getTime())) return String(ts);
+    return date.toISOString().replace("T", " ").replace("Z", "");
+  }
+
+  function logKind(event, source) {
+    if (source === "process") return (event.level || "info").toLowerCase();
+    return (event.event || "event").toLowerCase();
+  }
+
+  function logMessage(event, source) {
+    if (source === "process") {
+      const target = event.target ? `${event.target} ` : "";
+      return `${target}${event.message || ""}`.trim();
+    }
+    const parts = [event.event, event.id, event.model, event.provider_id, event.backend]
+      .filter((value) => value != null && value !== "");
+    return parts.join(" · ") || JSON.stringify(event);
+  }
+
+  function eventKey(event, source, index) {
+    return `${source}:${event.ts || ""}:${event.id || ""}:${event.event || event.message || index}`;
+  }
+
+  function renderLogEvents(payload) {
+    const viewer = $("#log-viewer");
+    const source = payload.source || $("#log-source").value;
+    const events = payload.events || [];
+    if (!events.length) {
+      viewer.innerHTML = `<div class="log-empty">${
+        source === "debug" && payload.enabled === false
+          ? "Debug JSONL is disabled. Enable it in logging settings to capture request events."
+          : payload.missing
+            ? "No debug log file yet. Events appear after the next proxied request."
+            : "No log events match the current filters."
+      }</div>`;
+      return;
+    }
+    const follow = $("#log-follow")?.checked;
+    const stickToBottom = follow && (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40);
+    viewer.innerHTML = "";
+    events.forEach((event, index) => {
+      const key = eventKey(event, source, index);
+      const row = document.createElement("div");
+      const kind = logKind(event, source);
+      row.className = `log-row${logsExpanded.has(key) ? " open" : ""}`;
+      row.innerHTML = `<span class="log-ts">${esc(formatLogTime(event.ts))}</span><span class="log-kind ${esc(kind)}">${esc(kind)}</span><span class="log-msg">${esc(logMessage(event, source))}</span>`;
+      if (logsExpanded.has(key)) {
+        const pre = document.createElement("pre");
+        pre.className = "log-json";
+        pre.textContent = JSON.stringify(event, null, 2);
+        row.append(pre);
+      }
+      row.addEventListener("click", () => {
+        if (logsExpanded.has(key)) logsExpanded.delete(key);
+        else logsExpanded.add(key);
+        renderLogEvents(payload);
+      });
+      viewer.append(row);
+    });
+    if (stickToBottom) viewer.scrollTop = viewer.scrollHeight;
+  }
+
+  async function loadLoggingSettings() {
+    const settings = await api("/logging");
+    const form = $("#logging-settings");
+    if (!form) return settings;
+    form.enabled.checked = !!settings.enabled;
+    form.log_path.value = settings.log_path || settings.default_log_path || "";
+    form.include_bodies.checked = !!settings.include_bodies;
+    form.include_stream_bodies.checked = !!settings.include_stream_bodies;
+    form.max_log_mb.value = settings.max_log_mb ?? "";
+    form.max_log_age_days.value = settings.max_log_age_days ?? "";
+    form.tracing_filter.value = settings.tracing_filter || "";
+    form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
+    const hint = $("#logging-persist-hint");
+    if (hint) hint.textContent = loggingHint(settings);
+    return settings;
+  }
+
+  function tracingLagNote(settings) {
+    if (settings.tracing_applied) return "";
+    const effective = settings.tracing_filter_effective;
+    return effective
+      ? `Process logs still use ${effective}.`
+      : "Process logs are not using the live tracing filter.";
+  }
+
+  function loggingReadyStatus(settings) {
+    return tracingLagNote(settings) || "Ready";
+  }
+
+  function loggingHint(settings) {
+    const base = settings.persist_available
+      ? "Changes apply immediately. SQLite keeps them across restarts when the store is open. Command-line debug flags still win for that process."
+      : "Changes apply immediately for this process. Persistence is unavailable (--no-webui-store), so they reset on restart.";
+    const lag = tracingLagNote(settings);
+    return lag ? `${base} ${lag}` : base;
+  }
+
+  function loggingSaveStatus(settings) {
+    const applied = settings.persisted
+      ? "Logging settings applied"
+      : settings.persist_available
+        ? "Logging settings applied for this process; they could not be saved for restart"
+        : "Logging settings applied for this process";
+    const lag = tracingLagNote(settings);
+    return lag ? `${applied} ${lag}` : applied;
+  }
+
+  async function loadLogs() {
+    if (logsInFlight) {
+      logsPending = true;
+      return;
+    }
+    logsInFlight = true;
+    try {
+      const source = $("#log-source").value;
+      const params = new URLSearchParams({ source, limit: "250" });
+      const query = $("#log-query").value.trim();
+      if (query) params.set("q", query);
+      if (source === "process") {
+        const level = $("#log-level").value;
+        if (level) params.set("level", level);
+      }
+      const payload = await api(`/logging/events?${params.toString()}`);
+      const meta = [];
+      if (payload.path) meta.push(payload.path);
+      if (payload.file_bytes) meta.push(`${payload.file_bytes} bytes`);
+      if (payload.truncated) meta.push("showing a tail of a large file");
+      $("#log-meta").textContent = meta.join(" · ");
+      renderLogEvents(payload);
+    } catch (e) {
+      // Keep the footer for logging-settings state (including tracing lag).
+      $("#log-meta").textContent = `Error: ${e.message}`;
+    } finally {
+      logsInFlight = false;
+      if (logsPending && activeTab === "logs") {
+        logsPending = false;
+        loadLogs();
+      } else {
+        logsPending = false;
+      }
+    }
+  }
+
+  function syncProcessLevelControl() {
+    const process = $("#log-source")?.value === "process";
+    if ($("#log-level")) $("#log-level").disabled = !process;
+  }
+
+  function bumpLogsPollTimer() {
+    if (!logsTimer) return;
+    clearInterval(logsTimer);
+    logsTimer = setInterval(loadLogs, 2500);
+  }
+
+  async function startLogsPoll({ updateFooter = false, epoch = tabEpoch } = {}) {
+    stopLogsPoll();
+    syncProcessLevelControl();
+    try {
+      const settings = await loadLoggingSettings();
+      if (epoch !== tabEpoch || activeTab !== "logs") return settings;
+      if (updateFooter) status(loggingReadyStatus(settings));
+      loadLogs();
+      logsTimer = setInterval(loadLogs, 2500);
+      return settings;
+    } catch (e) {
+      if (epoch === tabEpoch && activeTab === "logs" && updateFooter) {
+        status(`Error: ${e.message}`);
+      }
+      throw e;
+    }
+  }
+
+  function stopLogsPoll() {
+    if (logsTimer) clearInterval(logsTimer);
+    logsTimer = null;
+  }
+
+  $("#log-source")?.addEventListener("change", () => {
+    syncProcessLevelControl();
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-level")?.addEventListener("change", () => {
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-query")?.addEventListener("input", () => {
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-refresh")?.addEventListener("click", loadLogs);
+  $("#logging-settings")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const tracingFilter = form.tracing_filter.value.trim();
+    try {
+      status("Saving logging settings…");
+      const saved = await api("/logging", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: form.enabled.checked,
+          log_path: form.log_path.value.trim() || null,
+          include_bodies: form.include_bodies.checked,
+          include_stream_bodies: form.include_stream_bodies.checked,
+          max_log_mb: form.max_log_mb.value ? Number(form.max_log_mb.value) : null,
+          max_log_age_days: form.max_log_age_days.value ? Number(form.max_log_age_days.value) : null,
+          tracing_filter: tracingFilter ? tracingFilter : null,
+        }),
+      });
+      await loadLoggingSettings();
+      await loadLogs();
+      status(loggingSaveStatus(saved));
+    } catch (e) {
+      try {
+        await loadLoggingSettings();
+        await loadLogs();
+      } catch {
+        /* still report the save error */
+      }
+      status(`Error: ${e.message}`);
+    }
+  });
+
   async function boot() {
-    switchTab(tabFromLocation());
+    showTabPanel(tabFromLocation());
     status("Loading…");
     try {
-      await Promise.all([loadProviders(), loadProviderTemplates()]);
-      status("Ready");
+      await Promise.all([
+        loadProviders({ refreshRoutes: true, updateStatus: false }),
+        loadProviderTemplates(),
+      ]);
+      bootComplete = true;
+      await activateTabPolls(activeTab);
     } catch (e) {
+      bootComplete = true;
       status(`Error: ${e.message}`);
     }
   }

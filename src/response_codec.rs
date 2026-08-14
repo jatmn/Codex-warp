@@ -477,7 +477,7 @@ fn log_downstream_sse_frame(
         "backend": backend,
         "summary": downstream_stream_debug_summary(frame)
     });
-    if event["summary"].is_null() && !debug_log.include_stream_bodies {
+    if event["summary"].is_null() && !debug_log.include_stream_bodies() {
         return;
     }
     debug_log.log_stream_frame(event.take(), frame);

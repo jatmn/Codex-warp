@@ -17,6 +17,7 @@
       <nav class="tabs" role="tablist">
         <button type="button" class="tab active" data-tab="analytics" role="tab" aria-selected="true">Analytics</button>
         <button type="button" class="tab" data-tab="providers" role="tab" aria-selected="false">Providers</button>
+        <button type="button" class="tab" data-tab="logs" role="tab" aria-selected="false">Logs</button>
       </nav>
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle light/dark">
         <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
@@ -130,6 +131,71 @@
           </div>
         </form>
       </dialog>
+    </section>
+
+    <section id="panel-logs" class="panel" role="tabpanel" hidden>
+      <div class="panel-head">
+        <h2>Logs</h2>
+        <div class="filters">
+          <select id="log-source" aria-label="Log source">
+            <option value="process">Process logs</option>
+            <option value="debug">Debug JSONL</option>
+          </select>
+          <select id="log-level" aria-label="Minimum level">
+            <option value="">All levels</option>
+            <option value="debug">Debug+</option>
+            <option value="info" selected>Info+</option>
+            <option value="warn">Warn+</option>
+            <option value="error">Error</option>
+          </select>
+          <input id="log-query" type="search" placeholder="Filter logs" aria-label="Filter logs">
+          <label class="checkbox-row log-follow">
+            <input type="checkbox" id="log-follow" checked>
+            Follow
+          </label>
+          <button type="button" class="btn" id="log-refresh">Refresh</button>
+        </div>
+      </div>
+      <form id="logging-settings" class="log-settings">
+        <h3>Logging settings</h3>
+        <p class="hint muted" id="logging-persist-hint">Changes apply immediately. SQLite keeps them across restarts when the store is open. Command-line debug flags still win for that process.</p>
+        <div class="log-settings-grid">
+          <label class="checkbox-row">
+            <input type="checkbox" name="enabled">
+            Write debug JSONL
+          </label>
+          <label>
+            Log path
+            <input name="log_path" placeholder="codex-warp-debug.jsonl">
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="include_bodies">
+            Include request/response bodies
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="include_stream_bodies">
+            Include stream frames
+          </label>
+          <label>
+            Max log size (MB)
+            <input name="max_log_mb" type="number" min="1" step="1">
+          </label>
+          <label>
+            Max log age (days)
+            <input name="max_log_age_days" type="number" min="1" step="1">
+          </label>
+          <label class="log-filter-field">
+            Tracing filter
+            <input name="tracing_filter" placeholder="codex_warp=debug">
+          </label>
+        </div>
+        <p class="hint muted">Leave tracing filter empty to use the process default (<code>RUST_LOG</code> or <code>info</code> at startup). Full-body debug logs can contain prompts and tool results.</p>
+        <div class="form-actions">
+          <button type="submit" class="btn primary">Save logging settings</button>
+        </div>
+      </form>
+      <div id="log-meta" class="hint muted"></div>
+      <div id="log-viewer" class="log-viewer" role="log" aria-live="polite"></div>
     </section>
   </main>
 

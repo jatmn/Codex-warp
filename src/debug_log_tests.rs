@@ -2,6 +2,7 @@ use super::*;
 
 use serde_json::json;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -569,4 +570,222 @@ fn recover_pending_orphans_during_rotate_check_without_rotating() {
         fs::read_to_string(&path).expect("read active log"),
         "active"
     );
+}
+
+#[test]
+fn apply_config_enables_and_disables_logging_without_a_new_handle() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-config-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    assert!(log.current_path().is_none());
+
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        ..DebugConfig::default()
+    })
+    .expect("enable debug log");
+    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+    assert!(log.include_bodies());
+    log.log(json!({"event": "upstream_request", "id": "dbg_1"}));
+    let contents = fs::read_to_string(&path).expect("read enabled log");
+    assert!(contents.contains("upstream_request"));
+    assert!(contents.contains("\"ts\":"));
+
+    log.apply_config(&DebugConfig::default())
+        .expect("disable debug log");
+    assert!(log.current_path().is_none());
+    log.log(json!({"event": "should_not_write"}));
+    let contents = fs::read_to_string(&path).expect("read after disable");
+    assert!(!contents.contains("should_not_write"));
+}
+
+#[test]
+fn read_tail_reports_enabled_from_the_writer_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-read-tail-enabled-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    let disabled = log.read_tail(10, None, None).expect("disabled tail");
+    assert!(!disabled.enabled);
+    assert!(disabled.missing);
+    assert!(disabled.path.as_os_str().is_empty());
+
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        ..DebugConfig::default()
+    })
+    .expect("enable debug log");
+    let missing = log.read_tail(10, None, None).expect("enabled missing file");
+    assert!(missing.enabled);
+    assert!(missing.missing);
+    assert_eq!(missing.path, path);
+
+    log.log(json!({"event": "upstream_request", "id": "dbg_tail"}));
+    let present = log.read_tail(10, None, None).expect("enabled present file");
+    assert!(present.enabled);
+    assert!(!present.missing);
+    assert_eq!(present.path, path);
+    assert_eq!(present.events[0]["id"], "dbg_tail");
+}
+
+#[test]
+fn read_jsonl_tail_filters_and_limits_events() {
+    let dir =
+        std::env::temp_dir().join(format!("codex-warp-debug-log-tail-{}", std::process::id()));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"event\":\"upstream_request\",\"id\":\"one\"}\n",
+            "{\"event\":\"upstream_response\",\"id\":\"two\"}\n",
+            "not json\n",
+            "{\"event\":\"upstream_request\",\"id\":\"three\"}\n"
+        ),
+    )
+    .expect("write jsonl");
+
+    let all = read_jsonl_tail(&path, 10, None, None).expect("read tail");
+    assert_eq!(all.events.len(), 3);
+    assert!(!all.missing);
+
+    let requests =
+        read_jsonl_tail(&path, 10, None, Some("upstream_request")).expect("filter event");
+    assert_eq!(requests.events.len(), 2);
+
+    let limited = read_jsonl_tail(&path, 1, None, None).expect("limit");
+    assert_eq!(limited.events.len(), 1);
+    assert_eq!(limited.events[0]["id"], "three");
+
+    let query = read_jsonl_tail(&path, 10, Some("two"), None).expect("query");
+    assert_eq!(query.events.len(), 1);
+    assert_eq!(query.events[0]["id"], "two");
+}
+
+#[test]
+fn validate_debug_log_path_rejects_escape_and_system_paths() {
+    assert!(validate_debug_log_path(Path::new("codex-warp-debug.jsonl")).is_ok());
+    assert!(validate_debug_log_path(Path::new("/tmp/codex-warp-debug.jsonl")).is_ok());
+    assert!(validate_debug_log_path(Path::new("../secret.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("/etc/passwd.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("//etc/passwd.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("debug.log")).is_err());
+    assert!(
+        validate_debug_settings(&DebugConfig {
+            max_log_mb: Some(0),
+            ..DebugConfig::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_debug_settings(&DebugConfig {
+            enabled: false,
+            log_path: Some(PathBuf::from("/etc/passwd.jsonl")),
+            ..DebugConfig::default()
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn normalize_debug_config_fills_default_path_when_enabled() {
+    let mut config = DebugConfig {
+        enabled: true,
+        ..DebugConfig::default()
+    };
+    normalize_debug_config(&mut config);
+    assert_eq!(
+        config.log_path.as_deref(),
+        Some(Path::new(DEFAULT_DEBUG_LOG_PATH))
+    );
+    validate_debug_settings(&config).expect("normalized enabled config");
+}
+
+#[test]
+fn normalize_debug_config_does_not_rewrite_zero_rotation_limits() {
+    let mut config = DebugConfig {
+        max_log_mb: Some(0),
+        max_log_age_days: Some(0),
+        ..DebugConfig::default()
+    };
+    normalize_debug_config(&mut config);
+    assert_eq!(config.max_log_mb, Some(0));
+    assert_eq!(config.max_log_age_days, Some(0));
+    assert!(validate_debug_settings(&config).is_err());
+}
+
+#[test]
+fn apply_config_fills_default_path_when_enabled_without_path() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: None,
+        ..DebugConfig::default()
+    })
+    .expect("enable with default path");
+    assert_eq!(
+        log.current_path().as_deref(),
+        Some(Path::new(DEFAULT_DEBUG_LOG_PATH))
+    );
+}
+
+#[test]
+fn apply_config_stores_the_live_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-snapshot-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let config = DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..DebugConfig::default()
+    };
+    let log = DebugLog::disabled();
+    log.apply_config(&config).expect("apply");
+    assert_eq!(log.live_snapshot(), config);
+    assert!(log.include_bodies());
+    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+}
+
+#[test]
+fn apply_config_rejects_restricted_path_without_enabling_writer() {
+    let log = DebugLog::disabled();
+    let err = log
+        .apply_config(&DebugConfig {
+            enabled: true,
+            log_path: Some(PathBuf::from("/etc/passwd.jsonl")),
+            ..DebugConfig::default()
+        })
+        .expect_err("restricted path");
+    assert!(err.contains("allowed location"));
+    assert!(log.current_path().is_none());
+}
+
+#[test]
+fn read_jsonl_tail_rejects_symlink() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let target = dir.join("target.jsonl");
+    let link = dir.join("debug.jsonl");
+    fs::write(&target, "{\"event\":\"upstream_request\"}\n").expect("write target");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    assert!(validate_debug_log_path(&link).is_err());
+    assert!(read_jsonl_tail(&link, 10, None, None).is_err());
 }
