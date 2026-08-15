@@ -1079,10 +1079,10 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     // Ranked classifier:
     // 1. Closers that contain work-like substrings ("let me know").
     // 2. First-person / let-me prefixes: after stripping adverbs and nested
-    //    prefixes, the next action token is work unless it is a wrap-up /
-    //    hand-off verb. "Now let me summarize" stops; "I'll clone the repo"
-    //    and "Now let me verify" continue. Discourse verbs ("see", "try")
-    //    are not work by themselves ("Let me see if you need anything").
+    //    prefixes, the next action is work when it is a known work verb, or
+    //    an unlisted verb with a non-hand-off object ("I'll clone the repo",
+    //    "I'll add tests"). Wrap-up verbs and hand-off complements do not
+    //    count ("Now let me summarize", "I'll update you", "look at your PR").
     // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues.
     // 4. Dangling `:`/`...` only when the last sentence still talks about
@@ -1166,7 +1166,44 @@ fn remainder_is_work_action(rest: &str) -> bool {
     if rest.is_empty() || remainder_starts_with_wrap_up_action(rest) {
         return false;
     }
-    remainder_starts_with_work_verb(rest) || remainder_starts_with_unknown_action(rest)
+    let complement = strip_leading_prepositions(action_complement(rest));
+    if complement_is_hand_off(complement) {
+        return false;
+    }
+    // Known work verbs may stand alone ("Let me check."). Unlisted verbs are
+    // work only when they act on an object ("I'll clone the repo", "I'll add
+    // tests"), not because the token is long ("I'll think about this").
+    remainder_starts_with_work_verb(rest) || !complement.is_empty()
+}
+
+fn action_complement(rest: &str) -> &str {
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    rest[end..].trim_start()
+}
+
+fn strip_leading_prepositions(mut complement: &str) -> &str {
+    loop {
+        let Some(next) = [
+            "at ", "in ", "on ", "into ", "from ", "with ", "for ", "of ",
+        ]
+        .iter()
+        .find_map(|preposition| complement.strip_prefix(preposition)) else {
+            return complement;
+        };
+        complement = next;
+    }
+}
+
+fn complement_is_hand_off(complement: &str) -> bool {
+    let end = complement
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(complement.len());
+    matches!(
+        &complement[..end],
+        "you" | "your" | "about" | "here" | "if" | "whether" | "when"
+    )
 }
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
@@ -1186,6 +1223,9 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
         "stay",
         "remain",
         "see",
+        "think",
+        "note",
+        "rest",
     ]
     .iter()
     .any(|stem| token_starts_with_stem(rest, stem))
@@ -1199,13 +1239,6 @@ fn remainder_starts_with_work_verb(rest: &str) -> bool {
         "rebase", "commit", "merge", "build", "checkout",
     ];
     STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
-}
-
-fn remainder_starts_with_unknown_action(rest: &str) -> bool {
-    let end = rest
-        .find(|c: char| !c.is_ascii_alphabetic())
-        .unwrap_or(rest.len());
-    end >= 4
 }
 
 fn token_starts_with_stem(rest: &str, stem: &str) -> bool {

@@ -244,12 +244,12 @@ Modes:
 The guard only applies to chat-completions streams that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` / `then` / `next` when the next
-action is work, including unlisted tool verbs such as `clone` and hyphenated
-repeats such as `re-audit`, or a dangling `:`/`...` whose last sentence still
-talks about remaining work). Wrap-up actions after those prefixes (`summarize`,
-`stop`, `leave`, `explain`, `see`) do not force a follow-up, so
-`Now let me summarize`, `Let me see if you need anything`, and
-`Let me try to explain` stay `end_turn = true`. Closings such as `let me know`,
+action is a known work verb, or an unlisted verb with a non-hand-off object
+such as `I'll clone the repo` / `I'll add tests`, including hyphenated repeats
+such as `re-audit`, or a dangling `:`/`...` whose last sentence still talks
+about remaining work). Wrap-up verbs and hand-off complements after those
+prefixes (`summarize`, `stop`, `see`, `think`, `I'll update you`,
+`look at your PR`) do not force a follow-up. Closings such as `let me know`,
 `I'll leave the rest`, and delivery colons such as `Here is the final report:`
 also stay `end_turn = true`. A fully completed
 `update_plan` suppresses the guard when it is still the latest intent (no
