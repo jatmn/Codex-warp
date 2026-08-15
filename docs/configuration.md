@@ -243,15 +243,16 @@ Modes:
 
 The guard only applies to chat-completions streams that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
-(markers like `let me`, `i'll`, or a dangling `:`/`...`). A fully completed
+(markers like `let me`, `I'll`, or a dangling `:`/`...`). A fully completed
 `update_plan` in the request history suppresses the guard, but sessions that
 never call `update_plan` (common with some models) are still covered.
 `max_followups` limits consecutive automatic continuations per
-`prompt_cache_key`; when the request history shows the model has performed tool
-work since the last suspected stop, the counter resets, so a long session can
-keep auto-continuing through every genuine mid-task pause without letting a
-text-only loop run forever. Requests without a `prompt_cache_key` are observed
-but not forced.
+`prompt_cache_key`. The counter resets when the last request `input` item is
+completed tool work (or a pending non-`update_plan` tool call), so a long
+session can keep auto-continuing through genuine mid-task pauses after real
+tool progress without letting a text-only loop run forever. A trailing
+`update_plan` does not count as progress. Requests without a
+`prompt_cache_key` are observed but not forced.
 
 Continue guard does not patch prompts, modify skills, or cross providers for
 auto-review. It only changes the final Responses `end_turn` flag for a narrow

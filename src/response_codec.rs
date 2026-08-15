@@ -904,11 +904,10 @@ impl ContinueGuardState {
         };
         evict_continue_guard_budgets_if_needed(&mut budgets);
         if self.progress {
-            // Tool work (or a fresh tool loop) has happened since the last
-            // suspected stop, so this stop is not part of an unproductive
-            // text-only loop. Reset the session budget so `max_followups`
-            // caps only *consecutive* stops without progress instead of the
-            // total number of mid-task stops in a long session.
+            // The last request item is completed tool work (not update_plan),
+            // so this stop is not part of an unproductive text-only loop.
+            // Reset the session budget so `max_followups` caps only
+            // *consecutive* stops without that progress.
             budgets.remove(key);
         }
         let used = budgets.entry(key.clone()).or_insert(0);
@@ -1010,25 +1009,15 @@ fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
     Some(summary)
 }
 
-/// True when the request history shows the model actually performed tool work
-/// since its last plain-text completion. The continue-guard budget resets on
-/// this signal so `max_followups` caps only consecutive text-only stops rather
-/// than every mid-task stop in a long session.
+/// True when the last request item is completed tool work (or a pending
+/// non-plan tool call). The continue-guard budget resets on this signal so
+/// `max_followups` caps only consecutive text-only stops rather than every
+/// mid-task stop in a long session. `update_plan` is planning, not progress:
+/// treating it as tool work would reset the budget on every plan-only turn
+/// and let text-only pause loops run past `max_followups`.
 fn request_shows_tool_progress(request: &Value) -> bool {
     if let Some(input) = request.get("input").and_then(Value::as_array) {
-        return input
-            .last()
-            .and_then(|item| item.get("type").and_then(Value::as_str))
-            .is_some_and(|item_type| {
-                matches!(
-                    item_type,
-                    "function_call"
-                        | "tool_call"
-                        | "custom_tool_call"
-                        | "function_call_output"
-                        | "custom_tool_call_output"
-                )
-            });
+        return input.last().is_some_and(item_shows_tool_progress);
     }
     // Defensive chat-completions shape (some callers may pass a converted body):
     // tool results or pending assistant tool calls at the end of `messages`.
@@ -1036,13 +1025,34 @@ fn request_shows_tool_progress(request: &Value) -> bool {
         .get("messages")
         .and_then(Value::as_array)
         .and_then(|messages| messages.last())
-        .is_some_and(|message| {
-            message.get("role").and_then(Value::as_str) == Some("tool")
-                || message
-                    .get("tool_calls")
-                    .and_then(Value::as_array)
-                    .is_some_and(|calls| !calls.is_empty())
-        })
+        .is_some_and(chat_message_shows_tool_progress)
+}
+
+fn item_shows_tool_progress(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call_output" | "custom_tool_call_output") => true,
+        Some("function_call" | "tool_call" | "custom_tool_call") => !item_is_update_plan(item),
+        _ => false,
+    }
+}
+
+fn item_is_update_plan(item: &Value) -> bool {
+    item.get("name").and_then(Value::as_str) == Some("update_plan")
+        || item
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            == Some("update_plan")
+}
+
+fn chat_message_shows_tool_progress(message: &Value) -> bool {
+    if message.get("role").and_then(Value::as_str) == Some("tool") {
+        return true;
+    }
+    message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| calls.iter().any(|call| !item_is_update_plan(call)))
 }
 
 fn looks_like_mid_task_stop(text: &str) -> bool {
@@ -1055,10 +1065,23 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    if contains_closing_phrase(&normalized) {
+    // Wrap-ups that themselves contain continuation substrings ("let me know if")
+    // must win first. Politeness words ("thanks") must not: they appear in
+    // mid-task narration like "Thanks to the rebase. Now let me verify:".
+    if contains_overlapping_closing_phrase(&normalized) {
         return false;
     }
-    let starts_continuation = [
+    if contains_continuation_marker(&normalized) {
+        return true;
+    }
+    if contains_wrap_up_closing_phrase(&normalized) {
+        return false;
+    }
+    normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…')
+}
+
+fn contains_continuation_marker(normalized: &str) -> bool {
+    [
         "let me ",
         "let me also ",
         "let me first ",
@@ -1082,22 +1105,21 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
         "then run ",
     ]
     .iter()
-    .any(|marker| normalized.contains(marker));
-    let dangling_continuation =
-        normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…');
-    starts_continuation || dangling_continuation
+    .any(|marker| normalized.contains(marker))
 }
 
-/// Phrases that indicate a turn is actually wrapping up, not continuing. These
-/// take precedence over the continuation markers so final summaries are not
-/// mistaken for premature stops. Subtask-completion words such as "done" or
+fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
+    ["no actionable issues", "let me know if"]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
+/// Wrap-up phrasing that should not force a follow-up unless a continuation
+/// marker is also present. Subtask-completion words such as "done" or
 /// "complete" are deliberately excluded: mid-task text routinely says "the
-/// rebase is complete" before continuing ("Now let me push..."), so those words
-/// must not suppress the guard.
-fn contains_closing_phrase(normalized: &str) -> bool {
+/// rebase is complete" before continuing ("Now let me push...").
+fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     [
-        "no actionable issues",
-        "let me know if",
         "thank you",
         "thanks",
         "feel free",

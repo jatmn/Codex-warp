@@ -38,7 +38,7 @@ of client patches:
 - model-family metadata for reasoning, tools, context windows, modalities, and
   provider-local auto-review routing
 - editable request/tool morphs for chat-completions and Responses backends
-- optional continue guard for chat-completions models that stop mid-plan
+- continue guard (enabled by default) for chat-completions models that stop mid-task
 - optional tool approval policy loaded from TOML
 - optional local Web UI for provider/model toggles, SQLite usage analytics, and log viewing
 - sanitized debug logging and upstream `User-Agent` reporting
@@ -239,8 +239,7 @@ Implemented now:
 - non-streaming chat-completions response conversion
 - editable TOML provider headers, auth, endpoint paths, model metadata, and
   tool/request morphs
-- opt-in continue guard for premature chat-completions stops during active
-  Codex plans
+- continue guard (enabled by default) for premature chat-completions stops
 - sanitized debug logging that redacts obvious API keys and provider tokens even
   when full bodies or raw stream frames are enabled
 - opt-in tool approval policy for GitHub CLI approval hints, escalation
