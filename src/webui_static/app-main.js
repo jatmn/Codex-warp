@@ -1164,36 +1164,32 @@
     });
   }
 
-  function lineTooltipEl(point, labelStyle, colors) {
-    const frag = document.createDocumentFragment();
-    const title = document.createElement("div");
-    title.className = "tt-title";
-    title.textContent = formatBucketLabel(point.ts, labelStyle);
-    frag.append(title);
-    frag.append(...tooltipRowsEl([
+  function tooltipRowsFor(point, colors) {
+    return [
       ["Total tokens", point.total_tokens || 0, colors.tokens],
       ["Input tokens", point.input_tokens || 0, colors.input],
       ["Output tokens", point.output_tokens || 0, colors.output],
       ["Prompts", point.prompts || 0, colors.prompts],
       ["Sessions", point.sessions || 0, colors.sessions],
-    ]));
-    return frag;
+    ];
   }
 
-  function barTooltipEl(row, labelStyle, colors) {
+  function tooltipEl(titleText, rows) {
     const frag = document.createDocumentFragment();
     const title = document.createElement("div");
     title.className = "tt-title";
-    title.textContent = row.key || formatBucketLabel(row.ts, labelStyle);
+    title.textContent = titleText;
     frag.append(title);
-    frag.append(...tooltipRowsEl([
-      ["Total tokens", row.total_tokens || 0, colors.tokens],
-      ["Input tokens", row.input_tokens || 0, colors.input],
-      ["Output tokens", row.output_tokens || 0, colors.output],
-      ["Prompts", row.prompts || 0, colors.prompts],
-      ["Sessions", row.sessions || 0, colors.sessions],
-    ]));
+    frag.append(...tooltipRowsEl(rows));
     return frag;
+  }
+
+  function lineTooltipEl(point, labelStyle, colors) {
+    return tooltipEl(formatBucketLabel(point.ts, labelStyle), tooltipRowsFor(point, colors));
+  }
+
+  function barTooltipEl(row, labelStyle, colors) {
+    return tooltipEl(row.key || formatBucketLabel(row.ts, labelStyle), tooltipRowsFor(row, colors));
   }
 
   function tooltipSummary(point, labelStyle) {
@@ -1789,7 +1785,8 @@
       ts.className = "log-ts";
       ts.textContent = formatLogTime(event.ts);
       const kindEl = document.createElement("span");
-      kindEl.className = `log-kind ${kind}`;
+      const kindClass = String(kind).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      kindEl.classList.add("log-kind", kindClass || "unknown");
       kindEl.textContent = kind;
       const msg = document.createElement("span");
       msg.className = "log-msg";
