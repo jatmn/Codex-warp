@@ -145,7 +145,18 @@ cargo fmt --check
 cargo test --locked
 cargo build --locked
 git diff --check
+node --check src/webui_static/theme-bootstrap.js
+node --check src/webui_static/chart-math.js
+node --check src/webui_static/footer-status.js
+node --check src/webui_static/app-main.js
+node scripts/webui_chart_harness.js
 ```
+
+The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
+ownership, pointer reclaim only on hit, paint only with a measured CSS width,
+live-region clear, canvas interactivity attrs, bar paint anchors) and
+`footer-status.js` (analytics footer copy when chart-math is missing, boot
+errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
 
 For documentation-only changes, `git diff --check` and a quick trailing
 whitespace scan are usually enough:
@@ -164,6 +175,7 @@ The CI job performs:
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
+- `node --check` for `theme-bootstrap.js`, `chart-math.js`, `footer-status.js`, and `app-main.js`, plus `scripts/webui_chart_harness.js` (`chart-math.js` policy tests and `footer-status.js` overlay tests, not a browser canvas stub)
 - `git diff --check`
 - trailing-whitespace checks for README, AGENTS.md, and docs
 

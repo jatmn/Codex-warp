@@ -717,6 +717,145 @@ async fn management_ui_responses_cannot_be_framed() {
 }
 
 #[tokio::test]
+async fn management_ui_serves_chart_math_javascript() {
+    let response = serve_chart_math().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/javascript; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("chart math body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 chart math");
+    assert!(body.contains("CodexWarpCharts"));
+    assert!(body.contains("bucketLabelStyle"));
+    assert!(body.contains("chartInputStep"));
+    assert!(body.contains("fitCanvasMetrics"));
+    assert!(body.contains("chartsLiveLayout"));
+    assert!(body.contains("shouldPaintCharts"));
+    assert!(body.contains("liveRegionText"));
+    assert!(body.contains("barPaintRect"));
+    assert!(body.contains("barAnchorY"));
+    assert!(body.contains("chartSurface"));
+    assert!(body.contains("chartCanvasAttrs"));
+    assert!(!body.contains("CodexWarpFooter"));
+    assert!(!body.contains("analyticsDisplayStatus"));
+}
+
+#[tokio::test]
+async fn management_ui_app_javascript_prefixes_footer_status() {
+    let response = serve_js().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/javascript; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("app js body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 app js");
+    let footer = body
+        .find("CodexWarpFooter")
+        .expect("served app.js must prefix footer-status.js");
+    let app = body.find("codex-warp-webui-token").expect("app.js body");
+    assert!(footer < app);
+    assert!(body.contains("analyticsDisplayStatus"));
+    assert!(body.contains("Analytics charts failed to load (/ui/chart-math.js)"));
+    assert!(body.contains("if (remap === false)"));
+    assert!(body.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(body.contains("//# sourceMappingURL=app.js.map"));
+}
+
+#[tokio::test]
+async fn management_ui_app_javascript_source_map_covers_concat_sections() {
+    let response = serve_js_map().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/json; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("source map body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 source map");
+    let map: serde_json::Value = serde_json::from_str(&body).expect("json source map");
+    assert_eq!(map["file"], "app.js");
+    let sections = map["sections"].as_array().expect("indexed sections");
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections[0]["offset"]["line"], 0);
+    assert_eq!(
+        sections[1]["offset"]["line"],
+        js_source_line_count(WEBUI_FOOTER_STATUS_JS)
+    );
+    assert_eq!(sections[0]["map"]["sources"][0], "footer-status.js");
+    assert_eq!(sections[1]["map"]["sources"][0], "app-main.js");
+    assert_eq!(
+        sections[0]["map"]["sourcesContent"][0],
+        WEBUI_FOOTER_STATUS_JS
+    );
+    assert_eq!(sections[1]["map"]["sourcesContent"][0], WEBUI_APP_MAIN_JS);
+}
+
+#[test]
+fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
+    let math = include_str!("webui_static/chart-math.js");
+    let app = include_str!("webui_static/app-main.js");
+    let footer = include_str!("webui_static/footer-status.js");
+    assert!(footer.contains("function analyticsDisplayStatus("));
+    assert!(footer.contains("CodexWarpFooter"));
+    assert!(!math.contains("analyticsDisplayStatus"));
+    assert!(!math.contains("CodexWarpFooter"));
+    assert!(!app.contains("function analyticsDisplayStatus("));
+    assert!(app.contains("Footer.analyticsDisplayStatus"));
+    assert!(app.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+}
+
+#[test]
+fn webui_app_bundle_joins_fragments_on_a_line_boundary() {
+    let footer = "first\n";
+    let main = "second\n";
+    assert_eq!(join_js_sources(footer, main), "first\nsecond\n");
+    assert_eq!(js_source_line_count(footer), 1);
+    assert_eq!(join_js_sources("first", main), "first\nsecond\n");
+    assert_eq!(js_source_line_count("first"), 1);
+}
+
+#[tokio::test]
+async fn management_ui_index_loads_chart_math_before_app() {
+    let response = serve_index().await.into_response();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("index body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 index");
+    let math = body
+        .find("/ui/chart-math.js")
+        .expect("index must load chart-math.js");
+    let app = body.find("/ui/app.js").expect("index must load app.js");
+    assert!(math < app);
+    assert!(body.contains("id=\"chart-bar-title\">Usage over time"));
+    assert!(body.contains("aria-labelledby=\"chart-bar-title\""));
+    assert!(body.contains("aria-labelledby=\"chart-line-title\""));
+    assert!(body.contains("id=\"chart-kbd-help\""));
+    assert!(body.contains("Tab moves to the next control"));
+    assert!(body.contains(
+        "id=\"chart-line\" width=\"800\" height=\"220\" aria-labelledby=\"chart-line-title\""
+    ));
+    assert!(body.contains(
+        "id=\"chart-bar\" width=\"800\" height=\"220\" aria-labelledby=\"chart-bar-title\""
+    ));
+    assert!(!body.contains("role=\"application\""));
+    assert!(!body.contains("tabindex=\"0\""));
+    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
+    assert_eq!(body.matches("role=\"status\"").count(), 2);
+    assert!(!body.contains("By provider"));
+    assert_eq!(body.matches("class=\"chart-live").count(), 2);
+}
+
+#[tokio::test]
 async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
     use std::time::{SystemTime, UNIX_EPOCH};
 

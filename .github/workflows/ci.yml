@@ -48,6 +48,14 @@ jobs:
           target/debug/codex-warp --version
           target/debug/codex-warp --help
 
+      - name: Web UI JavaScript
+        run: |
+          node --check src/webui_static/theme-bootstrap.js
+          node --check src/webui_static/chart-math.js
+          node --check src/webui_static/footer-status.js
+          node --check src/webui_static/app-main.js
+          node scripts/webui_chart_harness.js
+
       - name: Diff Whitespace
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then

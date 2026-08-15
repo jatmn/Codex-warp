@@ -16,6 +16,8 @@
   --chart-tokens: var(--accent);
   --chart-prompts: #d97706;
   --chart-sessions: #16a34a;
+  --chart-input: #2563eb;
+  --chart-output: #7c3aed;
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 4px 16px rgba(24, 24, 27, 0.06);
@@ -43,6 +45,8 @@ html[data-theme="dark"] {
   --chart-tokens: var(--accent);
   --chart-prompts: #fbbf24;
   --chart-sessions: #4ade80;
+  --chart-input: #60a5fa;
+  --chart-output: #a78bfa;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.28);
   --shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.55);
   color-scheme: dark;
@@ -371,7 +375,79 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   font-size: 0.9rem;
   font-weight: 650;
 }
+.chart-wrap { position: relative; }
+.chart-wrap canvas { width: 100%; height: 220px; display: block; }
+.chart-fallback {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.chart-fallback[hidden] { display: none; }
 canvas { width: 100%; height: auto; display: block; }
+.chart-tooltip {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  min-width: 150px;
+  max-width: 260px;
+  padding: 0.5rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.chart-tooltip[hidden] { display: none; }
+.chart-tooltip .tt-title {
+  font-weight: 650;
+  margin-bottom: 0.3rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.chart-tooltip .tt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  white-space: nowrap;
+}
+.chart-tooltip .tt-row + .tt-row { margin-top: 0.15rem; }
+.chart-tooltip .tt-key {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+.chart-tooltip .tt-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+.chart-tooltip .tt-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 dialog {
   border: 1px solid var(--border);

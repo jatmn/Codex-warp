@@ -57,13 +57,24 @@
       </div>
       <div id="analytics-cards" class="cards"></div>
       <div class="charts">
+        <p id="chart-kbd-help" class="visually-hidden" hidden>Arrow keys move between time buckets. Tab moves to the next control. Each bucket reports total tokens, input tokens, output tokens, prompts, and sessions.</p>
         <div class="chart-box">
-          <h3>Token usage</h3>
-          <canvas id="chart-line" width="800" height="220"></canvas>
+          <h3 id="chart-line-title">Token usage</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-line" width="800" height="220" aria-labelledby="chart-line-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
         </div>
         <div class="chart-box">
-          <h3 id="chart-bar-title">By provider</h3>
-          <canvas id="chart-bar" width="800" height="220"></canvas>
+          <h3 id="chart-bar-title">Usage over time</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-bar" width="800" height="220" aria-labelledby="chart-bar-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
         </div>
       </div>
     </section>
@@ -204,6 +215,7 @@
   <footer class="footer">
     <span id="status-line">Ready</span>
   </footer>
+  <script src="/ui/chart-math.js" defer></script>
   <script src="/ui/app.js" defer></script>
 </body>
 </html>
