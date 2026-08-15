@@ -877,6 +877,11 @@
   function analyticsReadyMessage() {
     return Charts ? "Analytics updated" : CHARTS_FAILED_STATUS;
   }
+  function holdChartFailureStatus() {
+    if (Charts) return;
+    bootFooterHold = true;
+    writeStatus(CHARTS_FAILED_STATUS);
+  }
   function applyChartInteractivity(surface) {
     const attrs = Charts
       ? Charts.chartCanvasAttrs(surface)
@@ -918,14 +923,24 @@
       el.hidden = !!attrs.fallbackHidden;
     });
   }
+  function chartsLaidOut() {
+    const canvas = $("#chart-line") || $("#chart-bar");
+    if (!canvas || !Charts) return false;
+    return Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW);
+  }
   function syncChartSurface() {
+    if (!Charts) {
+      noteChartsUnavailable();
+      return;
+    }
     const series = analyticsSnapshot && analyticsSnapshot.data
       ? analyticsSnapshot.data.series || []
       : [];
-    applyChartInteractivity(Charts ? Charts.chartSurface(true, series.length) : "failed");
+    applyChartInteractivity(Charts.chartSurface(true, series.length, chartsLaidOut()));
   }
   function noteChartsUnavailable() {
     applyChartInteractivity("failed");
+    holdChartFailureStatus();
   }
   if (!Charts) noteChartsUnavailable();
   function formatBucketLabel(ms, style) {
@@ -946,9 +961,15 @@
       return;
     }
     const series = data.series || [];
-    syncChartSurface();
+    const line = $("#chart-line");
+    const laidOut = !!(line && Charts.shouldPaintCharts(line.clientWidth, line.__cssW));
+    applyChartInteractivity(Charts.chartSurface(true, series.length, laidOut));
+    if (!laidOut) {
+      if (activeTab === "analytics") scheduleChartResize();
+      return;
+    }
     const labelStyle = labelStyleFor(series);
-    drawLineChart($("#chart-line"), series, range);
+    drawLineChart(line, series, range);
     // Bar chart shows the same time series as bars so usage-over-time is visible
     // in both chart styles; breakdowns remain available via provider/model filters.
     drawBarChart(
@@ -1316,7 +1337,7 @@
   }
 
   function drawLineChart(canvas, series, range) {
-    if (!Charts.shouldPaintCharts(activeTab === "analytics", canvas.clientWidth)) return;
+    if (!Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW)) return;
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!series.length) {
@@ -1527,7 +1548,7 @@
   }
 
   function drawBarChart(canvas, rows, range) {
-    if (!Charts.shouldPaintCharts(activeTab === "analytics", canvas.clientWidth)) return;
+    if (!Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW)) return;
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!rows.length) {
@@ -1953,6 +1974,7 @@
   async function boot() {
     showTabPanel(tabFromLocation());
     status("Loading…");
+    holdChartFailureStatus();
     try {
       await Promise.all([
         loadProviders({ refreshRoutes: true, updateStatus: false }),

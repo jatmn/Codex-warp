@@ -152,8 +152,9 @@ node scripts/webui_chart_harness.js
 ```
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
-ownership, pointer reclaim only on hit, paint-only-when-visible, live-region clear,
-canvas interactivity attrs). It is not a browser canvas stub of `app.js`.
+ownership, pointer reclaim only on hit, paint only with a measured CSS width,
+live-region clear, canvas interactivity attrs). It is not a browser canvas stub
+of `app.js`.
 
 For documentation-only changes, `git diff --check` and a quick trailing
 whitespace scan are usually enough:

@@ -220,17 +220,17 @@ check("liveRegionText is empty when no bucket is selected", () => {
   assert.equal(stay.text, "");
 });
 
-check("shouldPaintCharts refuses hidden or unlaid-out canvases", () => {
-  assert.equal(charts.shouldPaintCharts(true, 400), true);
-  assert.equal(charts.shouldPaintCharts(false, 400), false);
-  assert.equal(charts.shouldPaintCharts(true, 0), false);
-  assert.equal(charts.shouldPaintCharts(false, 0), false);
+check("shouldPaintCharts paints only with a measured CSS width", () => {
+  assert.equal(charts.shouldPaintCharts(400, 0), true);
+  assert.equal(charts.shouldPaintCharts(0, 0), false);
+  assert.equal(charts.shouldPaintCharts(0, 360), true);
 });
 
-check("chartSurface is idle until math loaded and buckets exist", () => {
-  assert.equal(charts.chartSurface(false, 8), "failed");
-  assert.equal(charts.chartSurface(true, 0), "idle");
-  assert.equal(charts.chartSurface(true, 3), "interactive");
+check("chartSurface is idle until math, buckets, and layout exist", () => {
+  assert.equal(charts.chartSurface(false, 8, true), "failed");
+  assert.equal(charts.chartSurface(true, 0, true), "idle");
+  assert.equal(charts.chartSurface(true, 3, false), "idle");
+  assert.equal(charts.chartSurface(true, 3, true), "interactive");
 });
 
 check("chartCanvasAttrs revokes the full AT surface when disabled", () => {
