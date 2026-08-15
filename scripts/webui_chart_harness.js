@@ -4,6 +4,7 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const charts = require(path.join(__dirname, "..", "src/webui_static/chart-math.js"));
+const footer = require(path.join(__dirname, "..", "src/webui_static/footer-status.js"));
 
 function check(name, fn) {
   fn();
@@ -145,6 +146,17 @@ check("barPaintRect grows subpixel heights so positive values paint", () => {
   assert.equal(tall.y, 0);
 });
 
+check("barAnchorY uses the painted bar top, not the linear axis mapping", () => {
+  const padT = 30;
+  const plotH = 164;
+  const top = 100000;
+  const painted = charts.barPaintRect(500, top, plotH);
+  assert.equal(charts.barAnchorY(500, top, plotH, padT), padT + painted.y);
+  const linear = padT + (1 - 500 / top) * plotH;
+  assert.notEqual(charts.barAnchorY(500, top, plotH, padT), linear);
+  assert.equal(charts.barAnchorY(0, top, plotH, padT), padT + plotH);
+});
+
 check("tooltipFollowsPointer is pointer-owned only when mouse coords exist", () => {
   assert.equal(charts.tooltipFollowsPointer("pointer", { x: 1, y: 2 }), true);
   assert.equal(charts.tooltipFollowsPointer("pointer", null), false);
@@ -237,6 +249,47 @@ check("chartSurface is idle until math, buckets, and live layout exist", () => {
   assert.equal(charts.chartSurface(true, 3, false), "idle");
   assert.equal(charts.chartSurface(true, 3, true), "interactive");
   assert.equal(charts.chartSurface(true, 3, charts.chartsLiveLayout(0)), "idle");
+});
+
+check("analyticsDisplayStatus remaps only the analytics tab when math is missing", () => {
+  const fail = footer.chartsFailedStatus;
+  assert.equal(fail, "Analytics charts failed to load (/ui/chart-math.js)");
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "analytics", "Analytics updated", false, fail),
+    fail,
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "analytics", "Loading…", false),
+    fail,
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "providers", "Ready", false, fail),
+    "Ready",
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(true, "analytics", "Analytics updated", false, fail),
+    "Analytics updated",
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "analytics", "Analytics error: boom", true, fail),
+    `${fail}. Analytics error: boom`,
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "analytics", "Error: boom", true),
+    `${fail}. Error: boom`,
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(true, "analytics", "Analytics error: boom", true, fail),
+    "Analytics error: boom",
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(false, "analytics", "Error: providers failed", true, fail, false),
+    "Error: providers failed",
+  );
+  assert.equal(
+    footer.analyticsDisplayStatus(true, "analytics", "Error: providers failed", true, fail, false),
+    "Error: providers failed",
+  );
 });
 
 check("chartCanvasAttrs revokes the full AT surface when disabled", () => {

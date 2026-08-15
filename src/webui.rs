@@ -68,6 +68,7 @@ pub(crate) fn router(
         .route("/ui/theme-bootstrap.js", get(serve_theme_bootstrap))
         .route("/ui/chart-math.js", get(serve_chart_math))
         .route("/ui/app.js", get(serve_js))
+        .route("/ui/app.js.map", get(serve_js_map))
         .nest("/api", api_router(management_token, require_local_host))
 }
 
@@ -200,11 +201,103 @@ async fn serve_chart_math() -> impl IntoResponse {
     serve_static_js(include_str!("webui_static/chart-math.js"))
 }
 
+const WEBUI_FOOTER_STATUS_JS: &str = include_str!("webui_static/footer-status.js");
+const WEBUI_APP_MAIN_JS: &str = include_str!("webui_static/app-main.js");
+
+fn join_js_sources(first: &str, second: &str) -> String {
+    let mut out = String::with_capacity(first.len() + second.len() + 1);
+    out.push_str(first);
+    if !first.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(second);
+    out
+}
+
+fn js_source_line_count(src: &str) -> usize {
+    if src.is_empty() {
+        0
+    } else {
+        src.matches('\n').count() + usize::from(!src.ends_with('\n'))
+    }
+}
+
+fn identity_source_mappings(line_count: usize) -> String {
+    if line_count == 0 {
+        return String::new();
+    }
+    let mut mappings = String::from("AAAA");
+    for _ in 1..line_count {
+        mappings.push_str(";AACA");
+    }
+    mappings
+}
+
+fn webui_app_bundle() -> String {
+    join_js_sources(WEBUI_FOOTER_STATUS_JS, WEBUI_APP_MAIN_JS)
+}
+
+fn webui_app_source_map() -> String {
+    let footer_lines = js_source_line_count(WEBUI_FOOTER_STATUS_JS);
+    serde_json::to_string(&json!({
+        "version": 3,
+        "file": "app.js",
+        "sections": [
+            {
+                "offset": { "line": 0, "column": 0 },
+                "map": {
+                    "version": 3,
+                    "file": "footer-status.js",
+                    "sources": ["footer-status.js"],
+                    "sourcesContent": [WEBUI_FOOTER_STATUS_JS],
+                    "names": [],
+                    "mappings": identity_source_mappings(footer_lines),
+                }
+            },
+            {
+                "offset": { "line": footer_lines, "column": 0 },
+                "map": {
+                    "version": 3,
+                    "file": "app-main.js",
+                    "sources": ["app-main.js"],
+                    "sourcesContent": [WEBUI_APP_MAIN_JS],
+                    "names": [],
+                    "mappings": identity_source_mappings(js_source_line_count(WEBUI_APP_MAIN_JS)),
+                }
+            }
+        ]
+    }))
+    .expect("webui app source map is valid json")
+}
+
 async fn serve_js() -> impl IntoResponse {
-    serve_static_js(include_str!("webui_static/app.js"))
+    // Footer overlay must ship with app-main.js. A sibling script would 404
+    // the same way chart-math.js can, which is the failure the overlay reports.
+    let mut body = webui_app_bundle();
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str("//# sourceMappingURL=app.js.map\n");
+    serve_static_js_body(body)
+}
+
+async fn serve_js_map() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "application/json; charset=utf-8"),
+            (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
+            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+        ],
+        webui_app_source_map(),
+    )
 }
 
 fn serve_static_js(body: &'static str) -> impl IntoResponse {
+    serve_static_js_body(body)
+}
+
+fn serve_static_js_body(body: impl Into<String>) -> impl IntoResponse {
     (
         [
             (
@@ -215,7 +308,7 @@ fn serve_static_js(body: &'static str) -> impl IntoResponse {
             (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
             (header::X_FRAME_OPTIONS, "DENY"),
         ],
-        body,
+        body.into(),
     )
 }
 

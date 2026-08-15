@@ -158,6 +158,12 @@
     return { barH, y: height - barH };
   }
 
+  // Keyboard/pointer-anchor Y must use the painted bar top, not the linear
+  // axis mapping. Subpixel values sit on a 1px bar at the baseline.
+  function barAnchorY(val, top, plotH, padT) {
+    return (Number(padT) || 0) + barPaintRect(val, top, plotH).y;
+  }
+
   // Pointer tooltips follow the cursor. Keyboard (and pointer-without-coords)
   // must anchor to the selected bucket, or leftover mouse coords win.
   function tooltipFollowsPointer(inputMode, hasMouse) {
@@ -380,6 +386,7 @@
     layoutChartPlot,
     barSlotLayout,
     barPaintRect,
+    barAnchorY,
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,

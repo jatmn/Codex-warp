@@ -737,8 +737,91 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("shouldPaintCharts"));
     assert!(body.contains("liveRegionText"));
     assert!(body.contains("barPaintRect"));
+    assert!(body.contains("barAnchorY"));
     assert!(body.contains("chartSurface"));
     assert!(body.contains("chartCanvasAttrs"));
+    assert!(!body.contains("CodexWarpFooter"));
+    assert!(!body.contains("analyticsDisplayStatus"));
+}
+
+#[tokio::test]
+async fn management_ui_app_javascript_prefixes_footer_status() {
+    let response = serve_js().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/javascript; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("app js body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 app js");
+    let footer = body
+        .find("CodexWarpFooter")
+        .expect("served app.js must prefix footer-status.js");
+    let app = body.find("codex-warp-webui-token").expect("app.js body");
+    assert!(footer < app);
+    assert!(body.contains("analyticsDisplayStatus"));
+    assert!(body.contains("Analytics charts failed to load (/ui/chart-math.js)"));
+    assert!(body.contains("if (remap === false)"));
+    assert!(body.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(body.contains("//# sourceMappingURL=app.js.map"));
+}
+
+#[tokio::test]
+async fn management_ui_app_javascript_source_map_covers_concat_sections() {
+    let response = serve_js_map().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/json; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("source map body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 source map");
+    let map: serde_json::Value = serde_json::from_str(&body).expect("json source map");
+    assert_eq!(map["file"], "app.js");
+    let sections = map["sections"].as_array().expect("indexed sections");
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections[0]["offset"]["line"], 0);
+    assert_eq!(
+        sections[1]["offset"]["line"],
+        js_source_line_count(WEBUI_FOOTER_STATUS_JS)
+    );
+    assert_eq!(sections[0]["map"]["sources"][0], "footer-status.js");
+    assert_eq!(sections[1]["map"]["sources"][0], "app-main.js");
+    assert_eq!(
+        sections[0]["map"]["sourcesContent"][0],
+        WEBUI_FOOTER_STATUS_JS
+    );
+    assert_eq!(sections[1]["map"]["sourcesContent"][0], WEBUI_APP_MAIN_JS);
+}
+
+#[test]
+fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
+    let math = include_str!("webui_static/chart-math.js");
+    let app = include_str!("webui_static/app-main.js");
+    let footer = include_str!("webui_static/footer-status.js");
+    assert!(footer.contains("function analyticsDisplayStatus("));
+    assert!(footer.contains("CodexWarpFooter"));
+    assert!(!math.contains("analyticsDisplayStatus"));
+    assert!(!math.contains("CodexWarpFooter"));
+    assert!(!app.contains("function analyticsDisplayStatus("));
+    assert!(app.contains("Footer.analyticsDisplayStatus"));
+    assert!(app.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+}
+
+#[test]
+fn webui_app_bundle_joins_fragments_on_a_line_boundary() {
+    let footer = "first\n";
+    let main = "second\n";
+    assert_eq!(join_js_sources(footer, main), "first\nsecond\n");
+    assert_eq!(js_source_line_count(footer), 1);
+    assert_eq!(join_js_sources("first", main), "first\nsecond\n");
+    assert_eq!(js_source_line_count("first"), 1);
 }
 
 #[tokio::test]

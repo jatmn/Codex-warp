@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  // Fragment: /ui/app.js prefixes footer-status.js in the same response so the
+  // overlay cannot 404 independently. This file is not a complete entry.
+
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
   function readStoredToken() {
@@ -30,27 +33,54 @@
   let loggingSettingsHydrated = false;
   let loggingFormDirty = false;
   let loggingHydrating = false;
-  let activeTab = "analytics";
   let bootComplete = false;
   let bootFooterHold = false;
   let tabEpoch = 0;
   const expandedProviderIds = new Set();
   const VALID_TABS = new Set(["analytics", "providers", "logs"]);
+  function tabFromLocation() {
+    const hash = location.hash.replace(/^#/, "");
+    return VALID_TABS.has(hash) ? hash : "analytics";
+  }
+  // Hash is the source of truth before boot paints panels. Defaulting to
+  // analytics here made chart-math failure write the footer on #providers.
+  let activeTab = tabFromLocation();
 
   const $ = (sel) => document.querySelector(sel);
+  const Footer = globalThis.CodexWarpFooter;
+  if (!Footer || typeof Footer.analyticsDisplayStatus !== "function") {
+    throw new Error("codex-warp footer status failed to load");
+  }
   function writeStatus(msg) {
     $("#status-line").textContent = msg;
   }
+  function footerText(msg, opts) {
+    const isError = !!(opts && opts.isError);
+    const remap = !opts || opts.remap !== false;
+    const math = globalThis.CodexWarpCharts;
+    return Footer.analyticsDisplayStatus(
+      !!math,
+      activeTab,
+      msg,
+      isError,
+      Footer.chartsFailedStatus,
+      remap,
+    );
+  }
+  function commitStatus(msg, opts) {
+    writeStatus(footerText(msg, opts));
+  }
   // One footer slot. Background polls must not replace a failed boot.
   // User-initiated actions (save, filter change, provider edit) own the
-  // footer and clear that hold.
-  const status = (msg) => {
+  // footer and clear that hold. Chart-math failure is not a boot hold: it
+  // remaps analytics-tab copy through footerText and leaves other tabs alone.
+  const status = (msg, opts) => {
     bootFooterHold = false;
-    writeStatus(msg);
+    commitStatus(msg, opts);
   };
-  function pollStatus(msg) {
+  function pollStatus(msg, opts) {
     if (bootFooterHold) return;
-    writeStatus(msg);
+    commitStatus(msg, opts);
   }
 
   // Empty → JSON null (clear to defaults). Invalid input must not become
@@ -148,11 +178,6 @@
     const d = document.createElement("div");
     d.textContent = s ?? "";
     return d.innerHTML;
-  }
-
-  function tabFromLocation() {
-    const hash = location.hash.replace(/^#/, "");
-    return VALID_TABS.has(hash) ? hash : "analytics";
   }
 
   function tabHash(name) {
@@ -850,23 +875,15 @@
       };
       renderAnalyticsPresentation();
       if (activeTab === "analytics") {
-        if (!Charts) {
-          holdChartFailureStatus();
-        } else {
-          const message = "Analytics updated";
-          if (reportFromPoll) pollStatus(message);
-          else status(message);
-        }
+        const message = "Analytics updated";
+        if (reportFromPoll) pollStatus(message);
+        else status(message);
       }
     } catch (e) {
       if (activeTab === "analytics") {
-        if (!Charts) {
-          holdChartFailureStatus();
-        } else {
-          const message = `Analytics error: ${e.message}`;
-          if (reportFromPoll) pollStatus(message);
-          else status(message);
-        }
+        const message = `Analytics error: ${e.message}`;
+        if (reportFromPoll) pollStatus(message, { isError: true });
+        else status(message, { isError: true });
       }
     } finally {
       analyticsInFlight = false;
@@ -881,12 +898,6 @@
   // Chart math is a sibling deferred script. Missing it must not abort this
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
-  const CHARTS_FAILED_STATUS = "Analytics charts failed to load (/ui/chart-math.js)";
-  function holdChartFailureStatus() {
-    if (Charts) return;
-    bootFooterHold = true;
-    writeStatus(CHARTS_FAILED_STATUS);
-  }
   function applyChartInteractivity(surface) {
     const attrs = Charts
       ? Charts.chartCanvasAttrs(surface)
@@ -945,7 +956,6 @@
   }
   function noteChartsUnavailable() {
     applyChartInteractivity("failed");
-    holdChartFailureStatus();
   }
   if (!Charts) noteChartsUnavailable();
   function formatBucketLabel(ms, style) {
@@ -1228,7 +1238,8 @@
   function showBarTooltipFor(canvas, state, idx) {
     const row = state.rows[idx];
     const g = state.geometry;
-    const pos = chartToClient(canvas, g.xAt(idx) + (g.barW || 0) / 2, g.yAt(row.total_tokens || 0));
+    const y = Charts.barAnchorY(row.total_tokens || 0, g.top, g.plotH, g.padT);
+    const pos = chartToClient(canvas, g.xAt(idx) + (g.barW || 0) / 2, y);
     showChartTooltip(canvas, pos.x, pos.y, barTooltipHtml(row, state.labelStyle, chartColors()));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle)));
   }
@@ -1576,7 +1587,7 @@
       kind: "bar",
       rows,
       range,
-      geometry: { xAt, yAt, barW, barGap, slot, plotH, padT, padL, max, cssW: w },
+      geometry: { xAt, yAt, barW, barGap, slot, plotH, padT, padL, max, top: ticks.top, cssW: w },
       hoverTs: Charts.reconcileHoverTs(rows, prev && prev.kind === "bar" ? prev.hoverTs : null),
       inputMode: prev && prev.kind === "bar" ? prev.inputMode || "pointer" : "pointer",
       labelStyle: Charts.bucketLabelStyle(rows),
@@ -1977,7 +1988,6 @@
   async function boot() {
     showTabPanel(tabFromLocation());
     status("Loading…");
-    holdChartFailureStatus();
     try {
       await Promise.all([
         loadProviders({ refreshRoutes: true, updateStatus: false }),
@@ -1988,7 +1998,7 @@
     } catch (e) {
       bootComplete = true;
       bootFooterHold = true;
-      writeStatus(`Error: ${e.message}`);
+      commitStatus(`Error: ${e.message}`, { remap: false });
       try {
         await activateTabPolls(activeTab);
       } catch {
