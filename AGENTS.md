@@ -146,6 +146,10 @@ cargo fmt --check
 cargo test --locked
 cargo build --locked
 git diff --check
+node --check src/webui_static/theme-bootstrap.js
+node --check src/webui_static/chart-math.js
+node --check src/webui_static/app.js
+node scripts/webui_chart_harness.js
 ```
 
 For documentation-only changes:

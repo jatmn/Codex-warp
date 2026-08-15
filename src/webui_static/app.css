@@ -376,6 +376,19 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   font-weight: 650;
 }
 .chart-wrap { position: relative; }
+.chart-wrap canvas { width: 100%; height: 220px; display: block; }
+.chart-fallback {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.chart-fallback[hidden] { display: none; }
 canvas { width: 100%; height: auto; display: block; }
 .chart-tooltip {
   position: absolute;

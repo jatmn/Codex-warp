@@ -717,6 +717,47 @@ async fn management_ui_responses_cannot_be_framed() {
 }
 
 #[tokio::test]
+async fn management_ui_serves_chart_math_javascript() {
+    let response = serve_chart_math().await.into_response();
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE),
+        Some(&header::HeaderValue::from_static(
+            "application/javascript; charset=utf-8"
+        ))
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("chart math body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 chart math");
+    assert!(body.contains("CodexWarpCharts"));
+    assert!(body.contains("bucketLabelStyle"));
+    assert!(body.contains("chartInputStep"));
+    assert!(body.contains("fitCanvasMetrics"));
+}
+
+#[tokio::test]
+async fn management_ui_index_loads_chart_math_before_app() {
+    let response = serve_index().await.into_response();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("index body");
+    let body = String::from_utf8(bytes.to_vec()).expect("utf-8 index");
+    let math = body
+        .find("/ui/chart-math.js")
+        .expect("index must load chart-math.js");
+    let app = body.find("/ui/app.js").expect("index must load app.js");
+    assert!(math < app);
+    assert!(body.contains("id=\"chart-bar-title\">Usage over time"));
+    assert!(body.contains("aria-labelledby=\"chart-bar-title\""));
+    assert!(body.contains("aria-labelledby=\"chart-line-title\""));
+    assert!(body.contains("id=\"chart-kbd-help\""));
+    assert!(body.contains("Tab leaves the chart"));
+    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
+    assert!(!body.contains("By provider"));
+    assert_eq!(body.matches("class=\"chart-live").count(), 2);
+}
+
+#[tokio::test]
 async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
     use std::time::{SystemTime, UNIX_EPOCH};
 

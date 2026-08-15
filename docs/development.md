@@ -145,6 +145,10 @@ cargo fmt --check
 cargo test --locked
 cargo build --locked
 git diff --check
+node --check src/webui_static/theme-bootstrap.js
+node --check src/webui_static/chart-math.js
+node --check src/webui_static/app.js
+node scripts/webui_chart_harness.js
 ```
 
 For documentation-only changes, `git diff --check` and a quick trailing
@@ -164,6 +168,7 @@ The CI job performs:
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
+- `node --check` for `theme-bootstrap.js`, `chart-math.js`, and `app.js`, plus `scripts/webui_chart_harness.js`
 - `git diff --check`
 - trailing-whitespace checks for README, AGENTS.md, and docs
 

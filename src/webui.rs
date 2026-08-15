@@ -66,6 +66,7 @@ pub(crate) fn router(
         .route("/ui/", get(serve_index))
         .route("/ui/app.css", get(serve_css))
         .route("/ui/theme-bootstrap.js", get(serve_theme_bootstrap))
+        .route("/ui/chart-math.js", get(serve_chart_math))
         .route("/ui/app.js", get(serve_js))
         .nest("/api", api_router(management_token, require_local_host))
 }
@@ -192,21 +193,18 @@ async fn serve_css() -> impl IntoResponse {
 }
 
 async fn serve_theme_bootstrap() -> impl IntoResponse {
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (header::CACHE_CONTROL, "max-age=0, must-revalidate"),
-            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
-            (header::X_FRAME_OPTIONS, "DENY"),
-        ],
-        include_str!("webui_static/theme-bootstrap.js"),
-    )
+    serve_static_js(include_str!("webui_static/theme-bootstrap.js"))
+}
+
+async fn serve_chart_math() -> impl IntoResponse {
+    serve_static_js(include_str!("webui_static/chart-math.js"))
 }
 
 async fn serve_js() -> impl IntoResponse {
+    serve_static_js(include_str!("webui_static/app.js"))
+}
+
+fn serve_static_js(body: &'static str) -> impl IntoResponse {
     (
         [
             (
@@ -217,7 +215,7 @@ async fn serve_js() -> impl IntoResponse {
             (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
             (header::X_FRAME_OPTIONS, "DENY"),
         ],
-        include_str!("webui_static/app.js"),
+        body,
     )
 }
 
