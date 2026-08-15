@@ -310,10 +310,10 @@ fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::
 
 /// Rotate `path` to `{path}.1` when it exceeds size or age limits.
 ///
-/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`,
-/// but multiple Warp processes sharing the same `log_path` can still race. In
-/// that situation the backup may be overwritten or removed unexpectedly; use a
-/// distinct `log_path` per instance.
+/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`
+/// and `DebugLog::commit_inner`, but multiple Warp processes sharing the same
+/// `log_path` can still race. In that situation the backup may be overwritten
+/// or removed unexpectedly; use a distinct `log_path` per instance.
 fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
     recover_interrupted_rotation(path)?;
     let metadata = match fs::symlink_metadata(path) {
@@ -396,22 +396,7 @@ impl DebugLog {
         let mut config = config.clone();
         normalize_debug_config(&mut config);
         validate_debug_settings(&mut config)?;
-        let path = self.commit_inner(&config)?;
-        // Rotation also runs on the next write. Failing it here must not roll
-        // back a snapshot that already passed validation: a later write retries
-        // rotation, and live settings must not depend on filesystem cleanup.
-        if let Some(path) = path.as_ref()
-            && let Err(err) = maybe_rotate_log(
-                path.as_path(),
-                max_log_bytes_from_config(&config),
-                max_log_age_from_config(&config),
-            )
-        {
-            warn!(
-                "failed to rotate debug log {} while applying config: {err}",
-                path.display()
-            );
-        }
+        self.commit_inner(&config)?;
         Ok(())
     }
 
@@ -428,8 +413,26 @@ impl DebugLog {
             open_debug_log(path, true)
                 .map_err(|err| format!("cannot open debug log {}: {err}", path.display()))?;
         }
-        let mut inner = self.write_inner();
-        inner.snapshot = config.clone();
+        {
+            let mut inner = self.write_inner();
+            inner.snapshot = config.clone();
+        }
+        // Rotate under the same writer lock as `log()`. Failing rotation must
+        // not roll back a snapshot that already passed validation: a later
+        // write retries rotation, and live settings must not depend on
+        // filesystem cleanup.
+        if let Some(path) = path.as_ref()
+            && let Err(err) = maybe_rotate_log(
+                path.as_path(),
+                max_log_bytes_from_config(config),
+                max_log_age_from_config(config),
+            )
+        {
+            warn!(
+                "failed to rotate debug log {} while applying config: {err}",
+                path.display()
+            );
+        }
         Ok(path)
     }
 
@@ -539,7 +542,10 @@ impl DebugLog {
         };
         let max_log_bytes = max_log_bytes_from_config(&inner.snapshot);
         let max_log_age = max_log_age_from_config(&inner.snapshot);
+        let include_bodies = inner.snapshot.include_bodies;
+        let include_stream_bodies = inner.snapshot.include_stream_bodies;
         drop(inner);
+        apply_live_debug_event_policy(&mut event, include_bodies, include_stream_bodies);
         if let Some(object) = event.as_object_mut() {
             object
                 .entry("ts".to_string())
@@ -787,6 +793,38 @@ fn open_debug_log(path: &Path, create: bool) -> std::io::Result<File> {
     let file = options.open(path)?;
     reject_unusable_debug_log(path, &file.metadata()?)?;
     Ok(file)
+}
+
+/// Apply the live snapshot's body-inclusion policy at the write chokepoint.
+/// Helpers may attach `body`/`frame`/`error` using a stale unlocked read;
+/// `log()` holds `writer_lock` and must decide what actually hits disk.
+fn apply_live_debug_event_policy(
+    event: &mut Value,
+    include_bodies: bool,
+    include_stream_bodies: bool,
+) {
+    let Some(object) = event.as_object_mut() else {
+        return;
+    };
+    if !include_bodies {
+        object.remove("body");
+        if let Some(Value::String(error)) = object.remove("error") {
+            object.insert(
+                "error_fingerprint".to_string(),
+                json!(text_fingerprint(&error)),
+            );
+            object.insert("error_bytes".to_string(), json!(error.len()));
+            object.insert("error_body_redacted".to_string(), json!(true));
+        }
+    }
+    if !include_stream_bodies && let Some(Value::String(frame)) = object.remove("frame") {
+        object.insert(
+            "frame_fingerprint".to_string(),
+            json!(text_fingerprint(&frame)),
+        );
+        object.insert("frame_bytes".to_string(), json!(frame.len()));
+        object.insert("frame_body_redacted".to_string(), json!(true));
+    }
 }
 
 fn missing_jsonl_tail(path: PathBuf, enabled: bool) -> JsonlTail {

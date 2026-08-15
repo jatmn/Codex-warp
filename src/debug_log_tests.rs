@@ -606,6 +606,78 @@ fn apply_config_enables_and_disables_logging_without_a_new_handle() {
 }
 
 #[test]
+fn log_applies_live_body_policy_at_write_time() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-write-policy-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: false,
+        include_stream_bodies: false,
+        ..DebugConfig::default()
+    })
+    .expect("enable without bodies");
+
+    log.log(json!({
+        "event": "upstream_request",
+        "id": "dbg_body",
+        "body": {"prompt": "secret user prompt"}
+    }));
+    log.log(json!({
+        "event": "upstream_error",
+        "id": "dbg_err",
+        "error": "secret upstream failure"
+    }));
+    log.log(json!({
+        "event": "downstream_stream_frame",
+        "id": "dbg_frame",
+        "frame": "data: secret stream frame"
+    }));
+
+    let contents = fs::read_to_string(&path).expect("read policy log");
+    assert!(!contents.contains("secret user prompt"));
+    assert!(!contents.contains("secret upstream failure"));
+    assert!(!contents.contains("secret stream frame"));
+    assert!(contents.contains("\"error_body_redacted\":true"));
+    assert!(contents.contains("\"frame_body_redacted\":true"));
+    assert!(!contents.contains("\"body\":"));
+    assert!(!contents.contains("\"frame\":"));
+}
+
+#[test]
+fn apply_config_rotates_an_oversized_log() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-rotate-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, vec![b'x'; 1024 * 1024]).expect("write oversized log");
+
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        max_log_mb: Some(1),
+        ..DebugConfig::default()
+    })
+    .expect("apply oversized path");
+
+    assert!(!path.exists() || fs::metadata(&path).map(|m| m.len()).unwrap_or(0) < 1024 * 1024);
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
+    assert_eq!(
+        fs::metadata(&backup).expect("backup metadata").len(),
+        1024 * 1024
+    );
+}
+
+#[test]
 fn read_tail_reports_enabled_from_the_writer_snapshot() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-debug-log-read-tail-enabled-{}",

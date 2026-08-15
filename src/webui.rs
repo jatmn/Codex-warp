@@ -383,8 +383,11 @@ struct LoggingSettingsView {
     log_path: Option<String>,
     include_bodies: bool,
     include_stream_bodies: bool,
-    max_log_mb: u64,
-    max_log_age_days: u64,
+    max_log_mb: Option<u64>,
+    max_log_age_days: Option<u64>,
+    /// Rotation limits the writer uses when the stored fields are unset.
+    max_log_mb_effective: u64,
+    max_log_age_days_effective: u64,
     tracing_filter: Option<String>,
     /// Resolved filter the live snapshot wants (`tracing_filter`, else the process
     /// default captured when tracing started).
@@ -427,8 +430,10 @@ fn logging_settings_view(state: &AppState, persisted: bool) -> LoggingSettingsVi
             .map(|path| path.display().to_string()),
         include_bodies: debug.include_bodies,
         include_stream_bodies: debug.include_stream_bodies,
-        max_log_mb: effective_max_log_mb(&debug),
-        max_log_age_days: effective_max_log_age_days(&debug),
+        max_log_mb: debug.max_log_mb,
+        max_log_age_days: debug.max_log_age_days,
+        max_log_mb_effective: effective_max_log_mb(&debug),
+        max_log_age_days_effective: effective_max_log_age_days(&debug),
         tracing_filter: debug.tracing_filter,
         tracing_filter_wanted,
         tracing_filter_effective,

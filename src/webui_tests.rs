@@ -1174,6 +1174,16 @@ async fn logging_settings_apply_live_and_persist() {
     assert!(!before.enabled);
     assert!(before.persist_available);
     assert!(!before.persisted);
+    assert!(before.max_log_mb.is_none());
+    assert!(before.max_log_age_days.is_none());
+    assert_eq!(
+        before.max_log_mb_effective,
+        crate::debug_log::DEFAULT_MAX_LOG_MB
+    );
+    assert_eq!(
+        before.max_log_age_days_effective,
+        crate::debug_log::DEFAULT_MAX_LOG_AGE_DAYS
+    );
 
     let Json(updated) = update_logging(
         State(state.clone()),
@@ -1190,7 +1200,10 @@ async fn logging_settings_apply_live_and_persist() {
     .await
     .expect("update logging");
     assert!(updated.enabled);
-    assert_eq!(updated.max_log_mb, 32);
+    assert_eq!(updated.max_log_mb, Some(32));
+    assert_eq!(updated.max_log_age_days, Some(7));
+    assert_eq!(updated.max_log_mb_effective, 32);
+    assert_eq!(updated.max_log_age_days_effective, 7);
     assert!(updated.persisted);
     assert_eq!(updated.tracing_filter.as_deref(), Some("codex_warp=debug"));
     assert_eq!(updated.tracing_filter_wanted, "codex_warp=debug");

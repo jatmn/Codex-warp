@@ -428,7 +428,12 @@ body-inclusion flags still win over that overlay for the current process.
 `GET /api/logging` returns the live settings, including `persist_available`.
 `persisted` is only meaningful on `PUT /api/logging`: it is true when that
 mutation wrote the SQLite overlay. GET always returns `persisted: false`.
-`PUT /api/logging` validates the full live snapshot first, including the
+`max_log_mb` and `max_log_age_days` are the stored snapshot values (`null` when
+unset). `max_log_mb_effective` and `max_log_age_days_effective` are the limits
+the writer uses (`128` / `30` when those fields are unset). The Logs form
+hydrates empty rotation fields from the stored values and shows the effective
+limits as placeholders, so saving other settings does not persist explicit
+defaults. `PUT /api/logging` validates the full live snapshot first, including the
 tracing filter that will actually be reloaded (`tracing_filter`, or the process
 default captured from `RUST_LOG` / `info` when tracing started). Live logging
 has one snapshot, stored by `DebugLog`.
@@ -451,7 +456,9 @@ live `RUST_LOG` read. If tracing reload fails, the live snapshot stays
 applied, `tracing_applied` is false, and process logs keep the previous
 verbosity until a later save retries the filter. The SQLite overlay is durability, not live state: it is written
 after live install and never stores a snapshot that failed to become live.
-Overlay persist failure does not reinstall live settings and does not fail the
+Overlay writes parse `tracing_filter` the same way as live apply and replay
+(using `info` when the process pin is unavailable), so an invalid filter cannot
+be stored. Overlay persist failure does not reinstall live settings and does not fail the
 request; PUT returns the applied live settings with `persisted: false`. The next
 start still replays the previous overlay until a later save persists. A crash
 after live apply and before the overlay write does not persist across restart;

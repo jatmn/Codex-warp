@@ -1424,7 +1424,14 @@ fn debug_overlay_skips_invalid_tracing_filter() {
             tracing_filter: Some("codex_warp=not-a-level".into()),
             ..crate::config::DebugConfig::default()
         })
-        .unwrap();
+        .expect_err("upsert must refuse an invalid tracing filter");
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            tracing_filter: Some("codex_warp=not-a-level".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
 
     let mut config = AppConfig::default();
     store

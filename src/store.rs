@@ -486,7 +486,8 @@ impl Store {
     pub(crate) fn upsert_debug_overlay(&self, debug: &DebugConfig) -> anyhow::Result<()> {
         let mut debug = debug.clone();
         crate::debug_log::normalize_debug_config(&mut debug);
-        crate::debug_log::validate_debug_settings(&mut debug).map_err(anyhow::Error::msg)?;
+        crate::process_log::validate_debug_live_config_or(&mut debug, None)
+            .map_err(anyhow::Error::msg)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         Self::write_debug_overlay(&db, &debug)
     }

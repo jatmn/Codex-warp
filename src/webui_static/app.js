@@ -1051,7 +1051,9 @@
     form.include_bodies.checked = !!settings.include_bodies;
     form.include_stream_bodies.checked = !!settings.include_stream_bodies;
     form.max_log_mb.value = settings.max_log_mb ?? "";
+    form.max_log_mb.placeholder = String(settings.max_log_mb_effective ?? "");
     form.max_log_age_days.value = settings.max_log_age_days ?? "";
+    form.max_log_age_days.placeholder = String(settings.max_log_age_days_effective ?? "");
     form.tracing_filter.value = settings.tracing_filter || "";
     form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
     const hint = $("#logging-persist-hint");

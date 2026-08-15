@@ -179,18 +179,18 @@
           </label>
           <label>
             Max log size (MB)
-            <input name="max_log_mb" type="number" min="1" step="1">
+            <input name="max_log_mb" type="number" min="1" step="1" placeholder="128">
           </label>
           <label>
             Max log age (days)
-            <input name="max_log_age_days" type="number" min="1" step="1">
+            <input name="max_log_age_days" type="number" min="1" step="1" placeholder="30">
           </label>
           <label class="log-filter-field">
             Tracing filter
             <input name="tracing_filter" placeholder="codex_warp=debug">
           </label>
         </div>
-        <p class="hint muted">Leave tracing filter empty to use the process default (<code>RUST_LOG</code> or <code>info</code> at startup). Full-body debug logs can contain prompts and tool results.</p>
+        <p class="hint muted">Leave tracing filter empty to use the process default (<code>RUST_LOG</code> or <code>info</code> at startup). Leave max log size and age empty to keep the built-in 128&nbsp;MB / 30-day defaults. Full-body debug logs can contain prompts and tool results.</p>
         <div class="form-actions">
           <button type="submit" class="btn primary">Save logging settings</button>
         </div>
