@@ -469,3 +469,90 @@ details label { margin-bottom: 0.45rem; }
   .provider-head { flex-direction: column; align-items: flex-start; }
   .provider-chevron { margin-left: 0; align-self: flex-end; }
 }
+
+.log-settings {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0.9rem 1rem 1rem;
+  margin-bottom: 0.85rem;
+}
+.log-settings h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+.log-settings fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.log-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.65rem 0.85rem;
+  margin: 0.7rem 0;
+}
+.log-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+.log-filter-field { grid-column: 1 / -1; }
+.log-follow {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.4rem !important;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.log-viewer {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  background: var(--surface-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  height: min(68vh, 44rem);
+  overflow: auto;
+  padding: 0.25rem 0;
+}
+.log-empty {
+  padding: 1rem 0.85rem;
+  color: var(--muted);
+}
+.log-row {
+  display: grid;
+  grid-template-columns: 11.5rem 6.5rem minmax(0, 1fr);
+  gap: 0.55rem;
+  padding: 0.28rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.log-row:hover { background: var(--surface-2); }
+.log-row.open { background: var(--surface); }
+.log-ts { color: var(--muted); white-space: nowrap; }
+.log-kind {
+  font-weight: 650;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+}
+.log-kind.trace, .log-kind.debug { color: var(--muted); }
+.log-kind.info { color: var(--accent); }
+.log-kind.warn, .log-kind.warning { color: var(--chart-prompts); }
+.log-kind.error { color: var(--danger); }
+.log-msg { min-width: 0; overflow-wrap: anywhere; }
+.log-json {
+  grid-column: 1 / -1;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.55rem 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

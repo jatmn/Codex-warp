@@ -562,6 +562,22 @@ fn debug_config_parses_log_options() {
     assert!(config.debug.include_stream_bodies);
     assert_eq!(config.debug.max_log_mb, None);
     assert_eq!(config.debug.max_log_age_days, None);
+    assert_eq!(config.debug.tracing_filter, None);
+}
+
+#[test]
+fn debug_config_parses_tracing_filter() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [debug]
+            tracing_filter = "codex_warp=debug,warn"
+            "#,
+    )
+    .expect("debug tracing filter parses");
+    assert_eq!(
+        config.debug.tracing_filter.as_deref(),
+        Some("codex_warp=debug,warn")
+    );
 }
 
 #[test]

@@ -749,6 +749,8 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -809,6 +811,8 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -853,6 +857,8 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -899,6 +905,8 @@ async fn models_returns_empty_list_when_no_providers_configured() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -949,6 +957,8 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -986,6 +996,8 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -1052,6 +1064,8 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),
@@ -1123,6 +1137,8 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
         store: None,
         structured_output: std::sync::Arc::new(
             crate::structured_output::StructuredOutputCache::default(),

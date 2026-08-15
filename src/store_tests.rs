@@ -1,6 +1,17 @@
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn insert_raw_debug_overlay(store: &Store, debug: &crate::config::DebugConfig) {
+    let config_json = serde_json::to_string(debug).expect("serialize raw debug overlay");
+    let db = store.db.lock().expect("sqlite lock poisoned");
+    db.execute(
+        "INSERT INTO debug_overlay(id, config_json) VALUES (1, ?1)
+         ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json",
+        rusqlite::params![config_json],
+    )
+    .expect("insert raw debug overlay");
+}
+
 #[test]
 fn store_records_usage_and_aggregates_ranges() {
     let dir = std::env::temp_dir().join(format!(
@@ -128,7 +139,9 @@ fn store_applies_provider_and_model_overlays() {
     store
         .set_model_enabled("manual", "upstream-only", false)
         .unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert!(!config.providers["manual"].enabled);
     assert!(
@@ -259,7 +272,9 @@ fn soft_removed_primary_provider_does_not_replay_retained_model_overlays() {
         },
         ..AppConfig::default()
     };
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert!(config.provider.base_url.is_empty());
     assert!(config.provider.model_catalog.is_empty());
@@ -300,7 +315,9 @@ fn clearing_provider_soft_delete_restores_prior_model_toggles() {
         .set_model_enabled("legacy", "legacy/model", false)
         .unwrap();
     store.soft_remove_provider("legacy").unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     assert!(
         !config.providers.contains_key("legacy"),
         "soft-removed provider stays suppressed"
@@ -330,7 +347,9 @@ fn clearing_provider_soft_delete_restores_prior_model_toggles() {
             ..ProviderConfig::default()
         },
     );
-    store.apply_overlays(&mut restored).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut restored, None)
+        .unwrap();
     let entry = restored.providers["legacy"]
         .model_catalog
         .iter()
@@ -377,7 +396,9 @@ fn apply_overlays_preserves_toml_auth_for_non_managed_provider() {
     store
         .upsert_provider_overlay("toml", Some(true), false, false, Some(&overlay))
         .unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert_eq!(
         config.providers["toml"].api_key.as_deref(),
@@ -413,7 +434,9 @@ fn apply_overlays_does_not_resurrect_removed_toml_provider() {
         .unwrap();
 
     let mut config = AppConfig::default();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     assert!(
         !config.providers.contains_key("removed"),
         "a stale non-managed overlay must not recreate a removed TOML provider"
@@ -447,7 +470,9 @@ fn apply_overlays_does_not_resurrect_removed_primary_toml_provider() {
         .unwrap();
 
     let mut config = AppConfig::default();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert!(config.provider.base_url.is_empty());
     let _ = std::fs::remove_dir_all(dir);
@@ -481,7 +506,9 @@ fn apply_overlays_replays_overlapping_model_toggles_in_mutation_order() {
             ..ProviderConfig::default()
         },
     );
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert!(config.providers["manual"].model_is_enabled("friendly"));
     assert!(config.providers["manual"].model_is_enabled("gpt-4"));
@@ -529,7 +556,9 @@ fn apply_overlays_skips_corrupt_overlay_json() {
         .unwrap();
     }
 
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     assert!(config.providers.contains_key("manual"));
     // Corrupt config_json is skipped, but the overlay enabled column still applies.
@@ -573,7 +602,9 @@ fn soft_remove_model_suppresses_catalog_and_upstream_across_restart() {
     store
         .soft_remove_model("manual", "my-model", Some(&entry))
         .unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     let provider = &config.providers["manual"];
     assert!(provider.model_catalog.is_empty());
@@ -620,7 +651,9 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
     );
 
     store.upsert_model_catalog("manual", &entry, false).unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     let provider = &config.providers["manual"];
     assert!(provider.model_is_enabled("my-model"));
@@ -660,7 +693,9 @@ fn apply_overlays_plain_catalog_enable_clears_upstream_disabled_model() {
 
     // A toggle of an existing TOML catalog entry persists no catalog snapshot.
     store.set_model_enabled("manual", "friendly", true).unwrap();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
 
     let provider = &config.providers["manual"];
     assert!(provider.model_is_enabled("friendly"));
@@ -827,7 +862,9 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
         .unwrap();
 
     let mut config = AppConfig::default();
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     let live = config
         .providers
         .get("legacy")
@@ -896,7 +933,9 @@ fn apply_overlays_corrupt_model_overlay_preserves_disabled_models() {
         )
         .unwrap();
     }
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     assert!(
         config.providers["manual"]
             .disabled_models
@@ -941,7 +980,9 @@ fn apply_overlays_strips_inline_api_key_from_overlay_json() {
         )
         .unwrap();
     }
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     assert_eq!(
         config.providers["manual"].api_key.as_deref(),
         Some("toml-secret")
@@ -1064,7 +1105,9 @@ fn persist_managed_overlay_disable_updates_provider_and_disables_model_overlay()
 
     let mut config = AppConfig::default();
     config.providers.insert("managed".into(), provider);
-    store.apply_overlays(&mut config).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
     assert!(!config.providers["managed"].model_is_enabled("overlay-only"));
 
     let _ = std::fs::remove_dir_all(dir);
@@ -1133,4 +1176,306 @@ fn usage_identifiers_truncate_on_utf8_boundaries() {
     assert!(truncated.len() <= MAX_USAGE_IDENTIFIER_BYTES);
     assert!(truncated.is_char_boundary(truncated.len()));
     assert_eq!(truncated, "é".repeat(256));
+}
+
+#[test]
+fn debug_overlay_replays_into_config() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let debug = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(dir.join("debug.jsonl")),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..crate::config::DebugConfig::default()
+    };
+    store.upsert_debug_overlay(&debug).unwrap();
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let expected = crate::debug_log::validate_debug_log_path(&dir.join("debug.jsonl"))
+        .expect("pin overlay path");
+    let mut pinned = debug.clone();
+    pinned.log_path = Some(expected);
+    assert_eq!(config.debug, pinned);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upsert_debug_overlay_pins_relative_log_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-upsert-relative-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("overlay-relative.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        })
+        .unwrap();
+
+    let stored: String = {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.query_row(
+            "SELECT config_json FROM debug_overlay WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let stored: crate::config::DebugConfig = serde_json::from_str(&stored).unwrap();
+    let expected =
+        crate::debug_log::validate_debug_log_path(std::path::Path::new("overlay-relative.jsonl"))
+            .expect("pin relative overlay");
+    assert_eq!(stored.log_path.as_deref(), Some(expected.as_path()));
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
+    let _ = std::fs::remove_file(&expected);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_heals_legacy_relative_log_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-legacy-relative-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("overlay-legacy-relative.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new(
+        "overlay-legacy-relative.jsonl",
+    ))
+    .expect("pin legacy relative overlay");
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
+
+    let mut replayed = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .unwrap();
+    assert_eq!(
+        replayed.debug.log_path.as_deref(),
+        Some(expected.as_path()),
+        "healed overlay must store the pinned destination"
+    );
+    let _ = std::fs::remove_file(&expected);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_skips_restricted_log_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-restricted-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let err = store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("/etc/passwd.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        })
+        .expect_err("upsert must refuse a restricted path");
+    assert!(err.to_string().contains("allowed location"), "{err}");
+
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some("/etc/passwd.jsonl".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert!(!config.debug.enabled);
+    assert!(config.debug.log_path.is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_fills_default_path_when_enabled_without_path() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-default-path-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: None,
+            ..crate::config::DebugConfig::default()
+        })
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert!(config.debug.enabled);
+    let expected = crate::debug_log::validate_debug_log_path(std::path::Path::new(
+        crate::debug_log::DEFAULT_DEBUG_LOG_PATH,
+    ))
+    .expect("pin default overlay path");
+    assert_eq!(config.debug.log_path.as_deref(), Some(expected.as_path()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_skips_zero_rotation_limits() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-zero-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some(dir.join("debug.jsonl")),
+            max_log_mb: Some(0),
+            ..crate::config::DebugConfig::default()
+        })
+        .expect_err("upsert must refuse a zero rotation limit");
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            enabled: true,
+            log_path: Some(dir.join("debug.jsonl")),
+            max_log_mb: Some(0),
+            ..crate::config::DebugConfig::default()
+        },
+    );
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert!(!config.debug.enabled);
+    assert!(config.debug.log_path.is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_skips_invalid_tracing_filter() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-filter-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    store
+        .upsert_debug_overlay(&crate::config::DebugConfig {
+            tracing_filter: Some("codex_warp=not-a-level".into()),
+            ..crate::config::DebugConfig::default()
+        })
+        .expect_err("upsert must refuse an invalid tracing filter");
+    insert_raw_debug_overlay(
+        &store,
+        &crate::config::DebugConfig {
+            tracing_filter: Some("codex_warp=not-a-level".into()),
+            ..crate::config::DebugConfig::default()
+        },
+    );
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert!(config.debug.tracing_filter.is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn debug_overlay_accepts_unset_tracing_filter_with_pinned_fallback() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-store-debug-overlay-unset-filter-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let debug = crate::config::DebugConfig {
+        enabled: true,
+        log_path: Some(dir.join("debug.jsonl")),
+        tracing_filter: None,
+        ..crate::config::DebugConfig::default()
+    };
+    store.upsert_debug_overlay(&debug).unwrap();
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, Some("codex_warp=warn"))
+        .unwrap();
+    let expected = crate::debug_log::validate_debug_log_path(&dir.join("debug.jsonl"))
+        .expect("pin overlay path");
+    let mut pinned = debug.clone();
+    pinned.log_path = Some(expected);
+    assert_eq!(config.debug, pinned);
+
+    let mut via_default = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut via_default, None)
+        .unwrap();
+    assert_eq!(via_default.debug, pinned);
+
+    let _ = std::fs::remove_dir_all(dir);
 }

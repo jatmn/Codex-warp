@@ -5,3 +5,6 @@
 *.db
 *.db-shm
 *.db-wal
+# Default cwd debug log when `[debug]` is enabled without an explicit path.
+codex-warp-debug.jsonl
+codex-warp-debug.jsonl.*

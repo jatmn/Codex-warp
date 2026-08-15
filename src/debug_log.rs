@@ -1,14 +1,25 @@
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::OsString;
 use std::fs;
+use std::fs::File;
 use std::fs::OpenOptions;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -21,43 +32,88 @@ use crate::config::DebugConfig;
 const REDACTED: &str = "[REDACTED]";
 pub(crate) const DEFAULT_MAX_LOG_MB: u64 = 128;
 pub(crate) const DEFAULT_MAX_LOG_AGE_DAYS: u64 = 30;
+pub(crate) const DEFAULT_DEBUG_LOG_PATH: &str = "codex-warp-debug.jsonl";
+pub(crate) const LOG_TAIL_READ_BYTES: u64 = 512 * 1024;
+pub(crate) const DEFAULT_LOG_TAIL_LIMIT: usize = 200;
+pub(crate) const MAX_LOG_TAIL_LIMIT: usize = 1_000;
 
 #[derive(Clone)]
 pub(crate) struct DebugLog {
-    pub(crate) path: Option<Arc<PathBuf>>,
-    pub(crate) include_bodies: bool,
-    pub(crate) include_stream_bodies: bool,
-    max_log_bytes: u64,
-    max_log_age: Duration,
+    inner: Arc<RwLock<DebugLogInner>>,
     writer_lock: Arc<Mutex<()>>,
+    #[cfg(test)]
+    fail_next_commit: Arc<AtomicBool>,
+}
+
+struct DebugLogInner {
+    /// Live `[debug]` snapshot. GET, debug events, and the writer all read this.
+    snapshot: DebugConfig,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct JsonlTail {
+    pub path: PathBuf,
+    /// Writer `enabled` captured with the path and fd.
+    pub enabled: bool,
+    pub file_bytes: u64,
+    pub truncated: bool,
+    pub missing: bool,
+    pub events: Vec<Value>,
+}
+
+pub(crate) fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn effective_max_log_mb(config: &DebugConfig) -> u64 {
+    config
+        .max_log_mb
+        .filter(|mb| *mb > 0)
+        .unwrap_or(DEFAULT_MAX_LOG_MB)
+}
+
+pub(crate) fn effective_max_log_age_days(config: &DebugConfig) -> u64 {
+    config
+        .max_log_age_days
+        .filter(|days| *days > 0)
+        .unwrap_or(DEFAULT_MAX_LOG_AGE_DAYS)
+}
+
+/// Canonicalize debug config at every ingestion boundary (TOML/CLI, overlays,
+/// Web UI) so `enabled` and `log_path` mean the same thing to the writer and
+/// the stored settings. Rotation zeros are left intact so validation can reject
+/// them instead of silently substituting defaults.
+pub(crate) fn normalize_debug_config(config: &mut DebugConfig) {
+    if config
+        .log_path
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        config.log_path = None;
+    }
+    if config.enabled && config.log_path.is_none() {
+        config.log_path = Some(PathBuf::from(DEFAULT_DEBUG_LOG_PATH));
+    }
+    if let Some(filter) = config.tracing_filter.as_deref()
+        && filter.trim().is_empty()
+    {
+        config.tracing_filter = None;
+    }
 }
 
 fn max_log_bytes_from_config(config: &DebugConfig) -> u64 {
-    let mb = config.max_log_mb.unwrap_or(DEFAULT_MAX_LOG_MB);
-    let mb = if mb == 0 {
-        warn!(
-            "debug.max_log_mb must be greater than 0, using default {}",
-            DEFAULT_MAX_LOG_MB
-        );
-        DEFAULT_MAX_LOG_MB
-    } else {
-        mb
-    };
-    mb.saturating_mul(1024 * 1024)
+    effective_max_log_mb(config).saturating_mul(1024 * 1024)
 }
 
 fn max_log_age_from_config(config: &DebugConfig) -> Duration {
-    let days = config.max_log_age_days.unwrap_or(DEFAULT_MAX_LOG_AGE_DAYS);
-    let days = if days == 0 {
-        warn!(
-            "debug.max_log_age_days must be greater than 0, using default {}",
-            DEFAULT_MAX_LOG_AGE_DAYS
-        );
-        DEFAULT_MAX_LOG_AGE_DAYS
-    } else {
-        days
-    };
-    Duration::from_secs(days.saturating_mul(24 * 60 * 60))
+    Duration::from_secs(effective_max_log_age_days(config).saturating_mul(24 * 60 * 60))
+}
+
+fn active_log_path(config: &DebugConfig) -> Option<PathBuf> {
+    config.enabled.then(|| config.log_path.clone()).flatten()
 }
 
 pub(crate) fn should_rotate_log(
@@ -254,17 +310,23 @@ fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::
 
 /// Rotate `path` to `{path}.1` when it exceeds size or age limits.
 ///
-/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`,
-/// but multiple Warp processes sharing the same `log_path` can still race. In
-/// that situation the backup may be overwritten or removed unexpectedly; use a
-/// distinct `log_path` per instance.
+/// Note: this is serialized by the per-instance writer lock in `DebugLog::log`
+/// and `DebugLog::commit_inner`, but multiple Warp processes sharing the same
+/// `log_path` can still race. In that situation the backup may be overwritten
+/// or removed unexpectedly; use a distinct `log_path` per instance.
 fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::Result<()> {
     recover_interrupted_rotation(path)?;
-    let metadata = match fs::metadata(path) {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
+    if metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("debug log path {} must not be a symlink", path.display()),
+        ));
+    }
     if !metadata.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -287,46 +349,139 @@ fn maybe_rotate_log(path: &Path, max_bytes: u64, max_age: Duration) -> std::io::
 }
 
 impl DebugLog {
-    #[cfg(test)]
     pub(crate) fn disabled() -> Self {
+        Self::from_inner(DebugLogInner {
+            snapshot: DebugConfig::default(),
+        })
+    }
+
+    pub(crate) fn new(config: &DebugConfig) -> Result<Self, String> {
+        let log = Self::disabled();
+        log.apply_config(config)?;
+        Ok(log)
+    }
+
+    fn from_inner(inner: DebugLogInner) -> Self {
         Self {
-            path: None,
-            include_bodies: false,
-            include_stream_bodies: false,
-            max_log_bytes: max_log_bytes_from_config(&DebugConfig::default()),
-            max_log_age: max_log_age_from_config(&DebugConfig::default()),
+            inner: Arc::new(RwLock::new(inner)),
             writer_lock: Arc::new(Mutex::new(())),
+            #[cfg(test)]
+            fail_next_commit: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub(crate) fn new(config: &DebugConfig) -> Self {
-        let max_log_bytes = max_log_bytes_from_config(config);
-        let max_log_age = max_log_age_from_config(config);
-        let path = config
-            .enabled
-            .then(|| config.log_path.clone())
-            .flatten()
-            .map(Arc::new);
-        if config.enabled && path.is_none() {
-            warn!("debug logging is enabled but debug.log_path is not set");
+    #[cfg(test)]
+    pub(crate) fn fail_next_commit(&self) {
+        self.fail_next_commit.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn live_snapshot(&self) -> DebugConfig {
+        self.read_inner().snapshot.clone()
+    }
+
+    pub(crate) fn include_bodies(&self) -> bool {
+        self.read_inner().snapshot.include_bodies
+    }
+
+    pub(crate) fn include_stream_bodies(&self) -> bool {
+        self.read_inner().snapshot.include_stream_bodies
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_path(&self) -> Option<PathBuf> {
+        active_log_path(&self.read_inner().snapshot)
+    }
+
+    pub(crate) fn apply_config(&self, config: &DebugConfig) -> Result<(), String> {
+        let mut config = config.clone();
+        normalize_debug_config(&mut config);
+        validate_debug_settings(&mut config)?;
+        self.commit_inner(&config)?;
+        Ok(())
+    }
+
+    fn commit_inner(&self, config: &DebugConfig) -> Result<Option<PathBuf>, String> {
+        #[cfg(test)]
+        if self.fail_next_commit.swap(false, Ordering::SeqCst) {
+            return Err("injected debug log commit failure".to_string());
         }
+        let path = active_log_path(config);
+        let Ok(_guard) = self.writer_lock.lock() else {
+            return Err("failed to lock debug log writer while applying config".to_string());
+        };
         if let Some(path) = path.as_ref() {
-            maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age).unwrap_or_else(|err| {
-                warn!("failed to rotate debug log {}: {err}", path.display())
-            });
+            open_debug_log(path, true)
+                .map_err(|err| format!("cannot open debug log {}: {err}", path.display()))?;
         }
-        Self {
-            path,
-            include_bodies: config.include_bodies,
-            include_stream_bodies: config.include_stream_bodies,
-            max_log_bytes,
-            max_log_age,
-            writer_lock: Arc::new(Mutex::new(())),
+        {
+            let mut inner = self.write_inner();
+            inner.snapshot = config.clone();
         }
+        // Rotate under the same writer lock as `log()`. Failing rotation must
+        // not roll back a snapshot that already passed validation: a later
+        // write retries rotation, and live settings must not depend on
+        // filesystem cleanup.
+        if let Some(path) = path.as_ref()
+            && let Err(err) = maybe_rotate_log(
+                path.as_path(),
+                max_log_bytes_from_config(config),
+                max_log_age_from_config(config),
+            )
+        {
+            warn!(
+                "failed to rotate debug log {} while applying config: {err}",
+                path.display()
+            );
+        }
+        Ok(path)
+    }
+
+    pub(crate) fn read_tail(
+        &self,
+        limit: usize,
+        query: Option<&str>,
+        event: Option<&str>,
+    ) -> std::io::Result<JsonlTail> {
+        // Hold the writer lock only long enough to pin the current path and
+        // open an fd. Rotation can rename the file afterward; this fd still
+        // refers to the inode we opened, so parsing does not block writers.
+        let (enabled, path, file, file_bytes) = {
+            let Ok(_guard) = self.writer_lock.lock() else {
+                return Err(std::io::Error::new(
+                    ErrorKind::Other,
+                    "failed to lock debug log writer",
+                ));
+            };
+            let inner = self.read_inner();
+            let enabled = inner.snapshot.enabled;
+            let Some(path) = active_log_path(&inner.snapshot) else {
+                return Ok(missing_jsonl_tail(PathBuf::new(), enabled));
+            };
+            drop(inner);
+            match open_debug_log(&path, false) {
+                Ok(file) => {
+                    let file_bytes = file.metadata()?.len();
+                    (enabled, path, file, file_bytes)
+                }
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    return Ok(missing_jsonl_tail(path, enabled));
+                }
+                Err(err) => return Err(err),
+            }
+        };
+        parse_jsonl_tail(file, path, file_bytes, enabled, limit, query, event)
+    }
+
+    fn read_inner(&self) -> std::sync::RwLockReadGuard<'_, DebugLogInner> {
+        self.inner.read().expect("debug log lock poisoned")
+    }
+
+    fn write_inner(&self) -> std::sync::RwLockWriteGuard<'_, DebugLogInner> {
+        self.inner.write().expect("debug log lock poisoned")
     }
 
     pub(crate) fn log_request(&self, mut event: Value, body: &Value) {
-        if self.include_bodies
+        if self.include_bodies()
             && let Some(object) = event.as_object_mut()
         {
             object.insert("body".to_string(), redact_debug_value(body));
@@ -335,7 +490,7 @@ impl DebugLog {
     }
 
     pub(crate) fn log_response(&self, mut event: Value, body: Option<&Value>) {
-        if self.include_bodies
+        if self.include_bodies()
             && let Some(body) = body
             && let Some(object) = event.as_object_mut()
         {
@@ -346,7 +501,7 @@ impl DebugLog {
 
     pub(crate) fn log_error(&self, mut event: Value, error: &str) {
         if let Some(object) = event.as_object_mut() {
-            if self.include_bodies {
+            if self.include_bodies() {
                 object.insert("error".to_string(), json!(redact_debug_text(error)));
             } else {
                 object.insert(
@@ -361,7 +516,7 @@ impl DebugLog {
     }
 
     pub(crate) fn log_stream_frame(&self, mut event: Value, frame: &str) {
-        if self.include_stream_bodies
+        if self.include_stream_bodies()
             && let Some(object) = event.as_object_mut()
         {
             object.insert("frame".to_string(), json!(redact_debug_text(frame)));
@@ -377,25 +532,31 @@ impl DebugLog {
     }
 
     pub(crate) fn log(&self, mut event: Value) {
-        let Some(path) = &self.path else {
+        let Ok(_guard) = self.writer_lock.lock() else {
+            warn!("failed to lock debug log writer");
             return;
         };
+        let inner = self.read_inner();
+        let Some(path) = active_log_path(&inner.snapshot) else {
+            return;
+        };
+        let max_log_bytes = max_log_bytes_from_config(&inner.snapshot);
+        let max_log_age = max_log_age_from_config(&inner.snapshot);
+        let include_bodies = inner.snapshot.include_bodies;
+        let include_stream_bodies = inner.snapshot.include_stream_bodies;
+        drop(inner);
+        apply_live_debug_event_policy(&mut event, include_bodies, include_stream_bodies);
         if let Some(object) = event.as_object_mut() {
+            object
+                .entry("ts".to_string())
+                .or_insert_with(|| json!(now_unix_ms()));
             object.insert("schema".to_string(), json!("codex-warp-debug-v1"));
         }
         redact_debug_value_in_place(&mut event);
-        let Ok(_guard) = self.writer_lock.lock() else {
-            warn!("failed to lock debug log writer {}", path.display());
-            return;
-        };
-        if let Err(err) = maybe_rotate_log(path.as_path(), self.max_log_bytes, self.max_log_age) {
+        if let Err(err) = maybe_rotate_log(path.as_path(), max_log_bytes, max_log_age) {
             warn!("failed to rotate debug log {}: {err}", path.display());
         }
-        match OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path.as_ref())
-        {
+        match open_debug_log(&path, true) {
             Ok(mut file) => {
                 if let Err(err) = writeln!(file, "{event}") {
                     warn!("failed to write debug log {}: {err}", path.display());
@@ -404,6 +565,369 @@ impl DebugLog {
             Err(err) => warn!("failed to open debug log {}: {err}", path.display()),
         }
     }
+}
+
+pub(crate) fn clamp_log_tail_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(DEFAULT_LOG_TAIL_LIMIT)
+        .clamp(1, MAX_LOG_TAIL_LIMIT)
+}
+
+/// Validate rotation limits and pin `log_path` to a cwd-independent destination.
+///
+/// Enabled paths must be openable (parent exists, not restricted). Disabled
+/// paths still pin through the same resolver when the parent can be resolved,
+/// but missing parents and restricted destinations do not fail: a disabled
+/// snapshot is not opened and must not fail startup. `..` in a disabled path
+/// is left unchanged so enable-time validation can reject it.
+pub(crate) fn validate_debug_settings(config: &mut DebugConfig) -> Result<(), String> {
+    if let Some(path) = config.log_path.clone() {
+        match pin_debug_log_path(&path, config.enabled) {
+            Ok(pinned) => config.log_path = Some(pinned),
+            Err(err) if config.enabled => return Err(err),
+            Err(_) => {}
+        }
+    } else if config.enabled {
+        return Err("debug.log_path is required when debug.enabled is true".to_string());
+    }
+    if config.max_log_mb == Some(0) {
+        return Err("debug.max_log_mb must be greater than 0".to_string());
+    }
+    if config.max_log_age_days == Some(0) {
+        return Err("debug.max_log_age_days must be greater than 0".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
+    pin_debug_log_path(path, true)
+}
+
+fn pin_debug_log_path(path: &Path, require_usable: bool) -> Result<PathBuf, String> {
+    if path.as_os_str().is_empty() {
+        return Err("debug log_path is required".to_string());
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("debug log_path must not contain '..'".to_string());
+    }
+    if require_usable && path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        return Err("debug log_path must end with .jsonl".to_string());
+    }
+    if require_usable && is_restricted_log_path(path) {
+        return Err("debug log_path is not in an allowed location".to_string());
+    }
+    let absolute = absolute_debug_log_path(path)?;
+    if require_usable && is_restricted_log_path(&absolute) {
+        return Err("debug log_path is not in an allowed location".to_string());
+    }
+    let Some(parent) = absolute
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Err("debug log_path must include a file name".to_string());
+    };
+    match fs::symlink_metadata(parent) {
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return if require_usable {
+                Err("debug log_path parent directory must exist".to_string())
+            } else {
+                Ok(absolute)
+            };
+        }
+        Err(err) => {
+            return if require_usable {
+                Err(format!(
+                    "debug log_path parent {} is not usable: {err}",
+                    parent.display()
+                ))
+            } else {
+                Ok(absolute)
+            };
+        }
+        Ok(metadata) if !metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            return if require_usable {
+                Err("debug log_path parent must be a directory".to_string())
+            } else {
+                Ok(absolute)
+            };
+        }
+        Ok(_) => {}
+    }
+    let canonical_parent = match fs::canonicalize(parent) {
+        Ok(parent) => parent,
+        Err(err) if require_usable => {
+            return Err(format!(
+                "debug log_path parent {} is not usable: {err}",
+                parent.display()
+            ));
+        }
+        Err(_) => return Ok(absolute),
+    };
+    if !canonical_parent.is_dir() {
+        return if require_usable {
+            Err("debug log_path parent must be a directory".to_string())
+        } else {
+            Ok(absolute)
+        };
+    }
+    let Some(file_name) = absolute.file_name() else {
+        return Err("debug log_path must include a file name".to_string());
+    };
+    let resolved = canonical_parent.join(file_name);
+    if require_usable && is_restricted_log_path(&resolved) {
+        return Err("debug log_path is not in an allowed location".to_string());
+    }
+    if !require_usable {
+        return Ok(resolved);
+    }
+    match fs::symlink_metadata(&resolved) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("debug log_path must not be a symlink".to_string())
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            Err("debug log_path must be a regular file".to_string())
+        }
+        Ok(_) => Ok(resolved),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(resolved),
+        Err(err) => Err(format!(
+            "debug log_path {} is not usable: {err}",
+            resolved.display()
+        )),
+    }
+}
+
+fn absolute_debug_log_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|err| {
+            format!("resolve debug log_path against the process working directory: {err}")
+        })
+}
+
+fn is_restricted_log_path(path: &Path) -> bool {
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if !matches!(first, Component::RootDir | Component::Prefix(_)) {
+        return false;
+    }
+    let name = loop {
+        match components.next() {
+            Some(Component::Normal(name)) if !name.is_empty() => break name,
+            Some(Component::Normal(_)) | Some(Component::RootDir) => continue,
+            _ => return false,
+        }
+    };
+    matches!(
+        name.to_string_lossy().to_ascii_lowercase().as_str(),
+        "etc" | "proc" | "sys" | "dev" | "root"
+    )
+}
+
+fn debug_log_symlink_error(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        ErrorKind::InvalidInput,
+        format!("debug log path {} must not be a symlink", path.display()),
+    )
+}
+
+fn debug_log_not_file_error(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        ErrorKind::InvalidInput,
+        format!("debug log path {} is not a file", path.display()),
+    )
+}
+
+fn reject_unusable_debug_log(path: &Path, metadata: &fs::Metadata) -> std::io::Result<()> {
+    if metadata.file_type().is_symlink() {
+        return Err(debug_log_symlink_error(path));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(debug_log_symlink_error(path));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(debug_log_not_file_error(path));
+    }
+    Ok(())
+}
+
+fn open_debug_log(path: &Path, create: bool) -> std::io::Result<File> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => reject_unusable_debug_log(path, &metadata)?,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if !create {
+                return Err(err);
+            }
+        }
+        Err(err) => return Err(err),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if create {
+        options.create(true).append(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Open the named path itself so a symlink cannot redirect writes/tails.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    reject_unusable_debug_log(path, &file.metadata()?)?;
+    Ok(file)
+}
+
+/// Apply the live snapshot's body-inclusion policy at the write chokepoint.
+/// Helpers may attach `body`/`frame`/`error` using a stale unlocked read;
+/// `log()` holds `writer_lock` and must decide what actually hits disk.
+fn apply_live_debug_event_policy(
+    event: &mut Value,
+    include_bodies: bool,
+    include_stream_bodies: bool,
+) {
+    let Some(object) = event.as_object_mut() else {
+        return;
+    };
+    if !include_bodies {
+        object.remove("body");
+        if let Some(Value::String(error)) = object.remove("error") {
+            object.insert(
+                "error_fingerprint".to_string(),
+                json!(text_fingerprint(&error)),
+            );
+            object.insert("error_bytes".to_string(), json!(error.len()));
+            object.insert("error_body_redacted".to_string(), json!(true));
+        }
+    }
+    if !include_stream_bodies && let Some(Value::String(frame)) = object.remove("frame") {
+        object.insert(
+            "frame_fingerprint".to_string(),
+            json!(text_fingerprint(&frame)),
+        );
+        object.insert("frame_bytes".to_string(), json!(frame.len()));
+        object.insert("frame_body_redacted".to_string(), json!(true));
+    }
+}
+
+fn missing_jsonl_tail(path: PathBuf, enabled: bool) -> JsonlTail {
+    JsonlTail {
+        path,
+        enabled,
+        file_bytes: 0,
+        truncated: false,
+        missing: true,
+        events: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+fn read_jsonl_tail(
+    path: &Path,
+    limit: usize,
+    query: Option<&str>,
+    event: Option<&str>,
+) -> std::io::Result<JsonlTail> {
+    let file = match open_debug_log(path, false) {
+        Ok(file) => file,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return Ok(missing_jsonl_tail(path.to_path_buf(), true));
+        }
+        Err(err) => return Err(err),
+    };
+    let file_bytes = file.metadata()?.len();
+    parse_jsonl_tail(
+        file,
+        path.to_path_buf(),
+        file_bytes,
+        true,
+        limit,
+        query,
+        event,
+    )
+}
+
+fn parse_jsonl_tail(
+    mut file: File,
+    path: PathBuf,
+    file_bytes: u64,
+    enabled: bool,
+    limit: usize,
+    query: Option<&str>,
+    event: Option<&str>,
+) -> std::io::Result<JsonlTail> {
+    let start = file_bytes.saturating_sub(LOG_TAIL_READ_BYTES);
+    if start > 0 {
+        file.seek(SeekFrom::Start(start))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text.lines();
+    if start > 0 {
+        let _ = lines.next();
+    }
+    let query = query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let event = event
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let mut events = Vec::new();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(event) = event.as_deref() {
+            let matches_event = value
+                .get("event")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case(event));
+            if !matches_event {
+                continue;
+            }
+        }
+        if let Some(query) = query.as_deref()
+            && !line.to_ascii_lowercase().contains(query)
+        {
+            continue;
+        }
+        events.push(value);
+    }
+    if events.len() > limit {
+        events = events.split_off(events.len() - limit);
+    }
+    Ok(JsonlTail {
+        path: path.to_path_buf(),
+        enabled,
+        file_bytes,
+        truncated: start > 0,
+        missing: false,
+        events,
+    })
 }
 
 pub(crate) fn redact_debug_value(value: &Value) -> Value {

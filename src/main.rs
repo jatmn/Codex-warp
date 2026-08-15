@@ -5,6 +5,7 @@ mod guardian_compat;
 mod http;
 mod ids;
 mod models;
+mod process_log;
 mod provider;
 mod provider_templates;
 mod response_codec;

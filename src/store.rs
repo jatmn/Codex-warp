@@ -17,6 +17,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::config::AppConfig;
+use crate::config::DebugConfig;
 use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
@@ -195,6 +196,10 @@ impl Store {
                 route_order INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (provider_id, model_id)
             );
+            CREATE TABLE IF NOT EXISTS debug_overlay (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                config_json TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS usage_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts INTEGER NOT NULL,
@@ -233,7 +238,11 @@ impl Store {
         })
     }
 
-    pub(crate) fn apply_overlays(&self, config: &mut AppConfig) -> anyhow::Result<()> {
+    pub(crate) fn apply_overlays_with_tracing_fallback(
+        &self,
+        config: &mut AppConfig,
+        tracing_filter_fallback: Option<&str>,
+    ) -> anyhow::Result<()> {
         let db = self.db.lock().expect("sqlite lock poisoned");
         let mut stmt = db.prepare(
             "SELECT provider_id, enabled, removed, managed, config_json FROM provider_overlays",
@@ -429,6 +438,67 @@ impl Store {
                 provider.disable_model(&model_id);
             }
         }
+        let debug_json: Option<String> = db
+            .query_row(
+                "SELECT config_json FROM debug_overlay WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(debug_json) = debug_json {
+            match serde_json::from_str::<DebugConfig>(&debug_json) {
+                Ok(mut debug) => {
+                    crate::debug_log::normalize_debug_config(&mut debug);
+                    // Never re-read RUST_LOG while replaying overlays. Unset
+                    // tracing_filter is checked against the pinned process
+                    // default from tracing init, or `info` when that pin is
+                    // unavailable here.
+                    let fallback = tracing_filter_fallback.unwrap_or("info");
+                    let path_before_pin = debug.log_path.clone();
+                    if let Err(err) = crate::process_log::validate_debug_live_config_or(
+                        &mut debug,
+                        Some(fallback),
+                    ) {
+                        tracing::warn!(
+                            error = %err,
+                            "skipping invalid debug overlay"
+                        );
+                    } else {
+                        if debug.log_path != path_before_pin
+                            && let Err(err) = Self::write_debug_overlay(&db, &debug)
+                        {
+                            tracing::warn!(
+                                error = %err,
+                                "live debug overlay path was pinned but could not be saved"
+                            );
+                        }
+                        config.debug = debug;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "skipping corrupt debug overlay config_json");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn upsert_debug_overlay(&self, debug: &DebugConfig) -> anyhow::Result<()> {
+        let mut debug = debug.clone();
+        crate::debug_log::normalize_debug_config(&mut debug);
+        crate::process_log::validate_debug_live_config_or(&mut debug, None)
+            .map_err(anyhow::Error::msg)?;
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        Self::write_debug_overlay(&db, &debug)
+    }
+
+    fn write_debug_overlay(db: &Connection, debug: &DebugConfig) -> anyhow::Result<()> {
+        let config_json = serde_json::to_string(debug).context("serialize debug overlay")?;
+        db.execute(
+            "INSERT INTO debug_overlay(id, config_json) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json",
+            params![config_json],
+        )?;
         Ok(())
     }
 

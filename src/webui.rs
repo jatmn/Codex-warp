@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -24,16 +25,25 @@ use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::de::{self, Visitor};
+use serde_json::Value;
 use serde_json::json;
 
 use crate::config::AppConfig;
+use crate::config::DebugConfig;
 use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
 use crate::config::catalog_entry_matches_model;
 use crate::config::configured_provider_entries;
+use crate::debug_log::DEFAULT_DEBUG_LOG_PATH;
+use crate::debug_log::clamp_log_tail_limit;
+use crate::debug_log::effective_max_log_age_days;
+use crate::debug_log::effective_max_log_mb;
+use crate::debug_log::normalize_debug_config;
 use crate::models;
 use crate::models::register_catalog_routes_for_provider;
+use crate::process_log::tracing_filter_from_debug_or;
+use crate::process_log::validate_debug_live_config_or;
 use crate::provider::provider_display_name;
 use crate::provider_templates::bundled_provider_templates;
 use crate::provider_templates::find_provider_template;
@@ -78,7 +88,9 @@ fn api_router(management_token: Option<String>, require_local_host: bool) -> Rou
             put(update_model).delete(delete_model),
         )
         .route("/provider-templates", get(list_provider_templates))
-        .route("/analytics", get(get_analytics));
+        .route("/analytics", get(get_analytics))
+        .route("/logging", get(get_logging).put(update_logging))
+        .route("/logging/events", get(get_logging_events));
     if let Some(token) = management_token {
         router = router.layer(middleware::from_fn_with_state(
             ManagementAuth {
@@ -209,6 +221,10 @@ async fn serve_js() -> impl IntoResponse {
     )
 }
 
+/// Partial-update field. JSON `null` is `Clear`. Omitted keys are `Absent`
+/// only when the struct field has `#[serde(default)]`: this type deserializes
+/// through `deserialize_option`, so serde otherwise treats a missing key as
+/// `null` and this visitor maps that to `Clear`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 enum OptionalPatch<T> {
     #[default]
@@ -352,6 +368,198 @@ struct AnalyticsQuery {
     model: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct LoggingEventsQuery {
+    source: Option<String>,
+    limit: Option<usize>,
+    q: Option<String>,
+    level: Option<String>,
+    event: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LoggingSettingsView {
+    enabled: bool,
+    log_path: Option<String>,
+    include_bodies: bool,
+    include_stream_bodies: bool,
+    max_log_mb: Option<u64>,
+    max_log_age_days: Option<u64>,
+    /// Rotation limits the writer uses when the stored fields are unset.
+    max_log_mb_effective: u64,
+    max_log_age_days_effective: u64,
+    tracing_filter: Option<String>,
+    /// Resolved filter the live snapshot wants (`tracing_filter`, else the process
+    /// default captured when tracing started).
+    tracing_filter_wanted: String,
+    /// Filter the subscriber last installed successfully.
+    tracing_filter_effective: String,
+    /// True when a tracing subscriber is installed and its filter matches the live snapshot.
+    tracing_applied: bool,
+    persist_available: bool,
+    persisted: bool,
+    default_log_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoggingPersist {
+    enabled: Option<bool>,
+    #[serde(default)]
+    log_path: OptionalPatch<String>,
+    include_bodies: Option<bool>,
+    include_stream_bodies: Option<bool>,
+    #[serde(default)]
+    max_log_mb: OptionalPatch<u64>,
+    #[serde(default)]
+    max_log_age_days: OptionalPatch<u64>,
+    #[serde(default)]
+    tracing_filter: OptionalPatch<String>,
+}
+
+fn logging_settings_view(state: &AppState, persisted: bool) -> LoggingSettingsView {
+    let debug = state.debug_log.live_snapshot();
+    let tracing_filter_wanted = wanted_tracing_filter(state, &debug);
+    let tracing_filter_effective = installed_tracing_filter(state);
+    let tracing_applied =
+        state.tracing_reload.is_some() && tracing_filter_wanted == tracing_filter_effective;
+    LoggingSettingsView {
+        enabled: debug.enabled,
+        log_path: debug
+            .log_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        include_bodies: debug.include_bodies,
+        include_stream_bodies: debug.include_stream_bodies,
+        max_log_mb: debug.max_log_mb,
+        max_log_age_days: debug.max_log_age_days,
+        max_log_mb_effective: effective_max_log_mb(&debug),
+        max_log_age_days_effective: effective_max_log_age_days(&debug),
+        tracing_filter: debug.tracing_filter,
+        tracing_filter_wanted,
+        tracing_filter_effective,
+        tracing_applied,
+        persist_available: state.store.is_some(),
+        persisted,
+        default_log_path: DEFAULT_DEBUG_LOG_PATH.to_string(),
+    }
+}
+
+fn apply_logging_persist(
+    debug: &mut DebugConfig,
+    fields: LoggingPersist,
+    fallback: Option<&str>,
+) -> Result<(), ApiError> {
+    if let Some(enabled) = fields.enabled {
+        debug.enabled = enabled;
+    }
+    match fields.log_path {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => debug.log_path = None,
+        OptionalPatch::Set(path) => {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                debug.log_path = None;
+            } else {
+                debug.log_path = Some(PathBuf::from(trimmed));
+            }
+        }
+    }
+    if let Some(include_bodies) = fields.include_bodies {
+        debug.include_bodies = include_bodies;
+    }
+    if let Some(include_stream_bodies) = fields.include_stream_bodies {
+        debug.include_stream_bodies = include_stream_bodies;
+    }
+    match fields.max_log_mb {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => debug.max_log_mb = None,
+        OptionalPatch::Set(value) => debug.max_log_mb = Some(value),
+    }
+    match fields.max_log_age_days {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => debug.max_log_age_days = None,
+        OptionalPatch::Set(value) => debug.max_log_age_days = Some(value),
+    }
+    match fields.tracing_filter {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => debug.tracing_filter = None,
+        OptionalPatch::Set(filter) => {
+            let trimmed = filter.trim();
+            debug.tracing_filter = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+    }
+    normalize_debug_config(debug);
+    validate_logging_config(debug, fallback)?;
+    Ok(())
+}
+
+fn validate_logging_config(
+    debug: &mut DebugConfig,
+    fallback: Option<&str>,
+) -> Result<(), ApiError> {
+    validate_debug_live_config_or(debug, fallback).map_err(ApiError::bad_request)
+}
+
+fn tracing_fallback(state: &AppState) -> Option<&str> {
+    state
+        .tracing_reload
+        .as_ref()
+        .map(crate::process_log::TracingReload::fallback_filter)
+}
+
+fn wanted_tracing_filter(state: &AppState, debug: &DebugConfig) -> String {
+    match state.tracing_reload.as_ref() {
+        Some(reload) => reload.wanted_filter(debug),
+        // No subscriber means process logs are not live. Do not re-read
+        // RUST_LOG; resolve unset filters against a stable default.
+        None => tracing_filter_from_debug_or(debug, "info"),
+    }
+}
+
+fn installed_tracing_filter(state: &AppState) -> String {
+    state
+        .tracing_reload
+        .as_ref()
+        .map(crate::process_log::TracingReload::current_filter)
+        .unwrap_or_default()
+}
+
+fn sync_tracing_to_snapshot(state: &AppState, debug: &DebugConfig) {
+    let Some(reload) = state.tracing_reload.as_ref() else {
+        return;
+    };
+    let wanted = reload.wanted_filter(debug);
+    if reload.current_filter() == wanted {
+        return;
+    }
+    if let Err(err) = reload.reload(&wanted) {
+        tracing::warn!(
+            error = %err,
+            "live logging snapshot was applied but the tracing filter could not be reloaded"
+        );
+    }
+}
+
+/// Install `debug` as the live snapshot.
+///
+/// `DebugLog` owns that snapshot. GET, debug events, and the writer all read
+/// it. Tracing is a projection of the snapshot: reload is best-effort and
+/// never rolls the snapshot back. `GET /api/logging` reports the requested
+/// filter, the resolved wanted filter (using the process default captured at
+/// tracing init when `tracing_filter` is unset), the last installed subscriber
+/// filter, and `tracing_applied` when a subscriber exists and those last two
+/// match. Overlay persist is durability and is not part of this install.
+/// `AppConfig.debug` is not live logging state.
+fn set_live_logging(state: &AppState, debug: &DebugConfig) -> Result<(), String> {
+    let mut debug = debug.clone();
+    normalize_debug_config(&mut debug);
+    validate_debug_live_config_or(&mut debug, tracing_fallback(state))?;
+    state.debug_log.apply_config(&debug)?;
+    sync_tracing_to_snapshot(state, &debug);
+    Ok(())
+}
+
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: String,
@@ -1522,6 +1730,100 @@ async fn get_analytics(
         .analytics(range, provider, model)
         .map_err(|err| ApiError::internal(err.to_string()))?;
     Ok(Json(summary))
+}
+
+async fn get_logging(State(state): State<AppState>) -> Json<LoggingSettingsView> {
+    // Read the live debug-log snapshot. Waiting on `mutation_lock` would hide
+    // those settings until overlay persist finished, while debug events already
+    // follow the writer.
+    Json(logging_settings_view(&state, false))
+}
+
+async fn update_logging(
+    State(state): State<AppState>,
+    Json(fields): Json<LoggingPersist>,
+) -> Result<Json<LoggingSettingsView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
+    let mut debug = state.debug_log.live_snapshot();
+    apply_logging_persist(&mut debug, fields, tracing_fallback(&state))?;
+    set_live_logging(&state, &debug).map_err(ApiError::bad_request)?;
+    let mut persisted = false;
+    if let Some(store) = state.store.as_ref() {
+        let committed = state.debug_log.live_snapshot();
+        match store.upsert_debug_overlay(&committed) {
+            Ok(()) => persisted = true,
+            Err(err) => {
+                // Live install already succeeded. Reverting it because
+                // durability failed is what created a second install that
+                // could split the snapshot. Keep the live snapshot and
+                // report that this process applied it.
+                tracing::warn!(
+                    error = %err,
+                    "live logging settings were applied but the SQLite debug overlay could not be saved"
+                );
+            }
+        }
+    }
+    Ok(Json(logging_settings_view(&state, persisted)))
+}
+
+async fn get_logging_events(
+    State(state): State<AppState>,
+    Query(query): Query<LoggingEventsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let source = query
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("process");
+    let limit = clamp_log_tail_limit(query.limit);
+    let q = query
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match source {
+        "process" => {
+            let events = state.process_log.snapshot(limit, query.level.as_deref(), q);
+            Ok(Json(json!({
+                "source": "process",
+                "events": events,
+            })))
+        }
+        "debug" => {
+            let debug_log = state.debug_log.clone();
+            let query_text = q.map(str::to_owned);
+            let event = query
+                .event
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            let tail = tokio::task::spawn_blocking(move || {
+                debug_log.read_tail(limit, query_text.as_deref(), event.as_deref())
+            })
+            .await
+            .map_err(|err| ApiError::internal(err.to_string()))?
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+            Ok(Json(json!({
+                "source": "debug",
+                "enabled": tail.enabled,
+                "path": if tail.path.as_os_str().is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(tail.path.display().to_string())
+                },
+                "file_bytes": tail.file_bytes,
+                "truncated": tail.truncated,
+                "missing": tail.missing,
+                "events": tail.events,
+            })))
+        }
+        other => Err(ApiError::bad_request(format!(
+            "unsupported log source `{other}`"
+        ))),
+    }
 }
 
 #[cfg(test)]

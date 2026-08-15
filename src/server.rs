@@ -30,6 +30,9 @@ use crate::http::no_provider_response;
 use crate::http::unknown_model_response;
 use crate::models::models;
 use crate::models::seed_model_routes_from_config_and_store;
+use crate::process_log::ProcessLog;
+use crate::process_log::TracingReload;
+use crate::process_log::init_tracing;
 use crate::provider::select_provider;
 use crate::state::AppState;
 use crate::store::Store;
@@ -95,25 +98,15 @@ struct Args {
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    let process_log = ProcessLog::new(crate::process_log::DEFAULT_PROCESS_LOG_CAPACITY);
+    let tracing_reload = init_tracing(process_log.clone())?;
 
     let args = Args::parse();
     let mut config = load_config_layers(&args.config)?;
-    let destination = args.destination;
-    if let Some(listen) = args.listen {
+    let destination = args.destination.clone();
+    let cli_debug = CliDebugOverrides::from_args(&args);
+    if let Some(listen) = args.listen.clone() {
         config.listen = listen;
-    }
-    if let Some(path) = args.debug_log {
-        config.debug.enabled = true;
-        config.debug.log_path = Some(path);
-    }
-    if args.debug_log_include_bodies {
-        config.debug.include_bodies = true;
-    }
-    if args.debug_log_include_stream_bodies {
-        config.debug.include_stream_bodies = true;
     }
     if args.continue_guard {
         config.continue_guard.enabled = true;
@@ -132,7 +125,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     if args.no_webui {
         config.webui.enabled = false;
     }
-    if let Some(db_path) = args.webui_db {
+    if let Some(db_path) = args.webui_db.clone() {
         config.webui.db_path = db_path;
     }
 
@@ -146,7 +139,11 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         config,
         webui_store_enabled(webui_enabled, args.no_webui_store),
         destination,
+        process_log,
+        Some(tracing_reload),
+        cli_debug,
     )?;
+    apply_configured_tracing_filter(&state)?;
     let listen = state.read_config().listen.clone();
     let addr: SocketAddr = listen
         .parse()
@@ -191,9 +188,53 @@ fn apply_destination_override(config: &mut crate::config::AppConfig, destination
     }
 }
 
+#[derive(Clone, Default)]
+struct CliDebugOverrides {
+    log_path: Option<PathBuf>,
+    include_bodies: bool,
+    include_stream_bodies: bool,
+}
+
+impl CliDebugOverrides {
+    fn from_args(args: &Args) -> Self {
+        Self {
+            log_path: args.debug_log.clone(),
+            include_bodies: args.debug_log_include_bodies,
+            include_stream_bodies: args.debug_log_include_stream_bodies,
+        }
+    }
+}
+
+fn apply_cli_debug(config: &mut crate::config::AppConfig, cli: &CliDebugOverrides) {
+    if let Some(path) = &cli.log_path {
+        config.debug.enabled = true;
+        config.debug.log_path = Some(path.clone());
+    }
+    if cli.include_bodies {
+        config.debug.include_bodies = true;
+    }
+    if cli.include_stream_bodies {
+        config.debug.include_stream_bodies = true;
+    }
+}
+
+fn apply_configured_tracing_filter(state: &AppState) -> anyhow::Result<()> {
+    let Some(reload) = state.tracing_reload.as_ref() else {
+        return Ok(());
+    };
+    let filter = reload.wanted_filter(&state.debug_log.live_snapshot());
+    reload.reload(&filter).map_err(|err| anyhow::anyhow!(err))
+}
+
 fn initialize_state(config: crate::config::AppConfig) -> anyhow::Result<AppState> {
     let store_enabled = webui_store_enabled(config.webui.enabled, false);
-    initialize_state_with_store(config, store_enabled)
+    initialize_state_with_store(
+        config,
+        store_enabled,
+        ProcessLog::new(0),
+        None,
+        CliDebugOverrides::default(),
+    )
 }
 
 /// Make a command-line destination available while persistent overlays replay,
@@ -204,9 +245,18 @@ fn initialize_state_with_destination(
     mut config: crate::config::AppConfig,
     store_enabled: bool,
     destination: Option<String>,
+    process_log: ProcessLog,
+    tracing_reload: Option<TracingReload>,
+    cli_debug: CliDebugOverrides,
 ) -> anyhow::Result<AppState> {
     apply_destination_override(&mut config, destination.clone());
-    let state = initialize_state_with_store(config, store_enabled)?;
+    let state = initialize_state_with_store(
+        config,
+        store_enabled,
+        process_log,
+        tracing_reload,
+        cli_debug,
+    )?;
     apply_destination_override(&mut state.write_config(), destination);
     Ok(state)
 }
@@ -218,19 +268,39 @@ fn webui_store_enabled(webui_enabled: bool, no_webui_store: bool) -> bool {
 fn initialize_state_with_store(
     mut config: crate::config::AppConfig,
     store_enabled: bool,
+    process_log: ProcessLog,
+    tracing_reload: Option<TracingReload>,
+    cli_debug: CliDebugOverrides,
 ) -> anyhow::Result<AppState> {
     let store = if store_enabled {
         let store = Store::open(&config.webui.db_path)?;
-        store.apply_overlays(&mut config)?;
+        store.apply_overlays_with_tracing_fallback(
+            &mut config,
+            tracing_reload
+                .as_ref()
+                .map(crate::process_log::TracingReload::fallback_filter),
+        )?;
         Some(store)
     } else {
         None
     };
+    apply_cli_debug(&mut config, &cli_debug);
+    crate::debug_log::normalize_debug_config(&mut config.debug);
+    crate::process_log::validate_debug_live_config_or(
+        &mut config.debug,
+        tracing_reload
+            .as_ref()
+            .map(crate::process_log::TracingReload::fallback_filter),
+    )
+    .map_err(anyhow::Error::msg)?;
     let model_routes = store
         .as_ref()
         .map(|store| seed_model_routes_from_config_and_store(&config, store))
         .unwrap_or_default();
-    let debug_log = DebugLog::new(&config.debug);
+    let debug_log = DebugLog::new(&config.debug).map_err(anyhow::Error::msg)?;
+    // Live logging is owned by `debug_log`. Drop `[debug]` from the live
+    // AppConfig so runtime readers cannot treat a boot copy as current.
+    config.debug = crate::config::DebugConfig::default();
 
     Ok(AppState::from_parts(
         Arc::new(RwLock::new(config)),
@@ -239,6 +309,8 @@ fn initialize_state_with_store(
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
         debug_log,
+        process_log,
+        tracing_reload,
         store,
     ))
 }

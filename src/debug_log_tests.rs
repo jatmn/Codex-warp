@@ -2,6 +2,7 @@ use super::*;
 
 use serde_json::json;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -569,4 +570,463 @@ fn recover_pending_orphans_during_rotate_check_without_rotating() {
         fs::read_to_string(&path).expect("read active log"),
         "active"
     );
+}
+
+#[test]
+fn apply_config_enables_and_disables_logging_without_a_new_handle() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-config-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    assert!(log.current_path().is_none());
+
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        ..DebugConfig::default()
+    })
+    .expect("enable debug log");
+    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+    assert!(log.include_bodies());
+    log.log(json!({"event": "upstream_request", "id": "dbg_1"}));
+    let contents = fs::read_to_string(&path).expect("read enabled log");
+    assert!(contents.contains("upstream_request"));
+    assert!(contents.contains("\"ts\":"));
+
+    log.apply_config(&DebugConfig::default())
+        .expect("disable debug log");
+    assert!(log.current_path().is_none());
+    log.log(json!({"event": "should_not_write"}));
+    let contents = fs::read_to_string(&path).expect("read after disable");
+    assert!(!contents.contains("should_not_write"));
+}
+
+#[test]
+fn log_applies_live_body_policy_at_write_time() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-write-policy-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: false,
+        include_stream_bodies: false,
+        ..DebugConfig::default()
+    })
+    .expect("enable without bodies");
+
+    log.log(json!({
+        "event": "upstream_request",
+        "id": "dbg_body",
+        "body": {"prompt": "secret user prompt"}
+    }));
+    log.log(json!({
+        "event": "upstream_error",
+        "id": "dbg_err",
+        "error": "secret upstream failure"
+    }));
+    log.log(json!({
+        "event": "downstream_stream_frame",
+        "id": "dbg_frame",
+        "frame": "data: secret stream frame"
+    }));
+
+    let contents = fs::read_to_string(&path).expect("read policy log");
+    assert!(!contents.contains("secret user prompt"));
+    assert!(!contents.contains("secret upstream failure"));
+    assert!(!contents.contains("secret stream frame"));
+    assert!(contents.contains("\"error_body_redacted\":true"));
+    assert!(contents.contains("\"frame_body_redacted\":true"));
+    assert!(!contents.contains("\"body\":"));
+    assert!(!contents.contains("\"frame\":"));
+}
+
+#[test]
+fn log_helpers_apply_live_body_policy_at_write_time() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-helper-policy-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        include_stream_bodies: true,
+        ..DebugConfig::default()
+    })
+    .expect("enable with bodies");
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: false,
+        include_stream_bodies: false,
+        ..DebugConfig::default()
+    })
+    .expect("disable bodies");
+
+    log.log_request(
+        json!({"event": "upstream_request", "id": "dbg_req"}),
+        &json!({"prompt": "secret user prompt"}),
+    );
+    log.log_error(
+        json!({"event": "upstream_error", "id": "dbg_err"}),
+        "secret upstream failure",
+    );
+    log.log_stream_frame(
+        json!({"event": "downstream_stream_frame", "id": "dbg_frame"}),
+        "data: secret stream frame",
+    );
+
+    let contents = fs::read_to_string(&path).expect("read helper policy log");
+    assert!(!contents.contains("secret user prompt"));
+    assert!(!contents.contains("secret upstream failure"));
+    assert!(!contents.contains("secret stream frame"));
+    assert!(contents.contains("\"error_body_redacted\":true"));
+    assert!(contents.contains("\"frame_body_redacted\":true"));
+    assert!(!contents.contains("\"body\":"));
+    assert!(!contents.contains("\"frame\":"));
+}
+
+#[test]
+fn apply_config_rotates_an_oversized_log() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-rotate-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(&path, vec![b'x'; 1024 * 1024]).expect("write oversized log");
+
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        max_log_mb: Some(1),
+        ..DebugConfig::default()
+    })
+    .expect("apply oversized path");
+
+    assert!(!path.exists() || fs::metadata(&path).map(|m| m.len()).unwrap_or(0) < 1024 * 1024);
+    let backup = rotation_backup_path(&path);
+    assert!(backup.exists());
+    assert_eq!(
+        fs::metadata(&backup).expect("backup metadata").len(),
+        1024 * 1024
+    );
+}
+
+#[test]
+fn read_tail_reports_enabled_from_the_writer_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-read-tail-enabled-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    let disabled = log.read_tail(10, None, None).expect("disabled tail");
+    assert!(!disabled.enabled);
+    assert!(disabled.missing);
+    assert!(disabled.path.as_os_str().is_empty());
+
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        ..DebugConfig::default()
+    })
+    .expect("enable debug log");
+    let created = log.read_tail(10, None, None).expect("enabled created file");
+    assert!(created.enabled);
+    assert!(!created.missing);
+    assert_eq!(created.path, path);
+    assert!(path.is_file());
+
+    log.log(json!({"event": "upstream_request", "id": "dbg_tail"}));
+    let present = log.read_tail(10, None, None).expect("enabled present file");
+    assert!(present.enabled);
+    assert!(!present.missing);
+    assert_eq!(present.path, path);
+    assert_eq!(present.events[0]["id"], "dbg_tail");
+}
+
+#[test]
+fn read_jsonl_tail_filters_and_limits_events() {
+    let dir =
+        std::env::temp_dir().join(format!("codex-warp-debug-log-tail-{}", std::process::id()));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    fs::write(
+        &path,
+        concat!(
+            "{\"event\":\"upstream_request\",\"id\":\"one\"}\n",
+            "{\"event\":\"upstream_response\",\"id\":\"two\"}\n",
+            "not json\n",
+            "{\"event\":\"upstream_request\",\"id\":\"three\"}\n"
+        ),
+    )
+    .expect("write jsonl");
+
+    let all = read_jsonl_tail(&path, 10, None, None).expect("read tail");
+    assert_eq!(all.events.len(), 3);
+    assert!(!all.missing);
+
+    let requests =
+        read_jsonl_tail(&path, 10, None, Some("upstream_request")).expect("filter event");
+    assert_eq!(requests.events.len(), 2);
+
+    let limited = read_jsonl_tail(&path, 1, None, None).expect("limit");
+    assert_eq!(limited.events.len(), 1);
+    assert_eq!(limited.events[0]["id"], "three");
+
+    let query = read_jsonl_tail(&path, 10, Some("two"), None).expect("query");
+    assert_eq!(query.events.len(), 1);
+    assert_eq!(query.events[0]["id"], "two");
+}
+
+#[test]
+fn validate_debug_log_path_rejects_escape_and_system_paths() {
+    assert!(validate_debug_log_path(Path::new("codex-warp-debug.jsonl")).is_ok());
+    assert!(validate_debug_log_path(Path::new("/tmp/codex-warp-debug.jsonl")).is_ok());
+    assert!(validate_debug_log_path(Path::new("../secret.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("/etc/passwd.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("//etc/passwd.jsonl")).is_err());
+    assert!(validate_debug_log_path(Path::new("debug.log")).is_err());
+    assert!(
+        validate_debug_settings(&mut DebugConfig {
+            max_log_mb: Some(0),
+            ..DebugConfig::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_debug_settings(&mut DebugConfig {
+            enabled: false,
+            log_path: Some(PathBuf::from("/etc/passwd.jsonl")),
+            ..DebugConfig::default()
+        })
+        .is_ok()
+    );
+}
+
+#[test]
+fn validate_debug_log_path_rejects_missing_parent_directory() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-missing-parent-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("nested").join("debug.jsonl");
+    let err = validate_debug_log_path(&path).expect_err("missing parent");
+    assert!(err.contains("parent directory must exist"), "{err}");
+}
+
+#[test]
+fn validate_debug_log_path_rejects_parent_symlink_into_restricted_root() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-parent-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let link = dir.join("link");
+    std::os::unix::fs::symlink("/etc", &link).expect("symlink parent");
+    let path = link.join("codex-warp-debug.jsonl");
+    let err = validate_debug_log_path(&path).expect_err("restricted via parent symlink");
+    assert!(err.contains("allowed location"), "{err}");
+}
+
+#[test]
+fn apply_config_rejects_missing_parent_without_enabling_writer() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-apply-missing-parent-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("nested").join("debug.jsonl");
+    let log = DebugLog::disabled();
+    let err = log
+        .apply_config(&DebugConfig {
+            enabled: true,
+            log_path: Some(path),
+            ..DebugConfig::default()
+        })
+        .expect_err("missing parent");
+    assert!(err.contains("parent directory must exist"), "{err}");
+    assert!(log.current_path().is_none());
+    assert!(!log.live_snapshot().enabled);
+}
+
+#[test]
+fn normalize_debug_config_fills_default_path_when_enabled() {
+    let mut config = DebugConfig {
+        enabled: true,
+        ..DebugConfig::default()
+    };
+    normalize_debug_config(&mut config);
+    assert_eq!(
+        config.log_path.as_deref(),
+        Some(Path::new(DEFAULT_DEBUG_LOG_PATH))
+    );
+    validate_debug_settings(&mut config).expect("normalized enabled config");
+    let expected = validate_debug_log_path(Path::new(DEFAULT_DEBUG_LOG_PATH)).expect("pin default");
+    assert_eq!(config.log_path.as_deref(), Some(expected.as_path()));
+}
+
+#[test]
+fn normalize_debug_config_does_not_rewrite_zero_rotation_limits() {
+    let mut config = DebugConfig {
+        max_log_mb: Some(0),
+        max_log_age_days: Some(0),
+        ..DebugConfig::default()
+    };
+    normalize_debug_config(&mut config);
+    assert_eq!(config.max_log_mb, Some(0));
+    assert_eq!(config.max_log_age_days, Some(0));
+    assert!(validate_debug_settings(&mut config).is_err());
+}
+
+#[test]
+fn apply_config_fills_default_path_when_enabled_without_path() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: None,
+        ..DebugConfig::default()
+    })
+    .expect("enable with default path");
+    let expected = validate_debug_log_path(Path::new(DEFAULT_DEBUG_LOG_PATH)).expect("pin default");
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+    let _ = fs::remove_file(&expected);
+}
+
+#[test]
+fn apply_config_stores_relative_log_path_as_the_resolved_destination() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(PathBuf::from("relative-debug.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("apply relative");
+    let expected = validate_debug_log_path(Path::new("relative-debug.jsonl")).expect("resolve");
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
+    let _ = fs::remove_file(&expected);
+}
+
+#[test]
+fn apply_config_pins_relative_log_path_while_disabled() {
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: false,
+        log_path: Some(PathBuf::from("disabled-relative.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("pin disabled relative");
+    let expected = std::env::current_dir()
+        .expect("cwd")
+        .canonicalize()
+        .expect("canonical cwd")
+        .join("disabled-relative.jsonl");
+    assert!(log.current_path().is_none());
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
+}
+
+#[test]
+fn apply_config_pins_disabled_path_through_parent_symlink() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-disabled-parent-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let real = dir.join("real");
+    fs::create_dir(&real).expect("real parent");
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink parent");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: false,
+        log_path: Some(link.join("debug.jsonl")),
+        ..DebugConfig::default()
+    })
+    .expect("pin disabled via symlink parent");
+    let expected = real
+        .canonicalize()
+        .expect("canonical parent")
+        .join("debug.jsonl");
+    assert!(log.current_path().is_none());
+    assert_eq!(
+        log.live_snapshot().log_path.as_deref(),
+        Some(expected.as_path())
+    );
+}
+
+#[test]
+fn apply_config_stores_the_live_snapshot() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-snapshot-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let config = DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        tracing_filter: Some("codex_warp=debug".into()),
+        ..DebugConfig::default()
+    };
+    let log = DebugLog::disabled();
+    log.apply_config(&config).expect("apply");
+    let expected = validate_debug_log_path(&path).expect("pin absolute");
+    let mut pinned = config.clone();
+    pinned.log_path = Some(expected.clone());
+    assert_eq!(log.live_snapshot(), pinned);
+    assert!(log.include_bodies());
+    assert_eq!(log.current_path().as_deref(), Some(expected.as_path()));
+}
+
+#[test]
+fn apply_config_rejects_restricted_path_without_enabling_writer() {
+    let log = DebugLog::disabled();
+    let err = log
+        .apply_config(&DebugConfig {
+            enabled: true,
+            log_path: Some(PathBuf::from("/etc/passwd.jsonl")),
+            ..DebugConfig::default()
+        })
+        .expect_err("restricted path");
+    assert!(err.contains("allowed location"));
+    assert!(log.current_path().is_none());
+}
+
+#[test]
+fn read_jsonl_tail_rejects_symlink() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-symlink-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let target = dir.join("target.jsonl");
+    let link = dir.join("debug.jsonl");
+    fs::write(&target, "{\"event\":\"upstream_request\"}\n").expect("write target");
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    assert!(validate_debug_log_path(&link).is_err());
+    assert!(read_jsonl_tail(&link, 10, None, None).is_err());
 }

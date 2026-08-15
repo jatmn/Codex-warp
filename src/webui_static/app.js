@@ -23,12 +23,51 @@
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
+  let logsTimer = null;
+  let logsInFlight = false;
+  let logsPending = false;
+  let logsExpanded = new Set();
+  let loggingSettingsHydrated = false;
+  let loggingFormDirty = false;
+  let loggingHydrating = false;
   let activeTab = "analytics";
+  let bootComplete = false;
+  let bootFooterHold = false;
+  let tabEpoch = 0;
   const expandedProviderIds = new Set();
-  const VALID_TABS = new Set(["analytics", "providers"]);
+  const VALID_TABS = new Set(["analytics", "providers", "logs"]);
 
   const $ = (sel) => document.querySelector(sel);
-  const status = (msg) => { $("#status-line").textContent = msg; };
+  function writeStatus(msg) {
+    $("#status-line").textContent = msg;
+  }
+  // One footer slot. Background polls must not replace a failed boot.
+  // User-initiated actions (save, filter change, provider edit) own the
+  // footer and clear that hold.
+  const status = (msg) => {
+    bootFooterHold = false;
+    writeStatus(msg);
+  };
+  function pollStatus(msg) {
+    if (bootFooterHold) return;
+    writeStatus(msg);
+  }
+
+  // Empty → JSON null (clear to defaults). Invalid input must not become
+  // `Number(...)` NaN: JSON.stringify(NaN) is `null`, which the API treats as
+  // Clear and silently resets rotation limits.
+  function optionalPositiveInt(raw, label) {
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+    if (!/^[0-9]+$/.test(text)) {
+      throw new Error(`${label} must be a positive integer`);
+    }
+    const value = Number(text);
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`${label} must be a positive integer`);
+    }
+    return value;
+  }
 
   const themeApi = window.installCodexWarpTheme(window);
   if (!themeApi) {
@@ -128,7 +167,7 @@
     }
   }
 
-  function switchTab(name) {
+  function showTabPanel(name) {
     if (!VALID_TABS.has(name)) {
       return;
     }
@@ -144,8 +183,31 @@
       p.hidden = !on;
     });
     syncTabHash(name);
-    if (name === "analytics") startAnalyticsPoll();
-    else stopAnalyticsPoll();
+  }
+
+  async function activateTabPolls(name) {
+    const epoch = ++tabEpoch;
+    stopAnalyticsPoll();
+    stopLogsPoll();
+    if (name === "analytics") {
+      await startAnalyticsPoll(epoch);
+      return;
+    }
+    if (name === "logs") {
+      await startLogsPoll({ epoch });
+      return;
+    }
+    if (epoch === tabEpoch) pollStatus("Ready");
+  }
+
+  function switchTab(name) {
+    if (!VALID_TABS.has(name)) {
+      return;
+    }
+    showTabPanel(name);
+    if (bootComplete) {
+      void activateTabPolls(name);
+    }
   }
 
   document.querySelectorAll(".tab").forEach((btn) => {
@@ -184,8 +246,8 @@
     }
   }
 
-  async function loadProviders({ refreshRoutes = true } = {}) {
-    status("Loading providers…");
+  async function loadProviders({ refreshRoutes = true, updateStatus = true } = {}) {
+    if (updateStatus) status("Loading providers…");
     // Local persisted/configured providers must render before live discovery:
     // a stalled upstream must not block the controls needed to disable it.
     providers = await api("/providers");
@@ -718,23 +780,32 @@
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
   }
 
-  let analyticsPending = { queued: false };
+  let analyticsPending = { queued: false, fromPoll: true };
+
+  function requestAnalytics() {
+    void loadAnalytics({ fromPoll: false });
+  }
 
   $("#analytics-provider").addEventListener("change", () => {
     $("#analytics-model").value = "";
     fillAnalyticsFilters();
-    loadAnalytics();
+    requestAnalytics();
   });
-  $("#analytics-range").addEventListener("change", loadAnalytics);
-  $("#analytics-model").addEventListener("change", loadAnalytics);
+  $("#analytics-range").addEventListener("change", requestAnalytics);
+  $("#analytics-model").addEventListener("change", requestAnalytics);
 
-  async function loadAnalytics() {
+  async function loadAnalytics({ fromPoll = false } = {}) {
     if (analyticsInFlight) {
+      analyticsPending.fromPoll = analyticsPending.queued
+        ? analyticsPending.fromPoll && fromPoll
+        : fromPoll;
       analyticsPending.queued = true;
       return;
     }
     analyticsInFlight = true;
+    const reportFromPoll = fromPoll;
     analyticsPending.queued = false;
+    analyticsPending.fromPoll = true;
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
@@ -770,13 +841,23 @@
             : "Usage over time",
       };
       renderAnalyticsPresentation();
-      status("Analytics updated");
+      if (activeTab === "analytics") {
+        const message = "Analytics updated";
+        if (reportFromPoll) pollStatus(message);
+        else status(message);
+      }
     } catch (e) {
-      status(`Analytics error: ${e.message}`);
+      if (activeTab === "analytics") {
+        const message = `Analytics error: ${e.message}`;
+        if (reportFromPoll) pollStatus(message);
+        else status(message);
+      }
     } finally {
       analyticsInFlight = false;
-      if (analyticsPending.queued) {
-        loadAnalytics();
+      if (analyticsPending.queued && activeTab === "analytics") {
+        const queuedFromPoll = analyticsPending.fromPoll;
+        analyticsPending.queued = false;
+        loadAnalytics({ fromPoll: queuedFromPoll });
       }
     }
   }
@@ -919,10 +1000,11 @@
     });
   }
 
-  function startAnalyticsPoll() {
+  async function startAnalyticsPoll(epoch = tabEpoch) {
     stopAnalyticsPoll();
-    loadAnalytics();
-    analyticsTimer = setInterval(loadAnalytics, 5000);
+    await loadAnalytics({ fromPoll: true });
+    if (epoch !== tabEpoch || activeTab !== "analytics") return;
+    analyticsTimer = setInterval(() => loadAnalytics({ fromPoll: true }), 5000);
   }
 
   function stopAnalyticsPoll() {
@@ -930,14 +1012,304 @@
     analyticsTimer = null;
   }
 
+  function formatLogTime(ts) {
+    if (!ts) return "";
+    const date = new Date(Number(ts));
+    if (Number.isNaN(date.getTime())) return String(ts);
+    return date.toISOString().replace("T", " ").replace("Z", "");
+  }
+
+  function logKind(event, source) {
+    if (source === "process") return (event.level || "info").toLowerCase();
+    return (event.event || "event").toLowerCase();
+  }
+
+  function logMessage(event, source) {
+    if (source === "process") {
+      const target = event.target ? `${event.target} ` : "";
+      return `${target}${event.message || ""}`.trim();
+    }
+    const parts = [event.event, event.id, event.model, event.provider_id, event.backend]
+      .filter((value) => value != null && value !== "");
+    return parts.join(" · ") || JSON.stringify(event);
+  }
+
+  function eventKey(event, source, index) {
+    return `${source}:${event.ts || ""}:${event.id || ""}:${event.event || event.message || index}`;
+  }
+
+  function renderLogEvents(payload) {
+    const viewer = $("#log-viewer");
+    const source = payload.source || $("#log-source").value;
+    const events = payload.events || [];
+    if (!events.length) {
+      viewer.innerHTML = `<div class="log-empty">${
+        source === "debug" && payload.enabled === false
+          ? "Debug JSONL is disabled. Enable it in logging settings to capture request events."
+          : payload.missing
+            ? "No debug log file yet. Events appear after the next proxied request."
+            : "No log events match the current filters."
+      }</div>`;
+      return;
+    }
+    const follow = $("#log-follow")?.checked;
+    const stickToBottom = follow && (viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 40);
+    viewer.innerHTML = "";
+    events.forEach((event, index) => {
+      const key = eventKey(event, source, index);
+      const row = document.createElement("div");
+      const kind = logKind(event, source);
+      row.className = `log-row${logsExpanded.has(key) ? " open" : ""}`;
+      row.innerHTML = `<span class="log-ts">${esc(formatLogTime(event.ts))}</span><span class="log-kind ${esc(kind)}">${esc(kind)}</span><span class="log-msg">${esc(logMessage(event, source))}</span>`;
+      if (logsExpanded.has(key)) {
+        const pre = document.createElement("pre");
+        pre.className = "log-json";
+        pre.textContent = JSON.stringify(event, null, 2);
+        row.append(pre);
+      }
+      row.addEventListener("click", () => {
+        if (logsExpanded.has(key)) logsExpanded.delete(key);
+        else logsExpanded.add(key);
+        renderLogEvents(payload);
+      });
+      viewer.append(row);
+    });
+    if (stickToBottom) viewer.scrollTop = viewer.scrollHeight;
+  }
+
+  function applyLoggingChrome(settings) {
+    const form = $("#logging-settings");
+    if (!form) return;
+    form.log_path.placeholder = settings.default_log_path || "codex-warp-debug.jsonl";
+    form.max_log_mb.placeholder = String(settings.max_log_mb_effective ?? "");
+    form.max_log_age_days.placeholder = String(settings.max_log_age_days_effective ?? "");
+    form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
+    const hint = $("#logging-persist-hint");
+    if (hint) hint.textContent = loggingHint(settings);
+  }
+
+  function applyLoggingFields(settings) {
+    const form = $("#logging-settings");
+    if (!form) return;
+    loggingHydrating = true;
+    try {
+      form.enabled.checked = !!settings.enabled;
+      form.log_path.value = settings.log_path || "";
+      form.include_bodies.checked = !!settings.include_bodies;
+      form.include_stream_bodies.checked = !!settings.include_stream_bodies;
+      form.max_log_mb.value = settings.max_log_mb ?? "";
+      form.max_log_age_days.value = settings.max_log_age_days ?? "";
+      form.tracing_filter.value = settings.tracing_filter || "";
+      loggingFormDirty = false;
+    } finally {
+      loggingHydrating = false;
+    }
+  }
+
+  async function loadLoggingSettings({ hydrateFields = true } = {}) {
+    const settings = await api("/logging");
+    applyLoggingChrome(settings);
+    if (hydrateFields && !loggingFormDirty) {
+      applyLoggingFields(settings);
+    }
+    return settings;
+  }
+
+  function setLoggingFormHydrated(hydrated) {
+    loggingSettingsHydrated = hydrated;
+    const fields = $("#logging-settings-fields");
+    if (fields) fields.disabled = !hydrated;
+  }
+
+  function tracingLagNote(settings) {
+    if (settings.tracing_applied) return "";
+    const effective = settings.tracing_filter_effective;
+    return effective
+      ? `Process logs still use ${effective}.`
+      : "Process logs are not using the live tracing filter.";
+  }
+
+  function loggingReadyStatus(settings) {
+    return tracingLagNote(settings) || "Ready";
+  }
+
+  function loggingHint(settings) {
+    const base = settings.persist_available
+      ? "Changes apply immediately. SQLite keeps them across restarts when the store is open. Command-line debug flags still win for that process."
+      : "Changes apply immediately for this process. Persistence is unavailable (--no-webui-store), so they reset on restart.";
+    const lag = tracingLagNote(settings);
+    return lag ? `${base} ${lag}` : base;
+  }
+
+  function loggingSaveStatus(settings, remainingEdits = false) {
+    const applied = settings.persisted
+      ? "Logging settings applied"
+      : settings.persist_available
+        ? "Logging settings applied for this process; they could not be saved for restart"
+        : "Logging settings applied for this process";
+    const lag = tracingLagNote(settings);
+    const remaining = remainingEdits ? "Unsaved edits remain." : "";
+    return [applied, lag, remaining].filter(Boolean).join(" ");
+  }
+
+  async function loadLogs() {
+    if (logsInFlight) {
+      logsPending = true;
+      return;
+    }
+    logsInFlight = true;
+    try {
+      const source = $("#log-source").value;
+      const params = new URLSearchParams({ source, limit: "250" });
+      const query = $("#log-query").value.trim();
+      if (query) params.set("q", query);
+      if (source === "process") {
+        const level = $("#log-level").value;
+        if (level) params.set("level", level);
+      }
+      const payload = await api(`/logging/events?${params.toString()}`);
+      const meta = [];
+      if (payload.path) meta.push(payload.path);
+      if (payload.file_bytes) meta.push(`${payload.file_bytes} bytes`);
+      if (payload.truncated) meta.push("showing a tail of a large file");
+      $("#log-meta").textContent = meta.join(" · ");
+      renderLogEvents(payload);
+    } catch (e) {
+      // Keep the footer for logging-settings state (including tracing lag).
+      $("#log-meta").textContent = `Error: ${e.message}`;
+    } finally {
+      logsInFlight = false;
+      if (logsPending && activeTab === "logs") {
+        logsPending = false;
+        loadLogs();
+      } else {
+        logsPending = false;
+      }
+    }
+  }
+
+  function syncProcessLevelControl() {
+    const process = $("#log-source")?.value === "process";
+    if ($("#log-level")) $("#log-level").disabled = !process;
+  }
+
+  function bumpLogsPollTimer() {
+    if (!logsTimer) return;
+    clearInterval(logsTimer);
+    logsTimer = setInterval(loadLogs, 2500);
+  }
+
+  async function startLogsPoll({ epoch = tabEpoch } = {}) {
+    stopLogsPoll();
+    syncProcessLevelControl();
+    // Disable only until the first successful hydrate so tab switches do not
+    // interrupt in-progress edits.
+    if (!loggingSettingsHydrated) setLoggingFormHydrated(false);
+    try {
+      const settings = await loadLoggingSettings({ hydrateFields: !loggingFormDirty });
+      if (epoch !== tabEpoch || activeTab !== "logs") return settings;
+      setLoggingFormHydrated(true);
+      pollStatus(loggingReadyStatus(settings));
+      loadLogs();
+      logsTimer = setInterval(loadLogs, 2500);
+      return settings;
+    } catch (e) {
+      if (epoch === tabEpoch && activeTab === "logs") {
+        pollStatus(`Error: ${e.message}`);
+      }
+      throw e;
+    }
+  }
+
+  function stopLogsPoll() {
+    if (logsTimer) clearInterval(logsTimer);
+    logsTimer = null;
+  }
+
+  $("#log-source")?.addEventListener("change", () => {
+    syncProcessLevelControl();
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-level")?.addEventListener("change", () => {
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-query")?.addEventListener("input", () => {
+    bumpLogsPollTimer();
+    loadLogs();
+  });
+  $("#log-refresh")?.addEventListener("click", loadLogs);
+  $("#logging-settings")?.addEventListener("input", () => {
+    if (!loggingHydrating) loggingFormDirty = true;
+  });
+  $("#logging-settings")?.addEventListener("change", () => {
+    if (!loggingHydrating) loggingFormDirty = true;
+  });
+  $("#logging-settings")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!loggingSettingsHydrated) {
+      return;
+    }
+    const form = event.currentTarget;
+    const tracingFilter = form.tracing_filter.value.trim();
+    try {
+      const maxLogMb = optionalPositiveInt(form.max_log_mb.value, "Max log size (MB)");
+      const maxLogAgeDays = optionalPositiveInt(form.max_log_age_days.value, "Max log age (days)");
+      status("Saving logging settings…");
+      // Submitted values are the new baseline. Keystrokes during the PUT
+      // re-dirty the form so success must not overwrite them from the response.
+      loggingFormDirty = false;
+      const saved = await api("/logging", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: form.enabled.checked,
+          log_path: form.log_path.value.trim() || null,
+          include_bodies: form.include_bodies.checked,
+          include_stream_bodies: form.include_stream_bodies.checked,
+          max_log_mb: maxLogMb,
+          max_log_age_days: maxLogAgeDays,
+          tracing_filter: tracingFilter ? tracingFilter : null,
+        }),
+      });
+      applyLoggingChrome(saved);
+      if (!loggingFormDirty) {
+        applyLoggingFields(saved);
+      }
+      setLoggingFormHydrated(true);
+      await loadLogs();
+      status(loggingSaveStatus(saved, loggingFormDirty));
+    } catch (e) {
+      loggingFormDirty = true;
+      try {
+        await loadLoggingSettings({ hydrateFields: false });
+        await loadLogs();
+      } catch {
+        /* still report the save error */
+      }
+      status(`Error: ${e.message}`);
+    }
+  });
+
   async function boot() {
-    switchTab(tabFromLocation());
+    showTabPanel(tabFromLocation());
     status("Loading…");
     try {
-      await Promise.all([loadProviders(), loadProviderTemplates()]);
-      status("Ready");
+      await Promise.all([
+        loadProviders({ refreshRoutes: true, updateStatus: false }),
+        loadProviderTemplates(),
+      ]);
+      bootComplete = true;
+      await activateTabPolls(activeTab);
     } catch (e) {
-      status(`Error: ${e.message}`);
+      bootComplete = true;
+      bootFooterHold = true;
+      writeStatus(`Error: ${e.message}`);
+      try {
+        await activateTabPolls(activeTab);
+      } catch {
+        /* keep the boot error in the footer */
+      }
     }
   }
 

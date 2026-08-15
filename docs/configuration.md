@@ -336,6 +336,8 @@ The UI can:
 - toggle models on/off per provider
 - chart token usage, prompts, and sessions over time with a line chart, plus
   token usage over time with a bar chart (global, per provider, and per model)
+- view process logs and the sanitized debug JSONL log, and change debug logging
+  settings without restarting Warp
 
 The Analytics tab is the default landing view.
 
@@ -344,7 +346,9 @@ Ranges: `1h`, `5h`, `today` (UTC midnight boundary), `24h`, `48h`, `3d`,
 
 SQLite (`db_path`) stores overlays and usage analytics. TOML remains the
 bootstrap source of truth; overlays apply on startup whenever the database is
-open. Managed providers created in the UI live entirely in SQLite. Removing a
+open. Managed providers created in the UI live entirely in SQLite. Debug logging
+settings saved in the Logs tab are stored in a single-row debug overlay and
+replayed with the provider/model overlays. Removing a
 TOML-sourced provider or catalog model soft-deletes it via an overlay so it
 stays suppressed across restarts until the overlay row is cleared or the model
 is re-added in the UI. Soft-deleting a TOML provider keeps its per-model
@@ -358,8 +362,10 @@ routing does not require a prior `/v1/models` call after restart.
 
 The SQLite store opens only while the Web UI is enabled. Use
 `--no-webui-store` to keep an enabled UI stateless; its management API then
-keeps read-only provider/template views available, while mutations and usage
-analytics return service-unavailable rather than writing persistent state.
+keeps read-only provider/template views available, while provider/model
+mutations and usage analytics return service-unavailable rather than writing
+persistent state. Logging settings still apply live without SQLite; they are
+not kept across restart until the store is open.
 
 `PUT /api/providers/{id}/models/{model_id}` is a partial update: omitted fields
 keep their current values, and JSON `null` clears optional string fields
@@ -402,6 +408,8 @@ include_bodies = false
 include_stream_bodies = false
 max_log_mb = 128
 max_log_age_days = 30
+# Optional. When unset, Warp uses RUST_LOG or `info` captured at tracing start.
+# tracing_filter = "codex_warp=debug"
 ```
 
 You can also enable it from the command line:
@@ -411,6 +419,85 @@ target/debug/codex-warp \
   --config configs/moonshot-kimicode.toml \
   --debug-log /tmp/codex-warp-debug.jsonl
 ```
+
+The Web UI Logs tab can tail process logs (tracing) and the debug JSONL file,
+and it can change these `[debug]` settings without restarting Warp. Saves persist
+in the SQLite debug overlay and replay on the next start. `--debug-log` and the
+body-inclusion flags still win over that overlay for the current process.
+
+`GET /api/logging` returns the live settings, including `persist_available`.
+`persisted` is only meaningful on `PUT /api/logging`: it is true when that
+mutation wrote the SQLite overlay. GET always returns `persisted: false`.
+`max_log_mb` and `max_log_age_days` are the stored snapshot values (`null` when
+unset). `max_log_mb_effective` and `max_log_age_days_effective` are the limits
+the writer uses (`128` / `30` when those fields are unset). The Logs form
+hydrates empty rotation and log-path fields from the stored values and shows the
+effective / default destinations as placeholders, so saving other settings does
+not persist explicit defaults. Switching away from the Logs tab does not rewrite
+those fields while the form has unsaved edits. Live GET still refreshes the persist
+hint and placeholders (not the field values) so tracing lag and effective defaults
+stay current. A successful save applies the PUT response into the form unless the
+user edited fields while that request was in flight; the footer then reports that
+the submitted snapshot was applied and unsaved edits remain. A failed save keeps
+the unsaved edits. `PUT /api/logging` validates the full live snapshot first, including the
+tracing filter that will actually be reloaded (`tracing_filter`, or the process
+default captured from `RUST_LOG` / `info` when tracing started). Live logging
+has one snapshot, stored by `DebugLog`.
+`GET /api/logging`, debug events, and request logging all read that snapshot.
+Boot `[debug]` (TOML, overlays, CLI) is applied into that snapshot at startup
+and is not kept as a second live copy in `AppConfig`. After the snapshot is
+committed, Warp reloads tracing as a best-effort projection. `tracing_filter`
+is the requested live setting; `tracing_filter_wanted` is that setting resolved
+to the filter Warp will reload (`tracing_filter`, or the process default
+captured from `RUST_LOG` / `info` when tracing started — later `RUST_LOG`
+changes are not re-read); `tracing_filter_effective` is the filter the
+subscriber last installed successfully; `tracing_applied` is true when a
+subscriber is installed and wanted and effective match. If no tracing
+subscriber is installed, `tracing_filter_effective` is empty,
+`tracing_filter_wanted` resolves unset filters to `info` (without re-reading
+`RUST_LOG`), and `tracing_applied` is false. Debug overlays are validated the
+same way: unset `tracing_filter` is checked against the pinned process default
+from tracing init (or `info` when replaying without that pin), never against a
+live `RUST_LOG` read. If tracing reload fails, the live snapshot stays
+applied, `tracing_applied` is false, and process logs keep the previous
+verbosity until a later save retries the filter. The SQLite overlay is durability, not live state: it is written
+after live install and never stores a snapshot that failed to become live.
+Overlay writes parse `tracing_filter` the same way as live apply and replay
+(using `info` when the process pin is unavailable), so an invalid filter cannot
+be stored. Overlay persist failure does not reinstall live settings and does not fail the
+request; PUT returns the applied live settings with `persisted: false`. The next
+start still replays the previous overlay until a later save persists. A crash
+after live apply and before the overlay write does not persist across restart;
+the next start replays the previous overlay. A crash after the overlay write
+still replays the new overlay on the next start.
+`GET /api/logging/events` reads recent process events or the current JSONL tail
+(`source=process|debug`). A debug tail pins the writer snapshot (`enabled`,
+path, and file descriptor) under the writer lock, then parses after releasing
+that lock so request logging is not blocked. `enabled` is the writer flag from
+that pin, not a later config read and not “file exists”. If the file rotates
+during that parse, the response may show the previous segment until the next
+poll; events are still in the rotated backup. Debug `log_path`
+values are validated for TOML, CLI, overlays, and the Web UI when debug logging
+is enabled: the path must end in `.jsonl`, must not contain `..`, the log file
+itself must not be a symlink, its parent directory must already exist, and the
+resolved destination cannot use system roots such as `/etc`. Relative
+paths are resolved against the process working directory at apply time, and the
+live snapshot stores that destination so later writes and tails do not depend
+on a later cwd change. SQLite overlay writes use the same pin, so a relative
+`log_path` is not stored. Overlay replay still rewrites a relative path left by
+an older Warp so the next restart does not depend on cwd either. A relative `log_path` is rejected when Warp's cwd is a
+restricted root. A path stored while
+logging is disabled is not opened and does not fail startup. Warp does not
+follow a symlink at the log file itself when writing or tailing
+(`O_NOFOLLOW` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` on Windows). Parent
+directories are resolved to their real location so a symlink parent cannot place
+the log under a restricted root. Enabling debug logging opens (and creates) the
+log file immediately; a missing parent or unwritable path fails that apply
+instead of reporting enabled while writes silently drop. When `debug.enabled` is true and
+`log_path` is omitted, Warp uses `codex-warp-debug.jsonl` in the process working
+directory. `max_log_mb` and `max_log_age_days` of `0` are invalid at every entry
+point: the Web UI rejects them, startup fails, and overlays that contain them
+are skipped.
 
 ### Rotation
 
@@ -436,7 +523,7 @@ max_log_mb = 64
 max_log_age_days = 7
 ```
 
-Values of `0` are treated as invalid and fall back to the defaults. Rotation is
+Values of `0` are invalid. Rotation is
 performed by the individual Warp process; if multiple Warp instances share the
 same `log_path`, concurrent rotations can race and the backup may be overwritten
 or removed unexpectedly. Use a distinct `log_path` per instance when running
