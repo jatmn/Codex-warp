@@ -16,6 +16,9 @@ use crate::config::ToolPolicyConfig;
 use crate::debug_log::DebugLog;
 use crate::debug_log::text_fingerprint;
 use crate::ids::generated_id;
+use crate::namespace_helpers::NamespaceHelpers;
+use crate::namespace_helpers::is_custom_tool_call_type;
+use crate::namespace_helpers::is_function_call_type;
 use crate::store::UsageRecorder;
 use crate::tool_policy::apply_tool_policy_to_function_call;
 
@@ -34,6 +37,7 @@ pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
     response_id: String,
     custom_tool_names: BTreeSet<String>,
+    namespace_helpers: NamespaceHelpers,
     tool_policy: ToolPolicyConfig,
     debug_log: DebugLog,
     request_log_id: String,
@@ -187,6 +191,7 @@ pub(crate) fn chat_stream_to_responses(
         for event in state.finish(
             &response_id,
             &custom_tool_names,
+            &namespace_helpers,
             &tool_policy,
             Some((&debug_log, &request_log_id, &continue_guard)),
         ) {
@@ -217,6 +222,7 @@ pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
 pub(crate) fn native_stream_to_responses(
     upstream: reqwest::Response,
     custom_tool_names: BTreeSet<String>,
+    namespace_helpers: NamespaceHelpers,
     tool_policy: ToolPolicyConfig,
     debug_log: DebugLog,
     request_log_id: String,
@@ -278,7 +284,12 @@ pub(crate) fn native_stream_to_responses(
                     "backend": "responses",
                     "status": status
                 }), &frame);
-                let morphed = morph_native_sse_frame(&frame, &custom_tool_names, &tool_policy);
+                let morphed = morph_native_sse_frame(
+                    &frame,
+                    &custom_tool_names,
+                    &namespace_helpers,
+                    &tool_policy,
+                );
                 log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
                 yield Ok(Bytes::from(morphed));
                 if terminal.is_some() {
@@ -684,6 +695,7 @@ impl ChatAccum {
         &self,
         response_id: &str,
         custom_tool_names: &BTreeSet<String>,
+        namespace_helpers: &NamespaceHelpers,
         tool_policy: &ToolPolicyConfig,
         continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     ) -> Vec<String> {
@@ -736,6 +748,7 @@ impl ChatAccum {
                 &call.arguments,
                 &call_id,
                 custom_tool_names,
+                namespace_helpers,
                 tool_policy,
             );
             events.push(sse(
@@ -1013,12 +1026,18 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
 }
 
 pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {
-    chat_json_to_responses_with_policy(value, custom_tool_names, &ToolPolicyConfig::default())
+    chat_json_to_responses_with_policy(
+        value,
+        custom_tool_names,
+        &NamespaceHelpers::default(),
+        &ToolPolicyConfig::default(),
+    )
 }
 
 pub(crate) fn chat_json_to_responses_with_policy(
     value: Value,
     custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
     let value = chat_completion_payload(&value);
@@ -1079,6 +1098,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                     arguments,
                     call_id,
                     custom_tool_names,
+                    namespace_helpers,
                     tool_policy,
                 ));
             }
@@ -1331,10 +1351,7 @@ pub(crate) fn native_stream_debug_summary(value: &Value) -> Option<Value> {
         Some("response.reasoning_text.delta" | "response.reasoning_summary_text.delta")
     );
     let has_output_delta = matches!(event_type, Some("response.output_text.delta"));
-    let has_tool_item = matches!(
-        item_type,
-        Some("function_call" | "custom_tool_call" | "tool_call")
-    );
+    let has_tool_item = is_function_call_type(item_type) || is_custom_tool_call_type(item_type);
 
     (has_reasoning_delta || has_output_delta || has_tool_item).then(|| {
         json!({
@@ -1366,6 +1383,7 @@ fn custom_tool_input(arguments: &str) -> String {
 pub(crate) fn morph_native_sse_frame(
     frame: &str,
     custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> String {
     let mut event_lines = Vec::new();
@@ -1392,7 +1410,12 @@ pub(crate) fn morph_native_sse_frame(
     let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
         return format!("{frame}\n\n");
     };
-    morph_native_response_value(&mut value, custom_tool_names, tool_policy);
+    morph_native_response_value(
+        &mut value,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+    );
 
     let mut out = String::new();
     for line in event_lines {
@@ -1408,25 +1431,26 @@ pub(crate) fn morph_native_sse_frame(
 pub(crate) fn morph_native_response_value(
     value: &mut Value,
     custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) {
-    if custom_tool_names.is_empty() && !tool_policy.enabled {
+    if custom_tool_names.is_empty() && namespace_helpers.is_empty() && !tool_policy.enabled {
         return;
     }
 
     if let Some(item) = value.get_mut("item") {
-        morph_native_item(item, custom_tool_names, tool_policy);
+        morph_native_item(item, custom_tool_names, namespace_helpers, tool_policy);
     }
     if let Some(response) = value.get_mut("response")
         && let Some(output) = response.get_mut("output").and_then(Value::as_array_mut)
     {
         for item in output {
-            morph_native_item(item, custom_tool_names, tool_policy);
+            morph_native_item(item, custom_tool_names, namespace_helpers, tool_policy);
         }
     }
     if let Some(output) = value.get_mut("output").and_then(Value::as_array_mut) {
         for item in output {
-            morph_native_item(item, custom_tool_names, tool_policy);
+            morph_native_item(item, custom_tool_names, namespace_helpers, tool_policy);
         }
     }
 }
@@ -1434,44 +1458,24 @@ pub(crate) fn morph_native_response_value(
 fn morph_native_item(
     item: &mut Value,
     custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) {
     let Some(name) = item.get("name").and_then(Value::as_str) else {
         return;
     };
-    if item.get("type").and_then(Value::as_str) != Some("function_call") {
+    if !is_function_call_type(item.get("type").and_then(Value::as_str)) {
         return;
     }
     let arguments = item
         .get("arguments")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let call_id = item
-        .get("call_id")
-        .and_then(Value::as_str)
-        .unwrap_or("call")
-        .to_string();
-    if !custom_tool_names.contains(name) {
-        let rewritten = tool_call_item(name, arguments, &call_id, custom_tool_names, tool_policy);
-        if rewritten.get("type").and_then(Value::as_str) != Some("function_call") {
-            *item = rewritten;
-        } else if let Some(arguments) = rewritten.get("arguments").cloned()
-            && let Some(map) = item.as_object_mut()
-        {
-            map.insert("arguments".to_string(), arguments);
-        }
-        return;
-    }
-
-    let input = custom_tool_input(arguments);
-    if let Some(map) = item.as_object_mut() {
-        map.insert(
-            "type".to_string(),
-            Value::String("custom_tool_call".to_string()),
-        );
-        map.remove("arguments");
-        map.insert("input".to_string(), Value::String(input));
-    }
+    let (name, arguments) = namespace_helpers.rewrite_call(name, arguments);
+    apply_classified_call_to_native_item(
+        item,
+        classify_rewritten_call(&name, &arguments, custom_tool_names, tool_policy),
+    );
 }
 
 fn tool_call_item(
@@ -1479,35 +1483,109 @@ fn tool_call_item(
     arguments: &str,
     call_id: &str,
     custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
+    let (name, arguments) = namespace_helpers.rewrite_call(name, arguments);
+    classified_tool_call_item(&name, &arguments, call_id, custom_tool_names, tool_policy)
+}
+
+enum ClassifiedCall {
+    Custom { name: String, input: String },
+    Function { name: String, arguments: String },
+    Blocked { name: String, reason: String },
+}
+
+fn classify_rewritten_call(
+    name: &str,
+    arguments: &str,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) -> ClassifiedCall {
     if custom_tool_names.contains(name) {
-        return json!({
+        return ClassifiedCall::Custom {
+            name: name.to_string(),
+            input: custom_tool_input(arguments),
+        };
+    }
+    match apply_tool_policy_to_function_call(name, arguments, tool_policy) {
+        Ok((arguments, _decision)) => ClassifiedCall::Function {
+            name: name.to_string(),
+            arguments,
+        },
+        Err(decision) => ClassifiedCall::Blocked {
+            name: name.to_string(),
+            reason: decision.reason,
+        },
+    }
+}
+
+fn apply_classified_call_to_native_item(item: &mut Value, classified: ClassifiedCall) {
+    match classified {
+        ClassifiedCall::Custom { name, input } => {
+            if let Some(map) = item.as_object_mut() {
+                map.insert(
+                    "type".to_string(),
+                    Value::String("custom_tool_call".to_string()),
+                );
+                map.insert("name".to_string(), json!(name));
+                map.remove("arguments");
+                map.insert("input".to_string(), Value::String(input));
+            }
+        }
+        ClassifiedCall::Function { name, arguments } => {
+            if let Some(map) = item.as_object_mut() {
+                // Normalize backend `tool_call` into the Responses item type Codex expects.
+                map.insert(
+                    "type".to_string(),
+                    Value::String("function_call".to_string()),
+                );
+                map.insert("name".to_string(), json!(name));
+                map.insert("arguments".to_string(), json!(arguments));
+            }
+        }
+        ClassifiedCall::Blocked { name, reason } => {
+            *item = blocked_tool_call_message(&name, &reason);
+        }
+    }
+}
+
+fn classified_tool_call_item(
+    name: &str,
+    arguments: &str,
+    call_id: &str,
+    custom_tool_names: &BTreeSet<String>,
+    tool_policy: &ToolPolicyConfig,
+) -> Value {
+    match classify_rewritten_call(name, arguments, custom_tool_names, tool_policy) {
+        ClassifiedCall::Custom { name, input } => json!({
             "id": generated_id("ctc"),
             "type": "custom_tool_call",
             "name": name,
-            "input": custom_tool_input(arguments),
+            "input": input,
             "call_id": call_id
-        });
-    }
-    match apply_tool_policy_to_function_call(name, arguments, tool_policy) {
-        Ok((arguments, _decision)) => json!({
+        }),
+        ClassifiedCall::Function { name, arguments } => json!({
             "id": generated_id("fc"),
             "type": "function_call",
             "name": name,
             "arguments": arguments,
             "call_id": call_id
         }),
-        Err(decision) => json!({
-            "id": generated_id("msg"),
-            "type": "message",
-            "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": format!("Codex Warp blocked tool call `{name}`: {}", decision.reason)
-            }]
-        }),
+        ClassifiedCall::Blocked { name, reason } => blocked_tool_call_message(&name, &reason),
     }
+}
+
+fn blocked_tool_call_message(name: &str, reason: &str) -> Value {
+    json!({
+        "id": generated_id("msg"),
+        "type": "message",
+        "role": "assistant",
+        "content": [{
+            "type": "output_text",
+            "text": format!("Codex Warp blocked tool call `{name}`: {reason}")
+        }]
+    })
 }
 
 fn sse(event: &str, data: Value) -> String {

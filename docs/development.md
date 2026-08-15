@@ -184,6 +184,7 @@ file:
 | `src/upstream.rs` | Upstream request dispatch and response plumbing. |
 | `src/structured_output.rs` | Chat Completions JSON Schema compatibility fallback. |
 | `src/guardian_compat.rs` | Guardian auto-review prompt compatibility shim. |
+| `src/namespace_helpers.rs` | Codex namespace-tool expansion for sub-agent helpers. |
 | `src/response_codec.rs` | SSE, chat/responses conversion, and usage normalization. |
 | `src/transform.rs` | Responses-to-chat request/tool/history conversion. |
 | `src/transform_morph.rs` | Configured request morphs and dotted-path edits. |

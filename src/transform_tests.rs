@@ -529,7 +529,7 @@ fn native_responses_preserves_responses_fields_by_default() {
         "stream": true
     });
 
-    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let normalized = normalize_responses_request(request, &TransformConfig::default()).body;
 
     assert_eq!(normalized["reasoning"]["effort"], "medium");
     assert_eq!(normalized["text"]["format"]["type"], "json_schema");
@@ -555,7 +555,7 @@ fn native_responses_morphs_additional_tools() {
         "stream": true
     });
 
-    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let normalized = normalize_responses_request(request, &TransformConfig::default()).body;
 
     assert_eq!(normalized["input"][0]["tools"][0]["type"], "function");
     assert_eq!(normalized["input"][0]["tools"][0]["name"], "apply_patch");
@@ -643,4 +643,482 @@ fn chat_transform_reports_redacted_diagnostics_for_dropped_fields_and_tools() {
     assert!(tool_transforms.iter().any(|tool| {
         tool["name"] == "apply_patch" && tool["action"] == "converted_to_function"
     }));
+}
+
+#[test]
+fn expands_multi_agent_namespace_into_spawn_agent_helpers() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "multi_agent_v1.spawn_agent",
+                "arguments": "{\"message\":\"review the diff\"}"
+            },
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "spawn a reviewer"}]}
+        ],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "description": "Spawn a sub-agent for a well-scoped task.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "wait_agent",
+                    "description": "Wait for agents to reach a final status.",
+                    "parameters": {"type": "object", "properties": {}}
+                }
+            ]
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let tools = transformed.body["tools"].as_array().expect("tools array");
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+
+    assert!(names.contains(&"spawn_agent"));
+    assert!(names.contains(&"wait_agent"));
+    assert!(!names.iter().any(|name| *name == "multi_agent_v1_tool"));
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(
+        transformed
+            .namespace_helpers
+            .rewrite_call("spawn_agent", r#"{"message":"review"}"#)
+            .0,
+        "multi_agent_v1.spawn_agent"
+    );
+}
+
+#[test]
+fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "description": "Spawn a sub-agent",
+                    "parameters": {"type": "object", "properties": {}}
+                }]
+            },
+            {
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Flat v2 spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        ],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let names: Vec<&str> = transformed.body["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+
+    assert_eq!(names, vec!["multi_agent_v1.spawn_agent", "spawn_agent"]);
+}
+
+#[test]
+fn history_replays_collapsed_helper_calls_as_visible_children() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1_tool",
+            "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"review\"}}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "spawn_agent"
+    );
+    let arguments = transformed.body["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments");
+    assert_eq!(arguments, r#"{"message":"review"}"#);
+}
+
+#[test]
+fn native_responses_expand_namespace_tools() {
+    let request = json!({
+        "model": "test-model",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["tools"][0]["type"], "function");
+    assert_eq!(normalized.body["tools"][0]["name"], "spawn_agent");
+    assert_eq!(
+        normalized
+            .namespace_helpers
+            .rewrite_call("spawn_agent", "{}")
+            .0,
+        "multi_agent_v1.spawn_agent"
+    );
+}
+
+#[test]
+fn native_responses_replay_history_and_tool_choice_with_visible_names() {
+    let request = json!({
+        "model": "test-model",
+        "tool_choice": {"type": "function", "name": "multi_agent_v1.spawn_agent"},
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1.spawn_agent",
+            "arguments": "{\"message\":\"review the diff\"}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["tools"][0]["name"], "spawn_agent");
+    assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert_eq!(
+        normalized.body["input"][0]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
+    assert_eq!(normalized.body["tool_choice"]["name"], "spawn_agent");
+}
+
+#[test]
+fn native_responses_replay_string_and_function_tool_choice() {
+    let string_choice = json!({
+        "model": "test-model",
+        "tool_choice": "multi_agent_v1.spawn_agent",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+    let normalized = normalize_responses_request(string_choice, &TransformConfig::default());
+    assert_eq!(normalized.body["tool_choice"], "spawn_agent");
+
+    let nested = json!({
+        "model": "test-model",
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "multi_agent_v1.spawn_agent"}
+        },
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+    let normalized = normalize_responses_request(nested, &TransformConfig::default());
+    assert_eq!(
+        normalized.body["tool_choice"]["function"]["name"],
+        "spawn_agent"
+    );
+}
+
+#[test]
+fn native_responses_replay_custom_tool_call_history_with_visible_name() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "custom_tool_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1.spawn_agent",
+            "input": "review the diff"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["type"], "custom_tool_call");
+    assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert_eq!(normalized.body["input"][0]["input"], "review the diff");
+}
+
+#[test]
+fn native_responses_preserve_structured_custom_tool_call_input() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "custom_tool_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1.spawn_agent",
+            "input": {"message": "review the diff", "task_name": "reviewer"}
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert_eq!(
+        normalized.body["input"][0]["input"],
+        json!({"message": "review the diff", "task_name": "reviewer"})
+    );
+}
+
+#[test]
+fn native_responses_replay_collapsed_history_as_visible_child() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1_tool",
+            "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"review\"}}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert_eq!(
+        normalized.body["input"][0]["arguments"],
+        r#"{"message":"review"}"#
+    );
+}
+
+#[test]
+fn chat_transform_rewrites_tool_choice_to_visible_name() {
+    let request = json!({
+        "model": "test-model",
+        "tool_choice": {"type": "function", "name": "multi_agent_v1.spawn_agent"},
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    assert_eq!(transformed.body["tool_choice"]["name"], "spawn_agent");
+}
+
+#[test]
+fn chat_transform_rewrites_string_and_function_tool_choice() {
+    let string_choice = json!({
+        "model": "test-model",
+        "tool_choice": "multi_agent_v1.spawn_agent",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+    let transformed = responses_to_chat(string_choice, &TransformConfig::default());
+    assert_eq!(transformed.body["tool_choice"], "spawn_agent");
+
+    let nested = json!({
+        "model": "test-model",
+        "tool_choice": {
+            "type": "function",
+            "function": {"name": "multi_agent_v1.spawn_agent"}
+        },
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+    let transformed = responses_to_chat(nested, &TransformConfig::default());
+    assert_eq!(
+        transformed.body["tool_choice"]["function"]["name"],
+        "spawn_agent"
+    );
+}
+
+#[test]
+fn native_responses_replay_tool_call_history_with_visible_name() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "tool_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1.spawn_agent",
+            "arguments": "{\"message\":\"review the diff\"}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["type"], "tool_call");
+    assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert_eq!(
+        normalized.body["input"][0]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
+}
+
+#[test]
+fn chat_transform_replays_tool_call_history_as_visible_name() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "tool_call",
+            "call_id": "call_1",
+            "name": "multi_agent_v1.spawn_agent",
+            "arguments": "{\"message\":\"review the diff\"}"
+        }],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
+}
+
+#[test]
+fn chat_transform_rewrites_allowed_tools_tool_choice() {
+    let request = json!({
+        "model": "test-model",
+        "tool_choice": {
+            "type": "allowed_tools",
+            "mode": "auto",
+            "tools": [{"type": "function", "name": "multi_agent_v1.spawn_agent"}]
+        },
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    assert_eq!(
+        transformed.body["tool_choice"]["tools"][0]["name"],
+        "spawn_agent"
+    );
 }

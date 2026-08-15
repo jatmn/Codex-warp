@@ -115,6 +115,7 @@ Keep source changes near their domain:
 - `src/store.rs`: SQLite overlays and usage analytics
 - `src/structured_output.rs`: Chat Completions JSON Schema compatibility fallback
 - `src/guardian_compat.rs`: Guardian auto-review prompt compatibility shim
+- `src/namespace_helpers.rs`: Codex namespace-tool expansion for sub-agent helpers
 - `src/webui.rs`: embedded Web UI routes and config/analytics API
 - `src/provider_templates.rs`: bundled example provider profiles for the Web UI
 - `src/webui_static/`: embedded HTML/CSS/JS for the Web UI

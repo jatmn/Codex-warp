@@ -11,6 +11,7 @@ metadata and request compatibility once they start a model turn.
 - [What Codex Warp Must Preserve](#what-codex-warp-must-preserve)
 - [Structured Output And Chat Stream Compatibility](#structured-output-and-chat-stream-compatibility)
 - [Guardian Auto-Review Compatibility](#guardian-auto-review-compatibility)
+- [Sub-Agent Namespace Helpers](#sub-agent-namespace-helpers)
 - [Codex App Server Model Refresh](#codex-app-server-model-refresh)
 - [Configurable Codex Model Metadata](#configurable-codex-model-metadata)
 
@@ -110,6 +111,37 @@ clarification.
 If the Guardian request also needs structured output, the JSON Schema fallback
 still applies independently. The prompt shim is about decision semantics; the
 fallback is about making the JSON response parseable.
+
+## Sub-Agent Namespace Helpers
+
+These notes were checked on 2026-08-14 against the public
+[`openai/codex`](https://github.com/openai/codex) source tree:
+
+- [`codex-rs/core/src/tools/handlers/multi_agents_spec.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_spec.rs)
+  wraps v1 `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, and
+  `close_agent` in a Responses `type = "namespace"` tool named
+  `multi_agent_v1`. The runtime names Codex routes are dotted, for example
+  `multi_agent_v1.spawn_agent`.
+- Multi-agent v2 advertises those tools as ordinary functions such as
+  `spawn_agent`, so Warp leaves them unchanged.
+
+Chat Completions providers and many OpenAI-compatible Responses backends do
+not understand namespace tools. Warp expands each namespace child into an
+ordinary function named after the child (`spawn_agent`, `wait_agent`, and so
+on) and keeps the original child description and parameter schema. If a child
+name is already present as a top-level function, Warp falls back to the
+dotted runtime name.
+
+On the way back to Codex, Warp rewrites helper calls to the namespaced runtime
+name. It also unwraps the older collapsed envelope
+`{ "tool": "spawn_agent", "arguments": { ... } }` that some models emit when
+they only saw a single `{namespace}_tool` function.
+
+For Chat Completions coding turns (not Guardian requests), Warp also inserts a
+short system clarification that sub-agent tools are ordinary functions and
+should be called directly.
+
+Empty namespaces still collapse to `{namespace}_tool` as a last-resort helper.
 
 ## Codex App Server Model Refresh
 

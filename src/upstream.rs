@@ -18,11 +18,14 @@ use crate::config_loader::resolve_provider_alias;
 use crate::debug_log::request_debug_summary;
 use crate::guardian_compat::apply_guardian_compat_shim_from_source;
 use crate::guardian_compat::guardian_compat_debug_event;
+use crate::guardian_compat::is_guardian_request;
 use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
 use crate::http::endpoint_url;
 use crate::http::error_response;
 use crate::ids::generated_id;
+use crate::namespace_helpers::apply_subagent_helper_shim;
+use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
@@ -84,7 +87,9 @@ pub(crate) async fn proxy_native_responses(
     );
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
-    let body = normalize_responses_request(body, &selected.transform);
+    let native = normalize_responses_request(body, &selected.transform);
+    let namespace_helpers = native.namespace_helpers;
+    let body = native.body;
     let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
     let request_log_id = generated_id("dbg");
     state.debug_log.log_request(
@@ -107,6 +112,7 @@ pub(crate) async fn proxy_native_responses(
         body,
         stream_requested,
         custom_tool_names,
+        namespace_helpers,
         request_log_id,
         usage_recorder,
     )
@@ -138,6 +144,13 @@ pub(crate) async fn proxy_chat_responses(
         state
             .debug_log
             .log(guardian_compat_debug_event(&request_log_id, true));
+    }
+    let subagent_helpers_applied = !is_guardian_request(&body)
+        && apply_subagent_helper_shim(&mut original_chat_body, &chat_transform.namespace_helpers);
+    if subagent_helpers_applied {
+        state
+            .debug_log
+            .log(subagent_helper_debug_event(&request_log_id, true));
     }
     let cache_key = structured_output_cache_key(
         &selected.provider.base_url,
@@ -190,6 +203,7 @@ pub(crate) async fn proxy_chat_responses(
             "transform": chat_transform.diagnostics,
             "json_schema_attempted": json_schema_attempted,
             "guardian_compat_applied": guardian_compat_applied,
+            "subagent_helpers_applied": subagent_helpers_applied,
             "response_format": json_schema_debug_summary(&outbound_body)
         }),
         &outbound_body,
@@ -273,6 +287,7 @@ pub(crate) async fn proxy_chat_responses(
                 "json_schema_attempted": true,
                 "fallback_retry": true,
                 "guardian_compat_applied": guardian_compat_applied,
+                "subagent_helpers_applied": subagent_helpers_applied,
                 "response_format": json_schema_debug_summary(&outbound_body)
             }),
             &outbound_body,
@@ -363,6 +378,7 @@ pub(crate) async fn proxy_chat_responses(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
+            chat_transform.namespace_helpers,
             tool_policy,
             state.debug_log.clone(),
             request_log_id,
@@ -440,6 +456,7 @@ pub(crate) async fn proxy_chat_responses(
                 Json(chat_json_to_responses_with_policy(
                     value,
                     &chat_transform.custom_tool_names,
+                    &chat_transform.namespace_helpers,
                     &tool_policy,
                 ))
                 .into_response()
@@ -590,6 +607,7 @@ async fn send_native_responses(
     body: Value,
     stream_response: bool,
     custom_tool_names: BTreeSet<String>,
+    namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
     request_log_id: String,
     usage_recorder: Option<UsageRecorder>,
 ) -> Response {
@@ -639,6 +657,7 @@ async fn send_native_responses(
         let body = Body::from_stream(native_stream_to_responses(
             upstream,
             custom_tool_names,
+            namespace_helpers,
             tool_policy,
             state.debug_log.clone(),
             request_log_id,
@@ -713,10 +732,17 @@ async fn send_native_responses(
         recorder.record_completed((!normalized_usage.is_null()).then_some(&normalized_usage));
     }
 
-    let body = if status.is_success() && (!custom_tool_names.is_empty() || tool_policy.enabled) {
+    let body = if status.is_success()
+        && (!custom_tool_names.is_empty() || !namespace_helpers.is_empty() || tool_policy.enabled)
+    {
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(mut value) => {
-                morph_native_response_value(&mut value, &custom_tool_names, &tool_policy);
+                morph_native_response_value(
+                    &mut value,
+                    &custom_tool_names,
+                    &namespace_helpers,
+                    &tool_policy,
+                );
                 Body::from(Bytes::from(value.to_string()))
             }
             Err(_) => Body::from(bytes),

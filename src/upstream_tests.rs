@@ -21,6 +21,7 @@ use crate::config::ProviderConfig;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
 use crate::guardian_compat::GUARDIAN_COMPAT_CLARIFICATION;
+use crate::namespace_helpers::SUBAGENT_HELPER_CLARIFICATION;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::AnalyticsRange;
@@ -207,6 +208,7 @@ async fn native_stream_request_preserves_upstream_json_error_status_and_body() {
         json!({"model": "test-model", "stream": true}),
         true,
         BTreeSet::new(),
+        crate::namespace_helpers::NamespaceHelpers::default(),
         "dbg_native_http_error".to_string(),
         None,
     )
@@ -257,6 +259,7 @@ async fn native_stream_json_error_surfaces_provider_message_before_framing_error
         json!({"model": "test-model", "stream": true}),
         true,
         BTreeSet::new(),
+        crate::namespace_helpers::NamespaceHelpers::default(),
         "dbg_native_json_error".to_string(),
         None,
     )
@@ -312,6 +315,7 @@ async fn native_invalid_success_body_is_not_recorded_as_completed() {
         json!({"model": "test-model"}),
         false,
         BTreeSet::new(),
+        crate::namespace_helpers::NamespaceHelpers::default(),
         "dbg_native_invalid_success".to_string(),
         recorder,
     )
@@ -1201,5 +1205,121 @@ async fn guardian_shim_does_not_override_upstream_deny_outcome() {
         .join("");
     assert!(text.contains("\"outcome\":\"deny\""));
     assert!(!text.contains("\"outcome\":\"allow\""));
+    server.abort();
+}
+
+fn multi_agent_namespace_request(prompt_cache_key: Option<&str>) -> Value {
+    let mut request = json!({
+        "model": "deepseek-v4-flash",
+        "stream": false,
+        "instructions": "You are a coding agent.",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}}
+                }
+            }]
+        }],
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "spawn a reviewer"}]
+        }]
+    });
+    if let Some(key) = prompt_cache_key {
+        request["prompt_cache_key"] = json!(key);
+    }
+    request
+}
+
+fn has_subagent_helper_clarification(body: &Value) -> bool {
+    body.get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message.get("role").and_then(Value::as_str) == Some("system")
+                    && message.get("content").and_then(Value::as_str)
+                        == Some(SUBAGENT_HELPER_CLARIFICATION)
+            })
+        })
+}
+
+#[tokio::test]
+async fn namespace_request_receives_subagent_helper_clarification() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-subagent-helper-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("debug.jsonl");
+    let (base_url, bodies, server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let response = proxy_chat_responses(
+        test_state_with_debug(log_path.clone()),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        multi_agent_namespace_request(None),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen.len(), 1);
+    assert!(has_subagent_helper_clarification(&seen[0]));
+    let names: Vec<&str> = seen[0]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"spawn_agent"));
+    let events = debug_events(&log_path);
+    let request_event = events
+        .iter()
+        .find(|event| event["event"] == "upstream_request")
+        .expect("upstream request debug event");
+    assert_eq!(request_event["subagent_helpers_applied"], true);
+    assert_eq!(request_event["guardian_compat_applied"], false);
+    server.abort();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn guardian_request_does_not_receive_subagent_helper_clarification() {
+    let (base_url, bodies, server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let mut request = multi_agent_namespace_request(Some("guardian:test"));
+    request["text"] = json!({
+        "format": {
+            "type": "json_schema",
+            "name": "guardian_decision",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "properties": {"outcome": {"type": "string"}},
+                "required": ["outcome"]
+            }
+        }
+    });
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert!(has_guardian_clarification(&seen[0]));
+    assert!(!has_subagent_helper_clarification(&seen[0]));
     server.abort();
 }

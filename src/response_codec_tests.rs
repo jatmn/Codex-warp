@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::config::DebugConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
+use crate::namespace_helpers::NamespaceHelpers;
 use crate::store::Store;
 
 fn completed_end_turn(events: &[String]) -> bool {
@@ -75,6 +76,7 @@ async fn native_failed_stream_does_not_record_usage() {
     let events = native_stream_to_responses(
         upstream_response_with_body(failed.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_failed_usage".to_string(),
@@ -107,6 +109,7 @@ async fn native_incomplete_stream_is_forwarded_once_without_transport_failure() 
     let events = native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_native_incomplete_terminal".to_string(),
@@ -132,6 +135,7 @@ async fn native_stream_semantic_error_becomes_response_failed() {
     let events = native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_native_semantic_error".to_string(),
@@ -155,6 +159,7 @@ async fn native_stream_without_completed_event_becomes_response_failed() {
     let events = native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_native_incomplete".to_string(),
@@ -191,6 +196,7 @@ async fn native_completed_with_failed_status_does_not_record_usage() {
     let events = native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_failed_status_usage".to_string(),
@@ -231,6 +237,7 @@ async fn native_completed_without_usage_records_prompt_and_session() {
     native_stream_to_responses(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_native_no_usage".to_string(),
@@ -281,6 +288,7 @@ fn continue_guard_forces_followup_for_mid_plan_stop() {
     let events = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         Some((&DebugLog::disabled(), "dbg_test", &guard)),
     );
@@ -321,6 +329,7 @@ fn continue_guard_leaves_completed_summary_as_end_turn() {
     let events = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         Some((&DebugLog::disabled(), "dbg_test", &guard)),
     );
@@ -361,6 +370,7 @@ fn continue_guard_observe_mode_does_not_force_followup() {
     let events = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         Some((&DebugLog::disabled(), "dbg_test", &guard)),
     );
@@ -384,6 +394,7 @@ fn chat_text_delta_starts_with_output_item_added() {
     let done = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         None,
     );
@@ -407,6 +418,7 @@ fn chat_stream_completion_includes_normalized_usage() {
     let events = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         None,
     );
@@ -471,6 +483,7 @@ fn chat_stream_reasoning_content_emits_reasoning_deltas() {
         .chain(accum.finish(
             "resp_test",
             &BTreeSet::new(),
+            &NamespaceHelpers::default(),
             &crate::config::ToolPolicyConfig::default(),
             None,
         ))
@@ -569,6 +582,7 @@ fn chat_stream_reasoning_details_deduplicates_cumulative_snapshots() {
     let done = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         None,
     );
@@ -602,6 +616,7 @@ fn chat_stream_reasoning_details_handles_incremental_items() {
     let done = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         None,
     );
@@ -631,6 +646,7 @@ fn chat_stream_reasoning_content_deduplicates_cumulative_strings() {
     let done = accum.finish(
         "resp_test",
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
         None,
     );
@@ -806,6 +822,7 @@ fn chat_completion_tool_policy_decorates_github_pr_call() {
             }]
         }),
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &config.tool_policy,
     );
 
@@ -817,6 +834,43 @@ fn chat_completion_tool_policy_decorates_github_pr_call() {
     assert_eq!(value["output"][0]["type"], "function_call");
     assert_eq!(arguments["sandbox_permissions"], "require_escalated");
     assert_eq!(arguments["prefix_rule"], json!(["gh", "pr"]));
+}
+
+#[test]
+fn chat_completion_rewrites_spawn_agent_helper_to_namespaced_runtime() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "spawn_agent",
+                            "arguments": "{\"message\":\"review the diff\"}"
+                        }
+                    }]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(value["output"][0]["type"], "function_call");
+    assert_eq!(value["output"][0]["name"], "multi_agent_v1.spawn_agent");
+    assert_eq!(
+        value["output"][0]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
 }
 
 #[test]
@@ -842,6 +896,7 @@ fn chat_completion_tool_policy_blocks_github_token_call_in_enforce_mode() {
             }]
         }),
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &config.tool_policy,
     );
 
@@ -877,6 +932,7 @@ fn chat_completion_tool_policy_blocks_github_token_call_in_assist_mode() {
             }]
         }),
         &BTreeSet::new(),
+        &NamespaceHelpers::default(),
         &config.tool_policy,
     );
 
@@ -975,6 +1031,7 @@ fn native_function_calls_for_morphed_custom_tools_are_restored() {
     morph_native_response_value(
         &mut value,
         &custom_tool_names,
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
     );
 
@@ -982,6 +1039,109 @@ fn native_function_calls_for_morphed_custom_tools_are_restored() {
     assert_eq!(value["item"]["name"], "apply_patch");
     assert_eq!(value["item"]["input"], "*** Begin Patch\n*** End Patch\n");
     assert!(value["item"].get("arguments").is_none());
+}
+
+#[test]
+fn native_morph_rewrites_namespace_helper_before_custom_tool_classification() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let mut value = json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "call_id": "call_1",
+            "arguments": "{\"message\":\"review the diff\"}"
+        }
+    });
+    let custom_tool_names = BTreeSet::from(["spawn_agent".to_string()]);
+
+    morph_native_response_value(
+        &mut value,
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(value["item"]["type"], "function_call");
+    assert_eq!(value["item"]["name"], "multi_agent_v1.spawn_agent");
+    assert_eq!(
+        value["item"]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
+}
+
+#[test]
+fn native_sse_rewrites_namespace_helper_before_custom_tool_classification() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"function_call\",\"name\":\"spawn_agent\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["spawn_agent".to_string()]),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"type\":\"function_call\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
+    assert!(!morphed.contains("custom_tool_call"));
+}
+
+#[test]
+fn native_sse_rewrites_tool_call_items_like_function_calls() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"tool_call\",\"name\":\"spawn_agent\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"type\":\"function_call\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
+    assert!(!morphed.contains("\"type\":\"tool_call\""));
+}
+
+#[test]
+fn native_sse_restores_custom_tools_from_tool_call_items() {
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"tool_call\",\"name\":\"apply_patch\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["apply_patch".to_string()]),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"type\":\"custom_tool_call\""));
+    assert!(morphed.contains("\"name\":\"apply_patch\""));
+    assert!(morphed.contains("\"input\":\"patch\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
 }
 
 #[test]
@@ -995,6 +1155,7 @@ fn cr_only_native_sse_frames_are_morphed() {
     let morphed = morph_native_sse_frame(
         frame,
         &BTreeSet::from(["apply_patch".to_string()]),
+        &NamespaceHelpers::default(),
         &crate::config::ToolPolicyConfig::default(),
     );
     assert!(morphed.contains("custom_tool_call"));
@@ -1096,6 +1257,7 @@ async fn chat_stream_fails_when_sse_frame_buffer_exceeds_limit() {
         upstream,
         "resp_overflow".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
@@ -1137,6 +1299,7 @@ async fn chat_stream_without_done_fails_and_does_not_record_completion() {
         upstream_response_with_body(body.as_bytes().to_vec()),
         "resp_incomplete".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_incomplete".to_string(),
@@ -1173,6 +1336,7 @@ async fn malformed_chat_frame_followed_by_done_fails_without_recording_completio
         upstream_response_with_body(b"data: {bad json}\n\ndata: [DONE]\n\n".to_vec()),
         "resp_malformed".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_malformed".to_string(),
@@ -1220,6 +1384,7 @@ async fn chat_stream_error_frame_followed_by_done_does_not_record_completion() {
         upstream_response_with_body(body.as_bytes().to_vec()),
         "resp_error".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_error".to_string(),
@@ -1267,6 +1432,7 @@ async fn wrapped_chat_stream_error_does_not_record_completion() {
         upstream_response_with_body(body.as_bytes().to_vec()),
         "resp_wrapped_error".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_wrapped_error".to_string(),
@@ -1325,6 +1491,7 @@ async fn completed_chat_stream_without_usage_records_prompt_and_session() {
         ),
         "resp_complete".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_complete".to_string(),
@@ -1348,6 +1515,7 @@ async fn done_only_chat_stream_is_not_a_completed_response() {
         upstream_response_with_body(b"data: [DONE]\n\n".to_vec()),
         "resp_empty".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_empty".to_string(),
@@ -1367,6 +1535,7 @@ async fn malformed_choice_does_not_complete_chat_stream() {
         upstream_response_with_body(b"data: {\"choices\":[null]}\n\ndata: [DONE]\n\n".to_vec()),
         "resp_bad_choice".to_string(),
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_bad_choice".to_string(),
@@ -1396,6 +1565,7 @@ async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
     let events = native_stream_to_responses(
         upstream,
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         tool_policy,
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
@@ -1422,6 +1592,7 @@ async fn native_passthrough_stream_errors_when_debug_buffer_exceeds_limit() {
     let events = native_stream_to_responses(
         upstream,
         BTreeSet::new(),
+        NamespaceHelpers::default(),
         crate::config::ToolPolicyConfig::default(),
         DebugLog::disabled(),
         "dbg_overflow".to_string(),
@@ -1554,6 +1725,7 @@ async fn chat_stream_done_marker_still_completes() {
             ),
             "resp_done".to_string(),
             BTreeSet::new(),
+            NamespaceHelpers::default(),
             crate::config::ToolPolicyConfig::default(),
             debug_log,
             "dbg_done".to_string(),
@@ -1586,6 +1758,7 @@ async fn chat_stream_stop_without_done_completes() {
             ),
             "resp_stop_eof".to_string(),
             BTreeSet::new(),
+            NamespaceHelpers::default(),
             crate::config::ToolPolicyConfig::default(),
             debug_log,
             "dbg_stop_eof".to_string(),
@@ -1626,6 +1799,7 @@ async fn chat_stream_tool_calls_without_done_completes() {
             upstream_response_with_body(body.as_bytes().to_vec()),
             "resp_tools_eof".to_string(),
             BTreeSet::new(),
+            NamespaceHelpers::default(),
             crate::config::ToolPolicyConfig::default(),
             DebugLog::disabled(),
             "dbg_tools_eof".to_string(),
@@ -1650,6 +1824,44 @@ async fn chat_stream_tool_calls_without_done_completes() {
 }
 
 #[tokio::test]
+async fn chat_stream_rewrites_spawn_agent_helper_to_namespaced_runtime() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",",
+        "\"function\":{\"name\":\"spawn_agent\",\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+    );
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses(
+            upstream_response_with_body(body.as_bytes().to_vec()),
+            "resp_spawn_stream".to_string(),
+            BTreeSet::new(),
+            helpers,
+            crate::config::ToolPolicyConfig::default(),
+            DebugLog::disabled(),
+            "dbg_spawn_stream".to_string(),
+            ContinueGuardState::default(),
+            None,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+    assert!(events.iter().any(|event| {
+        event.contains("\"name\":\"multi_agent_v1.spawn_agent\"")
+            && event.contains("\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"")
+    }));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.contains("\"name\":\"spawn_agent\""))
+    );
+}
+
+#[tokio::test]
 async fn chat_stream_content_without_finish_reason_or_done_fails() {
     let (debug_log, path, dir) = temp_debug_log("chat-truncated");
     let events = collect_chat_stream_text(
@@ -1659,6 +1871,7 @@ async fn chat_stream_content_without_finish_reason_or_done_fails() {
             ),
             "resp_truncated".to_string(),
             BTreeSet::new(),
+            NamespaceHelpers::default(),
             crate::config::ToolPolicyConfig::default(),
             debug_log,
             "dbg_truncated".to_string(),
@@ -1700,6 +1913,7 @@ async fn chat_stream_transport_error_still_fails() {
             upstream,
             "resp_transport".to_string(),
             BTreeSet::new(),
+            NamespaceHelpers::default(),
             crate::config::ToolPolicyConfig::default(),
             DebugLog::disabled(),
             "dbg_transport".to_string(),

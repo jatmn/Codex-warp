@@ -8,6 +8,11 @@ use serde_json::json;
 use crate::config::TransformConfig;
 use crate::config::UnsupportedToolStrategy;
 use crate::ids::generated_id;
+use crate::namespace_helpers::NamespaceHelpers;
+use crate::namespace_helpers::expand_namespace_responses_tool;
+use crate::namespace_helpers::expand_namespace_tool;
+use crate::namespace_helpers::is_custom_tool_call_type;
+use crate::namespace_helpers::is_function_call_type;
 use crate::transform_morph::apply_native_request_morphs;
 use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
@@ -17,7 +22,14 @@ use crate::transform_morph::strip_disabled_reasoning_effort;
 pub struct ChatTransform {
     pub body: Value,
     pub custom_tool_names: BTreeSet<String>,
+    pub namespace_helpers: NamespaceHelpers,
     pub diagnostics: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTransform {
+    pub body: Value,
+    pub namespace_helpers: NamespaceHelpers,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,8 +48,41 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
-    let mut messages = Vec::new();
     let mut input_tools = Vec::new();
+    if let Some(Value::Array(input)) = request.get("input") {
+        for item in input {
+            if let Some(tools) = item.get("tools").and_then(Value::as_array) {
+                input_tools.extend(tools.iter().cloned());
+            }
+        }
+    }
+    if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+        input_tools.extend(tools.iter().cloned());
+    }
+
+    let mut custom_tool_names = BTreeSet::new();
+    let mut namespace_helpers = NamespaceHelpers::default();
+    let mut used_tool_names = BTreeSet::new();
+    let mut tool_diagnostics = Vec::new();
+    reserve_non_namespace_tool_names(&input_tools, transform, &mut used_tool_names);
+    let converted: Vec<Value> = input_tools
+        .iter()
+        .enumerate()
+        .flat_map(|(index, tool)| {
+            convert_tool(
+                tool,
+                transform,
+                &mut custom_tool_names,
+                &mut namespace_helpers,
+                &mut used_tool_names,
+                &mut tool_diagnostics,
+                "responses",
+                index,
+            )
+        })
+        .collect();
+
+    let mut messages = Vec::new();
     if let Some(instructions) = instructions {
         messages.push(json!({"role": "system", "content": instructions}));
     }
@@ -57,8 +102,12 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                     continue;
                 }
                 let prior_reasoning = pending_reasoning.take();
-                let (item_messages, consumed_reasoning) =
-                    response_item_to_messages(item, transform, prior_reasoning.as_deref());
+                let (item_messages, consumed_reasoning) = response_item_to_messages(
+                    item,
+                    transform,
+                    &namespace_helpers,
+                    prior_reasoning.as_deref(),
+                );
                 if !consumed_reasoning && should_retain_pending_reasoning(item) {
                     pending_reasoning = prior_reasoning;
                 }
@@ -78,9 +127,6 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                         messages.push(message);
                     }
                     messages.extend(item_messages);
-                }
-                if let Some(tools) = item.get("tools").and_then(Value::as_array) {
-                    input_tools.extend(tools.iter().cloned());
                 }
             }
             if let Some(message) = pending_tool_calls.take() {
@@ -110,31 +156,15 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
         copy_if_present(&request, &mut out, "stream_options");
     }
 
-    if let Some(tools) = request.get("tools").and_then(Value::as_array) {
-        input_tools.extend(tools.iter().cloned());
-    }
-    let mut custom_tool_names = BTreeSet::new();
-    let mut tool_diagnostics = Vec::new();
-    let converted: Vec<Value> = input_tools
-        .iter()
-        .enumerate()
-        .filter_map(|(index, tool)| {
-            convert_tool(
-                tool,
-                transform,
-                &mut custom_tool_names,
-                &mut tool_diagnostics,
-                "responses",
-                index,
-            )
-        })
-        .collect();
     if !converted.is_empty() {
         out.insert("tools".to_string(), Value::Array(converted));
         if !transform.drop_empty_tool_choice {
             copy_if_present(&request, &mut out, "tool_choice");
         } else if request.get("tool_choice").and_then(Value::as_str) != Some("auto") {
             copy_if_present(&request, &mut out, "tool_choice");
+        }
+        if let Some(choice) = out.get_mut("tool_choice") {
+            rewrite_tool_choice_names(choice, &namespace_helpers);
         }
     }
 
@@ -155,23 +185,43 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
     ChatTransform {
         body,
         custom_tool_names,
+        namespace_helpers,
         diagnostics,
     }
 }
 
-pub fn normalize_responses_request(mut request: Value, transform: &TransformConfig) -> Value {
+pub fn normalize_responses_request(request: Value, transform: &TransformConfig) -> NativeTransform {
+    let mut request = request;
     apply_native_request_morphs(&mut request, transform);
+    let mut helpers = NamespaceHelpers::default();
+    let mut used_names = BTreeSet::new();
+    let mut all_tools = Vec::new();
+    if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+        all_tools.extend(tools.iter().cloned());
+    }
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        for item in input {
+            if let Some(tools) = item.get("tools").and_then(Value::as_array) {
+                all_tools.extend(tools.iter().cloned());
+            }
+        }
+    }
+    reserve_non_namespace_tool_names(&all_tools, transform, &mut used_names);
     if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
-        morph_responses_tools(tools, transform);
+        morph_responses_tools(tools, transform, &mut helpers, &mut used_names);
     }
     if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
         for item in input {
             if let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut) {
-                morph_responses_tools(tools, transform);
+                morph_responses_tools(tools, transform, &mut helpers, &mut used_names);
             }
         }
     }
-    request
+    rewrite_native_request_visible_calls(&mut request, &helpers);
+    NativeTransform {
+        body: request,
+        namespace_helpers: helpers,
+    }
 }
 
 pub fn native_custom_tool_names(request: &Value, transform: &TransformConfig) -> BTreeSet<String> {
@@ -212,17 +262,121 @@ fn collect_custom_tool_names(
     }
 }
 
-fn morph_responses_tools(tools: &mut Vec<Value>, transform: &TransformConfig) {
+fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
+    if helpers.is_empty() {
+        return;
+    }
+    if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            rewrite_native_function_call_item(item, helpers);
+        }
+    }
+    if let Some(choice) = request.get_mut("tool_choice") {
+        rewrite_tool_choice_names(choice, helpers);
+    }
+}
+
+fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelpers) {
+    let item_type = item.get("type").and_then(Value::as_str);
+    let is_custom = is_custom_tool_call_type(item_type);
+    if !is_function_call_type(item_type) && !is_custom {
+        return;
+    }
+    let raw_name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    if is_custom {
+        // Native custom_tool_call items already carry Responses `input`. Rewriting
+        // through Chat Completions `{input: ...}` encoding would stringify or drop
+        // non-string payloads. Only the Codex runtime name needs to become visible.
+        let (name, _) = helpers.to_visible_call(&raw_name, "{}");
+        if let Some(map) = item.as_object_mut() {
+            map.insert("name".to_string(), json!(name));
+        }
+        return;
+    }
+    let raw_arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}")
+        .to_string();
+    let (name, arguments) = helpers.to_visible_call(&raw_name, &raw_arguments);
+    if let Some(map) = item.as_object_mut() {
+        map.insert("name".to_string(), json!(name));
+        map.insert("arguments".to_string(), json!(arguments));
+    }
+}
+
+fn rewrite_tool_choice_names(choice: &mut Value, helpers: &NamespaceHelpers) {
+    match choice {
+        Value::String(name) => {
+            *name = helpers.model_visible_name(name).to_string();
+        }
+        Value::Object(map) => {
+            if let Some(Value::String(name)) = map.get_mut("name") {
+                *name = helpers.model_visible_name(name).to_string();
+            }
+            if let Some(function) = map.get_mut("function")
+                && let Some(Value::String(name)) = function.get_mut("name")
+            {
+                *name = helpers.model_visible_name(name).to_string();
+            }
+            if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
+                for tool in tools {
+                    rewrite_tool_choice_names(tool, helpers);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn morph_responses_tools(
+    tools: &mut Vec<Value>,
+    transform: &TransformConfig,
+    helpers: &mut NamespaceHelpers,
+    used_names: &mut BTreeSet<String>,
+) {
     let converted: Vec<Value> = tools
         .iter()
-        .filter_map(|tool| convert_responses_tool(tool, transform))
+        .flat_map(|tool| convert_responses_tool(tool, transform, helpers, used_names))
         .collect();
     *tools = converted;
+}
+
+fn reserve_non_namespace_tool_names(
+    tools: &[Value],
+    transform: &TransformConfig,
+    used_names: &mut BTreeSet<String>,
+) {
+    for tool in tools {
+        let tool_type = tool
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("function");
+        if tool_type == "namespace" {
+            continue;
+        }
+        if transform
+            .unsupported_tool_types
+            .iter()
+            .any(|blocked| blocked == tool_type)
+            && transform.unsupported_tool_strategy == UnsupportedToolStrategy::Drop
+        {
+            continue;
+        }
+        if let Some(name) = tool_name(tool) {
+            used_names.insert(name);
+        }
+    }
 }
 
 fn response_item_to_messages(
     item: &Value,
     transform: &TransformConfig,
+    namespace_helpers: &NamespaceHelpers,
     prior_reasoning: Option<&str>,
 ) -> (Vec<Value>, bool) {
     match item.get("type").and_then(Value::as_str) {
@@ -257,15 +411,14 @@ fn response_item_to_messages(
                 false,
             )
         }
-        Some("function_call") | Some("custom_tool_call") => {
+        item_type if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) => {
             let call_id = item
                 .get("call_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| generated_id("call"));
-            let name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
-            let arguments = if item.get("type").and_then(Value::as_str) == Some("custom_tool_call")
-            {
+            let raw_name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let raw_arguments = if is_custom_tool_call_type(item_type) {
                 custom_tool_history_arguments(item.get("input"))
             } else {
                 item.get("arguments")
@@ -273,6 +426,7 @@ fn response_item_to_messages(
                     .unwrap_or("{}")
                     .to_string()
             };
+            let (name, arguments) = namespace_helpers.to_visible_call(raw_name, &raw_arguments);
             let mut message = json!({
                 "role": "assistant",
                 "content": null,
@@ -404,7 +558,9 @@ fn reasoning_item_to_text(item: &Value) -> Option<String> {
 
 fn should_retain_pending_reasoning(item: &Value) -> bool {
     match item.get("type").and_then(Value::as_str) {
-        Some("function_call") | Some("custom_tool_call") => true,
+        item_type if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) => {
+            true
+        }
         Some("function_call_output") | Some("custom_tool_call_output") => true,
         Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
         _ => false,
@@ -487,10 +643,12 @@ fn convert_tool(
     tool: &Value,
     transform: &TransformConfig,
     custom_tool_names: &mut BTreeSet<String>,
+    namespace_helpers: &mut NamespaceHelpers,
+    used_names: &mut BTreeSet<String>,
     diagnostics: &mut Vec<ToolTransformDiagnostic>,
     source: &'static str,
     index: usize,
-) -> Option<Value> {
+) -> Vec<Value> {
     let tool_type = tool
         .get("type")
         .and_then(Value::as_str)
@@ -510,7 +668,7 @@ fn convert_tool(
                     action: "dropped",
                     reason: Some("unsupported_tool_type"),
                 });
-                None
+                Vec::new()
             }
             UnsupportedToolStrategy::Passthrough => {
                 diagnostics.push(ToolTransformDiagnostic {
@@ -520,7 +678,7 @@ fn convert_tool(
                     action: "passthrough",
                     reason: Some("unsupported_tool_type_passthrough"),
                 });
-                Some(tool.clone())
+                vec![tool.clone()]
             }
             UnsupportedToolStrategy::AsFunction => {
                 if let Some(name) = tool.get("name").and_then(Value::as_str) {
@@ -533,13 +691,16 @@ fn convert_tool(
                     action: "converted_to_function",
                     reason: Some("unsupported_tool_type"),
                 });
-                Some(custom_tool_to_chat_function(tool))
+                vec![custom_tool_to_chat_function(tool)]
             }
         };
     }
 
     match tool_type {
         "function" => {
+            if let Some(name) = tool_name(tool) {
+                used_names.insert(name);
+            }
             diagnostics.push(ToolTransformDiagnostic {
                 source,
                 name,
@@ -547,20 +708,35 @@ fn convert_tool(
                 action: "converted_to_function",
                 reason: None,
             });
-            Some(tool_to_chat_function(tool))
+            vec![tool_to_chat_function(tool)]
         }
         "namespace" => {
+            let expanded = expand_namespace_tool(tool, used_names, namespace_helpers);
+            let reason = if expanded.len() == 1
+                && expanded[0]
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.ends_with("_tool"))
+            {
+                Some("namespace_tool")
+            } else {
+                Some("namespace_expanded")
+            };
             diagnostics.push(ToolTransformDiagnostic {
                 source,
                 name,
                 tool_type: tool_type.to_string(),
                 action: "converted_to_function",
-                reason: Some("namespace_tool"),
+                reason,
             });
-            Some(namespace_to_chat_function(tool))
+            expanded
         }
         _ => match named_tool_to_chat_function(tool) {
             Some(tool) => {
+                if let Some(name) = tool_name(&tool) {
+                    used_names.insert(name);
+                }
                 diagnostics.push(ToolTransformDiagnostic {
                     source,
                     name,
@@ -568,7 +744,7 @@ fn convert_tool(
                     action: "converted_to_function",
                     reason: Some("named_tool"),
                 });
-                Some(tool)
+                vec![tool]
             }
             None => {
                 diagnostics.push(ToolTransformDiagnostic {
@@ -578,7 +754,7 @@ fn convert_tool(
                     action: "dropped",
                     reason: Some("missing_tool_name"),
                 });
-                None
+                Vec::new()
             }
         },
     }
@@ -649,7 +825,12 @@ fn tool_name(tool: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn convert_responses_tool(tool: &Value, transform: &TransformConfig) -> Option<Value> {
+fn convert_responses_tool(
+    tool: &Value,
+    transform: &TransformConfig,
+    helpers: &mut NamespaceHelpers,
+    used_names: &mut BTreeSet<String>,
+) -> Vec<Value> {
     let tool_type = tool
         .get("type")
         .and_then(Value::as_str)
@@ -660,12 +841,18 @@ fn convert_responses_tool(tool: &Value, transform: &TransformConfig) -> Option<V
         .any(|blocked| blocked == tool_type)
     {
         return match transform.unsupported_tool_strategy {
-            UnsupportedToolStrategy::Drop => None,
-            UnsupportedToolStrategy::Passthrough => Some(tool.clone()),
-            UnsupportedToolStrategy::AsFunction => Some(custom_tool_to_responses_function(tool)),
+            UnsupportedToolStrategy::Drop => Vec::new(),
+            UnsupportedToolStrategy::Passthrough => vec![tool.clone()],
+            UnsupportedToolStrategy::AsFunction => vec![custom_tool_to_responses_function(tool)],
         };
     }
-    Some(tool.clone())
+    if tool_type == "namespace" {
+        return expand_namespace_responses_tool(tool, used_names, helpers);
+    }
+    if let Some(name) = tool_name(tool) {
+        used_names.insert(name);
+    }
+    vec![tool.clone()]
 }
 
 fn tool_to_chat_function(tool: &Value) -> Value {
@@ -675,32 +862,6 @@ fn tool_to_chat_function(tool: &Value) -> Value {
         "parameters": tool.get("parameters").cloned().unwrap_or_else(|| json!({"type": "object", "properties": {}}))
     });
     json!({"type": "function", "function": function})
-}
-
-fn namespace_to_chat_function(tool: &Value) -> Value {
-    let namespace = tool
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("namespace");
-    let description = tool
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    json!({
-        "type": "function",
-        "function": {
-            "name": format!("{namespace}_tool"),
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string"},
-                    "arguments": {"type": "object"}
-                },
-                "required": ["tool", "arguments"]
-            }
-        }
-    })
 }
 
 fn custom_tool_to_chat_function(tool: &Value) -> Value {
