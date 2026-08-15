@@ -809,7 +809,8 @@ impl ChatAccum {
 pub(crate) struct ContinueGuardState {
     config: ContinueGuardConfig,
     guard_key: Option<String>,
-    active_plan: ActivePlanSummary,
+    active_plan: Option<ActivePlanSummary>,
+    progress: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -832,7 +833,8 @@ impl ContinueGuardState {
                 .get("prompt_cache_key")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
-            active_plan: latest_active_plan(request).unwrap_or_default(),
+            active_plan: latest_active_plan(request),
+            progress: request_shows_tool_progress(request),
             config,
         }
     }
@@ -847,8 +849,17 @@ impl ContinueGuardState {
         if accum.tool_calls.iter().any(|call| !call.name.is_empty()) {
             return ContinueGuardDecision::none("tool_call_emitted");
         }
-        if !self.active_plan.has_open_items() {
-            return ContinueGuardDecision::none("no_active_plan");
+        // Only an explicitly completed `update_plan` blocks the guard. Many
+        // models/providers never call `update_plan` at all (the observed
+        // premature-stop sessions did not), so a missing plan must not prevent
+        // auto-continuation; the continuation-phrasing check and the
+        // `max_followups` budget already bound false positives.
+        if self
+            .active_plan
+            .as_ref()
+            .is_some_and(|plan| !plan.has_open_items())
+        {
+            return ContinueGuardDecision::none("plan_completed");
         }
         if !looks_like_mid_task_stop(&accum.text) {
             return ContinueGuardDecision::none("assistant_text_not_continuation");
@@ -892,6 +903,14 @@ impl ContinueGuardState {
             return false;
         };
         evict_continue_guard_budgets_if_needed(&mut budgets);
+        if self.progress {
+            // Tool work (or a fresh tool loop) has happened since the last
+            // suspected stop, so this stop is not part of an unproductive
+            // text-only loop. Reset the session budget so `max_followups`
+            // caps only *consecutive* stops without progress instead of the
+            // total number of mid-task stops in a long session.
+            budgets.remove(key);
+        }
         let used = budgets.entry(key.clone()).or_insert(0);
         if *used >= self.config.max_followups {
             return false;
@@ -991,6 +1010,41 @@ fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
     Some(summary)
 }
 
+/// True when the request history shows the model actually performed tool work
+/// since its last plain-text completion. The continue-guard budget resets on
+/// this signal so `max_followups` caps only consecutive text-only stops rather
+/// than every mid-task stop in a long session.
+fn request_shows_tool_progress(request: &Value) -> bool {
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        return input
+            .last()
+            .and_then(|item| item.get("type").and_then(Value::as_str))
+            .is_some_and(|item_type| {
+                matches!(
+                    item_type,
+                    "function_call"
+                        | "tool_call"
+                        | "custom_tool_call"
+                        | "function_call_output"
+                        | "custom_tool_call_output"
+                )
+            });
+    }
+    // Defensive chat-completions shape (some callers may pass a converted body):
+    // tool results or pending assistant tool calls at the end of `messages`.
+    request
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.last())
+        .is_some_and(|message| {
+            message.get("role").and_then(Value::as_str) == Some("tool")
+                || message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| !calls.is_empty())
+        })
+}
+
 fn looks_like_mid_task_stop(text: &str) -> bool {
     let normalized = text
         .trim()
@@ -1001,28 +1055,58 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    [
+    if contains_closing_phrase(&normalized) {
+        return false;
+    }
+    let starts_continuation = [
         "let me ",
         "let me also ",
+        "let me first ",
         "now let me ",
+        "next let me ",
         "i'll ",
+        "i'll now ",
         "i will ",
+        "i will now ",
+        "now i'll ",
+        "now i will ",
+        "then i'll ",
+        "then i will ",
         "next i'll ",
         "next i will ",
         "i need to ",
+        "i still need to ",
         "i'm going to ",
+        "i should now ",
+        "first let me ",
+        "then run ",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker));
+    let dangling_continuation =
+        normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…');
+    starts_continuation || dangling_continuation
+}
+
+/// Phrases that indicate a turn is actually wrapping up, not continuing. These
+/// take precedence over the continuation markers so final summaries are not
+/// mistaken for premature stops.
+fn contains_closing_phrase(normalized: &str) -> bool {
+    [
+        "done",
+        "complete",
+        "completed",
+        "finished",
+        "no actionable issues",
+        "let me know if",
+        "thank you",
+        "thanks",
+        "feel free",
+        "that's all",
+        "that is all",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
-        && ![
-            "done",
-            "complete",
-            "completed",
-            "finished",
-            "no actionable issues",
-        ]
-        .iter()
-        .any(|marker| normalized.contains(marker))
 }
 
 pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {

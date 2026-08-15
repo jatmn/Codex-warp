@@ -223,24 +223,35 @@ the user manually prompting it.
 ```toml
 [continue_guard]
 enabled = true
-mode = "observe"
+mode = "end_turn_false"
 max_followups = 1
 ```
+
+The guard is **enabled by default** with `mode = "end_turn_false"` and
+`max_followups = 1`, and it applies to every chat-completions provider routed
+through Warp. You only need to set `enabled = false` if a particular gateway
+never exhibits the premature-stop shape.
 
 Modes:
 
 - `observe`: log `continue_guard` debug events for suspected premature stops,
-  but leave `end_turn = true`. Use this to confirm a provider is hitting the
-  pattern before turning on automatic continuation.
+  but leave `end_turn = true`. Use this when diagnosing whether a provider is
+  hitting the pattern.
 - `end_turn_false`: for suspected premature stops, emit
   `response.completed.response.end_turn = false` so Codex continues the turn.
-  Use this for providers that have been verified to stop mid-plan.
+  This is the default.
 
 The guard only applies to chat-completions streams that finish with
-`finish_reason = "stop"`, emit no tool call, have an active `update_plan` in the
-request history, and end with continuation phrasing. `max_followups` limits
-automatic continuations per `prompt_cache_key`; requests without a
-`prompt_cache_key` are observed but not forced.
+`finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
+(markers like `let me`, `i'll`, or a dangling `:`/`...`). A fully completed
+`update_plan` in the request history suppresses the guard, but sessions that
+never call `update_plan` (common with some models) are still covered.
+`max_followups` limits consecutive automatic continuations per
+`prompt_cache_key`; when the request history shows the model has performed tool
+work since the last suspected stop, the counter resets, so a long session can
+keep auto-continuing through every genuine mid-task pause without letting a
+text-only loop run forever. Requests without a `prompt_cache_key` are observed
+but not forced.
 
 Continue guard does not patch prompts, modify skills, or cross providers for
 auto-review. It only changes the final Responses `end_turn` flag for a narrow
@@ -255,6 +266,8 @@ target/debug/codex-warp \
   --continue-guard-mode end_turn_false \
   --continue-guard-max-followups 1
 ```
+
+The defaults already cover normal use; the CLI flags are for temporary tuning.
 
 ## Tool Approval Policy
 

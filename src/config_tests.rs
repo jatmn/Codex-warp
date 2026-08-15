@@ -618,6 +618,18 @@ fn continue_guard_config_parses_options() {
 }
 
 #[test]
+fn continue_guard_defaults_to_enabled_end_turn_false() {
+    let config: AppConfig = toml::from_str("").expect("empty config parses with defaults");
+
+    assert!(config.continue_guard.enabled);
+    assert_eq!(
+        config.continue_guard.mode,
+        crate::config::ContinueGuardMode::EndTurnFalse
+    );
+    assert_eq!(config.continue_guard.max_followups, 1);
+}
+
+#[test]
 fn tool_policy_config_parses_options() {
     let config: AppConfig = toml::from_str(
         r#"

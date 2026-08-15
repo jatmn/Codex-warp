@@ -297,6 +297,266 @@ fn continue_guard_forces_followup_for_mid_plan_stop() {
 }
 
 #[test]
+fn continue_guard_default_config_forces_followup_for_observed_rebase_pause() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Rebase applied cleanly (git detected the `app.js` -> `app-main.js` rename from commit `de7eb82`). Now let me re-audit the current `app-main.js` on the rebased branch against the issue's original locations, since main evolved:"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    // The guard must be active with the shipped defaults: no explicit config
+    // needed, and `max_followups` resets because the request history shows the
+    // model performed tool work before this pause.
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-rebase",
+            "input": [
+                {"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"step\":\"Rebase\",\"status\":\"completed\"},{\"step\":\"Re-audit fix\",\"status\":\"in_progress\"}]}"},
+                {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Rebase applied cleanly."}]},
+                {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"git rebase\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+            ]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_fires_without_any_update_plan_like_observed_session() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Rebase applied cleanly (git detected the `app.js` -> `app-main.js` rename from commit `de7eb82`). Now let me re-audit the current `app-main.js` on the rebased branch against the issue's original locations, since main evolved:"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    // The real paused session (rollout-2026-08-15T13-02-04) never called
+    // `update_plan` -- only exec_command/apply_patch/write_stdin. The guard
+    // must still auto-continue, otherwise the observed pauses persist.
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-no-plan",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "fix the issue"}]},
+                {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"git log\"}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+            ]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_fully_completed_plan_blocks_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Now let me verify the final state of the release."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-plan-done",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Release\",\"status\":\"completed\"}]}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_trailing_colon_without_marker_triggers_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "The fix is intact on the renamed file. The final verification is still pending:"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-colon",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Verify fix\",\"status\":\"in_progress\"}]}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_budget_resets_after_tool_progress() {
+    let build_accum = |text: &str| {
+        let mut accum = ChatAccum::default();
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": text}}]
+        }));
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        }));
+        accum
+    };
+
+    // First suspected stop: no tool work in the request yet, so the budget is
+    // consumed and the follow-up is forced.
+    let first = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-progress",
+            "input": [
+                {"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "do the task"}]}
+            ]
+        }),
+    );
+    assert!(!completed_end_turn(
+        &build_accum("Now let me inspect the tree.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &first)),
+        )
+    ));
+
+    // The model then performed tool work (function_call_output is the last
+    // input item), so the next suspected stop gets a fresh budget.
+    let second = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-progress",
+            "input": [
+                {"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "do the task"}]},
+                {"type": "function_call", "name": "exec_command", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+            ]
+        }),
+    );
+    assert!(!completed_end_turn(
+        &build_accum("Now let me confirm the diff.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &second)),
+        )
+    ));
+}
+
+#[test]
+fn continue_guard_budget_exhausts_without_tool_progress() {
+    let build_accum = |text: &str| {
+        let mut accum = ChatAccum::default();
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": text}}]
+        }));
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        }));
+        accum
+    };
+    let request = json!({
+        "prompt_cache_key": "continue-guard-test-no-progress",
+        "input": [
+            {"type": "function_call", "name": "update_plan", "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "do the task"}]}
+        ]
+    });
+
+    let first = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(!completed_end_turn(
+        &build_accum("Now let me inspect the tree.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &first)),
+        )
+    ));
+
+    // No tool work happened between the stops: the second stop must surface to
+    // the user instead of looping forever.
+    let second = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(completed_end_turn(
+        &build_accum("Now let me inspect again.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &second)),
+        )
+    ));
+}
+
+#[test]
 fn continue_guard_leaves_completed_summary_as_end_turn() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({

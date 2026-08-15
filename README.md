@@ -117,22 +117,27 @@ override exact model metadata when a gateway reports something unusual.
 **Continue Guard**
 
 Some chat-completions providers finish with text like `Now let me check...`
-instead of issuing the next tool call. The continue guard can detect that case
-while Codex has an active plan and ask Codex to continue the same turn with
-`end_turn = false`:
+instead of issuing the next tool call. The continue guard detects that case and
+asks Codex to continue the same turn with `end_turn = false`, so long agent
+sessions keep working instead of pausing for a manual `continue`. The guard is
+enabled by default across all providers; use the CLI flags only to tune it for
+a specific session:
 
 ```bash
 target/debug/codex-warp \
   --config configs/clinepass.toml \
-  --continue-guard \
-  --continue-guard-mode end_turn_false
+  --continue-guard-mode observe
 ```
 
-The guard is conservative: it only acts when Codex has an active plan, the
-provider finishes with `finish_reason = "stop"`, no tool call was emitted, and
-the assistant text looks like it intended to keep working. See the
-[configuration guide](docs/configuration.md#continue-guard) for observe mode and
-follow-up limits.
+The guard is conservative: it only acts when the provider finishes with
+`finish_reason = "stop"`, no tool call was emitted, and the assistant text
+looks like it intended to keep working. A fully completed `update_plan`
+suppresses the guard, but sessions that never call `update_plan` are still
+covered. `max_followups` limits consecutive text-only stops per session; real
+tool work resets the counter, so mid-task pauses are handled without allowing
+unproductive loops to run away. See the
+[configuration guide](docs/configuration.md#continue-guard) for observe mode
+and follow-up limits.
 
 **Tool Approval Policy**
 
