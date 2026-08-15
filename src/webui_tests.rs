@@ -757,8 +757,12 @@ async fn management_ui_index_loads_chart_math_before_app() {
     assert!(body.contains("aria-labelledby=\"chart-line-title\""));
     assert!(body.contains("id=\"chart-kbd-help\""));
     assert!(body.contains("Tab moves to the next control"));
-    assert!(body.contains("id=\"chart-line\" width=\"800\" height=\"220\" aria-labelledby=\"chart-line-title\""));
-    assert!(body.contains("id=\"chart-bar\" width=\"800\" height=\"220\" aria-labelledby=\"chart-bar-title\""));
+    assert!(body.contains(
+        "id=\"chart-line\" width=\"800\" height=\"220\" aria-labelledby=\"chart-line-title\""
+    ));
+    assert!(body.contains(
+        "id=\"chart-bar\" width=\"800\" height=\"220\" aria-labelledby=\"chart-bar-title\""
+    ));
     assert!(!body.contains("role=\"application\""));
     assert!(!body.contains("tabindex=\"0\""));
     assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
