@@ -815,6 +815,21 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
 }
 
 #[test]
+fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
+    let app = include_str!("webui_static/app-main.js");
+    let index = include_str!("webui_static/index.html");
+    // Line and bar tooltips must surface cached tokens for the hovered bucket,
+    // and the keyboard/live summary must announce them as well.
+    assert!(app.contains("[\"Cached\", point.cached_tokens || 0, colors.cached]"));
+    assert!(app.contains("[\"Cached\", row.cached_tokens || 0, colors.cached]"));
+    assert!(app.contains(
+        "Cached tokens ${fmtInt(point.cached_tokens || 0)}, "
+    ));
+    // Keyboard help copy lists the fields each bucket reports.
+    assert!(index.contains("cached tokens, output tokens"));
+}
+
+#[test]
 fn webui_app_bundle_joins_fragments_on_a_line_boundary() {
     let footer = "first\n";
     let main = "second\n";
