@@ -1141,13 +1141,13 @@
     ).join("");
   }
 
-  function lineTooltipHtml(point, labelStyle, colors, hasCached) {
+  function lineTooltipHtml(point, labelStyle, colors) {
     return (
       `<div class="tt-title">${esc(formatBucketLabel(point.ts, labelStyle))}</div>` +
       tooltipRowsHtml([
         ["Total tokens", point.total_tokens || 0, colors.tokens],
         ["Input tokens", point.input_tokens || 0, colors.input],
-        ...(hasCached ? [["Cached tokens", point.cached_tokens || 0, colors.cached]] : []),
+        ["Cached tokens", point.cached_tokens || 0, colors.cached],
         ["Output tokens", point.output_tokens || 0, colors.output],
         ["Prompts", point.prompts || 0, colors.prompts],
         ["Sessions", point.sessions || 0, colors.sessions],
@@ -1155,13 +1155,13 @@
     );
   }
 
-  function barTooltipHtml(row, labelStyle, colors, hasCached) {
+  function barTooltipHtml(row, labelStyle, colors) {
     return (
       `<div class="tt-title">${esc(row.key || formatBucketLabel(row.ts, labelStyle))}</div>` +
       tooltipRowsHtml([
         ["Total tokens", row.total_tokens || 0, colors.tokens],
         ["Input tokens", row.input_tokens || 0, colors.input],
-        ...(hasCached ? [["Cached tokens", row.cached_tokens || 0, colors.cached]] : []),
+        ["Cached tokens", row.cached_tokens || 0, colors.cached],
         ["Output tokens", row.output_tokens || 0, colors.output],
         ["Prompts", row.prompts || 0, colors.prompts],
         ["Sessions", row.sessions || 0, colors.sessions],
@@ -1169,16 +1169,13 @@
     );
   }
 
-  function tooltipSummary(point, labelStyle, hasCached) {
+  function tooltipSummary(point, labelStyle) {
     const label = formatBucketLabel(point.ts, labelStyle);
-    let text = `${label}: Total tokens ${fmtInt(point.total_tokens || 0)}, ` +
-      `Input tokens ${fmtInt(point.input_tokens || 0)}, `;
-    if (hasCached) {
-      text += `Cached tokens ${fmtInt(point.cached_tokens || 0)}, `;
-    }
-    text += `Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
+    return `${label}: Total tokens ${fmtInt(point.total_tokens || 0)}, ` +
+      `Input tokens ${fmtInt(point.input_tokens || 0)}, ` +
+      `Cached tokens ${fmtInt(point.cached_tokens || 0)}, ` +
+      `Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
       `Prompts ${fmtInt(point.prompts || 0)}, Sessions ${fmtInt(point.sessions || 0)}`;
-    return text;
   }
 
   function announceChartData(canvas, text) {
@@ -1240,8 +1237,8 @@
     const point = state.series[idx];
     const g = state.geometry;
     const pos = chartToClient(canvas, g.xAt(point.ts), g.yTokens(point.total_tokens || 0));
-    showChartTooltip(canvas, pos.x, pos.y, lineTooltipHtml(point, state.labelStyle, chartColors(), state.hasCachedData));
-    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle, state.hasCachedData)));
+    showChartTooltip(canvas, pos.x, pos.y, lineTooltipHtml(point, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle)));
   }
 
   function showBarTooltipFor(canvas, state, idx) {
@@ -1249,8 +1246,8 @@
     const g = state.geometry;
     const y = Charts.barAnchorY(row.total_tokens || 0, g.top, g.plotH, g.padT);
     const pos = chartToClient(canvas, g.xAt(idx) + (g.barW || 0) / 2, y);
-    showChartTooltip(canvas, pos.x, pos.y, barTooltipHtml(row, state.labelStyle, chartColors(), state.hasCachedData));
-    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
+    showChartTooltip(canvas, pos.x, pos.y, barTooltipHtml(row, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle)));
   }
 
   // Hover state is stored as the bucket's timestamp (`hoverTs`) and resolved
@@ -1368,12 +1365,6 @@
       dismissChartHoverUi(canvas);
       return;
     }
-    const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
-      padL: 46,
-      padR: 88,
-      padT: 30,
-      padB: 26,
-    });
     const colors = chartColors();
     const tokenVals = series.map((p) => p.total_tokens || 0);
     const cachedVals = series.map((p) => p.cached_tokens || 0);
@@ -1392,6 +1383,42 @@
     const tsMin = series[0].ts;
     const tsMax = series[series.length - 1].ts;
     const tsSpan = Math.max(1, tsMax - tsMin);
+
+    // Legend chips live in the top padding band above the plot so they never
+    // cover the drawn series or the right-hand axis labels. Measure them
+    // first and reserve extra top padding when they need a second row.
+    const legend = [
+      ["Total tokens", colors.tokens],
+      ...(hasCachedData ? [["Cached tokens", colors.cached]] : []),
+      ["Prompts", colors.prompts],
+      ["Sessions", colors.sessions],
+    ];
+    ctx.font = "10px system-ui";
+    ctx.textBaseline = "middle";
+    const legendGap = 6;
+    const legendStartX = 46 + 24; // padL plus a nudge clear of the axis title
+    const legendLimit = w - 88; // requested padR column
+    const legendRows = [];
+    let legendRow = [];
+    let legendRowWidth = 0;
+    for (const [label, color] of legend) {
+      const chipW = ctx.measureText(label).width + 22;
+      if (legendRow.length && legendRowWidth + chipW > legendLimit) {
+        legendRows.push(legendRow);
+        legendRow = [];
+        legendRowWidth = 0;
+      }
+      legendRow.push([label, color, chipW]);
+      legendRowWidth += chipW + legendGap;
+    }
+    legendRows.push(legendRow);
+
+    const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
+      padL: 46,
+      padR: 88,
+      padT: 30 + (legendRows.length - 1) * 24,
+      padB: 26,
+    });
     const axisX = {
       tokens: padL,
       prompts: w - padR + 44,
@@ -1433,7 +1460,7 @@
     // Right axes: prompts and sessions each get their own scale and label.
     ctx.textAlign = "center";
     ctx.fillStyle = colors.tokens;
-    ctx.fillText("tokens", padL, 10);
+    ctx.fillText("tokens", padL, padT - 10);
     for (const [key, ticks, color] of [["prompts", prompts, colors.prompts], ["sessions", sessions, colors.sessions]]) {
       const ax = axisX[key];
       ctx.fillStyle = colors.muted;
@@ -1443,24 +1470,32 @@
       }
       ctx.fillStyle = color;
       ctx.textAlign = "center";
-      ctx.fillText(key, ax, 10);
+      ctx.fillText(key, ax, padT - 10);
     }
 
-    function strokeSeries(vals, yFn, color, dashed) {
+    function strokeSeries(vals, yFn, color, dashed, skipZero) {
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
-      // Cached tokens are a subset of input tokens and can equal the total on
-      // fully-cached buckets. A dashed cached stroke stays distinguishable
-      // when it coincides with the solid total line.
       if (dashed) ctx.setLineDash([4, 3]);
       ctx.beginPath();
+      let started = false;
       vals.forEach((val, i) => {
+        // Zero-value points are gaps: a dashed baseline run would read as
+        // cached activity where there is none (the common sparse-cache case).
+        if (skipZero && !(val > 0)) {
+          started = false;
+          return;
+        }
         const x = xAt(series[i].ts);
         const y = yFn(val);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
       });
       ctx.stroke();
       if (dashed) ctx.setLineDash([]);
@@ -1478,52 +1513,42 @@
       });
     }
 
-    strokeSeries(tokenVals, yTokens, colors.tokens);
     if (hasCachedData) {
-      strokeSeries(cachedVals, yTokens, colors.cached, true);
+      // Cached is drawn first so the solid total line keeps its identity when
+      // the two coincide on fully-cached buckets; the dashed cached stroke
+      // stays visible wherever cached differs from total.
+      strokeSeries(cachedVals, yTokens, colors.cached, true, true);
     }
+    strokeSeries(tokenVals, yTokens, colors.tokens);
     strokeSeries(promptVals, yPrompts, colors.prompts);
     strokeSeries(sessionVals, ySessions, colors.sessions);
-    drawDots(tokenVals, yTokens, colors.tokens);
     if (hasCachedData) {
-      // Smaller cached dots stay visible inside the total dot when the two
-      // series coincide on fully-cached buckets.
+      // Cached dots are drawn before the total dots so the total marker keeps
+      // its identity when they coincide.
       drawDots(cachedVals, yTokens, colors.cached, 2, true);
     }
+    drawDots(tokenVals, yTokens, colors.tokens);
     drawDots(promptVals, yPrompts, colors.prompts);
     drawDots(sessionVals, ySessions, colors.sessions);
 
-    // Legend chips overlay the top-left corner. Only advertise the cached
-    // series when the current range actually has cached data, so the legend
-    // never references a line that is not drawn.
-    const legend = [
-      ["Total tokens", colors.tokens],
-      ...(hasCachedData ? [["Cached tokens", colors.cached]] : []),
-      ["Prompts", colors.prompts],
-      ["Sessions", colors.sessions],
-    ];
-    ctx.font = "10px system-ui";
-    ctx.textBaseline = "middle";
-    // Draw chips on the single row inside the plot; stop when the next chip
-    // would cross the right axis column. This keeps the key visible (never
-    // covers the series or the right-hand axes) and degrades gracefully on
-    // narrow canvases instead of wrapping over the data or dropping entirely.
-    let lx = padL + 8;
-    const ly = padT + 6;
-    for (const [label, color] of legend) {
-      const chipW = ctx.measureText(label).width + 22;
-      if (lx + chipW > w - padR) break;
-      ctx.fillStyle = colors.surface;
-      ctx.strokeStyle = colors.grid;
-      ctx.fillRect(lx, ly, chipW, 16);
-      ctx.strokeRect(lx, ly, chipW, 16);
-      ctx.fillStyle = color;
-      ctx.fillRect(lx + 4, ly + 4, 8, 8);
-      ctx.fillStyle = colors.text;
-      ctx.textAlign = "left";
-      ctx.fillText(label, lx + 16, ly + 8);
-      lx += chipW + 6;
-    }
+    // Legend chips in the top band (above the plot), never over series data
+    // or axis labels.
+    legendRows.forEach((chips, rowIndex) => {
+      let lx = legendStartX;
+      const ly = 6 + rowIndex * 24;
+      for (const [label, color, chipW] of chips) {
+        ctx.fillStyle = colors.surface;
+        ctx.strokeStyle = colors.grid;
+        ctx.fillRect(lx, ly, chipW, 16);
+        ctx.strokeRect(lx, ly, chipW, 16);
+        ctx.fillStyle = color;
+        ctx.fillRect(lx + 4, ly + 4, 8, 8);
+        ctx.fillStyle = colors.text;
+        ctx.textAlign = "left";
+        ctx.fillText(label, lx + 16, ly + 8);
+        lx += chipW + legendGap;
+      }
+    });
 
     // Hover overlay and tooltip, resolved by bucket identity so redraws with
     // changed data can never leave a stale index behind.
@@ -1532,8 +1557,8 @@
     if (idx >= 0) {
       renderLineHover(canvas, state, idx);
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, lineTooltipHtml(series[idx], state.labelStyle, colors, hasCachedData));
-        announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(series[idx], state.labelStyle, hasCachedData)));
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, lineTooltipHtml(series[idx], state.labelStyle, colors));
+        announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(series[idx], state.labelStyle)));
       } else {
         showLineTooltipFor(canvas, state, idx);
       }
@@ -1568,8 +1593,8 @@
     const idx = resolveLineIdx(state);
     if (idx < 0) return;
     const point = state.series[idx];
-    showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipHtml(point, state.labelStyle, chartColors(), state.hasCachedData));
-    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle, state.hasCachedData)));
+    showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipHtml(point, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle)));
   }
 
   function renderLineHover(canvas, state, idx) {
@@ -1596,13 +1621,13 @@
       ctx.lineWidth = 2;
       ctx.stroke();
     };
-    ring(yTokens(point.total_tokens || 0), colors.tokens);
     if ((point.cached_tokens || 0) > 0) {
       // The smaller cached ring remains visible inside the total ring when the
       // two values coincide on fully-cached buckets. Skip zero-cached buckets
       // so a baseline ring is not implied where no cached activity exists.
       ring(yTokens(point.cached_tokens || 0), colors.cached, 3);
     }
+    ring(yTokens(point.total_tokens || 0), colors.tokens);
     ring(yPrompts(point.prompts || 0), colors.prompts);
     ring(ySessions(point.sessions || 0), colors.sessions);
   }
@@ -1623,7 +1648,13 @@
       padB: 26,
     });
     const colors = chartColors();
-    const max = Math.max(1, ...rows.map((r) => r.total_tokens || 0));
+    // The bar axis covers both total and cached values so the tooltip's cached
+    // row never reports a number the chart cannot represent.
+    const max = Math.max(
+      1,
+      ...rows.map((r) => r.total_tokens || 0),
+      ...rows.map((r) => r.cached_tokens || 0),
+    );
     const hasCachedData = rows.some((r) => (r.cached_tokens || 0) > 0);
     const ticks = integerTicks(max);
     const { barW, barGap, slot } = Charts.barSlotLayout(plotW, rows.length);
@@ -1713,8 +1744,8 @@
       }
       const state = canvas.__chart;
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, barTooltipHtml(rows[hidx], state.labelStyle, colors, hasCachedData));
-        announceChartData(canvas, Charts.liveRegionText(hidx, tooltipSummary(rows[hidx], state.labelStyle, hasCachedData)));
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, barTooltipHtml(rows[hidx], state.labelStyle, colors));
+        announceChartData(canvas, Charts.liveRegionText(hidx, tooltipSummary(rows[hidx], state.labelStyle)));
       } else {
         showBarTooltipFor(canvas, state, hidx);
       }
@@ -1728,8 +1759,8 @@
     const idx = resolveBarIdx(state);
     if (idx < 0) return;
     const row = state.rows[idx];
-    showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(row, state.labelStyle, chartColors(), state.hasCachedData));
-    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
+    showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(row, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle)));
   }
 
   function wireCharts() {
