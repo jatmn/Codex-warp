@@ -220,17 +220,23 @@ check("liveRegionText is empty when no bucket is selected", () => {
   assert.equal(stay.text, "");
 });
 
+check("chartsLiveLayout is current CSS width, not lastCssW", () => {
+  assert.equal(charts.chartsLiveLayout(400), true);
+  assert.equal(charts.chartsLiveLayout(0), false);
+});
+
 check("shouldPaintCharts paints only with a measured CSS width", () => {
   assert.equal(charts.shouldPaintCharts(400, 0), true);
   assert.equal(charts.shouldPaintCharts(0, 0), false);
   assert.equal(charts.shouldPaintCharts(0, 360), true);
 });
 
-check("chartSurface is idle until math, buckets, and layout exist", () => {
+check("chartSurface is idle until math, buckets, and live layout exist", () => {
   assert.equal(charts.chartSurface(false, 8, true), "failed");
   assert.equal(charts.chartSurface(true, 0, true), "idle");
   assert.equal(charts.chartSurface(true, 3, false), "idle");
   assert.equal(charts.chartSurface(true, 3, true), "interactive");
+  assert.equal(charts.chartSurface(true, 3, charts.chartsLiveLayout(0)), "idle");
 });
 
 check("chartCanvasAttrs revokes the full AT surface when disabled", () => {

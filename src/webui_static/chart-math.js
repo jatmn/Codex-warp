@@ -304,21 +304,27 @@
     return summary == null ? "" : String(summary);
   }
 
+  // Live layout is current CSS width. Hidden panels report 0; do not treat a
+  // remembered buffer as "the panel is visible" (polls would paint off-tab).
+  function chartsLiveLayout(clientWidth) {
+    return Number(clientWidth) > 0;
+  }
+
   // Hidden panels report clientWidth 0. Inventing an 800px CSS width there
   // poisons hover math. A previous real layout (`lastCssW`) is safe to reuse
-  // for deactivate/off-tab redraws; skip only when no measured width exists.
+  // for deactivate redraws; skip only when no measured width exists.
   function shouldPaintCharts(clientWidth, lastCssW) {
-    return Number(clientWidth) > 0 || Number(lastCssW) > 0;
+    return chartsLiveLayout(clientWidth) || Number(lastCssW) > 0;
   }
 
   // Three surfaces, not a boolean. HTML must ship idle: keyboard application
   // semantics exist only after math loaded, there is at least one bucket, and
-  // the canvas has a real CSS width to paint. "failed" is a missing module
-  // (show fallback). "idle" is a working chart with nothing to navigate, or
-  // buckets that have not been laid out yet.
-  function chartSurface(mathLoaded, bucketCount, laidOut) {
+  // the canvas is live-laid-out. "failed" is a missing module (show fallback).
+  // "idle" is a working chart with nothing to navigate, or buckets that have
+  // not been laid out yet.
+  function chartSurface(mathLoaded, bucketCount, liveLaidOut) {
     if (!mathLoaded) return "failed";
-    if (Number(bucketCount) > 0 && laidOut) return "interactive";
+    if (Number(bucketCount) > 0 && liveLaidOut) return "interactive";
     return "idle";
   }
 
@@ -385,6 +391,7 @@
     chartInputStep,
     announceIfChanged,
     liveRegionText,
+    chartsLiveLayout,
     shouldPaintCharts,
     chartSurface,
     chartCanvasAttrs,

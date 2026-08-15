@@ -850,15 +850,23 @@
       };
       renderAnalyticsPresentation();
       if (activeTab === "analytics") {
-        const message = analyticsReadyMessage();
-        if (reportFromPoll) pollStatus(message);
-        else status(message);
+        if (!Charts) {
+          holdChartFailureStatus();
+        } else {
+          const message = "Analytics updated";
+          if (reportFromPoll) pollStatus(message);
+          else status(message);
+        }
       }
     } catch (e) {
       if (activeTab === "analytics") {
-        const message = `Analytics error: ${e.message}`;
-        if (reportFromPoll) pollStatus(message);
-        else status(message);
+        if (!Charts) {
+          holdChartFailureStatus();
+        } else {
+          const message = `Analytics error: ${e.message}`;
+          if (reportFromPoll) pollStatus(message);
+          else status(message);
+        }
       }
     } finally {
       analyticsInFlight = false;
@@ -874,9 +882,6 @@
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
   const CHARTS_FAILED_STATUS = "Analytics charts failed to load (/ui/chart-math.js)";
-  function analyticsReadyMessage() {
-    return Charts ? "Analytics updated" : CHARTS_FAILED_STATUS;
-  }
   function holdChartFailureStatus() {
     if (Charts) return;
     bootFooterHold = true;
@@ -923,10 +928,10 @@
       el.hidden = !!attrs.fallbackHidden;
     });
   }
-  function chartsLaidOut() {
+  function chartsLiveLayout() {
     const canvas = $("#chart-line") || $("#chart-bar");
     if (!canvas || !Charts) return false;
-    return Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW);
+    return Charts.chartsLiveLayout(canvas.clientWidth);
   }
   function syncChartSurface() {
     if (!Charts) {
@@ -936,7 +941,7 @@
     const series = analyticsSnapshot && analyticsSnapshot.data
       ? analyticsSnapshot.data.series || []
       : [];
-    applyChartInteractivity(Charts.chartSurface(true, series.length, chartsLaidOut()));
+    applyChartInteractivity(Charts.chartSurface(true, series.length, chartsLiveLayout()));
   }
   function noteChartsUnavailable() {
     applyChartInteractivity("failed");
@@ -961,15 +966,13 @@
       return;
     }
     const series = data.series || [];
-    const line = $("#chart-line");
-    const laidOut = !!(line && Charts.shouldPaintCharts(line.clientWidth, line.__cssW));
-    applyChartInteractivity(Charts.chartSurface(true, series.length, laidOut));
-    if (!laidOut) {
+    syncChartSurface();
+    if (!chartsLiveLayout()) {
       if (activeTab === "analytics") scheduleChartResize();
       return;
     }
     const labelStyle = labelStyleFor(series);
-    drawLineChart(line, series, range);
+    drawLineChart($("#chart-line"), series, range);
     // Bar chart shows the same time series as bars so usage-over-time is visible
     // in both chart styles; breakdowns remain available via provider/model filters.
     drawBarChart(
