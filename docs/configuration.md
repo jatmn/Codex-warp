@@ -243,11 +243,13 @@ Modes:
 
 The guard only applies to chat-completions streams that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
-(specific markers like `now let me` / `I'll now`, generic `let me`/`I'll`/`I
-need to` only when the next verb is a work action, or a dangling `:`/`...`
-whose last sentence still talks about remaining work). Closings such as `let
-me know`, `I'll leave the rest`, `I need to stop`, and delivery colons such as
-`Here is the final report:` do not force a follow-up. A fully completed
+(`let me` / `I'll` / `I need to` / `I should` / `then` only when the next verb
+is a work action, including hyphenated repeats such as `re-audit`, or a
+dangling `:`/`...` whose last sentence still talks about remaining work).
+Adverbs such as `now` or `still` do not skip that verb check, so
+`Now let me summarize` and `I still need to stop` do not force a follow-up.
+Closings such as `let me know`, `I'll leave the rest`, and delivery colons
+such as `Here is the final report:` also stay `end_turn = true`. A fully completed
 `update_plan` suppresses the guard when it is still the latest intent (no
 later tool work), but sessions that never call `update_plan` are still
 covered, and a completed plan followed by real tool work does not hide a later

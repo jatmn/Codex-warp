@@ -1078,58 +1078,43 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     }
     // Ranked classifier:
     // 1. Closers that contain work-like substrings ("let me know").
-    // 2. Specific mid-task markers ("now let me", "then run").
-    // 3. Wrap-up / hand-off phrasing.
-    // 4. Generic first-person future ("let me", "I'll", "I need to") only
-    //    when the next verb is a work action, not summarize/stop/leave.
-    // 5. Dangling `:`/`...` only when the last sentence still talks about
+    // 2. First-person / let-me prefixes only when the next token is a work
+    //    action. Adverbs such as "now"/"first"/"still" do not themselves mean
+    //    the model is still working ("Now let me summarize" is a wrap-up).
+    // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-verb pair so
+    //    "Thanks to the rebase. Now let me verify" still continues.
+    // 4. Dangling `:`/`...` only when the last sentence still talks about
     //    remaining work. Bare delivery colons ("Here is the final report:")
     //    are not pauses.
     if contains_overlapping_closing_phrase(&normalized) {
         return false;
     }
-    if contains_strong_continuation_marker(&normalized) {
+    if contains_work_intent(&normalized) {
         return true;
     }
     if contains_wrap_up_closing_phrase(&normalized) {
         return false;
     }
-    if contains_weak_work_intent(&normalized) {
-        return true;
-    }
     dangling_punctuation_with_remaining_work(&normalized)
 }
 
-fn contains_strong_continuation_marker(normalized: &str) -> bool {
-    [
-        "let me also ",
-        "let me first ",
-        "now let me ",
-        "next let me ",
-        "first let me ",
-        "i'll now ",
-        "i will now ",
-        "now i'll ",
-        "now i will ",
-        "then i'll ",
-        "then i will ",
-        "next i'll ",
-        "next i will ",
+fn contains_work_intent(normalized: &str) -> bool {
+    const PREFIXES: [&str; 9] = [
+        "let me ",
+        "i'll ",
+        "i will ",
         "i still need to ",
-        "i should now ",
-        "then run ",
-    ]
-    .iter()
-    .any(|marker| normalized.contains(marker))
-}
-
-fn contains_weak_work_intent(normalized: &str) -> bool {
-    const PREFIXES: [&str; 5] = ["let me ", "i'll ", "i will ", "i need to ", "i'm going to "];
+        "i need to ",
+        "i'm going to ",
+        "i should ",
+        "then ",
+        "next ",
+    ];
     PREFIXES.iter().any(|prefix| {
         let mut start = 0;
         while let Some(idx) = normalized[start..].find(prefix) {
             let after_prefix = &normalized[start + idx + prefix.len()..];
-            if remainder_starts_with_work_verb(strip_weak_fillers(after_prefix)) {
+            if remainder_starts_with_work_verb(strip_intent_fillers(after_prefix)) {
                 return true;
             }
             start += idx + prefix.len();
@@ -1138,12 +1123,20 @@ fn contains_weak_work_intent(normalized: &str) -> bool {
     })
 }
 
-fn strip_weak_fillers(mut rest: &str) -> &str {
+fn strip_intent_fillers(mut rest: &str) -> &str {
     loop {
-        let Some(next) = ["just ", "also ", "first ", "now ", "quickly ", "please "]
-            .iter()
-            .find_map(|filler| rest.strip_prefix(filler))
-        else {
+        let Some(next) = [
+            "just ", "also ", "first ", "now ", "next ", "still ", "quickly ", "please ", "then ",
+        ]
+        .iter()
+        .find_map(|filler| rest.strip_prefix(filler)) else {
+            // Observed pauses use "re-audit" rather than a catalogued stem.
+            // Strip a hyphenated repetition prefix so the work-verb check sees
+            // "audit", without treating "read" as "ad".
+            if let Some(stripped) = rest.strip_prefix("re-") {
+                rest = stripped;
+                continue;
+            }
             return rest;
         };
         rest = next;
@@ -1183,20 +1176,13 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         "pending",
         "still need",
         "still have",
-        "next i",
-        "next let",
         "next step",
         "remaining",
         "after that",
-        "then i",
-        "then let",
-        "now i",
-        "now let",
         "not yet",
         "to do",
         "follow up",
         "follow-up",
-        "continue",
     ]
     .iter()
     .any(|cue| last_sentence.contains(cue))
@@ -1208,11 +1194,12 @@ fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
         .any(|marker| normalized.contains(marker))
 }
 
-/// Wrap-up phrasing that should not force a follow-up unless a *strong*
-/// continuation marker is also present. Generic "let me"/"I'll"/"I need to"
-/// are not enough on their own. Subtask-completion words such as "done" or
-/// "complete" are deliberately excluded: mid-task text routinely says "the
-/// rebase is complete" before continuing ("Now let me push...").
+/// Wrap-up phrasing that should not force a follow-up unless a prefix is
+/// followed by a work verb. Generic "let me"/"I'll"/"I need to"/"I should"
+/// are not enough on their own, even with "now"/"first"/"still". Subtask
+/// completion words such as "done" or "complete" are deliberately excluded:
+/// mid-task text routinely says "the rebase is complete" before continuing
+/// ("Now let me push...").
 fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     [
         "thank you",
