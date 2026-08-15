@@ -754,7 +754,7 @@ async fn management_ui_index_loads_chart_math_before_app() {
     assert!(body.contains("aria-labelledby=\"chart-bar-title\""));
     assert!(body.contains("aria-labelledby=\"chart-line-title\""));
     assert!(body.contains("id=\"chart-kbd-help\""));
-    assert!(body.contains("Tab leaves the chart"));
+    assert!(body.contains("Tab moves to the next control"));
     assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
     assert_eq!(body.matches("role=\"status\"").count(), 2);
     assert!(!body.contains("By provider"));
