@@ -876,6 +876,8 @@
       analyticsSnapshot = {
         data,
         range,
+        provider,
+        model,
         barTitle: model
           ? `${model} over time`
           : provider
@@ -1012,8 +1014,12 @@
     drawModelUsageChart($("#chart-model-sessions"), modelSeries, "sessions", range);
     drawModelUsageChart($("#chart-model-prompts"), modelSeries, "prompts", range);
 
-    const activeProvider = $("#analytics-provider").value;
-    const activeModel = $("#analytics-model").value;
+    // Gate pies on the filter state the response was fetched with, not the
+    // live select values: a slow poll can otherwise render a response computed
+    // with different filters than the user currently sees, mislabeling the
+    // per-provider pie for up to one round trip.
+    const activeProvider = analyticsSnapshot.provider || "";
+    const activeModel = analyticsSnapshot.model || "";
     drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider), {
       emptyText: activeProvider
         ? "Select All providers to see provider usage."
@@ -1481,7 +1487,10 @@
   function resolvePieIdx(state) {
     if (!state.geometry || !state.rows.length) return -1;
     const idx = state.hoverTs;
-    return idx >= 0 && idx < state.rows.length ? idx : -1;
+    // JS coercion makes `null >= 0` true, which turned a no-hover pie state
+    // into `null` (not -1) and crashed the hover-ring block on slices[null].
+    // Guard explicitly so no-hover always means -1.
+    return typeof idx === "number" && idx >= 0 && idx < state.rows.length ? idx : -1;
   }
 
   // Uniform point list across chart kinds so the shared focus/keyboard
@@ -2323,7 +2332,13 @@
     const opts = options || {};
     const prev = canvas.__chart;
     const sorted = (rows || []).slice().sort((a, b) => b.value - a.value);
-    if (!sorted.length) {
+    // Zero-token rows stay in the legend (a provider/model with prompts or
+    // sessions but no token spend should not vanish), but they have no slice,
+    // so the chart geometry, hover, and keyboard navigation only use rows with
+    // value > 0.
+    const legendRows = sorted.slice();
+    const active = sorted.filter((row) => row.value > 0);
+    if (!active.length) {
       canvas.__chart = {
         kind: "pie",
         rows: [],
@@ -2340,32 +2355,54 @@
       dismissChartHoverUi(canvas);
       return;
     }
-    const { slices, total } = Charts.pieSlices(sorted.map((row) => row.value));
+    const { slices, total } = Charts.pieSlices(active.map((row) => row.value));
     const pad = 30;
     const radius = Math.max(1, Math.min((w - pad * 2) / 2, (h - pad * 2) / 2));
     const cx = w / 2;
     const cy = h / 2;
     const colors = chartColors();
     const hoverKey = Charts.reconcilePieHover(
-      sorted,
+      active,
       prev && prev.kind === "pie" ? prev.hoverKey : null,
     );
-    const hoverIdx = hoverKey == null ? -1 : sorted.findIndex((row) => row.key === hoverKey);
+    const hoverIdx = hoverKey == null ? -1 : active.findIndex((row) => row.key === hoverKey);
+    // A poll redraw can reorder slices under a stationary pointer. When the
+    // pointer still owns the hover, trust the slice under the cursor so the
+    // tooltip never describes a slice the user is not pointing at.
+    let effectiveHoverIdx = hoverIdx;
+    if (
+      Charts.tooltipFollowsPointer(
+        prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
+        canvas.__mouse,
+      ) &&
+      canvas.__mouse
+    ) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = Charts.pointerCssX(
+        canvas.__mouse.x,
+        rect.left,
+        rect.width,
+        w,
+      );
+      const my = ((canvas.__mouse.y - rect.top) * h) / rect.height;
+      const hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
+      if (hitIdx >= 0) effectiveHoverIdx = hitIdx;
+    }
     canvas.__chart = {
       kind: "pie",
-      rows: sorted,
+      rows: active,
       total,
       geometry: { cx, cy, r: radius, slices },
-      hoverTs: hoverIdx >= 0 ? hoverIdx : null,
-      hoverKey,
+      hoverTs: effectiveHoverIdx >= 0 ? effectiveHoverIdx : null,
+      hoverKey:
+        effectiveHoverIdx >= 0 ? active[effectiveHoverIdx].key : null,
       inputMode: prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
       pieOptions: opts,
       cssW: w,
     };
 
-    sorted.forEach((row, index) => {
+    active.forEach((row, index) => {
       const slice = slices[index];
-      if (!(slice.value > 0)) return;
       ctx.beginPath();
       ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, radius, slice.start, slice.end);
@@ -2383,21 +2420,24 @@
       const slice = slices[hidx];
       ctx.beginPath();
       ctx.moveTo(cx, cy);
+      // The ring must not overpaint the whole wedge: stroke the outer arc
+      // band (radius to radius + 4) only, without closing through the center.
       ctx.arc(cx, cy, radius + 4, slice.start, slice.end);
+      ctx.arc(cx, cy, radius, slice.end, slice.start, true);
       ctx.closePath();
       ctx.fillStyle = paletteColor(hidx);
       ctx.fill();
       ctx.strokeStyle = colors.tokens;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
     }
 
     ctx.font = "10px system-ui";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    sorted.forEach((row, index) => {
+    active.forEach((row, index) => {
       const slice = slices[index];
-      if (!(slice.value > 0) || total <= 0) return;
+      if (total <= 0) return;
       const span = slice.end - slice.start;
       if (span < 0.36 || slice.value / total < 0.05) return;
       const mid = Charts.pieMidAngle(slice);
@@ -2411,7 +2451,7 @@
 
     renderChartLegend(
       legend,
-      sorted.map((row, index) => ({
+      legendRows.map((row, index) => ({
         key: row.key,
         color: paletteColor(index),
         value: row.value,

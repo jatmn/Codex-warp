@@ -543,10 +543,25 @@ check("pieMidAngle is the slice center for labels", () => {
 });
 
 check("reconcilePieHover keeps identity and drops removed keys", () => {
-  const rows = [{ key: "a" }, { key: "b" }];
+  const rows = [
+    { key: "a", value: 5 },
+    { key: "b", value: 3 },
+  ];
   assert.equal(charts.reconcilePieHover(rows, "b"), "b");
   assert.equal(charts.reconcilePieHover(rows, "missing"), null);
   assert.equal(charts.reconcilePieHover(rows, null), null);
+});
+
+check("reconcilePieHover drops a key whose value collapsed to zero", () => {
+  const rows = [
+    { key: "a", value: 100 },
+    { key: "b", value: 0 },
+  ];
+  assert.equal(charts.reconcilePieHover(rows, "a"), "a");
+  // A zero-value row has no visible slice; keeping its hover would leave a
+  // phantom ring/tooltip on an invisible wedge after a poll redraw.
+  assert.equal(charts.reconcilePieHover(rows, "b"), null);
+  assert.equal(charts.reconcilePieHover(rows, "a"), "a");
 });
 
 process.stdout.write("webui chart harness: all checks passed\n");

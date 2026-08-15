@@ -548,9 +548,13 @@
   // Pie hover identity is the slice key, not the positional index: a poll
   // redraw can reorder slices when values change, and the selected slice must
   // stay selected (or drop) instead of silently pointing at a different key.
+  // A row whose value collapsed to zero is no longer a selectable slice, so
+  // the key drops too — otherwise the hover ring/tooltip would point at a
+  // zero-width (invisible) slice after the redraw.
   function reconcilePieHover(rows, hoverKey) {
     if (hoverKey == null) return null;
-    return rows.some((row) => row.key === hoverKey) ? hoverKey : null;
+    const row = rows.find((candidate) => candidate.key === hoverKey);
+    return row && row.value > 0 ? hoverKey : null;
   }
 
   function announceIfChanged(previous, next) {

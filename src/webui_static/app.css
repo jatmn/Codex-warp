@@ -400,6 +400,11 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   border-radius: 2px;
   flex: none;
 }
+.legend-label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .legend-value {
   font-variant-numeric: tabular-nums;
   color: var(--text);

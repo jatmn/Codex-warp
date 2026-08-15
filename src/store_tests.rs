@@ -219,8 +219,16 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
 
     // Both models span the same bucket-aligned window with zero-filled gaps.
     assert_eq!(alpha.points.len(), beta.points.len());
-    assert_eq!(alpha.points.first().unwrap().ts, base - 24 * hour);
-    assert_eq!(alpha.points.last().unwrap().ts, base);
+    // The window is bucket-aligned from (now - 24h) to now; the exact edges
+    // can straddle an hour boundary between the two now_ms() reads (test
+    // setup vs analytics()), so assert the bucket alignment and span rather
+    // than exact wall-clock edges.
+    let first_ts = alpha.points.first().unwrap().ts;
+    let last_ts = alpha.points.last().unwrap().ts;
+    assert!(first_ts <= base - 23 * hour && first_ts >= base - 25 * hour);
+    assert!(last_ts >= base - hour && last_ts <= base + hour);
+    assert_eq!(first_ts % hour, 0);
+    assert_eq!(last_ts % hour, 0);
 
     let alpha_newest = alpha
         .points
