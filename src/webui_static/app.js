@@ -169,19 +169,19 @@
     syncTabHash(name);
   }
 
-  async function activateTabPolls(name) {
+  async function activateTabPolls(name, { updateFooter = true } = {}) {
     const epoch = ++tabEpoch;
     stopAnalyticsPoll();
     stopLogsPoll();
     if (name === "analytics") {
-      await startAnalyticsPoll(epoch);
+      await startAnalyticsPoll(epoch, { updateFooter });
       return;
     }
     if (name === "logs") {
-      await startLogsPoll({ updateFooter: true, epoch });
+      await startLogsPoll({ updateFooter, epoch });
       return;
     }
-    if (epoch === tabEpoch) status("Ready");
+    if (updateFooter && epoch === tabEpoch) status("Ready");
   }
 
   function switchTab(name) {
@@ -774,7 +774,10 @@
   $("#analytics-range").addEventListener("change", loadAnalytics);
   $("#analytics-model").addEventListener("change", loadAnalytics);
 
-  async function loadAnalytics() {
+  async function loadAnalytics(opts) {
+    const updateFooter = opts == null || typeof opts.updateFooter === "undefined"
+      ? true
+      : !!opts.updateFooter;
     if (analyticsInFlight) {
       analyticsPending.queued = true;
       return;
@@ -816,9 +819,9 @@
             : "Usage over time",
       };
       renderAnalyticsPresentation();
-      if (activeTab === "analytics") status("Analytics updated");
+      if (updateFooter && activeTab === "analytics") status("Analytics updated");
     } catch (e) {
-      if (activeTab === "analytics") status(`Analytics error: ${e.message}`);
+      if (updateFooter && activeTab === "analytics") status(`Analytics error: ${e.message}`);
     } finally {
       analyticsInFlight = false;
       if (analyticsPending.queued && activeTab === "analytics") {
@@ -965,11 +968,11 @@
     });
   }
 
-  async function startAnalyticsPoll(epoch = tabEpoch) {
+  async function startAnalyticsPoll(epoch = tabEpoch, { updateFooter = true } = {}) {
     stopAnalyticsPoll();
-    await loadAnalytics();
+    await loadAnalytics({ updateFooter });
     if (epoch !== tabEpoch || activeTab !== "analytics") return;
-    analyticsTimer = setInterval(loadAnalytics, 5000);
+    analyticsTimer = setInterval(() => loadAnalytics({ updateFooter }), 5000);
   }
 
   function stopAnalyticsPoll() {
@@ -1047,7 +1050,8 @@
     const form = $("#logging-settings");
     if (!form) return settings;
     form.enabled.checked = !!settings.enabled;
-    form.log_path.value = settings.log_path || settings.default_log_path || "";
+    form.log_path.value = settings.log_path || "";
+    form.log_path.placeholder = settings.default_log_path || "codex-warp-debug.jsonl";
     form.include_bodies.checked = !!settings.include_bodies;
     form.include_stream_bodies.checked = !!settings.include_stream_bodies;
     form.max_log_mb.value = settings.max_log_mb ?? "";
@@ -1236,7 +1240,7 @@
       bootComplete = true;
       status(`Error: ${e.message}`);
       try {
-        await activateTabPolls(activeTab);
+        await activateTabPolls(activeTab, { updateFooter: false });
       } catch {
         /* keep the boot error in the footer */
       }

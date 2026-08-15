@@ -431,9 +431,9 @@ mutation wrote the SQLite overlay. GET always returns `persisted: false`.
 `max_log_mb` and `max_log_age_days` are the stored snapshot values (`null` when
 unset). `max_log_mb_effective` and `max_log_age_days_effective` are the limits
 the writer uses (`128` / `30` when those fields are unset). The Logs form
-hydrates empty rotation fields from the stored values and shows the effective
-limits as placeholders, so saving other settings does not persist explicit
-defaults. `PUT /api/logging` validates the full live snapshot first, including the
+hydrates empty rotation and log-path fields from the stored values and shows the
+effective / default destinations as placeholders, so saving other settings does
+not persist explicit defaults. `PUT /api/logging` validates the full live snapshot first, including the
 tracing filter that will actually be reloaded (`tracing_filter`, or the process
 default captured from `RUST_LOG` / `info` when tracing started). Live logging
 has one snapshot, stored by `DebugLog`.
