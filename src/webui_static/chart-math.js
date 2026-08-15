@@ -527,6 +527,27 @@
     return (slice.start + slice.end) / 2;
   }
 
+  // Pick the more readable text color (white or near-black) for a solid hex
+  // fill using WCAG relative luminance. The naive NTSC-style weighted average
+  // misclassifies mid-tone colors, so use the sRGB channel formula instead.
+  function wcagLuminance(hex) {
+    const value = String(hex || "").replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(value)) return 0;
+    const channel = (start) => {
+      const c = parseInt(value.slice(start, start + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+  }
+
+  function textColorOn(hex) {
+    const lum = wcagLuminance(hex);
+    if (!(lum > 0)) return "#ffffff";
+    const white = 1.05 / (lum + 0.05);
+    const dark = (lum + 0.05) / 0.05;
+    return dark > white ? "#1f2937" : "#ffffff";
+  }
+
   // Hit-test a point against the pie. A donut has a dead inner circle; a full
   // pie passes innerR = 0. Angles below 12 o'clock are normalized into the
   // sweep so the wrap-around slice is hit correctly.
@@ -666,6 +687,8 @@
     chartInputStep,
     pieSlices,
     pieMidAngle,
+    wcagLuminance,
+    textColorOn,
     pieSliceIndexAt,
     reconcilePieHover,
     announceIfChanged,

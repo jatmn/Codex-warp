@@ -1035,15 +1035,20 @@ impl Store {
                     .push_str(&format!(" AND model = ?{}", overall_bind_values.len() + 1));
                 overall_bind_values.push(ValueBinder::Text(model.to_string()));
             }
-            breakdown_query(
-                &db,
-                &overall_where_sql,
-                &overall_bind_values,
-                "model",
-                model.is_none(),
-            )?
+            // Always include the model breakdown here (filtered to the
+            // selected model when one is active) so the "model usage overall"
+            // pie shows the selected model's window total even while a model
+            // filter narrows everything else on the page.
+            breakdown_query(&db, &overall_where_sql, &overall_bind_values, "model", true)?
         } else {
-            by_model.clone()
+            if model.is_some() {
+                // A model-filtered response omits the by-model breakdown from
+                // the payload, but the overall pie still needs the window
+                // total for the selected model.
+                breakdown_query(&db, &where_sql, &bind_values, "model", true)?
+            } else {
+                by_model.clone()
+            }
         };
 
         let bucket_idx = bind_values.len() + 1;

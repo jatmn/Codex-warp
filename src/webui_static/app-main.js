@@ -1029,9 +1029,10 @@
     // the overall pie stays global while a provider filter narrows the
     // per-provider pie below.
     drawPieChart($("#chart-pie-model"), pieRows(data.by_model_overall ?? data.by_model), {
-      emptyText: activeModel
-        ? "Select All models to see overall model usage."
-        : "No model usage in this range.",
+      // The backend now fills by_model_overall even under a model filter (the
+      // selected model's own window total), so an empty state means there is
+      // genuinely no usage for the current filter combination.
+      emptyText: "No model usage in this range.",
     });
     // Per-provider model breakdown exists only while a provider filter is
     // active and the model filter is clear (the API omits by_model otherwise).
@@ -1124,23 +1125,21 @@
     // token spend would otherwise vanish from the pie, leaving an empty
     // "no usage" chart next to summary cards that clearly show activity.
     // Zero-token rows get zero-width slices and a "0" legend value.
-    return (breakdown || []).map((row) => ({
-      key: row.key,
-      value: row.total_tokens || 0,
-    }));
+    return (breakdown || [])
+      .map((row) => ({
+        key: row.key,
+        // Clamp negative totals (untrusted upstream accounting) to zero so
+        // they cannot invert slice geometry or push model lines off-plot.
+        value: Math.max(0, row.total_tokens || 0),
+      }))
+      .filter((row) => row.key != null && row.key !== "");
   }
 
   // Percentage labels must stay readable on the fixed palette in both
-  // themes. Compute a cheap relative luminance and pick dark text on light
-  // colors instead of hard-coding white.
+  // themes. Delegate to the chart-math WCAG relative-luminance helper so the
+  // contrast decision is unit-tested; fall back to white when math is absent.
   function pieLabelColor(color) {
-    const hex = String(color || "").replace("#", "");
-    if (hex.length !== 6) return "#ffffff";
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.55 ? "#1f2937" : "#ffffff";
+    return Charts && Charts.textColorOn ? Charts.textColorOn(color) : "#ffffff";
   }
 
   function fmtInt(n) {
@@ -1514,7 +1513,10 @@
     else if (state.kind === "model") {
       drawModelUsageChart(canvas, state.series, state.metric, state.range);
     } else if (state.kind === "pie") {
-      drawPieChart(canvas, state.rows, state.pieOptions || {});
+      // Interaction redraws must feed the full row set (including zero-token
+      // rows kept in the legend); state.rows is the active, slice-able subset
+      // used for hover/keyboard resolution.
+      drawPieChart(canvas, state.legendRows || state.rows, state.pieOptions || {});
     }
   }
 
@@ -2342,6 +2344,7 @@
       canvas.__chart = {
         kind: "pie",
         rows: [],
+        legendRows,
         total: 0,
         geometry: null,
         hoverTs: null,
@@ -2350,7 +2353,19 @@
         pieOptions: opts,
         cssW: w,
       };
-      if (legend) legend.innerHTML = "";
+      // Zero-token rows still name the providers/models behind the activity;
+      // keep them visible next to the empty-state message instead of wiping
+      // the legend entirely.
+      if (legend) {
+        renderChartLegend(
+          legend,
+          legendRows.map((row, index) => ({
+            key: row.key,
+            color: paletteColor(index),
+            value: row.value,
+          })),
+        );
+      }
       drawChartEmpty(ctx, w, h, opts.emptyText || "No data in this range.");
       dismissChartHoverUi(canvas);
       return;
@@ -2391,6 +2406,7 @@
     canvas.__chart = {
       kind: "pie",
       rows: active,
+      legendRows,
       total,
       geometry: { cx, cy, r: radius, slices },
       hoverTs: effectiveHoverIdx >= 0 ? effectiveHoverIdx : null,

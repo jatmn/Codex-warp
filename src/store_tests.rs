@@ -307,6 +307,17 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert!(overall_keys.contains(&"alpha/model"));
     assert!(overall_keys.contains(&"beta/model"));
 
+    // With a model filter active, by_model_overall must still report the
+    // selected model's window total (the "Model usage overall" pie draws a
+    // truthful single-slice breakdown instead of an empty state).
+    let model_filtered = store
+        .analytics(AnalyticsRange::Last24Hours, None, Some("alpha/model"))
+        .unwrap();
+    assert_eq!(model_filtered.by_model_overall.len(), 1);
+    assert_eq!(model_filtered.by_model_overall[0].key, "alpha/model");
+    assert_eq!(model_filtered.by_model_overall[0].prompts, 3);
+    assert_eq!(model_filtered.by_model_overall[0].sessions, 2);
+
     let _ = std::fs::remove_dir_all(dir);
 }
 

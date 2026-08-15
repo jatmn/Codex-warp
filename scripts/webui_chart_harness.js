@@ -542,6 +542,16 @@ check("pieMidAngle is the slice center for labels", () => {
   assert.equal(charts.pieMidAngle(null), 0);
 });
 
+check("textColorOn picks dark text on light fills with WCAG luminance", () => {
+  // Amber-600: white text was 3.19:1 (below AA); dark text is ~5:1.
+  assert.equal(charts.textColorOn("#d97706"), "#1f2937");
+  // Teal-700: white text on this fill passes comfortably.
+  assert.equal(charts.textColorOn("#0f766e"), "#ffffff");
+  // Invalid/missing colors default to white text.
+  assert.equal(charts.textColorOn(""), "#ffffff");
+  assert.equal(charts.textColorOn("nope"), "#ffffff");
+});
+
 check("reconcilePieHover keeps identity and drops removed keys", () => {
   const rows = [
     { key: "a", value: 5 },
