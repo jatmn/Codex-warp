@@ -144,6 +144,20 @@
     return { barW, barGap: gap, slot };
   }
 
+  // Same contract as bar width: fillRect drops subpixel heights, so a positive
+  // token count must grow to 1 CSS pixel and sit on the plot baseline.
+  function barPaintRect(val, top, plotH) {
+    const value = Number(val) || 0;
+    const max = top > 0 ? top : 0;
+    const height = plotH > 0 ? plotH : 0;
+    if (!(value > 0) || !(max > 0) || !(height > 0)) {
+      return { barH: 0, y: height };
+    }
+    let barH = (value / max) * height;
+    if (barH > 0 && barH < 1) barH = Math.min(1, height);
+    return { barH, y: height - barH };
+  }
+
   // Pointer tooltips follow the cursor. Keyboard (and pointer-without-coords)
   // must anchor to the selected bucket, or leftover mouse coords win.
   function tooltipFollowsPointer(inputMode, hasMouse) {
@@ -296,11 +310,24 @@
     return !!panelVisible && Number(clientWidth) > 0;
   }
 
-  // Keyboard application semantics belong to working charts. A missing math
-  // module must revoke the full AT surface, not leave labelled dead canvases
-  // or keyboard help that describes navigation that no longer exists.
-  function chartCanvasAttrs(enabled) {
-    if (enabled) {
+  // Three surfaces, not a boolean. HTML must ship idle: keyboard application
+  // semantics exist only after math loaded AND there is at least one bucket.
+  // "failed" is a missing module (show fallback). "idle" is a working chart
+  // with nothing to navigate (empty series / not yet loaded).
+  function chartSurface(mathLoaded, bucketCount) {
+    if (!mathLoaded) return "failed";
+    if (Number(bucketCount) > 0) return "interactive";
+    return "idle";
+  }
+
+  function chartCanvasAttrs(surface) {
+    const kind =
+      surface === true || surface === "interactive"
+        ? "interactive"
+        : surface === "idle"
+          ? "idle"
+          : "failed";
+    if (kind === "interactive") {
       return {
         tabIndex: 0,
         role: "application",
@@ -309,6 +336,18 @@
         labelledBy: true,
         ariaHidden: null,
         kbdHelpHidden: false,
+        fallbackHidden: true,
+      };
+    }
+    if (kind === "idle") {
+      return {
+        tabIndex: null,
+        role: null,
+        keyshortcuts: null,
+        describedBy: null,
+        labelledBy: true,
+        ariaHidden: null,
+        kbdHelpHidden: true,
         fallbackHidden: true,
       };
     }
@@ -332,6 +371,7 @@
     fitCanvasMetrics,
     layoutChartPlot,
     barSlotLayout,
+    barPaintRect,
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,
@@ -344,6 +384,7 @@
     announceIfChanged,
     liveRegionText,
     shouldPaintCharts,
+    chartSurface,
     chartCanvasAttrs,
   };
 

@@ -189,6 +189,7 @@
     }
     if (name === "analytics") {
       renderAnalyticsPresentation();
+      scheduleChartResize();
     }
   }
 
@@ -849,7 +850,7 @@
       };
       renderAnalyticsPresentation();
       if (activeTab === "analytics") {
-        const message = "Analytics updated";
+        const message = analyticsReadyMessage();
         if (reportFromPoll) pollStatus(message);
         else status(message);
       }
@@ -872,10 +873,13 @@
   // Chart math is a sibling deferred script. Missing it must not abort this
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
-  let chartsUnavailableNoted = false;
-  function applyChartInteractivity(enabled) {
+  const CHARTS_FAILED_STATUS = "Analytics charts failed to load (/ui/chart-math.js)";
+  function analyticsReadyMessage() {
+    return Charts ? "Analytics updated" : CHARTS_FAILED_STATUS;
+  }
+  function applyChartInteractivity(surface) {
     const attrs = Charts
-      ? Charts.chartCanvasAttrs(enabled)
+      ? Charts.chartCanvasAttrs(surface)
       : {
           tabIndex: null,
           role: null,
@@ -906,7 +910,7 @@
       }
       if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
       else canvas.removeAttribute("aria-hidden");
-      if (!enabled && document.activeElement === canvas) canvas.blur();
+      if (attrs.tabIndex == null && document.activeElement === canvas) canvas.blur();
     });
     const kbdHelp = $("#chart-kbd-help");
     if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
@@ -914,11 +918,14 @@
       el.hidden = !!attrs.fallbackHidden;
     });
   }
+  function syncChartSurface() {
+    const series = analyticsSnapshot && analyticsSnapshot.data
+      ? analyticsSnapshot.data.series || []
+      : [];
+    applyChartInteractivity(Charts ? Charts.chartSurface(true, series.length) : "failed");
+  }
   function noteChartsUnavailable() {
-    applyChartInteractivity(false);
-    if (chartsUnavailableNoted) return;
-    chartsUnavailableNoted = true;
-    status("Analytics charts failed to load (/ui/chart-math.js)");
+    applyChartInteractivity("failed");
   }
   if (!Charts) noteChartsUnavailable();
   function formatBucketLabel(ms, style) {
@@ -939,6 +946,7 @@
       return;
     }
     const series = data.series || [];
+    syncChartSurface();
     const labelStyle = labelStyleFor(series);
     drawLineChart($("#chart-line"), series, range);
     // Bar chart shows the same time series as bars so usage-over-time is visible
@@ -1309,7 +1317,6 @@
 
   function drawLineChart(canvas, series, range) {
     if (!Charts.shouldPaintCharts(activeTab === "analytics", canvas.clientWidth)) return;
-    attachChartHover(canvas);
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!series.length) {
@@ -1521,7 +1528,6 @@
 
   function drawBarChart(canvas, rows, range) {
     if (!Charts.shouldPaintCharts(activeTab === "analytics", canvas.clientWidth)) return;
-    attachChartHover(canvas);
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!rows.length) {
@@ -1570,17 +1576,17 @@
 
     rows.forEach((r, i) => {
       const val = r.total_tokens || 0;
-      const barH = (val / ticks.top) * plotH;
+      const painted = Charts.barPaintRect(val, ticks.top, plotH);
       const x = xAt(i);
-      const y = yAt(val);
+      const y = padT + painted.y;
       ctx.fillStyle = colors.bar;
-      if (barW > 0 && barH >= 1) {
-        ctx.fillRect(x, y, barW, barH);
+      if (barW > 0 && painted.barH >= 1) {
+        ctx.fillRect(x, y, barW, painted.barH);
       }
       // Value label only when it fits inside the bar slot; on dense ranges the
       // tooltip (mouse or keyboard) carries the exact value instead of
       // overlapping neighbor labels.
-      if (val > 0 && barW >= 1 && barH >= 1) {
+      if (val > 0 && barW >= 1 && painted.barH >= 1) {
         ctx.font = "10px system-ui";
         const label = abbrev(val);
         const labelW = ctx.measureText(label).width;
@@ -1590,7 +1596,7 @@
           if (y - 4 >= padT + 8) {
             ctx.textBaseline = "bottom";
             ctx.fillText(label, x + barW / 2, y - 4);
-          } else if (barH >= 14) {
+          } else if (painted.barH >= 14) {
             ctx.textBaseline = "top";
             ctx.fillText(label, x + barW / 2, y + 2);
           }
@@ -1612,15 +1618,15 @@
     if (hidx >= 0) {
       const r = rows[hidx];
       const val = r.total_tokens || 0;
-      const barH = (val / ticks.top) * plotH;
+      const painted = Charts.barPaintRect(val, ticks.top, plotH);
       const x = xAt(hidx);
-      const y = yAt(val);
-      if (barW > 0 && barH >= 1) {
+      const y = padT + painted.y;
+      if (barW > 0 && painted.barH >= 1) {
         ctx.fillStyle = cssThemeColor("--accent-hover", colors.bar);
-        ctx.fillRect(x, y, barW, barH);
+        ctx.fillRect(x, y, barW, painted.barH);
         ctx.strokeStyle = colors.tokens;
         ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, barW, barH);
+        ctx.strokeRect(x, y, barW, painted.barH);
       }
       const state = canvas.__chart;
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
@@ -1642,6 +1648,16 @@
     showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(row, state.labelStyle, chartColors()));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle)));
   }
+
+  function wireCharts() {
+    if (!Charts) {
+      noteChartsUnavailable();
+      return;
+    }
+    for (const canvas of chartCanvases()) attachChartHover(canvas);
+    syncChartSurface();
+  }
+  wireCharts();
 
   async function startAnalyticsPoll(epoch = tabEpoch) {
     stopAnalyticsPoll();

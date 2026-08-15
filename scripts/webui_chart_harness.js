@@ -134,6 +134,17 @@ check("barSlotLayout paints a visible bar when the slot is subpixel", () => {
   assert.ok(tiny.barW <= tiny.slot + 1e-9);
 });
 
+check("barPaintRect grows subpixel heights so positive values paint", () => {
+  const tiny = charts.barPaintRect(500, 100000, 164);
+  assert.ok(tiny.barH >= 1);
+  assert.equal(tiny.y + tiny.barH, 164);
+  const zero = charts.barPaintRect(0, 100000, 164);
+  assert.equal(zero.barH, 0);
+  const tall = charts.barPaintRect(100000, 100000, 164);
+  assert.equal(tall.barH, 164);
+  assert.equal(tall.y, 0);
+});
+
 check("tooltipFollowsPointer is pointer-owned only when mouse coords exist", () => {
   assert.equal(charts.tooltipFollowsPointer("pointer", { x: 1, y: 2 }), true);
   assert.equal(charts.tooltipFollowsPointer("pointer", null), false);
@@ -216,8 +227,14 @@ check("shouldPaintCharts refuses hidden or unlaid-out canvases", () => {
   assert.equal(charts.shouldPaintCharts(false, 0), false);
 });
 
+check("chartSurface is idle until math loaded and buckets exist", () => {
+  assert.equal(charts.chartSurface(false, 8), "failed");
+  assert.equal(charts.chartSurface(true, 0), "idle");
+  assert.equal(charts.chartSurface(true, 3), "interactive");
+});
+
 check("chartCanvasAttrs revokes the full AT surface when disabled", () => {
-  const on = charts.chartCanvasAttrs(true);
+  const on = charts.chartCanvasAttrs("interactive");
   assert.equal(on.tabIndex, 0);
   assert.equal(on.role, "application");
   assert.equal(on.keyshortcuts, "ArrowLeft ArrowRight");
@@ -226,7 +243,15 @@ check("chartCanvasAttrs revokes the full AT surface when disabled", () => {
   assert.equal(on.ariaHidden, null);
   assert.equal(on.kbdHelpHidden, false);
   assert.equal(on.fallbackHidden, true);
-  const off = charts.chartCanvasAttrs(false);
+  const idle = charts.chartCanvasAttrs("idle");
+  assert.equal(idle.tabIndex, null);
+  assert.equal(idle.role, null);
+  assert.equal(idle.keyshortcuts, null);
+  assert.equal(idle.labelledBy, true);
+  assert.equal(idle.ariaHidden, null);
+  assert.equal(idle.kbdHelpHidden, true);
+  assert.equal(idle.fallbackHidden, true);
+  const off = charts.chartCanvasAttrs("failed");
   assert.equal(off.tabIndex, null);
   assert.equal(off.role, null);
   assert.equal(off.keyshortcuts, null);
@@ -235,6 +260,8 @@ check("chartCanvasAttrs revokes the full AT surface when disabled", () => {
   assert.equal(off.ariaHidden, true);
   assert.equal(off.kbdHelpHidden, true);
   assert.equal(off.fallbackHidden, false);
+  assert.deepEqual(charts.chartCanvasAttrs(true), on);
+  assert.deepEqual(charts.chartCanvasAttrs(false), off);
 });
 
 check("chartInputStep deactivate drops pointer ownership like blur", () => {
