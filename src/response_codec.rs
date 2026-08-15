@@ -1078,11 +1078,13 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     }
     // Ranked classifier:
     // 1. Closers that contain work-like substrings ("let me know").
-    // 2. First-person / let-me prefixes only when the next token is a work
-    //    action. Adverbs such as "now"/"first"/"still" do not themselves mean
-    //    the model is still working ("Now let me summarize" is a wrap-up).
-    // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-verb pair so
-    //    "Thanks to the rebase. Now let me verify" still continues.
+    // 2. First-person / let-me prefixes: after stripping adverbs and nested
+    //    prefixes, the next action token is work unless it is a wrap-up /
+    //    hand-off verb. "Now let me summarize" stops; "I'll clone the repo"
+    //    and "Now let me verify" continue. Discourse verbs ("see", "try")
+    //    are not work by themselves ("Let me see if you need anything").
+    // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
+    //    so "Thanks to the rebase. Now let me verify" still continues.
     // 4. Dangling `:`/`...` only when the last sentence still talks about
     //    remaining work. Bare delivery colons ("Here is the final report:")
     //    are not pauses.
@@ -1114,7 +1116,7 @@ fn contains_work_intent(normalized: &str) -> bool {
         let mut start = 0;
         while let Some(idx) = normalized[start..].find(prefix) {
             let after_prefix = &normalized[start + idx + prefix.len()..];
-            if remainder_starts_with_work_verb(strip_intent_fillers(after_prefix)) {
+            if remainder_is_work_action(strip_intent_fillers(after_prefix)) {
                 return true;
             }
             start += idx + prefix.len();
@@ -1126,12 +1128,29 @@ fn contains_work_intent(normalized: &str) -> bool {
 fn strip_intent_fillers(mut rest: &str) -> &str {
     loop {
         let Some(next) = [
-            "just ", "also ", "first ", "now ", "next ", "still ", "quickly ", "please ", "then ",
+            "just ",
+            "also ",
+            "first ",
+            "now ",
+            "next ",
+            "still ",
+            "quickly ",
+            "please ",
+            "then ",
+            "try ",
+            "to ",
+            "let me ",
+            "i'll ",
+            "i will ",
+            "i still need to ",
+            "i need to ",
+            "i'm going to ",
+            "i should ",
         ]
         .iter()
         .find_map(|filler| rest.strip_prefix(filler)) else {
             // Observed pauses use "re-audit" rather than a catalogued stem.
-            // Strip a hyphenated repetition prefix so the work-verb check sees
+            // Strip a hyphenated repetition prefix so the action check sees
             // "audit", without treating "read" as "ad".
             if let Some(stripped) = rest.strip_prefix("re-") {
                 rest = stripped;
@@ -1143,14 +1162,50 @@ fn strip_intent_fillers(mut rest: &str) -> &str {
     }
 }
 
+fn remainder_is_work_action(rest: &str) -> bool {
+    if rest.is_empty() || remainder_starts_with_wrap_up_action(rest) {
+        return false;
+    }
+    remainder_starts_with_work_verb(rest) || remainder_starts_with_unknown_action(rest)
+}
+
+fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
+    [
+        "summarize",
+        "stop",
+        "leave",
+        "wrap",
+        "explain",
+        "tell",
+        "know",
+        "wait",
+        "pause",
+        "recap",
+        "conclude",
+        "help",
+        "stay",
+        "remain",
+        "see",
+    ]
+    .iter()
+    .any(|stem| token_starts_with_stem(rest, stem))
+}
+
 fn remainder_starts_with_work_verb(rest: &str) -> bool {
-    const STEMS: [&str; 36] = [
-        "check", "inspect", "look", "read", "write", "run", "verify", "try", "open", "search",
-        "audit", "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep",
-        "list", "see", "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find",
-        "scan", "rebase", "commit", "merge", "build", "checkout",
+    const STEMS: [&str; 34] = [
+        "check", "inspect", "look", "read", "write", "run", "verify", "open", "search", "audit",
+        "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep", "list",
+        "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find", "scan",
+        "rebase", "commit", "merge", "build", "checkout",
     ];
     STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
+}
+
+fn remainder_starts_with_unknown_action(rest: &str) -> bool {
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    end >= 4
 }
 
 fn token_starts_with_stem(rest: &str, stem: &str) -> bool {
@@ -1195,7 +1250,7 @@ fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
 }
 
 /// Wrap-up phrasing that should not force a follow-up unless a prefix is
-/// followed by a work verb. Generic "let me"/"I'll"/"I need to"/"I should"
+/// followed by a work action. Generic "let me"/"I'll"/"I need to"/"I should"
 /// are not enough on their own, even with "now"/"first"/"still". Subtask
 /// completion words such as "done" or "complete" are deliberately excluded:
 /// mid-task text routinely says "the rebase is complete" before continuing
