@@ -1353,11 +1353,11 @@
     if (!models.length || !models[0].points[idx]) return "";
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
     const shown = models.slice(0, 12);
-    const rows = shown.map((model, i) => [
-      model.model,
-      model.points[idx][metric] || 0,
-      paletteColor(i),
-    ]);
+    const rows = [];
+    shown.forEach((model, i) => {
+      if (!model.points[idx]) return;
+      rows.push([model.model, model.points[idx][metric] || 0, paletteColor(i)]);
+    });
     let html = `<div class="tt-title">${esc(title)}</div>` + tooltipRowsHtml(rows);
     if (models.length > shown.length) {
       html += `<div class="tt-row"><span class="tt-key">+${models.length - shown.length} more models</span></div>`;
@@ -1368,9 +1368,10 @@
   function modelTooltipSummary(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
     const label = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const parts = models.slice(0, 4).map(
-      (model) => `${model.model} ${fmtInt(model.points[idx][metric] || 0)}`,
-    );
+    const parts = models
+      .slice(0, 4)
+      .filter((model) => model.points[idx])
+      .map((model) => `${model.model} ${fmtInt(model.points[idx][metric] || 0)}`);
     if (models.length > 4) parts.push(`+${models.length - 4} more models`);
     return `${label}: ${parts.join(", ")}`;
   }
@@ -2238,6 +2239,7 @@
     ctx.stroke();
     ctx.setLineDash([]);
     state.series.forEach((model, index) => {
+      if (!model.points[idx]) return;
       const y = yAt(model.points[idx][state.metric] || 0);
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
