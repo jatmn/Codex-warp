@@ -1150,8 +1150,8 @@
   function deactivateCharts({ except } = {}) {
     for (const canvas of chartCanvases()) {
       if (except && canvas === except) continue;
+      const state = canvas.__chart;
       if (Charts) {
-        const state = canvas.__chart;
         const next = Charts.chartInputStep(
           {
             points: state ? chartPoints(state) : [],
@@ -1171,6 +1171,7 @@
       }
       dismissChartHoverUi(canvas);
       if (document.activeElement === canvas) canvas.blur();
+      else if (state) redrawChart(canvas, state);
     }
   }
 
