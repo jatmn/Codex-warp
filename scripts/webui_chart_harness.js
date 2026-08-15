@@ -508,10 +508,10 @@ check("pieSliceIndexAt hits the correct slice and rejects misses", () => {
   assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r * 2, cy), -1);
   // Inside a donut hole is a miss.
   assert.equal(charts.pieSliceIndexAt(cx, cy, r, 30, slices, cx + 10, cy), -1);
-  // Center of a full pie is degenerate: atan2(0, 0) resolves to angle 0,
-  // which belongs to the second slice. The donut hole is what makes the
-  // center a miss, so a full pie keeps this documented quirk.
-  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy), 1);
+  // The exact center of a full pie is ambiguous (atan2(0, 0) has no defined
+  // slice), so it is treated as a miss instead of arbitrarily selecting a
+  // slice.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy), -1);
 });
 
 check("pieSliceIndexAt skips zero-width slices", () => {
@@ -523,6 +523,17 @@ check("pieSliceIndexAt skips zero-width slices", () => {
   // (3 o'clock) and the second half owns angle PI/2 (6 o'clock).
   assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r, cy), 0);
   assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy + r), 2);
+});
+
+check("pieSlices clamps non-finite and negative values to zero", () => {
+  const { slices, total } = charts.pieSlices([5, Infinity, NaN, -3, 2]);
+  assert.equal(total, 7);
+  assert.equal(slices.length, 5);
+  // Only the finite positive values consume angle.
+  assert.equal(slices[1].end - slices[1].start, 0);
+  assert.equal(slices[2].end - slices[2].start, 0);
+  assert.equal(slices[3].end - slices[3].start, 0);
+  assert.ok(Number.isFinite(slices[4].end));
 });
 
 check("pieMidAngle is the slice center for labels", () => {

@@ -141,6 +141,16 @@ pub(crate) struct AnalyticsModelPoint {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AnalyticsModelSeries {
     pub model: String,
+    /// Window-scoped totals for this model over the selected range. Sessions
+    /// are distinct over the whole window, so the Web UI legend can show a
+    /// number consistent with the summary cards instead of summing
+    /// bucket-scoped distinct session counts (which double-count sessions
+    /// that span buckets).
+    pub prompts: i64,
+    pub sessions: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
     pub points: Vec<AnalyticsModelPoint>,
 }
 
@@ -156,6 +166,10 @@ pub(crate) struct AnalyticsSummary {
     pub reasoning_tokens: i64,
     pub by_provider: Vec<AnalyticsBreakdown>,
     pub by_model: Vec<AnalyticsBreakdown>,
+    /// Model breakdown ignoring the provider filter. The provider-scoped
+    /// `by_model` feeds the per-provider pie; this field keeps the "model
+    /// usage overall" pie global even while a provider filter is active.
+    pub by_model_overall: Vec<AnalyticsBreakdown>,
     pub series: Vec<AnalyticsSeriesPoint>,
     /// Per-model time series. Each model gets its own bucket-aligned series so
     /// the Web UI can chart model usage (sessions, prompts, tokens) over time
@@ -1006,6 +1020,31 @@ impl Store {
             provider_id.is_none(),
         )?;
         let by_model = breakdown_query(&db, &where_sql, &bind_values, "model", model.is_none())?;
+        // The "model usage overall" pie must stay global while a provider
+        // filter is active, so run a model breakdown with the provider clause
+        // stripped (the provider-scoped `by_model` above feeds the
+        // per-provider pie instead). When no provider filter is active the
+        // two breakdowns are identical, so reuse `by_model` to avoid a second
+        // GROUP BY pass over the same window.
+        let by_model_overall = if provider_id.is_some() {
+            let mut overall_where_sql = String::from("WHERE ts >= ?1 AND ts <= ?2");
+            let mut overall_bind_values: Vec<ValueBinder> =
+                vec![ValueBinder::I64(start), ValueBinder::I64(end)];
+            if let Some(model) = model {
+                overall_where_sql
+                    .push_str(&format!(" AND model = ?{}", overall_bind_values.len() + 1));
+                overall_bind_values.push(ValueBinder::Text(model.to_string()));
+            }
+            breakdown_query(
+                &db,
+                &overall_where_sql,
+                &overall_bind_values,
+                "model",
+                model.is_none(),
+            )?
+        } else {
+            by_model.clone()
+        };
 
         let bucket_idx = bind_values.len() + 1;
         let series_sql = format!(
@@ -1075,6 +1114,18 @@ impl Store {
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
+        let by_model_totals = if model.is_none() {
+            by_model.clone()
+        } else {
+            // A model-filtered response deliberately omits the by-model
+            // breakdown from the payload, but the per-model series still
+            // needs window-scoped totals for its legend.
+            breakdown_query(&db, &where_sql, &bind_values, "model", true)?
+        };
+        let mut totals_by_model: BTreeMap<String, AnalyticsBreakdown> = BTreeMap::new();
+        for row in by_model_totals {
+            totals_by_model.insert(row.key.clone(), row);
+        }
         let mut by_model_map: BTreeMap<String, Vec<AnalyticsModelPoint>> = BTreeMap::new();
         for (model, point) in raw_model_points {
             by_model_map.entry(model).or_default().push(point);
@@ -1082,6 +1133,26 @@ impl Store {
         let model_series = by_model_map
             .into_iter()
             .map(|(model, points)| AnalyticsModelSeries {
+                prompts: totals_by_model
+                    .get(&model)
+                    .map(|row| row.prompts)
+                    .unwrap_or(0),
+                sessions: totals_by_model
+                    .get(&model)
+                    .map(|row| row.sessions)
+                    .unwrap_or(0),
+                input_tokens: totals_by_model
+                    .get(&model)
+                    .map(|row| row.input_tokens)
+                    .unwrap_or(0),
+                output_tokens: totals_by_model
+                    .get(&model)
+                    .map(|row| row.output_tokens)
+                    .unwrap_or(0),
+                total_tokens: totals_by_model
+                    .get(&model)
+                    .map(|row| row.total_tokens)
+                    .unwrap_or(0),
                 model,
                 points: fill_series_gaps(
                     points,
@@ -1112,6 +1183,7 @@ impl Store {
             reasoning_tokens: reasoning,
             by_provider,
             by_model,
+            by_model_overall,
             series: fill_series_gaps(
                 series,
                 start,

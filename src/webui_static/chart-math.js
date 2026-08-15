@@ -507,7 +507,10 @@
   // Pie slices start at 12 o'clock and sweep clockwise. Zero-value slices get
   // zero-width arcs so they cannot consume angle or become hittable.
   function pieSlices(values) {
-    const items = (values || []).map((value) => Math.max(0, Number(value) || 0));
+    const items = (values || []).map((value) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    });
     const total = items.reduce((sum, value) => sum + value, 0);
     let start = -Math.PI / 2;
     const slices = items.map((value) => {
@@ -531,7 +534,7 @@
     const dx = x - cx;
     const dy = y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (!(dist >= 0) || dist > outerR || dist < innerR) return -1;
+    if (!(dist > 0) || dist > outerR || dist < innerR) return -1;
     let angle = Math.atan2(dy, dx);
     if (angle < -Math.PI / 2) angle += Math.PI * 2;
     for (let i = 0; i < slices.length; i += 1) {

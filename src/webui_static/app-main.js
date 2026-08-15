@@ -1019,7 +1019,10 @@
         ? "Select All providers to see provider usage."
         : "No provider usage in this range.",
     });
-    drawPieChart($("#chart-pie-model"), pieRows(data.by_model), {
+    // Overall model usage ignores the provider filter (by_model_overall), so
+    // the overall pie stays global while a provider filter narrows the
+    // per-provider pie below.
+    drawPieChart($("#chart-pie-model"), pieRows(data.by_model_overall ?? data.by_model), {
       emptyText: activeModel
         ? "Select All models to see overall model usage."
         : "No model usage in this range.",
@@ -1107,12 +1110,31 @@
     return CHART_PALETTE[Number(index) % CHART_PALETTE.length];
   }
 
-  // Breakdown rows become pie slices keyed by identity. Zero-token rows are
-  // dropped: a zero-width slice would only clutter the legend and tooltip.
+  // Breakdown rows become pie slices keyed by identity. Zero-token rows stay
+  // in the legend with a "0" value so a provider/model with prompts or
+  // sessions but no token spend does not vanish next to active summary cards.
   function pieRows(breakdown) {
-    return (breakdown || [])
-      .map((row) => ({ key: row.key, value: row.total_tokens || 0 }))
-      .filter((row) => row.value > 0);
+    // Keep zero-token rows: a provider/model with prompts or sessions but no
+    // token spend would otherwise vanish from the pie, leaving an empty
+    // "no usage" chart next to summary cards that clearly show activity.
+    // Zero-token rows get zero-width slices and a "0" legend value.
+    return (breakdown || []).map((row) => ({
+      key: row.key,
+      value: row.total_tokens || 0,
+    }));
+  }
+
+  // Percentage labels must stay readable on the fixed palette in both
+  // themes. Compute a cheap relative luminance and pick dark text on light
+  // colors instead of hard-coding white.
+  function pieLabelColor(color) {
+    const hex = String(color || "").replace("#", "");
+    if (hex.length !== 6) return "#ffffff";
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.55 ? "#1f2937" : "#ffffff";
   }
 
   function fmtInt(n) {
@@ -1298,6 +1320,18 @@
         if (state) {
           state.inputMode = next.inputMode;
           state.hoverTs = next.hoverTs;
+          if (state.kind === "pie") {
+            // Positional hoverTs is only an index; the slice key is what
+            // survives value-driven reorders across polls. Deactivation must
+            // clear it here exactly like applyChartInput does, otherwise the
+            // next pie redraw re-derives a live hover from the stale key.
+            state.hoverKey =
+              state.hoverTs == null
+                ? null
+                : state.rows[state.hoverTs]
+                  ? state.rows[state.hoverTs].key
+                  : null;
+          }
         }
       } else {
         canvas.__mouse = null;
@@ -1352,15 +1386,19 @@
   function modelTooltipHtml(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const shown = models.slice(0, 12);
+    const present = models.filter((model) => model.points[idx]);
+    const shown = present.slice(0, 12);
     const rows = [];
     shown.forEach((model, i) => {
-      if (!model.points[idx]) return;
-      rows.push([model.model, model.points[idx][metric] || 0, paletteColor(i)]);
+      rows.push([
+        model.model,
+        model.points[idx][metric] || 0,
+        paletteColor(models.indexOf(model)),
+      ]);
     });
     let html = `<div class="tt-title">${esc(title)}</div>` + tooltipRowsHtml(rows);
-    if (models.length > shown.length) {
-      html += `<div class="tt-row"><span class="tt-key">+${models.length - shown.length} more models</span></div>`;
+    if (present.length > shown.length) {
+      html += `<div class="tt-row"><span class="tt-key">+${present.length - shown.length} more models</span></div>`;
     }
     return html;
   }
@@ -1368,11 +1406,11 @@
   function modelTooltipSummary(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
     const label = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const parts = models
+    const present = models.filter((model) => model.points[idx]);
+    const parts = present
       .slice(0, 4)
-      .filter((model) => model.points[idx])
       .map((model) => `${model.model} ${fmtInt(model.points[idx][metric] || 0)}`);
-    if (models.length > 4) parts.push(`+${models.length - 4} more models`);
+    if (present.length > 4) parts.push(`+${present.length - 4} more models`);
     return `${label}: ${parts.join(", ")}`;
   }
 
@@ -1821,7 +1859,10 @@
       const cssH = canvas.clientHeight || 260;
       const my = ((event.clientY - rect.top) * cssH) / rect.height;
       const g = state.geometry;
-      const idx = Charts.pieSliceIndexAt(g.cx, g.cy, g.r, 0, g.slices, mx, my);
+      // The hover ring is painted at radius + 4, so the hit zone must extend
+      // to the same band or moving the pointer onto the ring dismisses the
+      // selection it indicates.
+      const idx = Charts.pieSliceIndexAt(g.cx, g.cy, g.r + 4, 0, g.slices, mx, my);
       return idx < 0 ? null : idx;
     }
     const idx = Charts.barIndexAtX(mx - state.geometry.padL, state.geometry.slot, state.rows.length);
@@ -2059,6 +2100,10 @@
   }
 
   function modelTotal(model, metric) {
+    // Prefer the backend's window-scoped total: bucket-scoped distinct
+    // session counts double-count sessions that span buckets, so summing
+    // bucket points would inflate the sessions legend.
+    if (model.totals && model.totals[metric] != null) return model.totals[metric];
     return model.points.reduce((sum, point) => sum + (point[metric] || 0), 0);
   }
 
@@ -2069,8 +2114,19 @@
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     const legend = legendElFor(canvas);
+    const prev = canvas.__chart;
     const models = (modelSeries || [])
-      .map((series) => ({ model: series.model, points: series.points || [] }))
+      .map((series) => ({
+        model: series.model,
+        points: series.points || [],
+        totals: series.totals || {
+          prompts: series.prompts || 0,
+          sessions: series.sessions || 0,
+          input_tokens: series.input_tokens || 0,
+          output_tokens: series.output_tokens || 0,
+          total_tokens: series.total_tokens || 0,
+        },
+      }))
       .filter((series) => series.points.length)
       .sort((a, b) => modelTotal(b, metric) - modelTotal(a, metric));
     if (!models.length) {
@@ -2081,7 +2137,7 @@
         range,
         geometry: null,
         hoverTs: null,
-        inputMode: "pointer",
+        inputMode: prev && prev.kind === "model" ? prev.inputMode || "pointer" : "pointer",
         labelStyle: "time",
       };
       if (legend) legend.innerHTML = "";
@@ -2091,10 +2147,13 @@
     }
     const buckets = models[0].points.map((point) => ({ ts: point.ts }));
     const labelStyle = Charts.bucketLabelStyle(buckets);
-    const maxVal = Math.max(
-      1,
-      ...models.flatMap((model) => model.points.map((point) => point[metric] || 0)),
-    );
+    let maxVal = 1;
+    for (const model of models) {
+      for (const point of model.points) {
+        const value = point[metric] || 0;
+        if (value > maxVal) maxVal = value;
+      }
+    }
     const ticks = integerTicks(maxVal);
     const { padT, padB, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
       padL: 46,
@@ -2108,7 +2167,6 @@
     const xAt = (ts) => padL + ((ts - tsMin) / tsSpan) * plotW;
     const yAt = (value) => padT + (1 - value / ticks.top) * plotH;
     const colors = chartColors();
-    const prev = canvas.__chart;
     canvas.__chart = {
       kind: "model",
       series: models,
@@ -2154,9 +2212,12 @@
     ctx.fillText(metric, padL, 10);
 
     const n = buckets.length;
+    // Thin the time labels to ~10 across any range width; label the first and
+    // last bucket always so the window edges stay identifiable.
+    const labelStep = Math.max(1, Math.ceil(n / 10));
     ctx.textBaseline = "top";
     for (let i = 0; i < n; i += 1) {
-      if (n > 40 && i % Math.ceil(n / 40) !== 0 && i !== n - 1) continue;
+      if (i !== 0 && i !== n - 1 && i % labelStep !== 0) continue;
       ctx.fillStyle = colors.muted;
       ctx.textAlign = "center";
       ctx.fillText(
@@ -2181,7 +2242,7 @@
       });
       ctx.stroke();
     });
-    if (models.length <= 6) {
+    if (n === 1 || models.length <= 6) {
       models.forEach((model, index) => {
         ctx.fillStyle = paletteColor(index);
         model.points.forEach((point) => {
@@ -2260,6 +2321,7 @@
     ctx.clearRect(0, 0, w, h);
     const legend = legendElFor(canvas);
     const opts = options || {};
+    const prev = canvas.__chart;
     const sorted = (rows || []).slice().sort((a, b) => b.value - a.value);
     if (!sorted.length) {
       canvas.__chart = {
@@ -2269,7 +2331,7 @@
         geometry: null,
         hoverTs: null,
         hoverKey: null,
-        inputMode: "pointer",
+        inputMode: prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
         pieOptions: opts,
         cssW: w,
       };
@@ -2284,7 +2346,6 @@
     const cx = w / 2;
     const cy = h / 2;
     const colors = chartColors();
-    const prev = canvas.__chart;
     const hoverKey = Charts.reconcilePieHover(
       sorted,
       prev && prev.kind === "pie" ? prev.hoverKey : null,
@@ -2338,9 +2399,9 @@
       const slice = slices[index];
       if (!(slice.value > 0) || total <= 0) return;
       const span = slice.end - slice.start;
-      if (span < 0.45 || slice.value / total < 0.05) return;
+      if (span < 0.36 || slice.value / total < 0.05) return;
       const mid = Charts.pieMidAngle(slice);
-      ctx.fillStyle = "#ffffff";
+      ctx.fillStyle = pieLabelColor(paletteColor(index));
       ctx.fillText(
         `${Math.round((slice.value / total) * 100)}%`,
         cx + Math.cos(mid) * radius * 0.62,

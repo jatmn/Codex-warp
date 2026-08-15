@@ -258,17 +258,46 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(beta_newest.prompts, 1);
     assert_eq!(beta_newest.sessions, 1);
 
+    // Window-scoped totals must not double-count distinct sessions that span
+    // buckets: alpha has three prompts across two sessions in the window.
+    assert_eq!(alpha.prompts, 3);
+    assert_eq!(alpha.sessions, 2);
+    assert_eq!(alpha.input_tokens, 30);
+    assert_eq!(alpha.output_tokens, 15);
+    assert_eq!(alpha.total_tokens, 45);
+    assert_eq!(beta.prompts, 1);
+    assert_eq!(beta.sessions, 1);
+
     // Provider and model filters constrain the per-model series too.
     let alpha_only = store
         .analytics(AnalyticsRange::Last24Hours, Some("alpha-provider"), None)
         .unwrap();
     assert_eq!(alpha_only.model_series.len(), 1);
     assert_eq!(alpha_only.model_series[0].model, "alpha/model");
+    assert_eq!(alpha_only.model_series[0].prompts, 3);
+    assert_eq!(alpha_only.model_series[0].sessions, 2);
     let model_only = store
         .analytics(AnalyticsRange::Last24Hours, None, Some("beta/model"))
         .unwrap();
     assert_eq!(model_only.model_series.len(), 1);
     assert_eq!(model_only.model_series[0].model, "beta/model");
+    assert_eq!(model_only.model_series[0].prompts, 1);
+
+    // The "model usage overall" breakdown ignores the provider filter while
+    // the payload's by_model stays provider-scoped for the per-provider pie.
+    let provider_scoped = store
+        .analytics(AnalyticsRange::Last24Hours, Some("alpha-provider"), None)
+        .unwrap();
+    assert_eq!(provider_scoped.by_model.len(), 1);
+    assert_eq!(provider_scoped.by_model[0].key, "alpha/model");
+    assert_eq!(provider_scoped.by_model_overall.len(), 2);
+    let overall_keys: Vec<&str> = provider_scoped
+        .by_model_overall
+        .iter()
+        .map(|row| row.key.as_str())
+        .collect();
+    assert!(overall_keys.contains(&"alpha/model"));
+    assert!(overall_keys.contains(&"beta/model"));
 
     let _ = std::fs::remove_dir_all(dir);
 }
