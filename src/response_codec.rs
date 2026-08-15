@@ -1090,13 +1090,12 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
 
 /// Phrases that indicate a turn is actually wrapping up, not continuing. These
 /// take precedence over the continuation markers so final summaries are not
-/// mistaken for premature stops.
+/// mistaken for premature stops. Subtask-completion words such as "done" or
+/// "complete" are deliberately excluded: mid-task text routinely says "the
+/// rebase is complete" before continuing ("Now let me push..."), so those words
+/// must not suppress the guard.
 fn contains_closing_phrase(normalized: &str) -> bool {
     [
-        "done",
-        "complete",
-        "completed",
-        "finished",
         "no actionable issues",
         "let me know if",
         "thank you",

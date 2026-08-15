@@ -452,6 +452,43 @@ fn continue_guard_trailing_colon_without_marker_triggers_followup() {
 }
 
 #[test]
+fn continue_guard_subtask_completion_does_not_suppress_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "The rebase is complete. Now let me push the branch to origin:"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-subtask-done",
+            "input": [{
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Rebase\",\"status\":\"completed\"},{\"step\":\"Push\",\"status\":\"in_progress\"}]}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
 fn continue_guard_budget_resets_after_tool_progress() {
     let build_accum = |text: &str| {
         let mut accum = ChatAccum::default();
