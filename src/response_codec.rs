@@ -1065,31 +1065,35 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    // Wrap-ups that themselves contain continuation substrings ("let me know if")
-    // must win first. Politeness words ("thanks") must not: they appear in
-    // mid-task narration like "Thanks to the rebase. Now let me verify:".
+    // Wrap-ups that themselves contain continuation substrings ("let me know")
+    // must win first. Politeness words ("thanks") must not beat *strong*
+    // mid-task markers: they appear in narration like "Thanks to the rebase.
+    // Now let me verify:". Weak first-person future ("I'll", "I will") is
+    // common in both mid-task work and polite sign-offs, so wrap-up phrases
+    // win over those weaker markers.
     if contains_overlapping_closing_phrase(&normalized) {
         return false;
     }
-    if contains_continuation_marker(&normalized) {
+    if contains_strong_continuation_marker(&normalized) {
         return true;
     }
     if contains_wrap_up_closing_phrase(&normalized) {
         return false;
     }
+    if contains_weak_continuation_marker(&normalized) {
+        return true;
+    }
     normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…')
 }
 
-fn contains_continuation_marker(normalized: &str) -> bool {
+fn contains_strong_continuation_marker(normalized: &str) -> bool {
     [
         "let me ",
         "let me also ",
         "let me first ",
         "now let me ",
         "next let me ",
-        "i'll ",
         "i'll now ",
-        "i will ",
         "i will now ",
         "now i'll ",
         "now i will ",
@@ -1108,8 +1112,14 @@ fn contains_continuation_marker(normalized: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
+fn contains_weak_continuation_marker(normalized: &str) -> bool {
+    ["i'll ", "i will "]
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
 fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
-    ["no actionable issues", "let me know if"]
+    ["no actionable issues", "let me know"]
         .iter()
         .any(|marker| normalized.contains(marker))
 }

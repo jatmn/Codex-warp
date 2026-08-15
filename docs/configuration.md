@@ -243,7 +243,9 @@ Modes:
 
 The guard only applies to chat-completions streams that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
-(markers like `let me`, `I'll`, or a dangling `:`/`...`). A fully completed
+(markers like `let me`, `I'll now`, or a dangling `:`/`...`). Closings such as
+`let me know` and wrap-up phrasing with a bare `I'll`/`I will` do not force a
+follow-up. A fully completed
 `update_plan` in the request history suppresses the guard, but sessions that
 never call `update_plan` (common with some models) are still covered.
 `max_followups` limits consecutive automatic continuations per
