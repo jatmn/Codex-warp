@@ -379,6 +379,32 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
 }
 .chart-wrap { position: relative; }
 .chart-wrap canvas { width: 100%; height: 220px; display: block; }
+.chart-wrap canvas[data-chart-kind="pie"] { height: 260px; }
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  margin-top: 0.55rem;
+}
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+.legend-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
+}
 .chart-fallback {
   position: absolute;
   inset: 0;

@@ -153,6 +153,197 @@ fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
 }
 
 #[test]
+fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-model-series-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    let hour = 3_600_000_i64;
+    let now = now_ms();
+    let base = now.div_euclid(hour) * hour;
+    let insert = |ts: i64, provider_id: &str, model: &str, session_key: Option<&str>| {
+        store
+            .record_usage(&UsageEvent {
+                provider_id: provider_id.into(),
+                model: model.into(),
+                session_key: session_key.map(str::to_string),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cached_tokens: 2,
+                reasoning_tokens: 1,
+            })
+            .unwrap();
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "UPDATE usage_events SET ts = ?1 WHERE id = (SELECT MAX(id) FROM usage_events)",
+            rusqlite::params![ts],
+        )
+        .unwrap();
+    };
+
+    // Model "alpha" appears twice in the same bucket (two prompts, one
+    // session) and once in an earlier bucket with a second session.
+    insert(base - hour, "alpha-provider", "alpha/model", Some("sess-a"));
+    insert(base - hour, "alpha-provider", "alpha/model", Some("sess-a"));
+    insert(
+        base - 2 * hour,
+        "alpha-provider",
+        "alpha/model",
+        Some("sess-b"),
+    );
+    // Model "beta" appears once in the newest bucket.
+    insert(base, "beta-provider", "beta/model", Some("sess-c"));
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.model_series.len(), 2);
+
+    let alpha = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "alpha/model")
+        .expect("alpha/model series exists");
+    let beta = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "beta/model")
+        .expect("beta/model series exists");
+
+    // Both models span the same bucket-aligned window with zero-filled gaps.
+    assert_eq!(alpha.points.len(), beta.points.len());
+    assert_eq!(alpha.points.first().unwrap().ts, base - 24 * hour);
+    assert_eq!(alpha.points.last().unwrap().ts, base);
+
+    let alpha_newest = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - hour)
+        .expect("alpha bucket at base - 1h");
+    assert_eq!(alpha_newest.prompts, 2);
+    assert_eq!(alpha_newest.sessions, 1);
+    assert_eq!(alpha_newest.input_tokens, 20);
+    assert_eq!(alpha_newest.total_tokens, 30);
+
+    let alpha_older = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - 2 * hour)
+        .expect("alpha bucket at base - 2h");
+    assert_eq!(alpha_older.prompts, 1);
+    assert_eq!(alpha_older.sessions, 1);
+
+    // A gap bucket between the two alpha buckets is zero-filled.
+    let alpha_gap = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - 3 * hour)
+        .expect("gap bucket exists");
+    assert_eq!(alpha_gap.prompts, 0);
+    assert_eq!(alpha_gap.sessions, 0);
+    assert_eq!(alpha_gap.total_tokens, 0);
+
+    let beta_newest = beta
+        .points
+        .iter()
+        .find(|point| point.ts == base)
+        .expect("beta bucket at base");
+    assert_eq!(beta_newest.prompts, 1);
+    assert_eq!(beta_newest.sessions, 1);
+
+    // Provider and model filters constrain the per-model series too.
+    let alpha_only = store
+        .analytics(AnalyticsRange::Last24Hours, Some("alpha-provider"), None)
+        .unwrap();
+    assert_eq!(alpha_only.model_series.len(), 1);
+    assert_eq!(alpha_only.model_series[0].model, "alpha/model");
+    let model_only = store
+        .analytics(AnalyticsRange::Last24Hours, None, Some("beta/model"))
+        .unwrap();
+    assert_eq!(model_only.model_series.len(), 1);
+    assert_eq!(model_only.model_series[0].model, "beta/model");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn analytics_model_series_groups_sessions_by_model() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-model-series-sessions-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "alpha".into(),
+            model: "alpha/model".into(),
+            session_key: Some("sess-1".into()),
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "alpha".into(),
+            model: "alpha/model".into(),
+            session_key: Some("sess-1".into()),
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "beta".into(),
+            model: "beta/model".into(),
+            session_key: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    let alpha = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "alpha/model")
+        .expect("alpha/model series");
+    let beta = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "beta/model")
+        .expect("beta/model series");
+    assert_eq!(alpha.points.last().unwrap().prompts, 2);
+    assert_eq!(alpha.points.last().unwrap().sessions, 1);
+    assert_eq!(beta.points.last().unwrap().prompts, 1);
+    assert_eq!(beta.points.last().unwrap().sessions, 1);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn store_applies_provider_and_model_overlays() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-overlay-test-{}",

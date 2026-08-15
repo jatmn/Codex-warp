@@ -504,6 +504,52 @@
     return base;
   }
 
+  // Pie slices start at 12 o'clock and sweep clockwise. Zero-value slices get
+  // zero-width arcs so they cannot consume angle or become hittable.
+  function pieSlices(values) {
+    const items = (values || []).map((value) => Math.max(0, Number(value) || 0));
+    const total = items.reduce((sum, value) => sum + value, 0);
+    let start = -Math.PI / 2;
+    const slices = items.map((value) => {
+      const end = total > 0 ? start + (value / total) * Math.PI * 2 : start;
+      const slice = { value, start, end };
+      start = end;
+      return slice;
+    });
+    return { slices, total };
+  }
+
+  function pieMidAngle(slice) {
+    if (!slice) return 0;
+    return (slice.start + slice.end) / 2;
+  }
+
+  // Hit-test a point against the pie. A donut has a dead inner circle; a full
+  // pie passes innerR = 0. Angles below 12 o'clock are normalized into the
+  // sweep so the wrap-around slice is hit correctly.
+  function pieSliceIndexAt(cx, cy, outerR, innerR, slices, x, y) {
+    const dx = x - cx;
+    const dy = y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (!(dist >= 0) || dist > outerR || dist < innerR) return -1;
+    let angle = Math.atan2(dy, dx);
+    if (angle < -Math.PI / 2) angle += Math.PI * 2;
+    for (let i = 0; i < slices.length; i += 1) {
+      const slice = slices[i];
+      if (!(slice.value > 0)) continue;
+      if (angle >= slice.start && angle < slice.end) return i;
+    }
+    return -1;
+  }
+
+  // Pie hover identity is the slice key, not the positional index: a poll
+  // redraw can reorder slices when values change, and the selected slice must
+  // stay selected (or drop) instead of silently pointing at a different key.
+  function reconcilePieHover(rows, hoverKey) {
+    if (hoverKey == null) return null;
+    return rows.some((row) => row.key === hoverKey) ? hoverKey : null;
+  }
+
   function announceIfChanged(previous, next) {
     const prev = previous == null ? "" : String(previous);
     const value = next == null ? "" : String(next);
@@ -611,6 +657,10 @@
     nextKeyboardIdx,
     chartFocusAction,
     chartInputStep,
+    pieSlices,
+    pieMidAngle,
+    pieSliceIndexAt,
+    reconcilePieHover,
     announceIfChanged,
     liveRegionText,
     chartsLiveLayout,

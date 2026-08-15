@@ -57,7 +57,7 @@
       </div>
       <div id="analytics-cards" class="cards"></div>
       <div class="charts">
-        <p id="chart-kbd-help" class="visually-hidden" hidden>Arrow keys move between time buckets. Tab moves to the next control. Each bucket reports total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions.</p>
+        <p id="chart-kbd-help" class="visually-hidden" hidden>Arrow keys move between time buckets or pie slices. Tab moves to the next control. Each bucket reports total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions.</p>
         <div class="chart-box">
           <h3 id="chart-line-title">Token usage</h3>
           <div class="chart-wrap">
@@ -75,6 +75,56 @@
             <div class="chart-live visually-hidden" aria-live="polite"></div>
             <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
           </div>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-model-sessions-title">Model usage by sessions</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-model-sessions" width="800" height="220" aria-labelledby="chart-model-sessions-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-model-sessions-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-model-prompts-title">Model usage by prompts</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-model-prompts" width="800" height="220" aria-labelledby="chart-model-prompts-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-model-prompts-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-pie-provider-title">Provider usage</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-pie-provider" data-chart-kind="pie" width="800" height="260" aria-labelledby="chart-pie-provider-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-pie-provider-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-pie-model-title">Model usage overall</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-pie-model" data-chart-kind="pie" width="800" height="260" aria-labelledby="chart-pie-model-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-pie-model-legend"></div>
+        </div>
+        <div class="chart-box">
+          <h3 id="chart-pie-provider-models-title">Model usage per provider</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-pie-provider-models" data-chart-kind="pie" width="800" height="260" aria-labelledby="chart-pie-provider-models-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-pie-provider-models-legend"></div>
         </div>
       </div>
     </section>

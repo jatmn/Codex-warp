@@ -740,6 +740,10 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("barAnchorY"));
     assert!(body.contains("chartSurface"));
     assert!(body.contains("chartCanvasAttrs"));
+    assert!(body.contains("pieSlices"));
+    assert!(body.contains("pieSliceIndexAt"));
+    assert!(body.contains("pieMidAngle"));
+    assert!(body.contains("reconcilePieHover"));
     assert!(!body.contains("CodexWarpFooter"));
     assert!(!body.contains("analyticsDisplayStatus"));
 }
@@ -849,6 +853,18 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn webui_app_includes_model_and_pie_chart_renderers() {
+    let app = include_str!("webui_static/app-main.js");
+    assert!(app.contains("function drawModelUsageChart("));
+    assert!(app.contains("function drawPieChart("));
+    assert!(app.contains("function pieTooltipHtml("));
+    assert!(app.contains("function renderChartLegend("));
+    assert!(app.contains("chart-pie-provider"));
+    assert!(app.contains("chart-model-sessions"));
+    assert!(app.contains("chart-model-prompts"));
+}
+
+#[test]
 fn webui_app_bundle_joins_fragments_on_a_line_boundary() {
     let footer = "first\n";
     let main = "second\n";
@@ -875,6 +891,7 @@ async fn management_ui_index_loads_chart_math_before_app() {
     assert!(body.contains("aria-labelledby=\"chart-line-title\""));
     assert!(body.contains("id=\"chart-kbd-help\""));
     assert!(body.contains("Tab moves to the next control"));
+    assert!(body.contains("pie slices"));
     assert!(body.contains(
         "id=\"chart-line\" width=\"800\" height=\"220\" aria-labelledby=\"chart-line-title\""
     ));
@@ -883,10 +900,18 @@ async fn management_ui_index_loads_chart_math_before_app() {
     ));
     assert!(!body.contains("role=\"application\""));
     assert!(!body.contains("tabindex=\"0\""));
-    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
-    assert_eq!(body.matches("role=\"status\"").count(), 2);
+    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 7);
+    assert_eq!(body.matches("role=\"status\"").count(), 7);
     assert!(!body.contains("By provider"));
-    assert_eq!(body.matches("class=\"chart-live").count(), 2);
+    assert_eq!(body.matches("class=\"chart-live").count(), 7);
+    assert!(body.contains("id=\"chart-model-sessions-title\">Model usage by sessions"));
+    assert!(body.contains("id=\"chart-model-prompts-title\">Model usage by prompts"));
+    assert!(body.contains("id=\"chart-pie-provider-title\">Provider usage"));
+    assert!(body.contains("id=\"chart-pie-model-title\">Model usage overall"));
+    assert!(body.contains("id=\"chart-pie-provider-models-title\">Model usage per provider"));
+    assert!(body.contains("id=\"chart-model-sessions-legend\""));
+    assert!(body.contains("id=\"chart-pie-provider-legend\""));
+    assert_eq!(body.matches("data-chart-kind=\"pie\"").count(), 3);
 }
 
 #[tokio::test]

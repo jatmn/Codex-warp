@@ -129,6 +129,22 @@ pub(crate) struct AnalyticsSeriesPoint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnalyticsModelPoint {
+    pub ts: i64,
+    pub prompts: i64,
+    pub sessions: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AnalyticsModelSeries {
+    pub model: String,
+    pub points: Vec<AnalyticsModelPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct AnalyticsSummary {
     pub range: String,
     pub prompts: i64,
@@ -141,6 +157,10 @@ pub(crate) struct AnalyticsSummary {
     pub by_provider: Vec<AnalyticsBreakdown>,
     pub by_model: Vec<AnalyticsBreakdown>,
     pub series: Vec<AnalyticsSeriesPoint>,
+    /// Per-model time series. Each model gets its own bucket-aligned series so
+    /// the Web UI can chart model usage (sessions, prompts, tokens) over time
+    /// while sharing the same time window as the aggregate series.
+    pub model_series: Vec<AnalyticsModelSeries>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1019,6 +1039,68 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        let model_bucket_idx = bind_values.len() + 1;
+        let model_series_sql = format!(
+            "SELECT
+                (ts / ?{model_bucket_idx}) * ?{model_bucket_idx} AS bucket,
+                model,
+                COUNT(*),
+                {DISTINCT_SESSION_COUNT_SQL},
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(total_tokens), 0)
+             FROM usage_events
+             {where_sql}
+             GROUP BY bucket, model
+             ORDER BY bucket ASC, model ASC"
+        );
+        let mut model_series_binds = bind_values.clone();
+        model_series_binds.push(ValueBinder::I64(bucket));
+        let mut model_series_stmt = db.prepare(&model_series_sql)?;
+        let raw_model_points = model_series_stmt
+            .query_map(
+                rusqlite::params_from_iter(model_series_binds.iter()),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        AnalyticsModelPoint {
+                            ts: row.get(0)?,
+                            prompts: row.get(2)?,
+                            sessions: row.get(3)?,
+                            input_tokens: row.get(4)?,
+                            output_tokens: row.get(5)?,
+                            total_tokens: row.get(6)?,
+                        },
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut by_model_map: BTreeMap<String, Vec<AnalyticsModelPoint>> = BTreeMap::new();
+        for (model, point) in raw_model_points {
+            by_model_map.entry(model).or_default().push(point);
+        }
+        let model_series = by_model_map
+            .into_iter()
+            .map(|(model, points)| AnalyticsModelSeries {
+                model,
+                points: fill_series_gaps(
+                    points,
+                    start,
+                    end,
+                    bucket,
+                    |point| point.ts,
+                    |ts| AnalyticsModelPoint {
+                        ts,
+                        prompts: 0,
+                        sessions: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        total_tokens: 0,
+                    },
+                ),
+            })
+            .collect();
+
         Ok(AnalyticsSummary {
             range: range.as_str().to_string(),
             prompts,
@@ -1030,7 +1112,23 @@ impl Store {
             reasoning_tokens: reasoning,
             by_provider,
             by_model,
-            series: fill_series_gaps(series, start, end, bucket),
+            series: fill_series_gaps(
+                series,
+                start,
+                end,
+                bucket,
+                |point| point.ts,
+                |ts| AnalyticsSeriesPoint {
+                    ts,
+                    prompts: 0,
+                    sessions: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cached_tokens: 0,
+                },
+            ),
+            model_series,
         })
     }
 
@@ -1102,29 +1200,28 @@ fn breakdown_query(
     Ok(rows)
 }
 
-fn fill_series_gaps(
-    points: Vec<AnalyticsSeriesPoint>,
+fn fill_series_gaps<T, F, K>(
+    points: Vec<T>,
     start: i64,
     end: i64,
     bucket: i64,
-) -> Vec<AnalyticsSeriesPoint> {
+    ts_of: K,
+    empty: F,
+) -> Vec<T>
+where
+    T: Clone,
+    F: Fn(i64) -> T,
+    K: Fn(&T) -> i64,
+{
     let mut by_ts = BTreeMap::new();
     for point in points {
-        by_ts.insert(point.ts, point);
+        by_ts.insert(ts_of(&point), point);
     }
     let mut filled = Vec::new();
     let mut cursor = start.div_euclid(bucket) * bucket;
     let end_bucket = end.div_euclid(bucket) * bucket;
     while cursor <= end_bucket {
-        filled.push(by_ts.remove(&cursor).unwrap_or(AnalyticsSeriesPoint {
-            ts: cursor,
-            prompts: 0,
-            sessions: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            cached_tokens: 0,
-        }));
+        filled.push(by_ts.remove(&cursor).unwrap_or_else(|| empty(cursor)));
         cursor += bucket;
     }
     filled

@@ -461,4 +461,81 @@ check("chartInputStep deactivate drops pointer ownership like blur", () => {
   assert.equal(keyed.inputMode, "pointer");
 });
 
+check("pieSlices starts at 12 o'clock and sweeps clockwise", () => {
+  const { slices, total } = charts.pieSlices([2, 1, 1]);
+  assert.equal(total, 4);
+  assert.equal(slices.length, 3);
+  assert.equal(slices[0].start, -Math.PI / 2);
+  assert.equal(slices[0].end, slices[0].start + Math.PI);
+  assert.equal(slices[1].start, slices[0].end);
+  assert.equal(slices[1].end, slices[1].start + Math.PI / 2);
+  assert.equal(slices[2].end, slices[2].start + Math.PI / 2);
+  assert.equal(slices[2].end, -Math.PI / 2 + Math.PI * 2);
+});
+
+check("pieSlices gives zero-width arcs to zero values", () => {
+  const { slices, total } = charts.pieSlices([0, 5, 0]);
+  assert.equal(total, 5);
+  assert.equal(slices[0].start, slices[0].end);
+  assert.equal(slices[1].end - slices[1].start, Math.PI * 2);
+  assert.equal(slices[2].start, slices[2].end);
+});
+
+check("pieSlices handles empty and all-zero input", () => {
+  const empty = charts.pieSlices([]);
+  assert.equal(empty.total, 0);
+  assert.deepEqual(empty.slices, []);
+  const zeros = charts.pieSlices([0, 0]);
+  assert.equal(zeros.total, 0);
+  assert.equal(zeros.slices[0].start, zeros.slices[0].end);
+  assert.equal(zeros.slices[1].start, zeros.slices[1].end);
+});
+
+check("pieSliceIndexAt hits the correct slice and rejects misses", () => {
+  const { slices } = charts.pieSlices([1, 1, 1, 1]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // 3 o'clock (angle 0) is the second quarter: start at -PI/2 + PI/2 = 0.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r, cy), 1);
+  // 6 o'clock (angle PI/2) is the third quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy + r), 2);
+  // 9 o'clock (angle PI) is the fourth quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx - r, cy), 3);
+  // 12 o'clock (angle -PI/2) is the first quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy - r), 0);
+  // Outside the radius is a miss.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r * 2, cy), -1);
+  // Inside a donut hole is a miss.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 30, slices, cx + 10, cy), -1);
+  // Center of a full pie is degenerate: atan2(0, 0) resolves to angle 0,
+  // which belongs to the second slice. The donut hole is what makes the
+  // center a miss, so a full pie keeps this documented quirk.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy), 1);
+});
+
+check("pieSliceIndexAt skips zero-width slices", () => {
+  const { slices } = charts.pieSlices([5, 0, 5]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // The zero slice consumed no angle: the first half still owns angle 0
+  // (3 o'clock) and the second half owns angle PI/2 (6 o'clock).
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r, cy), 0);
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy + r), 2);
+});
+
+check("pieMidAngle is the slice center for labels", () => {
+  const { slices } = charts.pieSlices([1, 1]);
+  assert.equal(charts.pieMidAngle(slices[0]), -Math.PI / 2 + Math.PI / 2);
+  assert.equal(charts.pieMidAngle(null), 0);
+});
+
+check("reconcilePieHover keeps identity and drops removed keys", () => {
+  const rows = [{ key: "a" }, { key: "b" }];
+  assert.equal(charts.reconcilePieHover(rows, "b"), "b");
+  assert.equal(charts.reconcilePieHover(rows, "missing"), null);
+  assert.equal(charts.reconcilePieHover(rows, null), null);
+});
+
 process.stdout.write("webui chart harness: all checks passed\n");
