@@ -650,6 +650,55 @@ fn log_applies_live_body_policy_at_write_time() {
 }
 
 #[test]
+fn log_helpers_apply_live_body_policy_at_write_time() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-debug-log-helper-policy-{}",
+        std::process::id()
+    ));
+    let _guard = TempDirGuard::new(dir.clone());
+    let path = dir.join("debug.jsonl");
+    let log = DebugLog::disabled();
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: true,
+        include_stream_bodies: true,
+        ..DebugConfig::default()
+    })
+    .expect("enable with bodies");
+    log.apply_config(&DebugConfig {
+        enabled: true,
+        log_path: Some(path.clone()),
+        include_bodies: false,
+        include_stream_bodies: false,
+        ..DebugConfig::default()
+    })
+    .expect("disable bodies");
+
+    log.log_request(
+        json!({"event": "upstream_request", "id": "dbg_req"}),
+        &json!({"prompt": "secret user prompt"}),
+    );
+    log.log_error(
+        json!({"event": "upstream_error", "id": "dbg_err"}),
+        "secret upstream failure",
+    );
+    log.log_stream_frame(
+        json!({"event": "downstream_stream_frame", "id": "dbg_frame"}),
+        "data: secret stream frame",
+    );
+
+    let contents = fs::read_to_string(&path).expect("read helper policy log");
+    assert!(!contents.contains("secret user prompt"));
+    assert!(!contents.contains("secret upstream failure"));
+    assert!(!contents.contains("secret stream frame"));
+    assert!(contents.contains("\"error_body_redacted\":true"));
+    assert!(contents.contains("\"frame_body_redacted\":true"));
+    assert!(!contents.contains("\"body\":"));
+    assert!(!contents.contains("\"frame\":"));
+}
+
+#[test]
 fn apply_config_rotates_an_oversized_log() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-debug-log-apply-rotate-{}",

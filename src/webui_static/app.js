@@ -28,14 +28,30 @@
   let logsPending = false;
   let logsExpanded = new Set();
   let loggingSettingsHydrated = false;
+  let loggingFormDirty = false;
+  let loggingHydrating = false;
   let activeTab = "analytics";
   let bootComplete = false;
+  let bootFooterHold = false;
   let tabEpoch = 0;
   const expandedProviderIds = new Set();
   const VALID_TABS = new Set(["analytics", "providers", "logs"]);
 
   const $ = (sel) => document.querySelector(sel);
-  const status = (msg) => { $("#status-line").textContent = msg; };
+  function writeStatus(msg) {
+    $("#status-line").textContent = msg;
+  }
+  // One footer slot. Background polls must not replace a failed boot.
+  // User-initiated actions (save, filter change, provider edit) own the
+  // footer and clear that hold.
+  const status = (msg) => {
+    bootFooterHold = false;
+    writeStatus(msg);
+  };
+  function pollStatus(msg) {
+    if (bootFooterHold) return;
+    writeStatus(msg);
+  }
 
   // Empty → JSON null (clear to defaults). Invalid input must not become
   // `Number(...)` NaN: JSON.stringify(NaN) is `null`, which the API treats as
@@ -169,19 +185,19 @@
     syncTabHash(name);
   }
 
-  async function activateTabPolls(name, { updateFooter = true } = {}) {
+  async function activateTabPolls(name) {
     const epoch = ++tabEpoch;
     stopAnalyticsPoll();
     stopLogsPoll();
     if (name === "analytics") {
-      await startAnalyticsPoll(epoch, { updateFooter });
+      await startAnalyticsPoll(epoch);
       return;
     }
     if (name === "logs") {
-      await startLogsPoll({ updateFooter, epoch });
+      await startLogsPoll({ epoch });
       return;
     }
-    if (updateFooter && epoch === tabEpoch) status("Ready");
+    if (epoch === tabEpoch) pollStatus("Ready");
   }
 
   function switchTab(name) {
@@ -764,26 +780,32 @@
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
   }
 
-  let analyticsPending = { queued: false };
+  let analyticsPending = { queued: false, fromPoll: true };
+
+  function requestAnalytics() {
+    void loadAnalytics({ fromPoll: false });
+  }
 
   $("#analytics-provider").addEventListener("change", () => {
     $("#analytics-model").value = "";
     fillAnalyticsFilters();
-    loadAnalytics();
+    requestAnalytics();
   });
-  $("#analytics-range").addEventListener("change", loadAnalytics);
-  $("#analytics-model").addEventListener("change", loadAnalytics);
+  $("#analytics-range").addEventListener("change", requestAnalytics);
+  $("#analytics-model").addEventListener("change", requestAnalytics);
 
-  async function loadAnalytics(opts) {
-    const updateFooter = opts == null || typeof opts.updateFooter === "undefined"
-      ? true
-      : !!opts.updateFooter;
+  async function loadAnalytics({ fromPoll = false } = {}) {
     if (analyticsInFlight) {
+      analyticsPending.fromPoll = analyticsPending.queued
+        ? analyticsPending.fromPoll && fromPoll
+        : fromPoll;
       analyticsPending.queued = true;
       return;
     }
     analyticsInFlight = true;
+    const reportFromPoll = fromPoll;
     analyticsPending.queued = false;
+    analyticsPending.fromPoll = true;
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
@@ -819,13 +841,23 @@
             : "Usage over time",
       };
       renderAnalyticsPresentation();
-      if (updateFooter && activeTab === "analytics") status("Analytics updated");
+      if (activeTab === "analytics") {
+        const message = "Analytics updated";
+        if (reportFromPoll) pollStatus(message);
+        else status(message);
+      }
     } catch (e) {
-      if (updateFooter && activeTab === "analytics") status(`Analytics error: ${e.message}`);
+      if (activeTab === "analytics") {
+        const message = `Analytics error: ${e.message}`;
+        if (reportFromPoll) pollStatus(message);
+        else status(message);
+      }
     } finally {
       analyticsInFlight = false;
       if (analyticsPending.queued && activeTab === "analytics") {
-        loadAnalytics();
+        const queuedFromPoll = analyticsPending.fromPoll;
+        analyticsPending.queued = false;
+        loadAnalytics({ fromPoll: queuedFromPoll });
       }
     }
   }
@@ -968,11 +1000,11 @@
     });
   }
 
-  async function startAnalyticsPoll(epoch = tabEpoch, { updateFooter = true } = {}) {
+  async function startAnalyticsPoll(epoch = tabEpoch) {
     stopAnalyticsPoll();
-    await loadAnalytics({ updateFooter });
+    await loadAnalytics({ fromPoll: true });
     if (epoch !== tabEpoch || activeTab !== "analytics") return;
-    analyticsTimer = setInterval(() => loadAnalytics({ updateFooter }), 5000);
+    analyticsTimer = setInterval(() => loadAnalytics({ fromPoll: true }), 5000);
   }
 
   function stopAnalyticsPoll() {
@@ -1045,23 +1077,41 @@
     if (stickToBottom) viewer.scrollTop = viewer.scrollHeight;
   }
 
-  async function loadLoggingSettings() {
-    const settings = await api("/logging");
+  function applyLoggingChrome(settings) {
     const form = $("#logging-settings");
-    if (!form) return settings;
-    form.enabled.checked = !!settings.enabled;
-    form.log_path.value = settings.log_path || "";
+    if (!form) return;
     form.log_path.placeholder = settings.default_log_path || "codex-warp-debug.jsonl";
-    form.include_bodies.checked = !!settings.include_bodies;
-    form.include_stream_bodies.checked = !!settings.include_stream_bodies;
-    form.max_log_mb.value = settings.max_log_mb ?? "";
     form.max_log_mb.placeholder = String(settings.max_log_mb_effective ?? "");
-    form.max_log_age_days.value = settings.max_log_age_days ?? "";
     form.max_log_age_days.placeholder = String(settings.max_log_age_days_effective ?? "");
-    form.tracing_filter.value = settings.tracing_filter || "";
     form.tracing_filter.placeholder = settings.tracing_filter_wanted || settings.tracing_filter_effective || "codex_warp=debug";
     const hint = $("#logging-persist-hint");
     if (hint) hint.textContent = loggingHint(settings);
+  }
+
+  function applyLoggingFields(settings) {
+    const form = $("#logging-settings");
+    if (!form) return;
+    loggingHydrating = true;
+    try {
+      form.enabled.checked = !!settings.enabled;
+      form.log_path.value = settings.log_path || "";
+      form.include_bodies.checked = !!settings.include_bodies;
+      form.include_stream_bodies.checked = !!settings.include_stream_bodies;
+      form.max_log_mb.value = settings.max_log_mb ?? "";
+      form.max_log_age_days.value = settings.max_log_age_days ?? "";
+      form.tracing_filter.value = settings.tracing_filter || "";
+      loggingFormDirty = false;
+    } finally {
+      loggingHydrating = false;
+    }
+  }
+
+  async function loadLoggingSettings({ hydrateFields = true } = {}) {
+    const settings = await api("/logging");
+    applyLoggingChrome(settings);
+    if (hydrateFields && !loggingFormDirty) {
+      applyLoggingFields(settings);
+    }
     return settings;
   }
 
@@ -1091,14 +1141,15 @@
     return lag ? `${base} ${lag}` : base;
   }
 
-  function loggingSaveStatus(settings) {
+  function loggingSaveStatus(settings, remainingEdits = false) {
     const applied = settings.persisted
       ? "Logging settings applied"
       : settings.persist_available
         ? "Logging settings applied for this process; they could not be saved for restart"
         : "Logging settings applied for this process";
     const lag = tracingLagNote(settings);
-    return lag ? `${applied} ${lag}` : applied;
+    const remaining = remainingEdits ? "Unsaved edits remain." : "";
+    return [applied, lag, remaining].filter(Boolean).join(" ");
   }
 
   async function loadLogs() {
@@ -1148,21 +1199,23 @@
     logsTimer = setInterval(loadLogs, 2500);
   }
 
-  async function startLogsPoll({ updateFooter = false, epoch = tabEpoch } = {}) {
+  async function startLogsPoll({ epoch = tabEpoch } = {}) {
     stopLogsPoll();
-    setLoggingFormHydrated(false);
     syncProcessLevelControl();
+    // Disable only until the first successful hydrate so tab switches do not
+    // interrupt in-progress edits.
+    if (!loggingSettingsHydrated) setLoggingFormHydrated(false);
     try {
-      const settings = await loadLoggingSettings();
+      const settings = await loadLoggingSettings({ hydrateFields: !loggingFormDirty });
       if (epoch !== tabEpoch || activeTab !== "logs") return settings;
       setLoggingFormHydrated(true);
-      if (updateFooter) status(loggingReadyStatus(settings));
+      pollStatus(loggingReadyStatus(settings));
       loadLogs();
       logsTimer = setInterval(loadLogs, 2500);
       return settings;
     } catch (e) {
-      if (epoch === tabEpoch && activeTab === "logs" && updateFooter) {
-        status(`Error: ${e.message}`);
+      if (epoch === tabEpoch && activeTab === "logs") {
+        pollStatus(`Error: ${e.message}`);
       }
       throw e;
     }
@@ -1187,6 +1240,12 @@
     loadLogs();
   });
   $("#log-refresh")?.addEventListener("click", loadLogs);
+  $("#logging-settings")?.addEventListener("input", () => {
+    if (!loggingHydrating) loggingFormDirty = true;
+  });
+  $("#logging-settings")?.addEventListener("change", () => {
+    if (!loggingHydrating) loggingFormDirty = true;
+  });
   $("#logging-settings")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!loggingSettingsHydrated) {
@@ -1198,6 +1257,9 @@
       const maxLogMb = optionalPositiveInt(form.max_log_mb.value, "Max log size (MB)");
       const maxLogAgeDays = optionalPositiveInt(form.max_log_age_days.value, "Max log age (days)");
       status("Saving logging settings…");
+      // Submitted values are the new baseline. Keystrokes during the PUT
+      // re-dirty the form so success must not overwrite them from the response.
+      loggingFormDirty = false;
       const saved = await api("/logging", {
         method: "PUT",
         body: JSON.stringify({
@@ -1210,14 +1272,17 @@
           tracing_filter: tracingFilter ? tracingFilter : null,
         }),
       });
-      await loadLoggingSettings();
+      applyLoggingChrome(saved);
+      if (!loggingFormDirty) {
+        applyLoggingFields(saved);
+      }
       setLoggingFormHydrated(true);
       await loadLogs();
-      status(loggingSaveStatus(saved));
+      status(loggingSaveStatus(saved, loggingFormDirty));
     } catch (e) {
+      loggingFormDirty = true;
       try {
-        await loadLoggingSettings();
-        setLoggingFormHydrated(true);
+        await loadLoggingSettings({ hydrateFields: false });
         await loadLogs();
       } catch {
         /* still report the save error */
@@ -1238,9 +1303,10 @@
       await activateTabPolls(activeTab);
     } catch (e) {
       bootComplete = true;
-      status(`Error: ${e.message}`);
+      bootFooterHold = true;
+      writeStatus(`Error: ${e.message}`);
       try {
-        await activateTabPolls(activeTab, { updateFooter: false });
+        await activateTabPolls(activeTab);
       } catch {
         /* keep the boot error in the footer */
       }
