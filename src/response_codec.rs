@@ -828,13 +828,21 @@ struct ContinueGuardDecision {
 
 impl ContinueGuardState {
     pub(crate) fn from_request(config: ContinueGuardConfig, request: &Value) -> Self {
+        let guard_key = request
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let progress = request_shows_tool_progress(request);
+        // Reset on inbound tool progress, not only on suspected stops: a normal
+        // summary after real work must clear the consecutive-stop counter so a
+        // later pause in the same session can still auto-continue.
+        if progress {
+            reset_continue_guard_budget(guard_key.as_deref());
+        }
         Self {
-            guard_key: request
-                .get("prompt_cache_key")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
+            guard_key,
             active_plan: latest_active_plan(request),
-            progress: request_shows_tool_progress(request),
+            progress,
             config,
         }
     }
@@ -849,15 +857,15 @@ impl ContinueGuardState {
         if accum.tool_calls.iter().any(|call| !call.name.is_empty()) {
             return ContinueGuardDecision::none("tool_call_emitted");
         }
-        // Only an explicitly completed `update_plan` blocks the guard. Many
-        // models/providers never call `update_plan` at all (the observed
-        // premature-stop sessions did not), so a missing plan must not prevent
-        // auto-continuation; the continuation-phrasing check and the
-        // `max_followups` budget already bound false positives.
+        // A completed `update_plan` is a wrap-up signal only when the model
+        // stopped there. If the last request item is later tool work, the plan
+        // snapshot is stale and must not hide a mid-task pause. Missing plans
+        // never suppress: many providers never call `update_plan`.
         if self
             .active_plan
             .as_ref()
             .is_some_and(|plan| !plan.has_open_items())
+            && !self.progress
         {
             return ContinueGuardDecision::none("plan_completed");
         }
@@ -903,13 +911,6 @@ impl ContinueGuardState {
             return false;
         };
         evict_continue_guard_budgets_if_needed(&mut budgets);
-        if self.progress {
-            // The last request item is completed tool work (not update_plan),
-            // so this stop is not part of an unproductive text-only loop.
-            // Reset the session budget so `max_followups` caps only
-            // *consecutive* stops without that progress.
-            budgets.remove(key);
-        }
         let used = budgets.entry(key.clone()).or_insert(0);
         if *used >= self.config.max_followups {
             return false;
@@ -939,6 +940,16 @@ impl ActivePlanSummary {
 fn continue_guard_budgets() -> &'static Mutex<BTreeMap<String, u8>> {
     static BUDGETS: OnceLock<Mutex<BTreeMap<String, u8>>> = OnceLock::new();
     BUDGETS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn reset_continue_guard_budget(key: Option<&str>) {
+    let Some(key) = key else {
+        return;
+    };
+    let Ok(mut budgets) = continue_guard_budgets().lock() else {
+        return;
+    };
+    budgets.remove(key);
 }
 
 /// Evict oldest entries from the budget map when it exceeds the size cap to
@@ -1065,12 +1076,15 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    // Wrap-ups that themselves contain continuation substrings ("let me know")
-    // must win first. Politeness words ("thanks") must not beat *strong*
-    // mid-task markers: they appear in narration like "Thanks to the rebase.
-    // Now let me verify:". Weak first-person future ("I'll", "I will") is
-    // common in both mid-task work and polite sign-offs, so wrap-up phrases
-    // win over those weaker markers.
+    // Ranked classifier:
+    // 1. Closers that contain work-like substrings ("let me know").
+    // 2. Specific mid-task markers ("now let me", "then run").
+    // 3. Wrap-up / hand-off phrasing.
+    // 4. Generic first-person future ("let me", "I'll", "I need to") only
+    //    when the next verb is a work action, not summarize/stop/leave.
+    // 5. Dangling `:`/`...` only when the last sentence still talks about
+    //    remaining work. Bare delivery colons ("Here is the final report:")
+    //    are not pauses.
     if contains_overlapping_closing_phrase(&normalized) {
         return false;
     }
@@ -1080,19 +1094,19 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if contains_wrap_up_closing_phrase(&normalized) {
         return false;
     }
-    if contains_weak_continuation_marker(&normalized) {
+    if contains_weak_work_intent(&normalized) {
         return true;
     }
-    normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…')
+    dangling_punctuation_with_remaining_work(&normalized)
 }
 
 fn contains_strong_continuation_marker(normalized: &str) -> bool {
     [
-        "let me ",
         "let me also ",
         "let me first ",
         "now let me ",
         "next let me ",
+        "first let me ",
         "i'll now ",
         "i will now ",
         "now i'll ",
@@ -1101,21 +1115,91 @@ fn contains_strong_continuation_marker(normalized: &str) -> bool {
         "then i will ",
         "next i'll ",
         "next i will ",
-        "i need to ",
         "i still need to ",
-        "i'm going to ",
         "i should now ",
-        "first let me ",
         "then run ",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
 }
 
-fn contains_weak_continuation_marker(normalized: &str) -> bool {
-    ["i'll ", "i will "]
-        .iter()
-        .any(|marker| normalized.contains(marker))
+fn contains_weak_work_intent(normalized: &str) -> bool {
+    const PREFIXES: [&str; 5] = ["let me ", "i'll ", "i will ", "i need to ", "i'm going to "];
+    PREFIXES.iter().any(|prefix| {
+        let mut start = 0;
+        while let Some(idx) = normalized[start..].find(prefix) {
+            let after_prefix = &normalized[start + idx + prefix.len()..];
+            if remainder_starts_with_work_verb(strip_weak_fillers(after_prefix)) {
+                return true;
+            }
+            start += idx + prefix.len();
+        }
+        false
+    })
+}
+
+fn strip_weak_fillers(mut rest: &str) -> &str {
+    loop {
+        let Some(next) = ["just ", "also ", "first ", "now ", "quickly ", "please "]
+            .iter()
+            .find_map(|filler| rest.strip_prefix(filler))
+        else {
+            return rest;
+        };
+        rest = next;
+    }
+}
+
+fn remainder_starts_with_work_verb(rest: &str) -> bool {
+    const STEMS: [&str; 36] = [
+        "check", "inspect", "look", "read", "write", "run", "verify", "try", "open", "search",
+        "audit", "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep",
+        "list", "see", "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find",
+        "scan", "rebase", "commit", "merge", "build", "checkout",
+    ];
+    STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
+}
+
+fn token_starts_with_stem(rest: &str, stem: &str) -> bool {
+    let Some(after) = rest.strip_prefix(stem) else {
+        return false;
+    };
+    let suffix_end = after
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(after.len());
+    matches!(&after[..suffix_end], "" | "s" | "es" | "ed" | "ing")
+}
+
+fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
+    if !(normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…')) {
+        return false;
+    }
+    let last_sentence = normalized
+        .rsplit(|c| matches!(c, '.' | '!' | '?' | ';'))
+        .next()
+        .unwrap_or(normalized)
+        .trim();
+    [
+        "pending",
+        "still need",
+        "still have",
+        "next i",
+        "next let",
+        "next step",
+        "remaining",
+        "after that",
+        "then i",
+        "then let",
+        "now i",
+        "now let",
+        "not yet",
+        "to do",
+        "follow up",
+        "follow-up",
+        "continue",
+    ]
+    .iter()
+    .any(|cue| last_sentence.contains(cue))
 }
 
 fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
@@ -1125,10 +1209,10 @@ fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
 }
 
 /// Wrap-up phrasing that should not force a follow-up unless a *strong*
-/// continuation marker is also present. Bare "I'll"/"I will" are not enough.
-/// Subtask-completion words such as "done" or "complete" are deliberately
-/// excluded: mid-task text routinely says "the rebase is complete" before
-/// continuing ("Now let me push...").
+/// continuation marker is also present. Generic "let me"/"I'll"/"I need to"
+/// are not enough on their own. Subtask-completion words such as "done" or
+/// "complete" are deliberately excluded: mid-task text routinely says "the
+/// rebase is complete" before continuing ("Now let me push...").
 fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     [
         "thank you",

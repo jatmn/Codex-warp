@@ -20,8 +20,9 @@ listen = "127.0.0.1:8787"
 # assistant text like "Now let me check..." instead of the next tool call.
 # Warp detects that shape and sends response.completed end_turn=false so
 # Codex automatically samples a follow-up turn instead of waiting for the user.
-# A fully completed update_plan suppresses the guard; sessions that never call
-# update_plan are still covered.
+# A fully completed update_plan suppresses the guard unless later tool work
+# shows the plan is stale; sessions that never call update_plan are still
+# covered.
 enabled = true
 mode = "end_turn_false"
 max_followups = 1

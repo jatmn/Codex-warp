@@ -132,10 +132,11 @@ target/debug/codex-warp \
 The guard is conservative: it only acts when the provider finishes with
 `finish_reason = "stop"`, no tool call was emitted, and the assistant text
 looks like it intended to keep working. A fully completed `update_plan`
-suppresses the guard, but sessions that never call `update_plan` are still
-covered. `max_followups` limits consecutive text-only stops per session; real
-tool work resets the counter, so mid-task pauses are handled without allowing
-unproductive loops to run away. See the
+suppresses the guard unless later tool work shows the plan snapshot is stale;
+sessions that never call `update_plan` are still covered. `max_followups`
+limits consecutive text-only stops per session; real tool work resets the
+counter even on ordinary completions, so mid-task pauses are handled without
+allowing unproductive loops to run away. See the
 [configuration guide](docs/configuration.md#continue-guard) for observe mode
 and follow-up limits.
 
