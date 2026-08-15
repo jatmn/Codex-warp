@@ -171,6 +171,27 @@ fn inserts_subagent_helper_instruction_once() {
 }
 
 #[test]
+fn does_not_insert_instruction_for_collapsed_only_namespace() {
+    let tool = json!({
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "description": "Tools for spawning and managing sub-agents."
+    });
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&tool, &mut used, &mut helpers);
+    let mut body = json!({
+        "messages": [
+            {"role": "system", "content": "You are a coding agent."},
+            {"role": "user", "content": "spawn a reviewer"}
+        ]
+    });
+    assert!(!helpers.has_expanded_helpers());
+    assert!(!apply_subagent_helper_shim(&mut body, &helpers));
+    assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn does_not_unwrap_unregistered_tool_envelopes() {
     let mut used = BTreeSet::new();
     let mut helpers = NamespaceHelpers::default();

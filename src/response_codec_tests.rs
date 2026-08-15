@@ -1042,6 +1042,109 @@ fn native_function_calls_for_morphed_custom_tools_are_restored() {
 }
 
 #[test]
+fn native_morph_rewrites_namespace_helper_before_custom_tool_classification() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let mut value = json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "name": "spawn_agent",
+            "call_id": "call_1",
+            "arguments": "{\"message\":\"review the diff\"}"
+        }
+    });
+    let custom_tool_names = BTreeSet::from(["spawn_agent".to_string()]);
+
+    morph_native_response_value(
+        &mut value,
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(value["item"]["type"], "function_call");
+    assert_eq!(value["item"]["name"], "multi_agent_v1.spawn_agent");
+    assert_eq!(
+        value["item"]["arguments"],
+        "{\"message\":\"review the diff\"}"
+    );
+}
+
+#[test]
+fn native_sse_rewrites_namespace_helper_before_custom_tool_classification() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"function_call\",\"name\":\"spawn_agent\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["spawn_agent".to_string()]),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"type\":\"function_call\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
+    assert!(!morphed.contains("custom_tool_call"));
+}
+
+#[test]
+fn native_sse_rewrites_tool_call_items_like_function_calls() {
+    let mut helpers = NamespaceHelpers::default();
+    helpers.register(
+        "spawn_agent".to_string(),
+        "multi_agent_v1.spawn_agent".to_string(),
+    );
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"tool_call\",\"name\":\"spawn_agent\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"type\":\"function_call\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
+    assert!(!morphed.contains("\"type\":\"tool_call\""));
+}
+
+#[test]
+fn native_sse_restores_custom_tools_from_tool_call_items() {
+    let frame = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{",
+        "\"id\":\"item_1\",\"type\":\"tool_call\",\"name\":\"apply_patch\",",
+        "\"call_id\":\"call_1\",\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}"
+    );
+    let morphed = morph_native_sse_frame(
+        frame,
+        &BTreeSet::from(["apply_patch".to_string()]),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert!(morphed.contains("\"type\":\"custom_tool_call\""));
+    assert!(morphed.contains("\"name\":\"apply_patch\""));
+    assert!(morphed.contains("\"input\":\"patch\""));
+    assert!(morphed.contains("\"id\":\"item_1\""));
+}
+
+#[test]
 fn cr_only_native_sse_frames_are_morphed() {
     let frame = concat!(
         "event: response.output_item.done\r",

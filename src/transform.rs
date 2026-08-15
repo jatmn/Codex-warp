@@ -11,6 +11,8 @@ use crate::ids::generated_id;
 use crate::namespace_helpers::NamespaceHelpers;
 use crate::namespace_helpers::expand_namespace_responses_tool;
 use crate::namespace_helpers::expand_namespace_tool;
+use crate::namespace_helpers::is_custom_tool_call_type;
+use crate::namespace_helpers::is_function_call_type;
 use crate::transform_morph::apply_native_request_morphs;
 use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
@@ -161,6 +163,9 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
         } else if request.get("tool_choice").and_then(Value::as_str) != Some("auto") {
             copy_if_present(&request, &mut out, "tool_choice");
         }
+        if let Some(choice) = out.get_mut("tool_choice") {
+            rewrite_tool_choice_names(choice, &namespace_helpers);
+        }
     }
 
     copy_if_present(&request, &mut out, "temperature");
@@ -212,6 +217,7 @@ pub fn normalize_responses_request(request: Value, transform: &TransformConfig) 
             }
         }
     }
+    rewrite_native_request_visible_calls(&mut request, &helpers);
     NativeTransform {
         body: request,
         namespace_helpers: helpers,
@@ -253,6 +259,77 @@ fn collect_custom_tool_names(
         {
             names.insert(name.to_string());
         }
+    }
+}
+
+fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
+    if helpers.is_empty() {
+        return;
+    }
+    if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            rewrite_native_function_call_item(item, helpers);
+        }
+    }
+    if let Some(choice) = request.get_mut("tool_choice") {
+        rewrite_tool_choice_names(choice, helpers);
+    }
+}
+
+fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelpers) {
+    let item_type = item.get("type").and_then(Value::as_str);
+    let is_custom = is_custom_tool_call_type(item_type);
+    if !is_function_call_type(item_type) && !is_custom {
+        return;
+    }
+    let raw_name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    if is_custom {
+        // Native custom_tool_call items already carry Responses `input`. Rewriting
+        // through Chat Completions `{input: ...}` encoding would stringify or drop
+        // non-string payloads. Only the Codex runtime name needs to become visible.
+        let (name, _) = helpers.to_visible_call(&raw_name, "{}");
+        if let Some(map) = item.as_object_mut() {
+            map.insert("name".to_string(), json!(name));
+        }
+        return;
+    }
+    let raw_arguments = item
+        .get("arguments")
+        .and_then(Value::as_str)
+        .unwrap_or("{}")
+        .to_string();
+    let (name, arguments) = helpers.to_visible_call(&raw_name, &raw_arguments);
+    if let Some(map) = item.as_object_mut() {
+        map.insert("name".to_string(), json!(name));
+        map.insert("arguments".to_string(), json!(arguments));
+    }
+}
+
+fn rewrite_tool_choice_names(choice: &mut Value, helpers: &NamespaceHelpers) {
+    match choice {
+        Value::String(name) => {
+            *name = helpers.model_visible_name(name).to_string();
+        }
+        Value::Object(map) => {
+            if let Some(Value::String(name)) = map.get_mut("name") {
+                *name = helpers.model_visible_name(name).to_string();
+            }
+            if let Some(function) = map.get_mut("function")
+                && let Some(Value::String(name)) = function.get_mut("name")
+            {
+                *name = helpers.model_visible_name(name).to_string();
+            }
+            if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
+                for tool in tools {
+                    rewrite_tool_choice_names(tool, helpers);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -334,22 +411,21 @@ fn response_item_to_messages(
                 false,
             )
         }
-        Some("function_call") | Some("custom_tool_call") => {
+        item_type if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) => {
             let call_id = item
                 .get("call_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| generated_id("call"));
             let raw_name = item.get("name").and_then(Value::as_str).unwrap_or("tool");
-            let raw_arguments =
-                if item.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
-                    custom_tool_history_arguments(item.get("input"))
-                } else {
-                    item.get("arguments")
-                        .and_then(Value::as_str)
-                        .unwrap_or("{}")
-                        .to_string()
-                };
+            let raw_arguments = if is_custom_tool_call_type(item_type) {
+                custom_tool_history_arguments(item.get("input"))
+            } else {
+                item.get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}")
+                    .to_string()
+            };
             let (name, arguments) = namespace_helpers.to_visible_call(raw_name, &raw_arguments);
             let mut message = json!({
                 "role": "assistant",
@@ -482,7 +558,9 @@ fn reasoning_item_to_text(item: &Value) -> Option<String> {
 
 fn should_retain_pending_reasoning(item: &Value) -> bool {
     match item.get("type").and_then(Value::as_str) {
-        Some("function_call") | Some("custom_tool_call") => true,
+        item_type if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) => {
+            true
+        }
         Some("function_call_output") | Some("custom_tool_call_output") => true,
         Some("message") => item.get("role").and_then(Value::as_str) == Some("assistant"),
         _ => false,

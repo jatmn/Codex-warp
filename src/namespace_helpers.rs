@@ -22,9 +22,26 @@ pub struct NamespaceHelpers {
     collapsed: BTreeMap<String, String>,
 }
 
+/// Native backends may emit `tool_call` for the same payload as Responses `function_call`.
+pub(crate) fn is_function_call_type(item_type: Option<&str>) -> bool {
+    matches!(item_type, Some("function_call" | "tool_call"))
+}
+
+pub(crate) fn is_custom_tool_call_type(item_type: Option<&str>) -> bool {
+    item_type == Some("custom_tool_call")
+}
+
 impl NamespaceHelpers {
     pub fn is_empty(&self) -> bool {
         self.aliases.is_empty() && self.collapsed.is_empty()
+    }
+
+    /// True when at least one namespace child was expanded into an ordinary function.
+    /// Collapsed `{namespace}_tool` fallbacks do not count: those still require the
+    /// envelope schema, so the expanded-helper clarification would contradict the
+    /// advertised tools.
+    pub fn has_expanded_helpers(&self) -> bool {
+        !self.aliases.is_empty()
     }
 
     pub fn register(&mut self, visible_name: String, runtime_name: String) {
@@ -167,7 +184,7 @@ pub(crate) fn apply_subagent_helper_shim(
     chat_body: &mut Value,
     helpers: &NamespaceHelpers,
 ) -> bool {
-    if helpers.is_empty() || subagent_helper_already_applied(chat_body) {
+    if !helpers.has_expanded_helpers() || subagent_helper_already_applied(chat_body) {
         return false;
     }
     let instruction = json!({
