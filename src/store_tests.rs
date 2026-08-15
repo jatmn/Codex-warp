@@ -60,8 +60,16 @@ fn store_records_usage_and_aggregates_ranges() {
     assert_eq!(summary.by_provider.len(), 2);
     assert!(!summary.series.is_empty());
     // The per-bucket series must carry cached tokens so chart tooltips and the
-    // cached line have data to render (both events land in the same bucket).
-    assert_eq!(summary.series.last().unwrap().cached_tokens, 2);
+    // cached line have data to render. Sum across buckets so the assertion is
+    // independent of which hour bucket the inserts land in.
+    assert_eq!(
+        summary
+            .series
+            .iter()
+            .map(|point| point.cached_tokens)
+            .sum::<i64>(),
+        2
+    );
 
     let filtered = store
         .analytics(AnalyticsRange::Last24Hours, Some("alpha"), None)

@@ -1172,7 +1172,7 @@
   function tooltipSummary(point, labelStyle) {
     const label = formatBucketLabel(point.ts, labelStyle);
     return `${label}: Total tokens ${fmtInt(point.total_tokens || 0)}, ` +
-      `Input tokens ${fmtInt(point.input_tokens || 0)}, Cached tokens ${fmtInt(point.cached_tokens || 0)}, ` +
+      `Input tokens ${fmtInt(point.input_tokens || 0)}, Cached ${fmtInt(point.cached_tokens || 0)}, ` +
       `Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
       `Prompts ${fmtInt(point.prompts || 0)}, Sessions ${fmtInt(point.sessions || 0)}`;
   }
@@ -1377,7 +1377,10 @@
     const sessionVals = series.map((p) => p.sessions || 0);
     // Each series scales independently so a small-magnitude series (e.g.
     // sessions against prompts) is not flattened into the baseline.
-    const tokens = integerTicks(Math.max(1, ...tokenVals));
+    // The cached series shares the token axis, so the scale must cover both
+    // totals and cached values; a bucket whose cached count exceeds the total
+    // max (partial/malformed upstream usage) must not paint off the plot.
+    const tokens = integerTicks(Math.max(1, ...tokenVals, ...cachedVals));
     const prompts = integerTicks(Math.max(1, ...promptVals));
     const sessions = integerTicks(Math.max(1, ...sessionVals));
     const tsMin = series[0].ts;
@@ -1436,11 +1439,15 @@
       ctx.fillText(key, ax, 10);
     }
 
-    function strokeSeries(vals, yFn, color) {
+    function strokeSeries(vals, yFn, color, dashed) {
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
+      // Cached tokens are a subset of input tokens and can equal the total on
+      // fully-cached buckets. A dashed cached stroke stays distinguishable
+      // when it coincides with the solid total line.
+      if (dashed) ctx.setLineDash([4, 3]);
       ctx.beginPath();
       vals.forEach((val, i) => {
         const x = xAt(series[i].ts);
@@ -1449,23 +1456,26 @@
         else ctx.lineTo(x, y);
       });
       ctx.stroke();
+      if (dashed) ctx.setLineDash([]);
     }
 
-    function drawDots(vals, yFn, color) {
+    function drawDots(vals, yFn, color, radius) {
       ctx.fillStyle = color;
       vals.forEach((val, i) => {
         ctx.beginPath();
-        ctx.arc(xAt(series[i].ts), yFn(val), 3, 0, Math.PI * 2);
+        ctx.arc(xAt(series[i].ts), yFn(val), radius || 3, 0, Math.PI * 2);
         ctx.fill();
       });
     }
 
     strokeSeries(tokenVals, yTokens, colors.tokens);
-    strokeSeries(cachedVals, yTokens, colors.cached);
+    strokeSeries(cachedVals, yTokens, colors.cached, true);
     strokeSeries(promptVals, yPrompts, colors.prompts);
     strokeSeries(sessionVals, ySessions, colors.sessions);
     drawDots(tokenVals, yTokens, colors.tokens);
-    drawDots(cachedVals, yTokens, colors.cached);
+    // Smaller cached dots stay visible inside the total dot when the two
+    // series coincide on fully-cached buckets.
+    drawDots(cachedVals, yTokens, colors.cached, 2);
     drawDots(promptVals, yPrompts, colors.prompts);
     drawDots(sessionVals, ySessions, colors.sessions);
 
@@ -1477,11 +1487,17 @@
       ["Sessions", colors.sessions],
     ];
     let lx = padL + 8;
-    const ly = padT + 6;
+    let ly = padT + 6;
     ctx.font = "10px system-ui";
     ctx.textBaseline = "middle";
     for (const [label, color] of legend) {
       const chipW = ctx.measureText(label).width + 22;
+      // Keep legend chips inside the plot: an extra series chip must not paint
+      // over the right-hand prompts/sessions axis labels on narrow canvases.
+      if (lx + chipW > w - padR) {
+        lx = padL + 8;
+        ly += 22;
+      }
       ctx.fillStyle = colors.surface;
       ctx.strokeStyle = colors.grid;
       ctx.fillRect(lx, ly, chipW, 16);
@@ -1556,9 +1572,9 @@
     ctx.lineTo(x, padT + plotH);
     ctx.stroke();
     ctx.setLineDash([]);
-    const ring = (y, color) => {
+    const ring = (y, color, radius) => {
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.arc(x, y, radius || 5, 0, Math.PI * 2);
       ctx.fillStyle = colors.surface;
       ctx.fill();
       ctx.strokeStyle = color;
@@ -1566,7 +1582,9 @@
       ctx.stroke();
     };
     ring(yTokens(point.total_tokens || 0), colors.tokens);
-    ring(yTokens(point.cached_tokens || 0), colors.cached);
+    // The smaller cached ring remains visible inside the total ring when the
+    // two values coincide on fully-cached buckets.
+    ring(yTokens(point.cached_tokens || 0), colors.cached, 3);
     ring(yPrompts(point.prompts || 0), colors.prompts);
     ring(ySessions(point.sessions || 0), colors.sessions);
   }

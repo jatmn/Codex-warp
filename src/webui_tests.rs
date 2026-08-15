@@ -819,12 +819,17 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     let app = include_str!("webui_static/app-main.js");
     let index = include_str!("webui_static/index.html");
     // Line and bar tooltips must surface cached tokens for the hovered bucket,
-    // and the keyboard/live summary must announce them as well.
+    // the line chart must paint a cached series, and the keyboard/live summary
+    // must announce it as well.
     assert!(app.contains("[\"Cached\", point.cached_tokens || 0, colors.cached]"));
     assert!(app.contains("[\"Cached\", row.cached_tokens || 0, colors.cached]"));
     assert!(app.contains(
-        "Cached tokens ${fmtInt(point.cached_tokens || 0)}, "
+        "Cached ${fmtInt(point.cached_tokens || 0)}, "
     ));
+    assert!(app.contains("strokeSeries(cachedVals, yTokens, colors.cached, true)"));
+    assert!(app.contains("drawDots(cachedVals, yTokens, colors.cached, 2)"));
+    assert!(app.contains("ring(yTokens(point.cached_tokens || 0), colors.cached, 3)"));
+    assert!(app.contains("[\"Cached\", colors.cached]"));
     // Keyboard help copy lists the fields each bucket reports.
     assert!(index.contains("cached tokens, output tokens"));
 }
