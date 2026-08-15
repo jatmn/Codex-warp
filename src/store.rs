@@ -125,6 +125,7 @@ pub(crate) struct AnalyticsSeriesPoint {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
+    pub cached_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -994,7 +995,8 @@ impl Store {
                 {DISTINCT_SESSION_COUNT_SQL},
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(total_tokens), 0)
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(cached_tokens), 0)
              FROM usage_events
              {where_sql}
              GROUP BY bucket
@@ -1012,6 +1014,7 @@ impl Store {
                     input_tokens: row.get(3)?,
                     output_tokens: row.get(4)?,
                     total_tokens: row.get(5)?,
+                    cached_tokens: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1120,6 +1123,7 @@ fn fill_series_gaps(
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            cached_tokens: 0,
         }));
         cursor += bucket;
     }

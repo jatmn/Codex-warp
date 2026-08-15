@@ -993,6 +993,7 @@
         total_tokens: point.total_tokens || 0,
         input_tokens: point.input_tokens || 0,
         output_tokens: point.output_tokens || 0,
+        cached_tokens: point.cached_tokens || 0,
         prompts: point.prompts || 0,
         sessions: point.sessions || 0,
       })),
@@ -1044,6 +1045,7 @@
       sessions: cssThemeColor("--chart-sessions", "#16a34a"),
       input: cssThemeColor("--chart-input", "#2563eb"),
       output: cssThemeColor("--chart-output", "#7c3aed"),
+      cached: cssThemeColor("--chart-cached", "#be185d"),
       bar: cssThemeColor("--chart-tokens", "#0f766e"),
     };
   }
@@ -1145,6 +1147,7 @@
       tooltipRowsHtml([
         ["Total tokens", point.total_tokens || 0, colors.tokens],
         ["Input tokens", point.input_tokens || 0, colors.input],
+        ["Cached", point.cached_tokens || 0, colors.cached],
         ["Output tokens", point.output_tokens || 0, colors.output],
         ["Prompts", point.prompts || 0, colors.prompts],
         ["Sessions", point.sessions || 0, colors.sessions],
@@ -1158,6 +1161,7 @@
       tooltipRowsHtml([
         ["Total tokens", row.total_tokens || 0, colors.tokens],
         ["Input tokens", row.input_tokens || 0, colors.input],
+        ["Cached", row.cached_tokens || 0, colors.cached],
         ["Output tokens", row.output_tokens || 0, colors.output],
         ["Prompts", row.prompts || 0, colors.prompts],
         ["Sessions", row.sessions || 0, colors.sessions],
@@ -1168,7 +1172,8 @@
   function tooltipSummary(point, labelStyle) {
     const label = formatBucketLabel(point.ts, labelStyle);
     return `${label}: Total tokens ${fmtInt(point.total_tokens || 0)}, ` +
-      `Input tokens ${fmtInt(point.input_tokens || 0)}, Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
+      `Input tokens ${fmtInt(point.input_tokens || 0)}, Cached tokens ${fmtInt(point.cached_tokens || 0)}, ` +
+      `Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
       `Prompts ${fmtInt(point.prompts || 0)}, Sessions ${fmtInt(point.sessions || 0)}`;
   }
 
@@ -1367,6 +1372,7 @@
     });
     const colors = chartColors();
     const tokenVals = series.map((p) => p.total_tokens || 0);
+    const cachedVals = series.map((p) => p.cached_tokens || 0);
     const promptVals = series.map((p) => p.prompts || 0);
     const sessionVals = series.map((p) => p.sessions || 0);
     // Each series scales independently so a small-magnitude series (e.g.
@@ -1455,15 +1461,18 @@
     }
 
     strokeSeries(tokenVals, yTokens, colors.tokens);
+    strokeSeries(cachedVals, yTokens, colors.cached);
     strokeSeries(promptVals, yPrompts, colors.prompts);
     strokeSeries(sessionVals, ySessions, colors.sessions);
     drawDots(tokenVals, yTokens, colors.tokens);
+    drawDots(cachedVals, yTokens, colors.cached);
     drawDots(promptVals, yPrompts, colors.prompts);
     drawDots(sessionVals, ySessions, colors.sessions);
 
     // Legend chips overlay the top-left corner.
     const legend = [
       ["Total tokens", colors.tokens],
+      ["Cached", colors.cached],
       ["Prompts", colors.prompts],
       ["Sessions", colors.sessions],
     ];
@@ -1557,6 +1566,7 @@
       ctx.stroke();
     };
     ring(yTokens(point.total_tokens || 0), colors.tokens);
+    ring(yTokens(point.cached_tokens || 0), colors.cached);
     ring(yPrompts(point.prompts || 0), colors.prompts);
     ring(ySessions(point.sessions || 0), colors.sessions);
   }
