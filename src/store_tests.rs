@@ -70,6 +70,18 @@ fn store_records_usage_and_aggregates_ranges() {
             .sum::<i64>(),
         2
     );
+    // The serialized /analytics payload must carry the field the Web UI reads:
+    // the chart tooltips and cached line consume `series[].cached_tokens`.
+    let json = serde_json::to_value(&summary).expect("serialize analytics summary");
+    assert_eq!(
+        json["series"]
+            .as_array()
+            .expect("series array")
+            .iter()
+            .map(|point| point["cached_tokens"].as_i64().unwrap_or(0))
+            .sum::<i64>(),
+        2
+    );
 
     let filtered = store
         .analytics(AnalyticsRange::Last24Hours, Some("alpha"), None)

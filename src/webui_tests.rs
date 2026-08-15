@@ -826,9 +826,9 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains(
         "Cached ${fmtInt(point.cached_tokens || 0)}, "
     ));
-    assert!(app.contains("strokeSeries(cachedVals, yTokens, colors.cached, true)"));
-    assert!(app.contains("drawDots(cachedVals, yTokens, colors.cached, 2)"));
-    assert!(app.contains("ring(yTokens(point.cached_tokens || 0), colors.cached, 3)"));
+    assert!(app.contains("strokeSeries(cachedDrawVals, yTokens, colors.cached, true)"));
+    assert!(app.contains("drawDots(cachedDrawVals, yTokens, colors.cached, 2, true)"));
+    assert!(app.contains("ring(yTokens(Math.min(point.cached_tokens || 0, tokens.top)), colors.cached, 3)"));
     assert!(app.contains("[\"Cached\", colors.cached]"));
     // Keyboard help copy lists the fields each bucket reports.
     assert!(index.contains("cached tokens, output tokens"));

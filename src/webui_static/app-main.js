@@ -1377,10 +1377,13 @@
     const sessionVals = series.map((p) => p.sessions || 0);
     // Each series scales independently so a small-magnitude series (e.g.
     // sessions against prompts) is not flattened into the baseline.
-    // The cached series shares the token axis, so the scale must cover both
-    // totals and cached values; a bucket whose cached count exceeds the total
-    // max (partial/malformed upstream usage) must not paint off the plot.
-    const tokens = integerTicks(Math.max(1, ...tokenVals, ...cachedVals));
+    // Cached tokens are a subset of input tokens, so the total-based scale
+    // covers them. A malformed value above the total max is clamped at draw
+    // time (like the bar chart clamps its bars) instead of inflating the axis
+    // and flattening the total line.
+    const tokens = integerTicks(Math.max(1, ...tokenVals));
+    const hasCachedData = cachedVals.some((value) => value > 0);
+    const cachedDrawVals = cachedVals.map((value) => Math.min(value, tokens.top));
     const prompts = integerTicks(Math.max(1, ...promptVals));
     const sessions = integerTicks(Math.max(1, ...sessionVals));
     const tsMin = series[0].ts;
@@ -1459,9 +1462,12 @@
       if (dashed) ctx.setLineDash([]);
     }
 
-    function drawDots(vals, yFn, color, radius) {
+    function drawDots(vals, yFn, color, radius, skipZero) {
       ctx.fillStyle = color;
       vals.forEach((val, i) => {
+        // Zero-value markers along the baseline read as false activity (the
+        // common case for cached tokens on buckets without cache hits).
+        if (skipZero && !(val > 0)) return;
         ctx.beginPath();
         ctx.arc(xAt(series[i].ts), yFn(val), radius || 3, 0, Math.PI * 2);
         ctx.fill();
@@ -1469,13 +1475,17 @@
     }
 
     strokeSeries(tokenVals, yTokens, colors.tokens);
-    strokeSeries(cachedVals, yTokens, colors.cached, true);
+    if (hasCachedData) {
+      strokeSeries(cachedDrawVals, yTokens, colors.cached, true);
+    }
     strokeSeries(promptVals, yPrompts, colors.prompts);
     strokeSeries(sessionVals, ySessions, colors.sessions);
     drawDots(tokenVals, yTokens, colors.tokens);
-    // Smaller cached dots stay visible inside the total dot when the two
-    // series coincide on fully-cached buckets.
-    drawDots(cachedVals, yTokens, colors.cached, 2);
+    if (hasCachedData) {
+      // Smaller cached dots stay visible inside the total dot when the two
+      // series coincide on fully-cached buckets.
+      drawDots(cachedDrawVals, yTokens, colors.cached, 2, true);
+    }
     drawDots(promptVals, yPrompts, colors.prompts);
     drawDots(sessionVals, ySessions, colors.sessions);
 
@@ -1486,28 +1496,32 @@
       ["Prompts", colors.prompts],
       ["Sessions", colors.sessions],
     ];
-    let lx = padL + 8;
-    let ly = padT + 6;
     ctx.font = "10px system-ui";
     ctx.textBaseline = "middle";
-    for (const [label, color] of legend) {
-      const chipW = ctx.measureText(label).width + 22;
-      // Keep legend chips inside the plot: an extra series chip must not paint
-      // over the right-hand prompts/sessions axis labels on narrow canvases.
-      if (lx + chipW > w - padR) {
-        lx = padL + 8;
-        ly += 22;
+    // Legend chips sit inside the plot; with four entries they can exceed the
+    // plot width on narrow canvases. Keep the single-row placement and skip
+    // the decorative legend when it would not fit, so chips never cover the
+    // plotted series or the right-hand axes.
+    let legendWidth = 0;
+    for (const [label] of legend) {
+      legendWidth += ctx.measureText(label).width + 22 + 6;
+    }
+    if (padL + 8 + legendWidth <= w - padR) {
+      let lx = padL + 8;
+      const ly = padT + 6;
+      for (const [label, color] of legend) {
+        const chipW = ctx.measureText(label).width + 22;
+        ctx.fillStyle = colors.surface;
+        ctx.strokeStyle = colors.grid;
+        ctx.fillRect(lx, ly, chipW, 16);
+        ctx.strokeRect(lx, ly, chipW, 16);
+        ctx.fillStyle = color;
+        ctx.fillRect(lx + 4, ly + 4, 8, 8);
+        ctx.fillStyle = colors.text;
+        ctx.textAlign = "left";
+        ctx.fillText(label, lx + 16, ly + 8);
+        lx += chipW + 6;
       }
-      ctx.fillStyle = colors.surface;
-      ctx.strokeStyle = colors.grid;
-      ctx.fillRect(lx, ly, chipW, 16);
-      ctx.strokeRect(lx, ly, chipW, 16);
-      ctx.fillStyle = color;
-      ctx.fillRect(lx + 4, ly + 4, 8, 8);
-      ctx.fillStyle = colors.text;
-      ctx.textAlign = "left";
-      ctx.fillText(label, lx + 16, ly + 8);
-      lx += chipW + 6;
     }
 
     // Hover overlay and tooltip, resolved by bucket identity so redraws with
@@ -1562,7 +1576,7 @@
     const point = state.series[idx];
     const colors = chartColors();
     const ctx = canvas.getContext("2d");
-    const { xAt, yTokens, yPrompts, ySessions, padT, plotH } = state.geometry;
+    const { xAt, yTokens, yPrompts, ySessions, padT, plotH, tokens } = state.geometry;
     const x = xAt(point.ts);
     ctx.strokeStyle = colors.muted;
     ctx.lineWidth = 1;
@@ -1582,9 +1596,12 @@
       ctx.stroke();
     };
     ring(yTokens(point.total_tokens || 0), colors.tokens);
-    // The smaller cached ring remains visible inside the total ring when the
-    // two values coincide on fully-cached buckets.
-    ring(yTokens(point.cached_tokens || 0), colors.cached, 3);
+    if ((point.cached_tokens || 0) > 0) {
+      // The smaller cached ring remains visible inside the total ring when the
+      // two values coincide on fully-cached buckets. Skip zero-cached buckets
+      // so a baseline ring is not implied where no cached activity exists.
+      ring(yTokens(Math.min(point.cached_tokens || 0, tokens.top)), colors.cached, 3);
+    }
     ring(yPrompts(point.prompts || 0), colors.prompts);
     ring(ySessions(point.sessions || 0), colors.sessions);
   }
