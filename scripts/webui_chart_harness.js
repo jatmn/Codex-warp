@@ -183,4 +183,49 @@ check("chartInputStep: Tab onto a pointer hover becomes keyboard-owned", () => {
   assert.equal(pointerBack.hasMouse, true);
 });
 
+check("liveRegionText is empty when no bucket is selected", () => {
+  assert.equal(charts.liveRegionText(-1, "10:00: Total tokens 1"), "");
+  assert.equal(charts.liveRegionText(0, "10:00: Total tokens 1"), "10:00: Total tokens 1");
+  const stay = charts.announceIfChanged("10:00: Total tokens 1", charts.liveRegionText(-1, "10:00: Total tokens 1"));
+  assert.equal(stay.changed, true);
+  assert.equal(stay.text, "");
+});
+
+check("shouldPaintCharts refuses hidden or unlaid-out canvases", () => {
+  assert.equal(charts.shouldPaintCharts(true, 400), true);
+  assert.equal(charts.shouldPaintCharts(false, 400), false);
+  assert.equal(charts.shouldPaintCharts(true, 0), false);
+  assert.equal(charts.shouldPaintCharts(false, 0), false);
+});
+
+check("chartCanvasAttrs revokes keyboard application semantics when disabled", () => {
+  const on = charts.chartCanvasAttrs(true);
+  assert.equal(on.tabIndex, 0);
+  assert.equal(on.role, "application");
+  assert.equal(on.keyshortcuts, "ArrowLeft ArrowRight");
+  assert.equal(on.describedBy, "chart-kbd-help");
+  const off = charts.chartCanvasAttrs(false);
+  assert.equal(off.tabIndex, null);
+  assert.equal(off.role, null);
+  assert.equal(off.keyshortcuts, null);
+  assert.equal(off.describedBy, null);
+});
+
+check("chartInputStep deactivate drops pointer ownership like blur", () => {
+  const points = [{ ts: 1 }, { ts: 2 }];
+  const hovered = charts.chartInputStep(
+    { points, hoverTs: 2, inputMode: "pointer", hasMouse: true },
+    { type: "deactivate" },
+  );
+  assert.equal(hovered.hoverTs, null);
+  assert.equal(hovered.hasMouse, false);
+  assert.equal(hovered.inputMode, "pointer");
+  const keyed = charts.chartInputStep(
+    { points, hoverTs: 1, inputMode: "keyboard", hasMouse: false },
+    { type: "deactivate" },
+  );
+  assert.equal(keyed.hoverTs, null);
+  assert.equal(keyed.inputMode, "pointer");
+});
+
 process.stdout.write("webui chart harness: all checks passed\n");

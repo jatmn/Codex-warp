@@ -151,6 +151,10 @@ node --check src/webui_static/app.js
 node scripts/webui_chart_harness.js
 ```
 
+The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
+ownership, paint-only-when-visible, live-region clear, canvas interactivity
+attrs). It is not a browser canvas stub of `app.js`.
+
 For documentation-only changes, `git diff --check` and a quick trailing
 whitespace scan are usually enough:
 
@@ -168,7 +172,7 @@ The CI job performs:
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
-- `node --check` for `theme-bootstrap.js`, `chart-math.js`, and `app.js`, plus `scripts/webui_chart_harness.js`
+- `node --check` for `theme-bootstrap.js`, `chart-math.js`, and `app.js`, plus `scripts/webui_chart_harness.js` (`chart-math.js` policy tests, not a browser canvas stub)
 - `git diff --check`
 - trailing-whitespace checks for README, AGENTS.md, and docs
 

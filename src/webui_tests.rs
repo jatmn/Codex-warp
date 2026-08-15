@@ -733,6 +733,9 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("bucketLabelStyle"));
     assert!(body.contains("chartInputStep"));
     assert!(body.contains("fitCanvasMetrics"));
+    assert!(body.contains("shouldPaintCharts"));
+    assert!(body.contains("liveRegionText"));
+    assert!(body.contains("chartCanvasAttrs"));
 }
 
 #[tokio::test]

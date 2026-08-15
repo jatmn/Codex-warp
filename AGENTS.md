@@ -152,6 +152,10 @@ node --check src/webui_static/app.js
 node scripts/webui_chart_harness.js
 ```
 
+The chart harness exercises `chart-math.js` policy (ticks, hover identity, keyboard
+ownership, paint-only-when-visible, live-region clear, canvas interactivity
+attrs). It is not a browser canvas stub of `app.js`.
+
 For documentation-only changes:
 
 ```bash

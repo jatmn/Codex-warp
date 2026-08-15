@@ -231,7 +231,7 @@
         hoverTs: points[action.idx].ts,
       };
     }
-    if (event.type === "blur") {
+    if (event.type === "blur" || event.type === "deactivate") {
       return { ...base, hasMouse: false, hoverTs: null, inputMode: "pointer" };
     }
     if (event.type === "keydown") {
@@ -257,6 +257,39 @@
     return { text: value, changed: true };
   }
 
+  // Live text is a function of the selected bucket. No selection (pointer left,
+  // series shrink, empty data, tab hide) must announce empty — not "keep the
+  // last tooltip until blur".
+  function liveRegionText(selectedIdx, summary) {
+    if (!(selectedIdx >= 0)) return "";
+    return summary == null ? "" : String(summary);
+  }
+
+  // Hidden panels report clientWidth 0. Inventing an 800px CSS width there
+  // poisons hover math; paint only when the analytics panel is actually laid out.
+  function shouldPaintCharts(panelVisible, clientWidth) {
+    return !!panelVisible && Number(clientWidth) > 0;
+  }
+
+  // Keyboard application semantics belong to working charts. A missing math
+  // module must revoke them, not leave tabindex/ARIA describing dead canvases.
+  function chartCanvasAttrs(enabled) {
+    if (enabled) {
+      return {
+        tabIndex: 0,
+        role: "application",
+        keyshortcuts: "ArrowLeft ArrowRight",
+        describedBy: "chart-kbd-help",
+      };
+    }
+    return {
+      tabIndex: null,
+      role: null,
+      keyshortcuts: null,
+      describedBy: null,
+    };
+  }
+
   const api = {
     integerTicks,
     bucketLabelStyle,
@@ -275,6 +308,9 @@
     chartFocusAction,
     chartInputStep,
     announceIfChanged,
+    liveRegionText,
+    shouldPaintCharts,
+    chartCanvasAttrs,
   };
 
   const root = typeof globalThis !== "undefined" ? globalThis : this;
