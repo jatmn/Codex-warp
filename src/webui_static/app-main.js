@@ -1764,13 +1764,15 @@
     const source = payload.source || $("#log-source").value;
     const events = payload.events || [];
     if (!events.length) {
-      viewer.innerHTML = `<div class="log-empty">${
+      const empty = document.createElement("div");
+      empty.className = "log-empty";
+      empty.textContent =
         source === "debug" && payload.enabled === false
           ? "Debug JSONL is disabled. Enable it in logging settings to capture request events."
           : payload.missing
             ? "No debug log file yet. Events appear after the next proxied request."
-            : "No log events match the current filters."
-      }</div>`;
+            : "No log events match the current filters.";
+      viewer.replaceChildren(empty);
       return;
     }
     const follow = $("#log-follow")?.checked;
