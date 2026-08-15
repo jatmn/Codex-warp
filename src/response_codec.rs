@@ -1124,10 +1124,11 @@ fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
         .any(|marker| normalized.contains(marker))
 }
 
-/// Wrap-up phrasing that should not force a follow-up unless a continuation
-/// marker is also present. Subtask-completion words such as "done" or
-/// "complete" are deliberately excluded: mid-task text routinely says "the
-/// rebase is complete" before continuing ("Now let me push...").
+/// Wrap-up phrasing that should not force a follow-up unless a *strong*
+/// continuation marker is also present. Bare "I'll"/"I will" are not enough.
+/// Subtask-completion words such as "done" or "complete" are deliberately
+/// excluded: mid-task text routinely says "the rebase is complete" before
+/// continuing ("Now let me push...").
 fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     [
         "thank you",
