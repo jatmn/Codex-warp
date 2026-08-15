@@ -756,6 +756,7 @@ async fn management_ui_index_loads_chart_math_before_app() {
     assert!(body.contains("id=\"chart-kbd-help\""));
     assert!(body.contains("Tab leaves the chart"));
     assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
+    assert_eq!(body.matches("role=\"status\"").count(), 2);
     assert!(!body.contains("By provider"));
     assert_eq!(body.matches("class=\"chart-live").count(), 2);
 }

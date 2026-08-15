@@ -876,8 +876,21 @@
   function applyChartInteractivity(enabled) {
     const attrs = Charts
       ? Charts.chartCanvasAttrs(enabled)
-      : { tabIndex: null, role: null, keyshortcuts: null, describedBy: null };
+      : {
+          tabIndex: null,
+          role: null,
+          keyshortcuts: null,
+          describedBy: null,
+          labelledBy: null,
+          ariaHidden: true,
+          kbdHelpHidden: true,
+          fallbackHidden: false,
+        };
     document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
+      if (!canvas.dataset.labelledby) {
+        const labelled = canvas.getAttribute("aria-labelledby");
+        if (labelled) canvas.dataset.labelledby = labelled;
+      }
       if (attrs.tabIndex == null) canvas.removeAttribute("tabindex");
       else canvas.setAttribute("tabindex", String(attrs.tabIndex));
       if (attrs.role) canvas.setAttribute("role", attrs.role);
@@ -886,14 +899,23 @@
       else canvas.removeAttribute("aria-keyshortcuts");
       if (attrs.describedBy) canvas.setAttribute("aria-describedby", attrs.describedBy);
       else canvas.removeAttribute("aria-describedby");
+      if (attrs.labelledBy && canvas.dataset.labelledby) {
+        canvas.setAttribute("aria-labelledby", canvas.dataset.labelledby);
+      } else {
+        canvas.removeAttribute("aria-labelledby");
+      }
+      if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
+      else canvas.removeAttribute("aria-hidden");
       if (!enabled && document.activeElement === canvas) canvas.blur();
+    });
+    const kbdHelp = $("#chart-kbd-help");
+    if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
+    document.querySelectorAll(".chart-fallback").forEach((el) => {
+      el.hidden = !!attrs.fallbackHidden;
     });
   }
   function noteChartsUnavailable() {
     applyChartInteractivity(false);
-    document.querySelectorAll(".chart-fallback").forEach((el) => {
-      el.hidden = false;
-    });
     if (chartsUnavailableNoted) return;
     chartsUnavailableNoted = true;
     status("Analytics charts failed to load (/ui/chart-math.js)");
@@ -1125,8 +1147,9 @@
     return [$("#chart-line"), $("#chart-bar")].filter(Boolean);
   }
 
-  function deactivateCharts() {
+  function deactivateCharts({ except } = {}) {
     for (const canvas of chartCanvases()) {
+      if (except && canvas === except) continue;
       if (Charts) {
         const state = canvas.__chart;
         const next = Charts.chartInputStep(
@@ -1219,23 +1242,34 @@
       };
     }
 
-    function applyChartInput(next, { hitTest } = {}) {
+    function applyChartInput(next) {
       const state = canvas.__chart;
       canvas.__mouse = next.hasMouse ? canvas.__mouse : null;
       if (!state) return next;
       state.inputMode = next.inputMode;
-      if (Object.prototype.hasOwnProperty.call(next, "hoverTs") && !hitTest) {
+      if (Object.prototype.hasOwnProperty.call(next, "hoverTs")) {
         state.hoverTs = next.hoverTs;
       }
       return next;
     }
 
     canvas.addEventListener("mousemove", (event) => {
-      const next = Charts.chartInputStep(chartInputState(), { type: "mousemove" });
-      applyChartInput(next, { hitTest: true });
       const state = canvas.__chart;
+      const prevHover = state ? state.hoverTs : null;
+      const prevMode = state && state.inputMode ? state.inputMode : "pointer";
+      const next = Charts.chartInputStep(chartInputState(), {
+        type: "mousemove",
+        hitTs: pointerHitTs(canvas, event, state),
+      });
+      applyChartInput(next);
+      canvas.__mouse = next.hasMouse ? { x: event.clientX, y: event.clientY } : null;
+      if (next.claimExclusive) deactivateCharts({ except: canvas });
       if (!state) return;
-      canvas.__mouse = { x: event.clientX, y: event.clientY };
+      if (prevHover !== state.hoverTs || prevMode !== state.inputMode) {
+        if (state.hoverTs == null) dismissChartHoverUi(canvas);
+        redrawChart(canvas, state);
+        return;
+      }
       if (state.kind === "line") handleLineChartHover(canvas, event, state);
       else handleBarChartHover(canvas, event, state);
     });
@@ -1250,6 +1284,7 @@
     canvas.addEventListener("focus", () => {
       const next = Charts.chartInputStep(chartInputState(), { type: "focus" });
       applyChartInput(next);
+      if (next.claimExclusive) deactivateCharts({ except: canvas });
       const state = canvas.__chart;
       if (!state || next.hoverTs == null) return;
       redrawChart(canvas, state);
@@ -1424,31 +1459,34 @@
     }
   }
 
-  function handleLineChartHover(canvas, event, state) {
-    const { series, range, geometry } = state;
-    if (!geometry) return;
+  function pointerHitTs(canvas, event, state) {
+    if (!state || !state.geometry) return null;
     const rect = canvas.getBoundingClientRect();
-    const mx = Charts.pointerCssX(event.clientX, rect.left, rect.width, geometry.cssW || canvas.__cssW);
-    const best = Charts.nearestIdxByX(
-      series.map((point) => geometry.xAt(point.ts)),
-      mx,
-      14,
+    const mx = Charts.pointerCssX(
+      event.clientX,
+      rect.left,
+      rect.width,
+      state.geometry.cssW || canvas.__cssW,
     );
-    if (best < 0) {
-      if (state.hoverTs != null) {
-        state.hoverTs = null;
-        drawLineChart(canvas, series, range);
-      }
-      dismissChartHoverUi(canvas);
-      return;
+    if (state.kind === "line") {
+      const best = Charts.nearestIdxByX(
+        state.series.map((point) => state.geometry.xAt(point.ts)),
+        mx,
+        14,
+      );
+      return best < 0 ? null : state.series[best].ts;
     }
-    if (state.hoverTs !== series[best].ts) {
-      state.hoverTs = series[best].ts;
-      drawLineChart(canvas, series, range);
-    } else {
-      showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipHtml(series[best], state.labelStyle, chartColors()));
-      announceChartData(canvas, Charts.liveRegionText(best, tooltipSummary(series[best], state.labelStyle)));
-    }
+    const idx = Charts.barIndexAtX(mx - state.geometry.padL, state.geometry.slot, state.rows.length);
+    return idx < 0 ? null : state.rows[idx].ts;
+  }
+
+  function handleLineChartHover(canvas, event, state) {
+    if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
+    const idx = resolveLineIdx(state);
+    if (idx < 0) return;
+    const point = state.series[idx];
+    showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipHtml(point, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle)));
   }
 
   function renderLineHover(canvas, state, idx) {
@@ -1596,26 +1634,12 @@
   }
 
   function handleBarChartHover(canvas, event, state) {
-    const { rows, range, geometry } = state;
-    if (!geometry) return;
-    const rect = canvas.getBoundingClientRect();
-    const mx = Charts.pointerCssX(event.clientX, rect.left, rect.width, geometry.cssW || canvas.__cssW);
-    const idx = Charts.barIndexAtX(mx - geometry.padL, geometry.slot, rows.length);
-    if (idx < 0) {
-      if (state.hoverTs != null) {
-        state.hoverTs = null;
-        drawBarChart(canvas, rows, range);
-      }
-      dismissChartHoverUi(canvas);
-      return;
-    }
-    if (state.hoverTs !== rows[idx].ts) {
-      state.hoverTs = rows[idx].ts;
-      drawBarChart(canvas, rows, range);
-    } else {
-      showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(rows[idx], state.labelStyle, chartColors()));
-      announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(rows[idx], state.labelStyle)));
-    }
+    if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
+    const idx = resolveBarIdx(state);
+    if (idx < 0) return;
+    const row = state.rows[idx];
+    showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(row, state.labelStyle, chartColors()));
+    announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle)));
   }
 
   async function startAnalyticsPoll(epoch = tabEpoch) {

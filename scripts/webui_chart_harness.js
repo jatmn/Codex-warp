@@ -178,9 +178,27 @@ check("chartInputStep: Tab onto a pointer hover becomes keyboard-owned", () => {
   const leaveWhileKeys = charts.chartInputStep(keyed, { type: "mouseleave" });
   assert.equal(leaveWhileKeys.hoverTs, 3);
   assert.equal(leaveWhileKeys.inputMode, "keyboard");
-  const pointerBack = charts.chartInputStep(leaveWhileKeys, { type: "mousemove" });
+  const miss = charts.chartInputStep(leaveWhileKeys, { type: "mousemove", hitTs: null });
+  assert.equal(miss.inputMode, "keyboard");
+  assert.equal(miss.hoverTs, 3);
+  assert.equal(miss.hasMouse, false);
+  assert.equal(miss.claimExclusive, false);
+  const pointerBack = charts.chartInputStep(leaveWhileKeys, { type: "mousemove", hitTs: 1 });
   assert.equal(pointerBack.inputMode, "pointer");
+  assert.equal(pointerBack.hoverTs, 1);
   assert.equal(pointerBack.hasMouse, true);
+  assert.equal(pointerBack.claimExclusive, true);
+});
+
+check("chartInputStep: pointer miss clears pointer hover but not keyboard", () => {
+  const points = [{ ts: 1 }, { ts: 2 }];
+  const pointerMiss = charts.chartInputStep(
+    { points, hoverTs: 2, inputMode: "pointer", hasMouse: true },
+    { type: "mousemove", hitTs: null },
+  );
+  assert.equal(pointerMiss.inputMode, "pointer");
+  assert.equal(pointerMiss.hoverTs, null);
+  assert.equal(pointerMiss.hasMouse, true);
 });
 
 check("liveRegionText is empty when no bucket is selected", () => {
@@ -198,17 +216,25 @@ check("shouldPaintCharts refuses hidden or unlaid-out canvases", () => {
   assert.equal(charts.shouldPaintCharts(false, 0), false);
 });
 
-check("chartCanvasAttrs revokes keyboard application semantics when disabled", () => {
+check("chartCanvasAttrs revokes the full AT surface when disabled", () => {
   const on = charts.chartCanvasAttrs(true);
   assert.equal(on.tabIndex, 0);
   assert.equal(on.role, "application");
   assert.equal(on.keyshortcuts, "ArrowLeft ArrowRight");
   assert.equal(on.describedBy, "chart-kbd-help");
+  assert.equal(on.labelledBy, true);
+  assert.equal(on.ariaHidden, null);
+  assert.equal(on.kbdHelpHidden, false);
+  assert.equal(on.fallbackHidden, true);
   const off = charts.chartCanvasAttrs(false);
   assert.equal(off.tabIndex, null);
   assert.equal(off.role, null);
   assert.equal(off.keyshortcuts, null);
   assert.equal(off.describedBy, null);
+  assert.equal(off.labelledBy, null);
+  assert.equal(off.ariaHidden, true);
+  assert.equal(off.kbdHelpHidden, true);
+  assert.equal(off.fallbackHidden, false);
 });
 
 check("chartInputStep deactivate drops pointer ownership like blur", () => {

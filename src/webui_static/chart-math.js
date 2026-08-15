@@ -195,7 +195,8 @@
 
   // Focus is keyboard ownership. Preserve an existing bucket, but leftover
   // mouse coordinates are not pointer ownership — Tab onto a hovered chart
-  // must still get a bucket-anchored tooltip. Pointer reclaim is mousemove.
+  // must still get a bucket-anchored tooltip. Pointer reclaim is a hit, not
+  // mere mousemove over padding or empty plot.
   function chartFocusAction(resolvedIdx, len) {
     if (!len) return { kind: "noop", idx: -1, inputMode: null, clearMouse: false };
     const idx = resolvedIdx >= 0 ? resolvedIdx : nextKeyboardIdx(-1, len, 0);
@@ -215,7 +216,30 @@
 
     if (!event || !event.type) return base;
     if (event.type === "mousemove") {
-      return { ...base, inputMode: "pointer", hasMouse: true };
+      const hitTs = Object.prototype.hasOwnProperty.call(event, "hitTs")
+        ? event.hitTs
+        : null;
+      if (hitTs != null) {
+        return {
+          ...base,
+          inputMode: "pointer",
+          hasMouse: true,
+          hoverTs: hitTs,
+          claimExclusive: true,
+        };
+      }
+      // A miss must not steal keyboard ownership. Pointer mode still tracks
+      // the cursor so leaving the plot can clear a pointer hover.
+      if (inputMode === "keyboard") {
+        return { ...base, hasMouse: false, claimExclusive: false };
+      }
+      return {
+        ...base,
+        inputMode: "pointer",
+        hasMouse: true,
+        hoverTs: null,
+        claimExclusive: false,
+      };
     }
     if (event.type === "mouseleave") {
       if (inputMode === "keyboard") return { ...base, hasMouse: false };
@@ -229,6 +253,7 @@
         inputMode: "keyboard",
         hasMouse: false,
         hoverTs: points[action.idx].ts,
+        claimExclusive: true,
       };
     }
     if (event.type === "blur" || event.type === "deactivate") {
@@ -272,7 +297,8 @@
   }
 
   // Keyboard application semantics belong to working charts. A missing math
-  // module must revoke them, not leave tabindex/ARIA describing dead canvases.
+  // module must revoke the full AT surface, not leave labelled dead canvases
+  // or keyboard help that describes navigation that no longer exists.
   function chartCanvasAttrs(enabled) {
     if (enabled) {
       return {
@@ -280,6 +306,10 @@
         role: "application",
         keyshortcuts: "ArrowLeft ArrowRight",
         describedBy: "chart-kbd-help",
+        labelledBy: true,
+        ariaHidden: null,
+        kbdHelpHidden: false,
+        fallbackHidden: true,
       };
     }
     return {
@@ -287,6 +317,10 @@
       role: null,
       keyshortcuts: null,
       describedBy: null,
+      labelledBy: null,
+      ariaHidden: true,
+      kbdHelpHidden: true,
+      fallbackHidden: false,
     };
   }
 
