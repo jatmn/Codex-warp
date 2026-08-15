@@ -830,6 +830,10 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains("[\"Cached tokens\", colors.cached]"));
     // The legend only advertises the cached series when the range has data.
     assert!(app.contains("...(hasCachedData ? [[\"Cached tokens\", colors.cached]] : [])"));
+    // Tooltip rows and the live summary gate the cached row the same way.
+    assert!(app.contains(
+        "...(hasCached ? [[\"Cached tokens\", point.cached_tokens || 0, colors.cached]] : [])"
+    ));
     // Keyboard help copy lists the fields each bucket reports.
     assert!(index.contains("cached tokens, output tokens"));
 }
