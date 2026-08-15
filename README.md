@@ -229,7 +229,8 @@ Implemented now:
 - `GET /v1/models` and `/models`
 - streaming chat-completions text to Responses SSE
 - streaming chat-completions function calls to Responses `function_call` output
-  items
+  items, including expansion of Codex `namespace` tools such as
+  `multi_agent_v1.spawn_agent` into ordinary functions
 - non-streaming chat-completions response conversion
 - editable TOML provider headers, auth, endpoint paths, model metadata, and
   tool/request morphs
@@ -245,7 +246,6 @@ Implemented now:
 Still intentionally small:
 
 - no multimodal image/file request translation yet
-- no namespace tool expansion beyond a simple fallback function
 - no built-in provider profile auto-connects without user config
 
 ## Affiliation
