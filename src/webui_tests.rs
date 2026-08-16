@@ -834,8 +834,9 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains(
         "...(hasCached ? [[\"Cached tokens\", point.cached_tokens || 0, colors.cached]] : [])"
     ));
-    // Keyboard help copy lists the fields each bucket reports.
-    assert!(index.contains("cached tokens, output tokens"));
+    // Keyboard help copy lists the fields each bucket reports, including the
+    // cached-token field that tooltips gate on actual range data.
+    assert!(index.contains("cached tokens when the range has cached usage"));
 }
 
 #[test]

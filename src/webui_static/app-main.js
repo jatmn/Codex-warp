@@ -1364,7 +1364,7 @@
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!series.length) {
-      canvas.__chart = { kind: "line", series: [], range, geometry: null, hoverTs: null, inputMode: "pointer", labelStyle: "time" };
+      canvas.__chart = { kind: "line", series: [], range, geometry: null, hoverTs: null, inputMode: "pointer", labelStyle: "time", hasCachedData: false };
       dismissChartHoverUi(canvas);
       return;
     }
@@ -1407,16 +1407,26 @@
     let legendRow = [];
     let legendRowWidth = 0;
     for (const [label, color] of legend) {
-      const chipW = ctx.measureText(label).width + 22;
       // A chip wider than the whole budget would overrun the axis column on
-      // any row; skip it rather than paint over the axis labels.
+      // any row; shrink the label (with an ellipsis) so every series keeps a
+      // legend entry on narrow canvases instead of silently dropping it. Only
+      // when even a minimal label cannot fit is the chip skipped.
+      let chipLabel = label;
+      const fits = (text) => ctx.measureText(text).width + 22 <= legendBudget;
+      if (!fits(chipLabel)) {
+        while (chipLabel.length > 1 && !fits(chipLabel + "…")) {
+          chipLabel = chipLabel.slice(0, -1);
+        }
+        if (chipLabel.length > 1) chipLabel += "…";
+      }
+      const chipW = ctx.measureText(chipLabel).width + 22;
       if (chipW > legendBudget) continue;
       if (legendRow.length && legendRowWidth + chipW > legendBudget) {
         legendRows.push(legendRow);
         legendRow = [];
         legendRowWidth = 0;
       }
-      legendRow.push([label, color, chipW]);
+      legendRow.push([chipLabel, color, chipW]);
       legendRowWidth += chipW + legendGap;
     }
     legendRows.push(legendRow);
@@ -1468,7 +1478,7 @@
     // Right axes: prompts and sessions each get their own scale and label.
     ctx.textAlign = "center";
     ctx.fillStyle = colors.tokens;
-    ctx.fillText("tokens", padL, padT - 4);
+    ctx.fillText("tokens", padL, 14);
     for (const [key, ticks, color] of [["prompts", prompts, colors.prompts], ["sessions", sessions, colors.sessions]]) {
       const ax = axisX[key];
       ctx.fillStyle = colors.muted;
@@ -1478,7 +1488,7 @@
       }
       ctx.fillStyle = color;
       ctx.textAlign = "center";
-      ctx.fillText(key, ax, padT - 4);
+      ctx.fillText(key, ax, 14);
     }
 
     function strokeSeries(vals, yFn, color, dashed, skipZero) {
@@ -1647,7 +1657,7 @@
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
     ctx.clearRect(0, 0, w, h);
     if (!rows.length) {
-      canvas.__chart = { kind: "bar", rows: [], range, geometry: null, hoverTs: null, inputMode: "pointer", labelStyle: "time" };
+      canvas.__chart = { kind: "bar", rows: [], range, geometry: null, hoverTs: null, inputMode: "pointer", labelStyle: "time", hasCachedData: false };
       dismissChartHoverUi(canvas);
       return;
     }
@@ -1658,13 +1668,10 @@
       padB: 26,
     });
     const colors = chartColors();
-    // The bar axis covers both total and cached values so the tooltip's cached
-    // row never reports a number the chart cannot represent.
-    const max = Math.max(
-      1,
-      ...rows.map((r) => r.total_tokens || 0),
-      ...rows.map((r) => r.cached_tokens || 0),
-    );
+    // The bar chart paints only total-token bars, so the axis scales to the
+    // drawn series; the hover tooltip still reports the bucket's cached tokens
+    // as a text readout even when that value exceeds the axis top.
+    const max = Math.max(1, ...rows.map((r) => r.total_tokens || 0));
     const hasCachedData = rows.some((r) => (r.cached_tokens || 0) > 0);
     const ticks = integerTicks(max);
     const { barW, barGap, slot } = Charts.barSlotLayout(plotW, rows.length);
