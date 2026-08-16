@@ -470,6 +470,100 @@ fn mask_api_key_shows_prefix_and_suffix() {
 }
 
 #[test]
+fn looks_like_env_var_name_matches_webui_classifier() {
+    assert!(looks_like_env_var_name("OPENAI_API_KEY"));
+    assert!(looks_like_env_var_name("_LEADING_UNDERSCORE"));
+    assert!(looks_like_env_var_name("A_1"));
+    assert!(!looks_like_env_var_name(""));
+    assert!(!looks_like_env_var_name("OPENAI"));
+    assert!(!looks_like_env_var_name("openai_api_key"));
+    assert!(!looks_like_env_var_name("1_LEADING_DIGIT"));
+    assert!(!looks_like_env_var_name("SK-LIVE"));
+}
+
+#[test]
+fn javascript_credential_helpers_stay_in_sync_with_rust() {
+    let app = include_str!("webui_static/app-main.js");
+    assert!(
+        app.contains("Keep in lockstep with looks_like_env_var_name"),
+        "JS env classifier must document the Rust twin"
+    );
+    assert!(
+        app.contains("Keep in lockstep with mask_api_key"),
+        "JS mask helper must document the Rust twin"
+    );
+    assert!(app.contains("/^[A-Z_][A-Z0-9_]*$/"));
+    assert!(app.contains("return value.includes(\"_\")"));
+    assert!(app.contains("if (n <= 8)"));
+    assert!(app.contains("prefix = 1"));
+    assert!(app.contains("suffix = 1"));
+    assert!(app.contains("if (n <= 12)"));
+    assert!(app.contains("prefix = 2"));
+    assert!(app.contains("suffix = 2"));
+    assert!(app.contains("prefix = 4"));
+    assert!(app.contains("suffix = 4"));
+}
+
+#[test]
+fn managed_provider_view_exposes_only_masked_api_key() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let raw_key = "sk-test-managed-provider-api-key-1234567890";
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-view-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        name: Some("managed".into()),
+        api_key: Some(raw_key.into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        Some(store),
+    );
+
+    let view = build_provider_view(&state, "managed", &provider, &[]);
+    assert!(view.managed);
+    assert!(view.has_inline_api_key);
+    assert!(view.has_api_key);
+    let preview = view
+        .api_key_preview
+        .as_deref()
+        .expect("managed providers should expose masked api_key_preview");
+    assert_eq!(preview, mask_api_key(raw_key));
+    let json = serde_json::to_string(&view).expect("serialize provider view");
+    assert!(
+        !json.contains(raw_key),
+        "raw api key must never appear in JSON"
+    );
+    assert!(
+        json.contains(preview),
+        "masked api key preview should be present in JSON"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
     let mut fields =

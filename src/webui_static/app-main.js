@@ -487,12 +487,14 @@
 
   const clearCredentialsBtn = $("#provider-clear-credentials");
 
+  // Keep in lockstep with looks_like_env_var_name in src/webui.rs.
   function looksLikeEnvVarName(value) {
     if (!value) return false;
     if (!/^[A-Z_][A-Z0-9_]*$/.test(value)) return false;
     return value.includes("_");
   }
 
+  // Keep in lockstep with mask_api_key in src/webui.rs.
   function maskApiKey(value) {
     const chars = Array.from(value);
     const n = chars.length;

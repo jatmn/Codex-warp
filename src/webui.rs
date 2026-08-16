@@ -1148,8 +1148,8 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
 }
 
 /// Show a short prefix and suffix so a stored key can be identified without
-/// returning the secret. Matches the common harness pattern (first/last few
-/// characters visible, middle hidden).
+/// returning the secret. Keep this in lockstep with `maskApiKey` in
+/// `src/webui_static/app-main.js`.
 fn mask_api_key(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let n = chars.len();
@@ -1173,6 +1173,9 @@ fn mask_api_key(value: &str) -> String {
     masked
 }
 
+/// Keep this in lockstep with `looksLikeEnvVarName` in
+/// `src/webui_static/app-main.js`: ASCII uppercase/underscore/digit, first
+/// character not a digit, and at least one underscore.
 fn looks_like_env_var_name(value: &str) -> bool {
     let mut chars = value.chars();
     let first = match chars.next() {
