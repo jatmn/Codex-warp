@@ -499,9 +499,11 @@
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
     const apiKeyInputValue = String(apiKeyInput.value || "").trim();
+    const keepInlineApiKey =
+      mode === "edit" && providerForm.dataset.hasApiKey === "true" && !apiKeyInputValue;
     const body = {
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: apiKeyInputValue || null,
+      api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -511,7 +513,7 @@
       model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
     };
-    const headers = collectProviderHeadersFromForm();
+    const headers = collectProviderHeadersFromForm(mode);
     try {
       if (mode === "create") {
         const isCustom = !template || template.key === "custom";
@@ -594,7 +596,7 @@
     providerHeadersRows.append(row);
   }
 
-  function collectProviderHeadersFromForm() {
+  function collectProviderHeadersFromForm(mode = "create") {
     const rows = Array.from(
       providerHeadersRows.querySelectorAll(".provider-header-row"),
     );
@@ -611,7 +613,15 @@
       }
       headers[key] = String(rawValue.value || "");
     }
-    return Object.keys(headers).length ? headers : null;
+    if (Object.keys(headers).length) {
+      return headers;
+    }
+    // Custom edit with only blank rows is an explicit clear. Named/template
+    // edits hide the section and must omit headers to preserve TOML values.
+    if (mode === "edit" && !providerHeadersSection.hidden) {
+      return {};
+    }
+    return null;
   }
 
   function applyProviderHeaders(headers = null) {
@@ -781,6 +791,10 @@
         applyProviderHeaders(null);
       }
       apiKeyInput.value = p.api_key_env || "";
+      apiKeyInput.placeholder = p.has_api_key && !p.api_key_env
+        ? "Configured for this process"
+        : "PROVIDER_API_KEY";
+      providerForm.dataset.hasApiKey = p.has_api_key ? "true" : "false";
       if (isNamed) {
         providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
       }
@@ -790,6 +804,8 @@
       applyProviderHeaders(null);
       providerForm.querySelector("[name=api_key_env]").readOnly = false;
       providerForm.querySelector("[name=api_key_env]").title = "";
+      providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
+      providerForm.dataset.hasApiKey = "false";
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;

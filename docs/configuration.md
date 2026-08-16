@@ -452,8 +452,10 @@ keep their current values, and JSON `null` clears optional string fields
 re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
 
-Provider overlays never persist `api_key` or request `headers`; use
-`api_key_env` (and TOML headers) for durable secrets. For a TOML-backed
+Provider overlays never persist `api_key`. Use `api_key_env` for durable secrets.
+Managed (Web UI-created) providers persist request `headers` in the SQLite overlay
+because they have no TOML snapshot. TOML-backed overlays still strip headers so
+TOML remains the source of truth for header auth. For a TOML-backed
 provider, `api_key_env` remains TOML-owned and is read-only in the Web UI so a
 later TOML credential rotation cannot be overwritten by an old SQLite snapshot.
 

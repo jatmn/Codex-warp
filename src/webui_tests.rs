@@ -277,7 +277,7 @@ fn validate_provider_persist_rejects_empty_base_url() {
 }
 
 #[test]
-fn normalize_provider_api_key_fields_treats_unknown_env_name_as_raw_key() {
+fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
     unsafe {
         std::env::remove_var(NAME);
@@ -300,7 +300,30 @@ fn normalize_provider_api_key_fields_treats_unknown_env_name_as_raw_key() {
 
     normalize_provider_api_key_fields(&mut fields);
 
-    assert_eq!(fields.api_key.as_deref(), Some(NAME));
+    assert!(fields.api_key.is_none());
+    assert_eq!(fields.api_key_env, OptionalPatch::Set(NAME.to_string()));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
+        api_key: None,
+        headers: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(fields.api_key.as_deref(), Some("sk-live-not-an-env"));
     assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
@@ -330,6 +353,58 @@ fn unique_provider_id_suffixes_use_sanitized_base() {
     let id = unique_provider_id(&state, "My Gateway!");
     assert_eq!(id, "my-gateway-3");
     validate_provider_id(&id).expect("generated id must be valid");
+}
+
+#[test]
+fn unique_provider_id_skips_bundled_template_ids() {
+    let state = test_state();
+    let id = unique_provider_id(&state, "opencode_go");
+    assert_eq!(id, "opencode_go-2");
+    validate_provider_id(&id).expect("generated id must be valid");
+}
+
+#[test]
+fn apply_provider_persist_clears_opposite_credential() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("OLD_KEY".into()),
+        ..ProviderConfig::default()
+    };
+    let env_fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("NEW_KEY".into()),
+        api_key: None,
+        headers: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    env_fields.apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert_eq!(provider.api_key_env.as_deref(), Some("NEW_KEY"));
+
+    let inline_fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: Some("sk-live-not-an-env".into()),
+        headers: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    inline_fields.apply_to(&mut provider);
+    assert_eq!(provider.api_key.as_deref(), Some("sk-live-not-an-env"));
+    assert!(provider.api_key_env.is_none());
 }
 
 #[test]

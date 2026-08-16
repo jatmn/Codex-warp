@@ -1077,7 +1077,7 @@ fn upsert_provider_overlay_strips_custom_headers() {
         .headers
         .insert("authorization".into(), "Bearer leaked".into());
     store
-        .upsert_provider_overlay("secret", Some(true), false, true, Some(&provider))
+        .upsert_provider_overlay("secret", Some(true), false, false, Some(&provider))
         .unwrap();
 
     let db = store.db.lock().expect("lock");
@@ -1093,6 +1093,54 @@ fn upsert_provider_overlay_strips_custom_headers() {
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     let headers = parsed.get("headers").and_then(|value| value.as_object());
     assert!(headers.is_none_or(|map| map.is_empty()));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn managed_provider_overlay_persists_custom_headers() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-header-keep-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("headers.db")).unwrap();
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    provider
+        .headers
+        .insert("x-custom-token".into(), "secret-header".into());
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+
+    let json: String = {
+        let db = store.db.lock().expect("lock");
+        db.query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'managed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert!(json.contains("secret-header"));
+
+    let mut config = AppConfig::default();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert_eq!(
+        config.providers["managed"]
+            .headers
+            .get("x-custom-token")
+            .map(String::as_str),
+        Some("secret-header")
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

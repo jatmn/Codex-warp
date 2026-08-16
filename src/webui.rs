@@ -1002,7 +1002,11 @@ fn build_provider_view(
         managed: provider_is_managed(state, id),
         has_api_key: provider.api_key().is_some(),
         api_key_env: provider.api_key_env.clone(),
-        headers: provider.headers.clone(),
+        headers: if provider_is_managed(state, id) {
+            provider.headers.clone()
+        } else {
+            BTreeMap::new()
+        },
         auth_header: provider.auth_header.clone(),
         auth_scheme: provider.auth_scheme.clone(),
         responses_path: provider.responses_path.clone(),
@@ -1063,12 +1067,9 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
             if trimmed.is_empty() {
                 fields.api_key_env = OptionalPatch::Absent;
             } else if looks_like_env_var_name(trimmed) {
-                if std::env::var(trimmed).is_ok() {
-                    *raw = trimmed.to_string();
-                } else {
-                    fields.api_key = Some(trimmed.to_string());
-                    fields.api_key_env = OptionalPatch::Absent;
-                }
+                // Env-shaped names are durable overlay fields. Do not rewrite an
+                // unset name into inline `api_key`; overlays never persist that.
+                *raw = trimmed.to_string();
             } else {
                 fields.api_key = Some(trimmed.to_string());
                 fields.api_key_env = OptionalPatch::Absent;
@@ -1172,6 +1173,12 @@ fn provider_id_is_taken(state: &AppState, id: &str) -> bool {
     if id == PRIMARY_PROVIDER_ID {
         return true;
     }
+    if bundled_provider_templates()
+        .iter()
+        .any(|template| !template.id.is_empty() && template.id == id)
+    {
+        return true;
+    }
     state.read_config().providers.contains_key(id)
 }
 
@@ -1247,6 +1254,9 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
         OptionalPatch::Set(api_key_env) => {
             let trimmed = api_key_env.trim();
             provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+            if provider.api_key_env.is_some() {
+                provider.api_key = None;
+            }
         }
     }
     if let Some(api_key) = fields
@@ -1256,6 +1266,7 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
         .filter(|value| !value.is_empty())
     {
         provider.api_key = Some(api_key.to_string());
+        provider.api_key_env = None;
     }
     if let Some(headers) = &fields.headers {
         provider.headers = headers.clone();
@@ -1406,17 +1417,19 @@ async fn create_provider(
             provider.enabled = fields.enabled.unwrap_or(true);
             provider.model_catalog = body.model_catalog.clone();
             apply_provider_persist(&mut provider, &fields);
-            let candidate = body
+            let requested_id = body
                 .id
                 .as_deref()
                 .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| make_provider_id_from_base_url(base_url));
-            let id = if provider_id_is_taken(&state, &candidate) {
-                unique_provider_id(&state, &candidate)
+                .filter(|value| !value.is_empty());
+            let id = if let Some(id) = requested_id {
+                validate_provider_id(id)?;
+                if provider_id_is_taken(&state, id) {
+                    return Err(ApiError::bad_request("provider already exists"));
+                }
+                id.to_string()
             } else {
-                candidate
+                unique_provider_id(&state, &make_provider_id_from_base_url(base_url))
             };
             validate_provider_id(&id)?;
             if id == PRIMARY_PROVIDER_ID {
@@ -1432,13 +1445,13 @@ async fn create_provider(
             }
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
-            provider.model_catalog = body.model_catalog.clone();
             if let Some(api_key) = fields
                 .api_key
                 .as_ref()
                 .filter(|value| !value.trim().is_empty())
             {
                 provider.api_key = Some(api_key.clone());
+                provider.api_key_env = None;
             }
             match &fields.api_key_env {
                 OptionalPatch::Absent => {}
@@ -1446,6 +1459,9 @@ async fn create_provider(
                 OptionalPatch::Set(api_key_env) => {
                     let trimmed = api_key_env.trim();
                     provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+                    if provider.api_key_env.is_some() {
+                        provider.api_key = None;
+                    }
                 }
             }
             (id, provider)
@@ -1529,6 +1545,9 @@ async fn update_provider(
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
+    if !managed {
+        fields.headers = None;
+    }
 
     let (snapshot, previous_enabled, refresh_discovery) = {
         let config = state.read_config();
