@@ -189,15 +189,20 @@
       const out = labels.map((label) => String(label || ""));
       let guard = 0;
       while (rowPixelWidth(out) > finiteBudget && guard++ < 400) {
-        let idx = 0;
-        for (let i = 1; i < out.length; i++) {
-          const a = out[i].replace(/…$/u, "");
-          const b = out[idx].replace(/…$/u, "");
-          if (a.length > b.length) idx = i;
+        let idx = -1;
+        let widest = -1;
+        for (let i = 0; i < out.length; i++) {
+          const base = out[i].endsWith("…") ? out[i].slice(0, -1) : out[i];
+          if (!base) continue;
+          const width = chipWidth(out[i]);
+          if (width > widest) {
+            widest = width;
+            idx = i;
+          }
         }
+        if (idx < 0) break;
         const current = out[idx];
         const base = current.endsWith("…") ? current.slice(0, -1) : current;
-        if (!base) break;
         out[idx] = base.length === 1 ? "" : `${base.slice(0, -1)}…`;
       }
       return out;
@@ -235,13 +240,25 @@
       return packed;
     }
 
-    if (!list.length) return { rows: [], style };
+    if (!list.length) return { rows: [], style, overflow: false };
     const capped = Math.min(maxRows, list.length);
     for (let rowCount = 1; rowCount <= capped; rowCount++) {
       const packed = pack(rowCount, false);
-      if (packed) return { rows: packed, style };
+      if (packed) return { rows: packed, style, overflow: false };
     }
-    return { rows: pack(capped, true) || [], style };
+    return { rows: pack(capped, true) || [], style, overflow: true };
+  }
+
+  // Legend paint is clipped to the reserved top band. Packing may still emit
+  // min-width swatches when the budget cannot hold them; clip keeps those
+  // boxes off the plot and the right-axis column.
+  function legendPaintClip(startX, budget, height) {
+    return {
+      x: Number(startX) || 0,
+      y: 0,
+      width: Math.max(0, Number(budget) || 0),
+      height: Math.max(0, Number(height) || 0),
+    };
   }
 
   // Gap is a remainder of each slot, never an independent cost that can consume
@@ -501,6 +518,7 @@
     layoutChartPlot,
     legendChipChrome,
     layoutLegendChips,
+    legendPaintClip,
     barSlotLayout,
     barPaintRect,
     barAnchorY,

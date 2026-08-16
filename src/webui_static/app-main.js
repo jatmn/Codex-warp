@@ -1561,8 +1561,14 @@
     drawDots(promptVals, yPrompts, colors.prompts);
     drawDots(sessionVals, ySessions, colors.sessions);
 
-    // Legend chips in the top band (above the plot), never over series data
-    // or axis labels.
+    // Legend chips in the reserved top band. Clip to that band so a packing
+    // overflow (min swatches wider than the budget) cannot cover the plot or
+    // the right-axis column.
+    const legendClip = Charts.legendPaintClip(legendStartX, legendBudget, padT);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(legendClip.x, legendClip.y, legendClip.width, legendClip.height);
+    ctx.clip();
     legendRows.forEach((chips, rowIndex) => {
       let lx = legendStartX;
       const ly = 6 + rowIndex * 24;
@@ -1586,6 +1592,7 @@
         lx += chip.width + legendGap;
       }
     });
+    ctx.restore();
 
     // Hover overlay and tooltip, resolved by bucket identity so redraws with
     // changed data can never leave a stale index behind.
