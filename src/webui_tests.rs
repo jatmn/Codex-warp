@@ -279,7 +279,9 @@ fn validate_provider_persist_rejects_empty_base_url() {
 #[test]
 fn normalize_provider_api_key_fields_treats_unknown_env_name_as_raw_key() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
-    std::env::remove_var(NAME);
+    unsafe {
+        std::env::remove_var(NAME);
+    }
 
     let mut fields = ProviderPersist {
         name: OptionalPatch::Absent,

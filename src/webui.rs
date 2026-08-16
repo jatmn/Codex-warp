@@ -1046,7 +1046,8 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
         .api_key
         .as_ref()
         .is_some_and(|value| !value.trim().is_empty());
-    let has_api_key_env = matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
+    let has_api_key_env =
+        matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
     if has_api_key && has_api_key_env {
         return Err(ApiError::bad_request(
             "set either api_key or api_key_env, not both",
@@ -1058,20 +1059,20 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
 fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
     match &mut fields.api_key_env {
         OptionalPatch::Set(raw) => {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            fields.api_key_env = OptionalPatch::Absent;
-        } else if looks_like_env_var_name(trimmed) {
-            if std::env::var(trimmed).is_ok() {
-                *raw = trimmed.to_string();
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                fields.api_key_env = OptionalPatch::Absent;
+            } else if looks_like_env_var_name(trimmed) {
+                if std::env::var(trimmed).is_ok() {
+                    *raw = trimmed.to_string();
+                } else {
+                    fields.api_key = Some(trimmed.to_string());
+                    fields.api_key_env = OptionalPatch::Absent;
+                }
             } else {
                 fields.api_key = Some(trimmed.to_string());
                 fields.api_key_env = OptionalPatch::Absent;
             }
-        } else {
-            fields.api_key = Some(trimmed.to_string());
-            fields.api_key_env = OptionalPatch::Absent;
-        }
         }
         OptionalPatch::Clear | OptionalPatch::Absent => {}
     }
@@ -1092,7 +1093,10 @@ fn looks_like_env_var_name(value: &str) -> bool {
     if !(first.is_ascii_alphabetic() || first == '_') {
         return false;
     }
-    if !value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return false;
     }
     true
@@ -1244,7 +1248,12 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
             provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
     }
-    if let Some(api_key) = fields.api_key.as_ref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(api_key) = fields
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         provider.api_key = Some(api_key.to_string());
     }
     if let Some(headers) = &fields.headers {
@@ -1401,11 +1410,12 @@ async fn create_provider(
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
                 .unwrap_or_else(|| make_provider_id_from_base_url(base_url));
-            let id = if provider_id_is_taken(&state, candidate) {
-                unique_provider_id(&state, candidate)
+            let id = if provider_id_is_taken(&state, &candidate) {
+                unique_provider_id(&state, &candidate)
             } else {
-                candidate.to_string()
+                candidate
             };
             validate_provider_id(&id)?;
             if id == PRIMARY_PROVIDER_ID {
@@ -1422,7 +1432,11 @@ async fn create_provider(
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
             provider.model_catalog = body.model_catalog.clone();
-            if let Some(api_key) = fields.api_key.as_ref().filter(|value| !value.trim().is_empty()) {
+            if let Some(api_key) = fields
+                .api_key
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
                 provider.api_key = Some(api_key.clone());
             }
             match &fields.api_key_env {
