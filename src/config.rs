@@ -219,8 +219,8 @@ pub struct ContinueGuardConfig {
 impl Default for ContinueGuardConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            mode: ContinueGuardMode::Observe,
+            enabled: true,
+            mode: ContinueGuardMode::EndTurnFalse,
             max_followups: 1,
         }
     }
@@ -235,7 +235,7 @@ pub enum ContinueGuardMode {
 
 impl Default for ContinueGuardMode {
     fn default() -> Self {
-        Self::Observe
+        Self::EndTurnFalse
     }
 }
 

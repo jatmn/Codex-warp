@@ -38,7 +38,7 @@ of client patches:
 - model-family metadata for reasoning, tools, context windows, modalities, and
   provider-local auto-review routing
 - editable request/tool morphs for chat-completions and Responses backends
-- optional continue guard for chat-completions models that stop mid-plan
+- continue guard (enabled by default) for chat-completions models that stop mid-task
 - optional tool approval policy loaded from TOML
 - optional local Web UI for provider/model toggles, SQLite usage analytics, and log viewing
 - sanitized debug logging and upstream `User-Agent` reporting
@@ -117,22 +117,30 @@ override exact model metadata when a gateway reports something unusual.
 **Continue Guard**
 
 Some chat-completions providers finish with text like `Now let me check...`
-instead of issuing the next tool call. The continue guard can detect that case
-while Codex has an active plan and ask Codex to continue the same turn with
-`end_turn = false`:
+instead of issuing the next tool call. The continue guard detects that case and
+asks Codex to continue the same turn with `end_turn = false`, so long agent
+sessions keep working instead of pausing for a manual `continue`. The guard is
+enabled by default across chat-completions providers (SSE and non-stream JSON);
+use the CLI flags only to
+tune it for a specific session:
 
 ```bash
 target/debug/codex-warp \
   --config configs/clinepass.toml \
-  --continue-guard \
-  --continue-guard-mode end_turn_false
+  --continue-guard-mode observe
 ```
 
-The guard is conservative: it only acts when Codex has an active plan, the
-provider finishes with `finish_reason = "stop"`, no tool call was emitted, and
-the assistant text looks like it intended to keep working. See the
-[configuration guide](docs/configuration.md#continue-guard) for observe mode and
-follow-up limits.
+The guard is conservative: it only acts when the provider finishes with
+`finish_reason = "stop"` (or omits / empties `finish_reason` on a text-only JSON
+completion), no tool call was emitted, and the assistant text
+looks like it intended to keep working. A fully completed `update_plan`
+suppresses the guard unless later tool work shows the plan snapshot is stale;
+sessions that never call `update_plan` are still covered. `max_followups`
+limits consecutive text-only stops per session; the counter resets when the
+last request `input` item is completed tool work, so mid-task pauses are
+handled without allowing unproductive loops to run away. See the
+[configuration guide](docs/configuration.md#continue-guard) for observe mode
+and follow-up limits.
 
 **Tool Approval Policy**
 
@@ -234,8 +242,7 @@ Implemented now:
 - non-streaming chat-completions response conversion
 - editable TOML provider headers, auth, endpoint paths, model metadata, and
   tool/request morphs
-- opt-in continue guard for premature chat-completions stops during active
-  Codex plans
+- continue guard (enabled by default) for premature chat-completions stops
 - sanitized debug logging that redacts obvious API keys and provider tokens even
   when full bodies or raw stream frames are enabled
 - opt-in tool approval policy for GitHub CLI approval hints, escalation

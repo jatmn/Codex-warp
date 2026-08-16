@@ -223,28 +223,99 @@ the user manually prompting it.
 ```toml
 [continue_guard]
 enabled = true
-mode = "observe"
+mode = "end_turn_false"
 max_followups = 1
 ```
+
+The guard is **enabled by default** with `mode = "end_turn_false"` and
+`max_followups = 1`, and it applies to every chat-completions provider routed
+through Warp. You only need to set `enabled = false` if a particular gateway
+never exhibits the premature-stop shape.
 
 Modes:
 
 - `observe`: log `continue_guard` debug events for suspected premature stops,
-  but leave `end_turn = true`. Use this to confirm a provider is hitting the
-  pattern before turning on automatic continuation.
+  but leave `end_turn = true`. Use this when diagnosing whether a provider is
+  hitting the pattern.
 - `end_turn_false`: for suspected premature stops, emit
   `response.completed.response.end_turn = false` so Codex continues the turn.
-  Use this for providers that have been verified to stop mid-plan.
+  This is the default.
 
-The guard only applies to chat-completions streams that finish with
-`finish_reason = "stop"`, emit no tool call, have an active `update_plan` in the
-request history, and end with continuation phrasing. `max_followups` limits
-automatic continuations per `prompt_cache_key`; requests without a
+The guard applies to chat-completions responses, both SSE streams and
+non-stream JSON, that finish with
+`finish_reason = "stop"` (text-only JSON completions that omit
+`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and end with continuation phrasing
+(`let me` / `I'll` / `I need to` / `I should` when the next action is a known
+work verb or an unlisted verb with a concrete object such as `I'll clone the
+repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
+`then` / `next` only when the next action is a known work verb, so
+`Then run the tests` continues but `Next I need a decision from you` does not;
+or a dangling `:`/`...` whose last sentence still talks about unfinished
+speaker work, not a delivery frame such as `Here is a summary of remaining
+work:`). Status copulas such as `This is still pending:` and bare unfinished
+headers such as `Tasks remaining:` and clause remaining headers
+(`Remaining tasks:`, `The remaining items:`, `All remaining tasks:`,
+`Incomplete remaining tasks:`, `Complete remaining tasks:`,
+`Summary, remaining tasks:`) still continue. Attributive remaining
+inside an `and`-coordinated phrase (`Summary and remaining tasks:`) stays
+`end_turn = true` because remaining is a modifier there, not a header or
+predicate. Locative copulas (`Here are the remaining items:`,
+`Below are remaining tasks:`, `Above are the remaining steps:`,
+`Following are remaining tasks:`) stay delivery even when remaining appears later.
+Remaining subjects whose copular predicate is completion
+(`Remaining work is complete:`, `Remaining tasks are done:`) stay
+`end_turn = true`. Attributive complete (`Remaining complete tasks:`) and
+hedged completion (`Remaining tasks are mostly done:`) still continue, as do
+negated or incomplete remaining (`Remaining work is not done:`,
+`Remaining work is incomplete:`).
+Cleared remaining polarity
+(`No issues remaining:`) stays `end_turn = true` unless a later unfinished
+speaker cue is still present (`Nothing pending, but I still need to:`) or a
+later clause still has speaker pending (`Nothing pending, verification is
+pending:`). Bare
+`pending` is a status label on some other actor or process
+(`Approval pending:`, `Review pending:`, `CI pending:`) and stays
+`end_turn = true`. Complement particles such as `back` and `up` are
+stripped before the object is classified, so `I'll check back with you` and
+`I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
+complements, leftover adverbs or state words, offer clauses on unlisted verbs
+(`I'll take a look later if you want`, `I'll take another look later`),
+generic pronouns (`I'll do it next`), and work verbs whose only complement is
+postponement (`I'll continue later`, `I'll run soon`) also do not force a
+follow-up. Bare work verbs and immediacy still continue (`I'll continue`,
+`I'll verify now`). Closings
+such as `let me know`, `I'll leave the rest`, and delivery colons such as
+`Here is the final report:` stay `end_turn = true`, but investigative
+complements still continue (`Now let me know what failed in the test output`,
+`Let me see the test output`, `Let me see if the tests pass`,
+`I'll help fix the failing tests`). `if`/`whether`/`when` are person
+hand-offs only when the clause addresses the user (`Let me see if you need
+anything`, `Let me check if you need anything`); `Let me know if the tests
+pass` stays a hand-off because `know` plus a conditional is an inform-me
+request. Known work verbs may still
+take a pronoun object (`I'll inspect it next`) and may keep a trailing
+`if you want` after a real object (`I'll inspect the tree if you want`).
+Person complements still win over work verbs (`look at your PR`). Unlisted
+verbs still continue with a real object even when sequenced (`I'll update the
+lockfile next`). A fully completed
+`update_plan` suppresses the guard when it is still the latest intent (no
+later tool work), but sessions that never call `update_plan` are still
+covered, and a completed plan followed by real tool work does not hide a later
+mid-task pause.
+`max_followups` limits consecutive automatic continuations per
+`prompt_cache_key`. The counter resets when the last request `input` item is
+completed tool work (or a pending non-`update_plan` tool call), including
+requests that are not themselves suspected pauses, so a long
+session can keep auto-continuing through genuine mid-task pauses after real
+tool progress without letting a text-only loop run forever. A trailing
+`update_plan` does not count as progress. Tool outputs and chat `role=tool`
+messages also do not count unless they match a non-`update_plan` call id
+already present in the request. Requests without a
 `prompt_cache_key` are observed but not forced.
 
 Continue guard does not patch prompts, modify skills, or cross providers for
 auto-review. It only changes the final Responses `end_turn` flag for a narrow
-streaming completion shape that Codex itself knows how to follow up.
+completion shape that Codex itself knows how to follow up.
 
 CLI overrides are available for test sessions:
 
@@ -255,6 +326,8 @@ target/debug/codex-warp \
   --continue-guard-mode end_turn_false \
   --continue-guard-max-followups 1
 ```
+
+The defaults already cover normal use; the CLI flags are for temporary tuning.
 
 ## Tool Approval Policy
 

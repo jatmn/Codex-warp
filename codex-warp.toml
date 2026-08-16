@@ -16,12 +16,15 @@ listen = "127.0.0.1:8787"
 # db_path = "codex-warp.db"
 
 [continue_guard]
-# Detects chat-completions providers that finish with plain assistant text like
-# "Now let me check..." while Codex still has an active plan. Keep observe mode
-# unless you want Warp to send response.completed end_turn=false and let Codex
-# automatically sample a follow-up turn.
-enabled = false
-mode = "observe"
+# Enabled by default: chat-completions providers often finish with plain
+# assistant text like "Now let me check..." instead of the next tool call.
+# Warp detects that shape and sends response.completed end_turn=false so
+# Codex automatically samples a follow-up turn instead of waiting for the user.
+# A fully completed update_plan suppresses the guard unless later tool work
+# shows the plan is stale; sessions that never call update_plan are still
+# covered.
+enabled = true
+mode = "end_turn_false"
 max_followups = 1
 
 [config]

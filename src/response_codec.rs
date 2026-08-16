@@ -556,6 +556,55 @@ pub(crate) struct ToolCallAccum {
 }
 
 impl ChatAccum {
+    fn from_chat_completion(value: &Value) -> Self {
+        let mut accum = Self::default();
+        if let Some(usage) = value.get("usage") {
+            accum.usage = Some(chat_usage_to_responses_usage(Some(usage)));
+        }
+        let Some(choice) = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return accum;
+        };
+        let message = choice.get("message").unwrap_or(&Value::Null);
+        accum.text.push_str(&chat_message_text(message));
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let mut acc = ToolCallAccum::default();
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    acc.id = id.to_string();
+                }
+                if let Some(name) = call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    acc.name = name.to_string();
+                }
+                if let Some(arguments) = call
+                    .get("function")
+                    .and_then(|function| function.get("arguments"))
+                    .and_then(Value::as_str)
+                {
+                    acc.arguments.push_str(arguments);
+                }
+                accum.tool_calls.push(acc);
+            }
+        }
+        if let Some(finish_reason) = chat_finish_reason(choice) {
+            accum.finish_reason = Some(finish_reason.to_string());
+        } else if accum.tool_calls.iter().all(|call| call.name.is_empty()) {
+            // Completed JSON text with omitted, null, or empty finish_reason
+            // is the same premature-stop shape as `stop`. Explicit terminal
+            // reasons (`length`, `content_filter`, `tool_calls`) are taken
+            // from the field above and never rewritten.
+            accum.finish_reason = Some("stop".to_string());
+        }
+        accum
+    }
+
     pub(crate) fn apply_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
         if let Some(usage) = chunk.get("usage") {
@@ -568,7 +617,7 @@ impl ChatAccum {
             .unwrap_or_default();
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
-            if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if let Some(finish_reason) = chat_finish_reason(&choice) {
                 self.finish_reason = Some(finish_reason.to_string());
             }
             if let Some(incoming) = chat_reasoning_text(delta)
@@ -625,9 +674,8 @@ impl ChatAccum {
                 ));
             }
 
-            if let Some(content) = delta.get("content").and_then(Value::as_str)
-                && !content.is_empty()
-            {
+            let content = chat_content_text(delta.get("content"));
+            if !content.is_empty() {
                 if self.message_item_id.is_none() {
                     let item_id = generated_id("msg");
                     self.message_item_id = Some(item_id.clone());
@@ -644,7 +692,7 @@ impl ChatAccum {
                         }),
                     ));
                 }
-                self.text.push_str(content);
+                self.text.push_str(&content);
                 events.push(sse(
                     "response.output_text.delta",
                     json!({
@@ -809,7 +857,8 @@ impl ChatAccum {
 pub(crate) struct ContinueGuardState {
     config: ContinueGuardConfig,
     guard_key: Option<String>,
-    active_plan: ActivePlanSummary,
+    active_plan: Option<ActivePlanSummary>,
+    progress: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -827,12 +876,21 @@ struct ContinueGuardDecision {
 
 impl ContinueGuardState {
     pub(crate) fn from_request(config: ContinueGuardConfig, request: &Value) -> Self {
+        let guard_key = request
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let progress = request_shows_tool_progress(request);
+        // Reset on inbound tool progress, not only on suspected stops: a normal
+        // summary after real work must clear the consecutive-stop counter so a
+        // later pause in the same session can still auto-continue.
+        if progress {
+            reset_continue_guard_budget(guard_key.as_deref());
+        }
         Self {
-            guard_key: request
-                .get("prompt_cache_key")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            active_plan: latest_active_plan(request).unwrap_or_default(),
+            guard_key,
+            active_plan: latest_active_plan(request),
+            progress,
             config,
         }
     }
@@ -847,8 +905,17 @@ impl ContinueGuardState {
         if accum.tool_calls.iter().any(|call| !call.name.is_empty()) {
             return ContinueGuardDecision::none("tool_call_emitted");
         }
-        if !self.active_plan.has_open_items() {
-            return ContinueGuardDecision::none("no_active_plan");
+        // A completed `update_plan` is a wrap-up signal only when the model
+        // stopped there. If the last request item is later tool work, the plan
+        // snapshot is stale and must not hide a mid-task pause. Missing plans
+        // never suppress: many providers never call `update_plan`.
+        if self
+            .active_plan
+            .as_ref()
+            .is_some_and(|plan| !plan.has_open_items())
+            && !self.progress
+        {
+            return ContinueGuardDecision::none("plan_completed");
         }
         if !looks_like_mid_task_stop(&accum.text) {
             return ContinueGuardDecision::none("assistant_text_not_continuation");
@@ -923,6 +990,16 @@ fn continue_guard_budgets() -> &'static Mutex<BTreeMap<String, u8>> {
     BUDGETS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn reset_continue_guard_budget(key: Option<&str>) {
+    let Some(key) = key else {
+        return;
+    };
+    let Ok(mut budgets) = continue_guard_budgets().lock() else {
+        return;
+    };
+    budgets.remove(key);
+}
+
 /// Evict oldest entries from the budget map when it exceeds the size cap to
 /// prevent unbounded memory growth during long-running proxy sessions.
 fn evict_continue_guard_budgets_if_needed(budgets: &mut BTreeMap<String, u8>) {
@@ -991,6 +1068,100 @@ fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
     Some(summary)
 }
 
+/// True when the last request item is completed tool work (or a pending
+/// non-plan tool call). The continue-guard budget resets on this signal so
+/// `max_followups` caps only consecutive text-only stops rather than every
+/// mid-task stop in a long session. `update_plan` is planning, not progress:
+/// treating it as tool work would reset the budget on every plan-only turn
+/// and let text-only pause loops run past `max_followups`. Tool outputs and
+/// chat `role=tool` messages count only when they match a non-plan call id
+/// already in the request; missing or unmatched ids are not progress.
+fn request_shows_tool_progress(request: &Value) -> bool {
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        return input
+            .last()
+            .is_some_and(|item| item_shows_tool_progress(item, input));
+    }
+    // Defensive chat-completions shape (some callers may pass a converted body):
+    // tool results or pending assistant tool calls at the end of `messages`.
+    request
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| chat_messages_show_tool_progress(messages))
+}
+
+fn item_shows_tool_progress(item: &Value, items: &[Value]) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call_output" | "custom_tool_call_output") => {
+            output_matches_non_plan_call(item, items)
+        }
+        Some("function_call" | "tool_call" | "custom_tool_call") => !item_is_update_plan(item),
+        _ => false,
+    }
+}
+
+fn output_matches_non_plan_call(output: &Value, items: &[Value]) -> bool {
+    let Some(call_id) = output_call_id(output) else {
+        return false;
+    };
+    items.iter().any(|item| {
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "tool_call" | "custom_tool_call")
+        ) && !item_is_update_plan(item)
+            && call_item_id(item).is_some_and(|id| id == call_id)
+    })
+}
+
+fn output_call_id(item: &Value) -> Option<&str> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("tool_call_id").and_then(Value::as_str))
+}
+
+fn item_is_update_plan(item: &Value) -> bool {
+    item.get("name").and_then(Value::as_str) == Some("update_plan")
+        || item
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            == Some("update_plan")
+}
+
+fn chat_messages_show_tool_progress(messages: &[Value]) -> bool {
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    if last.get("role").and_then(Value::as_str) == Some("tool") {
+        return tool_message_matches_non_plan_call(last, messages);
+    }
+    last.get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| calls.iter().any(|call| !item_is_update_plan(call)))
+}
+
+fn tool_message_matches_non_plan_call(message: &Value, messages: &[Value]) -> bool {
+    let Some(call_id) = output_call_id(message) else {
+        return false;
+    };
+    messages.iter().rev().skip(1).any(|message| {
+        message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    !item_is_update_plan(call) && call_item_id(call).is_some_and(|id| id == call_id)
+                })
+            })
+    })
+}
+
+fn call_item_id(item: &Value) -> Option<&str> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
+}
+
 fn looks_like_mid_task_stop(text: &str) -> bool {
     let normalized = text
         .trim()
@@ -1001,28 +1172,678 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     if normalized.is_empty() {
         return false;
     }
-    [
+    // Ranked classifier:
+    // 1. First-person / let-me prefixes: after stripping adverbs and nested
+    //    prefixes, the next action is work when it is a known work verb, or
+    //    an unlisted verb with a concrete object ("I'll clone the repo",
+    //    "I'll add tests"). Particles in the complement ("back", "ahead",
+    //    "up") are stripped before the object is classified, so "check back
+    //    with you" is a hand-off and "follow up soon" is not a work object.
+    //    Discourse verbs such as "know"/"see"/"help" are not wrap-up vetoes:
+    //    "let me know" and "see if you" stay hand-offs, while "know what
+    //    failed in the test output" / "see the test output" / "see if the
+    //    tests pass" / "help fix" still continue. `if`/`whether`/`when` are
+    //    person hand-offs only when the clause addresses the user, not when
+    //    they introduce speaker work. Wrap-up verbs, person complements,
+    //    offer clauses, leftover adverbs/pronouns, light nouns plus
+    //    deferral, and work verbs whose only complement is postponement do
+    //    not count ("Now let me summarize", "I'll update you",
+    //    "I'll do it next", "I'll sit tight", "I'll take another look later",
+    //    "look at your PR", "I'll continue later", "I'll run soon").
+    //    Immediacy ("I'll verify now", "I'll continue") is still work.
+    // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
+    //    so "Thanks to the rebase. Now let me verify" still continues, and
+    //    "no actionable issues. Now let me audit file B" still continues.
+    // 3. Dangling `:`/`...` only when the last sentence still talks about
+    //    unfinished speaker work. Delivery frames ("Here is a summary of
+    //    remaining work:") are not pauses. Remaining/pending polarity is
+    //    per clause, not a sentence veto: "No issues remaining:" stays
+    //    done, "Nothing pending, but I still need to:" still continues,
+    //    and "Nothing pending, verification is pending:" still continues
+    //    because the copular pending clause is not itself cleared. Bare
+    //    `pending` is a status label ("Review pending:", "Approval
+    //    pending:"), not speaker work; speaker pending uses a copula
+    //    ("This is still pending:", "verification is pending:").
+    //    Remaining is predicative ("Tasks remaining:", "still remaining")
+    //    or a clause header after comma/`but`/`yet` ("Remaining tasks:",
+    //    "The remaining items:", "All remaining tasks:",
+    //    "Incomplete remaining tasks:", "Complete remaining tasks:",
+    //    "Summary, remaining tasks:"), not an
+    //    attributive noun modifier inside an `and`-coordinated phrase
+    //    ("Summary and remaining tasks:") and not a remaining subject
+    //    whose copular predicate is completion ("Remaining work is complete:",
+    //    "Remaining tasks are done:"), not an attributive complete
+    //    ("Remaining complete tasks:") or a hedged predicate
+    //    ("Remaining tasks are mostly done:"). Presentational copulas
+    //    ("Here are the remaining items:", "Below are remaining tasks:",
+    //    "Above are the remaining steps:", "Following are remaining tasks:")
+    //    stay delivery even when remaining appears later in the sentence.
+    if contains_work_intent(&normalized) {
+        return true;
+    }
+    if contains_wrap_up_closing_phrase(&normalized) {
+        return false;
+    }
+    dangling_punctuation_with_remaining_work(&normalized)
+}
+
+fn contains_work_intent(normalized: &str) -> bool {
+    const FIRST_PERSON_PREFIXES: [&str; 7] = [
         "let me ",
-        "let me also ",
-        "now let me ",
         "i'll ",
         "i will ",
-        "next i'll ",
-        "next i will ",
+        "i still need to ",
         "i need to ",
         "i'm going to ",
+        "i should ",
+    ];
+    // Sequencing words are common in hand-offs ("Next I need a decision from
+    // you"). They count only when the next action is a known work verb, after
+    // nested first-person fillers. "Then I'll clone the repo" still matches
+    // via the first-person prefix, not via `then`.
+    const SEQUENCING_PREFIXES: [&str; 2] = ["then ", "next "];
+    prefix_has_work_intent(normalized, &FIRST_PERSON_PREFIXES, false)
+        || prefix_has_work_intent(normalized, &SEQUENCING_PREFIXES, true)
+}
+
+fn prefix_has_work_intent(
+    normalized: &str,
+    prefixes: &[&str],
+    require_known_work_verb: bool,
+) -> bool {
+    prefixes.iter().any(|prefix| {
+        let mut start = 0;
+        while let Some(idx) = normalized[start..].find(prefix) {
+            let after_prefix = strip_intent_fillers(&normalized[start + idx + prefix.len()..]);
+            let matched = if require_known_work_verb {
+                remainder_starts_with_work_verb(after_prefix)
+            } else {
+                remainder_is_work_action(after_prefix)
+            };
+            if matched {
+                return true;
+            }
+            start += idx + prefix.len();
+        }
+        false
+    })
+}
+
+fn strip_intent_fillers(mut rest: &str) -> &str {
+    loop {
+        let Some(next) = [
+            "just ",
+            "also ",
+            "first ",
+            "now ",
+            "next ",
+            "still ",
+            "quickly ",
+            "please ",
+            "then ",
+            "try ",
+            "help ",
+            "to ",
+            "let me ",
+            "i'll ",
+            "i will ",
+            "i still need to ",
+            "i need to ",
+            "i'm going to ",
+            "i should ",
+        ]
+        .iter()
+        .find_map(|filler| rest.strip_prefix(filler)) else {
+            // Observed pauses use "re-audit" rather than a catalogued stem.
+            // Strip a hyphenated repetition prefix so the action check sees
+            // "audit", without treating "read" as "ad".
+            if let Some(stripped) = rest.strip_prefix("re-") {
+                rest = stripped;
+                continue;
+            }
+            return rest;
+        };
+        rest = next;
+    }
+}
+
+fn remainder_is_work_action(rest: &str) -> bool {
+    if rest.is_empty() || remainder_starts_with_wrap_up_action(rest) {
+        return false;
+    }
+    let complement = strip_complement_fillers(action_complement(rest));
+    // Person heads and person-addressing *if/whether/when* clauses are
+    // hand-offs even for work verbs ("look at your PR", "check if you
+    // need"). Trailing offer clauses after a real object still continue
+    // ("I'll inspect the tree if you want") because those do not open the
+    // complement. "Let me know if …" is an inform-me request, not speaker
+    // work, even without "you".
+    if complement_is_person_hand_off(complement) || remainder_is_inform_conditional(rest) {
+        return false;
+    }
+    // Known work verbs may stand alone ("Let me check.") and may take a
+    // pronoun object ("I'll inspect it next"). A work verb whose only
+    // complement is postponement is not the next action
+    // ("I'll continue later", "I'll run soon", "I'll continue next").
+    // Immediacy is still work ("I'll verify now", "I'll continue").
+    // Unlisted verbs need a concrete noun object
+    // ("I'll clone the repo", "I'll add tests"), not a leftover pronoun,
+    // time adverb, state adjective, offer clause, or light noun plus
+    // deferral ("I'll do it next", "I'll follow up soon", "I'll sit tight",
+    // "I'll take another look later"). Discourse verbs such as "know"/"see"
+    // stay hand-offs when the complement still addresses the user
+    // ("Let me know what you'd like next") and continue when it names
+    // speaker work ("Let me see if the tests pass").
+    if remainder_starts_with_work_verb(rest) {
+        return !complement_is_deferral_only(complement);
+    }
+    if complement_addresses_person(complement) {
+        return false;
+    }
+    complement_is_concrete_object(complement)
+}
+
+fn action_complement(rest: &str) -> &str {
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    rest[end..].trim_start()
+}
+
+fn strip_complement_fillers(mut complement: &str) -> &str {
+    loop {
+        let Some(next) = [
+            "back ", "ahead ", "along ", "again ", "around ", "up ", "out ", "off ", "down ",
+            "at ", "in ", "on ", "into ", "from ", "with ", "for ", "of ", "to ",
+        ]
+        .iter()
+        .find_map(|filler| complement.strip_prefix(filler)) else {
+            return complement;
+        };
+        complement = next;
+    }
+}
+
+fn complement_head(complement: &str) -> &str {
+    let end = complement
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(complement.len());
+    &complement[..end]
+}
+
+fn complement_is_person_hand_off(complement: &str) -> bool {
+    matches!(
+        complement_head(complement),
+        "you" | "your" | "yourself" | "about" | "here"
+    ) || complement_opens_with_person_clause(complement)
+}
+
+fn complement_opens_with_person_clause(complement: &str) -> bool {
+    matches!(complement_head(complement), "if" | "whether" | "when")
+        && complement_addresses_person(complement)
+}
+
+fn remainder_is_inform_conditional(rest: &str) -> bool {
+    token_starts_with_stem(rest, "know")
+        && matches!(
+            complement_head(strip_complement_fillers(action_complement(rest))),
+            "if" | "whether" | "when"
+        )
+}
+
+fn complement_is_deferral_only(complement: &str) -> bool {
+    // Postponement of this turn ("later", "soon", "next") is not work.
+    // Immediacy tokens ("now", "still") stay in `is_deferral_token` so
+    // unlisted verbs can peel them off an object ("do it now"), but a
+    // catalogued work verb plus only "now" is the next action.
+    // Trailing punctuation is not postponement: "I'll continue." is a
+    // bare work verb.
+    let stripped = complement
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
+        .trim();
+    !stripped.is_empty() && peel_trailing_postponement(stripped).is_empty()
+}
+
+fn complement_addresses_person(complement: &str) -> bool {
+    complement
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .any(|token| matches!(token, "you" | "your" | "yours" | "yourself"))
+}
+
+fn complement_is_concrete_object(complement: &str) -> bool {
+    let complement = normalize_unlisted_verb_complement(complement);
+    if complement.is_empty()
+        || complement_is_generic_pronoun(complement)
+        || complement_is_person_hand_off(complement)
+        || complement_is_non_object_head(complement)
+        || complement_has_offer_clause(complement)
+        || complement_is_light_noun_without_object(complement)
+    {
+        return false;
+    }
+    true
+}
+
+fn normalize_unlisted_verb_complement(mut complement: &str) -> &str {
+    loop {
+        let stripped = strip_complement_fillers(strip_leading_determiners(complement));
+        let peeled = peel_trailing_deferral(stripped);
+        if peeled == complement {
+            return peeled;
+        }
+        complement = peeled;
+    }
+}
+
+fn strip_leading_determiners(mut complement: &str) -> &str {
+    loop {
+        let Some(next) = [
+            "a ", "an ", "the ", "another ", "some ", "any ", "more ", "one ",
+        ]
+        .iter()
+        .find_map(|determiner| complement.strip_prefix(determiner)) else {
+            return complement;
+        };
+        complement = next;
+    }
+}
+
+fn peel_trailing_deferral(complement: &str) -> &str {
+    peel_trailing_matching_tokens(complement, is_deferral_token)
+}
+
+fn peel_trailing_postponement(complement: &str) -> &str {
+    peel_trailing_matching_tokens(complement, is_postponement_token)
+}
+
+fn peel_trailing_matching_tokens(complement: &str, is_token: fn(&str) -> bool) -> &str {
+    let mut complement = complement
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace());
+    loop {
+        let last = complement
+            .rsplit(|c: char| c.is_ascii_whitespace() || !c.is_ascii_alphabetic())
+            .find(|token| !token.is_empty())
+            .unwrap_or("");
+        if last.is_empty() || !is_token(last) {
+            return complement.trim_end();
+        }
+        let Some(end) = complement.rfind(last) else {
+            return complement.trim_end();
+        };
+        complement = complement[..end].trim_end();
+    }
+}
+
+fn is_postponement_token(token: &str) -> bool {
+    matches!(
+        token,
+        "soon"
+            | "later"
+            | "today"
+            | "tomorrow"
+            | "tonight"
+            | "afterwards"
+            | "instead"
+            | "anyway"
+            | "already"
+            | "currently"
+            | "next"
+    )
+}
+
+fn is_deferral_token(token: &str) -> bool {
+    is_postponement_token(token) || matches!(token, "now" | "still")
+}
+
+fn complement_is_light_noun_without_object(complement: &str) -> bool {
+    if !matches!(
+        complement_head(complement),
+        "look" | "glance" | "peek" | "moment" | "break"
+    ) {
+        return false;
+    }
+    let after_noun = action_complement(complement);
+    let object = normalize_unlisted_verb_complement(after_noun);
+    object.is_empty()
+        || complement_is_generic_pronoun(object)
+        || complement_is_person_hand_off(object)
+        || complement_is_non_object_head(object)
+}
+
+fn complement_is_generic_pronoun(complement: &str) -> bool {
+    matches!(
+        complement_head(complement),
+        "it" | "this" | "that" | "them" | "these" | "those" | "something" | "anything"
+    )
+}
+
+fn complement_is_non_object_head(complement: &str) -> bool {
+    matches!(
+        complement_head(complement),
+        "soon"
+            | "later"
+            | "now"
+            | "today"
+            | "tomorrow"
+            | "tonight"
+            | "afterwards"
+            | "instead"
+            | "anyway"
+            | "already"
+            | "currently"
+            | "tight"
+            | "quiet"
+            | "there"
+            | "once"
+            | "still"
+    )
+}
+
+fn complement_has_offer_clause(complement: &str) -> bool {
+    complement.starts_with("if you")
+        || complement.starts_with("when you")
+        || complement.starts_with("whenever you")
+        || complement.contains(" if you")
+        || complement.contains(" when you")
+        || complement.contains(" whenever you")
+}
+
+fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
+    [
+        "summarize",
+        "stop",
+        "leave",
+        "wrap",
+        "explain",
+        "tell",
+        "wait",
+        "pause",
+        "recap",
+        "conclude",
+        "stay",
+        "remain",
+        "think",
+        "note",
+        "rest",
+    ]
+    .iter()
+    .any(|stem| token_starts_with_stem(rest, stem))
+}
+
+fn remainder_starts_with_work_verb(rest: &str) -> bool {
+    const STEMS: [&str; 34] = [
+        "check", "inspect", "look", "read", "write", "run", "verify", "open", "search", "audit",
+        "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep", "list",
+        "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find", "scan",
+        "rebase", "commit", "merge", "build", "checkout",
+    ];
+    STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
+}
+
+fn token_starts_with_stem(rest: &str, stem: &str) -> bool {
+    let Some(after) = rest.strip_prefix(stem) else {
+        return false;
+    };
+    let suffix_end = after
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(after.len());
+    matches!(&after[..suffix_end], "" | "s" | "es" | "ed" | "ing")
+}
+
+fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
+    if !(normalized.ends_with(':') || normalized.ends_with("...") || normalized.ends_with('…')) {
+        return false;
+    }
+    let last_sentence = normalized
+        .rsplit(|c| matches!(c, '.' | '!' | '?' | ';'))
+        .next()
+        .unwrap_or(normalized)
+        .trim();
+    if last_sentence_is_delivery(last_sentence) {
+        return false;
+    }
+    last_sentence_has_unfinished_speaker_work(last_sentence)
+}
+
+fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
+    // Comma/`but`/`yet` introduce independent clauses, so a later remaining
+    // header still counts ("Summary, remaining tasks:", "Nothing pending,
+    // remaining tasks:"). `and` only coordinates noun phrases, so
+    // "remaining tasks" after `and` stays attributive.
+    independent_clauses(last_sentence).any(|clause| {
+        remaining_opens_unfinished_header(clause)
+            || coordinated_conjuncts(clause).any(clause_has_unfinished_speaker_work)
+    })
+}
+
+fn remaining_opens_unfinished_header(clause: &str) -> bool {
+    if clause_clears_remaining_work(clause) {
+        return false;
+    }
+    // Remaining headers allow remaining-NP premodifiers: determiners/
+    // quantifiers plus a status adjective ("the remaining items",
+    // "all remaining tasks", "incomplete remaining tasks",
+    // "complete remaining tasks"). Do not skip other nouns: "summary
+    // remaining" is not a header, and `and`-coordination is handled by
+    // scoring remaining only at the independent-clause head
+    // ("Summary and remaining tasks:"). Copular completion still wins
+    // ("Complete remaining tasks are done:").
+    remaining_header_head(clause) == "remaining"
+}
+
+fn remaining_header_head(clause: &str) -> &str {
+    clause_alpha_tokens(clause)
+        .find(|token| !is_remaining_header_premodifier(token))
+        .unwrap_or("")
+}
+
+fn is_remaining_header_premodifier(token: &str) -> bool {
+    is_remaining_np_determiner(token) || is_remaining_np_status_adjective(token)
+}
+
+fn is_remaining_np_determiner(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "the"
+            | "another"
+            | "some"
+            | "any"
+            | "more"
+            | "one"
+            | "all"
+            | "both"
+            | "each"
+            | "every"
+            | "few"
+            | "several"
+            | "many"
+            | "most"
+    )
+}
+
+fn is_remaining_np_status_adjective(token: &str) -> bool {
+    matches!(
+        token,
+        "incomplete"
+            | "unfinished"
+            | "outstanding"
+            | "leftover"
+            | "open"
+            | "pending"
+            | "complete"
+            | "completed"
+    )
+}
+
+fn clause_alpha_tokens(clause: &str) -> impl Iterator<Item = &str> {
+    clause
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|token| !token.is_empty())
+}
+
+fn independent_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
+    last_sentence
+        .split(',')
+        .flat_map(|part| part.split(" but "))
+        .flat_map(|part| part.split(" yet "))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn coordinated_conjuncts(clause: &str) -> impl Iterator<Item = &str> {
+    clause
+        .split(" and ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn clause_has_unfinished_speaker_work(clause: &str) -> bool {
+    const SPEAKER_WORK_CUES: [&str; 8] = [
+        "still need",
+        "still have",
+        "next step",
+        "after that",
+        "not yet",
+        "to do",
+        "follow up",
+        "follow-up",
+    ];
+    if SPEAKER_WORK_CUES.iter().any(|cue| clause.contains(cue)) {
+        return true;
+    }
+    if clause_clears_remaining_work(clause) {
+        return false;
+    }
+    // Copular pending is speaker status ("this is still pending",
+    // "verification is pending"). Bare "pending" is a label on some other
+    // actor or process ("review pending", "approval pending", "ci pending").
+    // Remaining is unfinished only as a predicate ("tasks remaining",
+    // "work is remaining"), not as a modifier ("remaining tasks") that
+    // `and`-coordination would otherwise promote into a fake header.
+    clause.contains("still pending")
+        || clause.contains("is pending")
+        || clause.contains("are pending")
+        || remaining_is_predicative(clause)
+}
+
+fn remaining_is_predicative(clause: &str) -> bool {
+    clause.contains("still remaining")
+        || clause.contains("is remaining")
+        || clause.contains("are remaining")
+        || clause_last_alpha_token(clause) == "remaining"
+}
+
+fn clause_last_alpha_token(clause: &str) -> &str {
+    clause
+        .rsplit(|c: char| !c.is_alphabetic())
+        .find(|token| !token.is_empty())
+        .unwrap_or("")
+}
+
+fn clause_clears_remaining_work(clause: &str) -> bool {
+    // Remaining/pending cues mean unfinished speaker work unless this
+    // clause negates those cues ("No issues remaining:", "nothing pending:")
+    // or the remaining subject has a copular completion predicate
+    // ("Remaining work is complete:", "work remaining is done:").
+    // Attributive complete ("Remaining complete tasks:") and hedged
+    // completion ("Remaining tasks are mostly done:") stay unfinished.
+    // Do not treat generic "not" as clearance: "not yet" and
+    // "Remaining work is not done:" stay unfinished. Token matching keeps
+    // "incomplete" from counting as "complete".
+    ["no ", "none ", "nothing ", "without ", "zero "]
+        .iter()
+        .any(|negation| clause.contains(negation))
+        || clause_resolves_remaining_work(clause)
+}
+
+fn clause_resolves_remaining_work(clause: &str) -> bool {
+    let tokens = clause_alpha_tokens(clause).collect::<Vec<_>>();
+    let Some(remaining_at) = tokens.iter().position(|token| *token == "remaining") else {
+        return false;
+    };
+    let mut negated = false;
+    let mut seen_copula = false;
+    let mut weakened = false;
+    for token in &tokens[remaining_at + 1..] {
+        if *token == "will" {
+            return false;
+        }
+        if matches!(*token, "not" | "never" | "incomplete") {
+            negated = true;
+            continue;
+        }
+        if matches!(*token, "is" | "are" | "was" | "were" | "been" | "be") {
+            seen_copula = true;
+            continue;
+        }
+        if !seen_copula {
+            continue;
+        }
+        if matches!(
+            *token,
+            "mostly"
+                | "almost"
+                | "nearly"
+                | "partially"
+                | "partly"
+                | "somewhat"
+                | "mainly"
+                | "roughly"
+        ) {
+            weakened = true;
+            continue;
+        }
+        if matches!(
+            *token,
+            "still" | "now" | "already" | "fully" | "currently" | "all" | "quite"
+        ) {
+            continue;
+        }
+        if matches!(*token, "complete" | "completed" | "done" | "finished") {
+            return !negated && !weakened;
+        }
+        return false;
+    }
+    false
+}
+
+fn last_sentence_is_delivery(last_sentence: &str) -> bool {
+    starts_with_presentational_copula(last_sentence)
+        || last_sentence.contains("summary of ")
+        || last_sentence.contains("final report")
+}
+
+fn starts_with_presentational_copula(sentence: &str) -> bool {
+    ["here", "below", "above", "following"]
+        .iter()
+        .any(|locative| {
+            let Some(rest) = sentence.strip_prefix(locative) else {
+                return false;
+            };
+            rest.starts_with("'s ") || rest.starts_with(" is ") || rest.starts_with(" are ")
+        })
+}
+
+/// Wrap-up phrasing that should not force a follow-up unless a prefix is
+/// followed by a work action. Generic "let me"/"I'll"/"I need to"/"I should"
+/// are not enough on their own, even with "now"/"first"/"still". Subtask
+/// completion words such as "done" or "complete" are deliberately excluded:
+/// mid-task text routinely says "the rebase is complete" before continuing
+/// ("Now let me push..."). "let me know" is classified from the action after
+/// the prefix, not as a substring closer, so investigative phrasing can still
+/// continue.
+fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
+    [
+        "thank you",
+        "thanks",
+        "feel free",
+        "that's all",
+        "that is all",
+        "no actionable issues",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
-        && ![
-            "done",
-            "complete",
-            "completed",
-            "finished",
-            "no actionable issues",
-        ]
-        .iter()
-        .any(|marker| normalized.contains(marker))
 }
 
 pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {
@@ -1031,6 +1852,7 @@ pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<
         custom_tool_names,
         &NamespaceHelpers::default(),
         &ToolPolicyConfig::default(),
+        None,
     )
 }
 
@@ -1039,6 +1861,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
     custom_tool_names: &BTreeSet<String>,
     namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
+    continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
 ) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
@@ -1055,16 +1878,14 @@ pub(crate) fn chat_json_to_responses_with_policy(
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
-        let content = message.get("content").and_then(Value::as_str);
+        let content = chat_message_text(message);
         let mut message_parts = Vec::new();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
         {
             message_parts.push(json!({"type": "reasoning_summary_text", "text": reasoning}));
         }
-        if let Some(content) = message.get("content").and_then(Value::as_str)
-            && !content.is_empty()
-        {
+        if !content.is_empty() {
             message_parts.push(json!({"type": "output_text", "text": content}));
         }
         if !message_parts.is_empty() {
@@ -1073,7 +1894,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                 "role": "assistant",
                 "content": message_parts
             }));
-        } else if content.is_some() {
+        } else if message.get("content").is_some() {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -1105,13 +1926,93 @@ pub(crate) fn chat_json_to_responses_with_policy(
         }
     }
 
+    let end_turn = ChatAccum::from_chat_completion(&value).end_turn(continue_guard);
     json!({
         "id": response_id,
         "object": "response",
         "status": "completed",
+        "end_turn": end_turn,
         "output": output,
         "usage": chat_usage_to_responses_usage(value.get("usage"))
     })
+}
+
+fn chat_finish_reason(choice: &Value) -> Option<&str> {
+    choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+}
+
+fn chat_message_text(message: &Value) -> String {
+    chat_content_text(message.get("content"))
+}
+
+fn chat_content_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(items)) => {
+            let parts = items
+                .iter()
+                .filter_map(chat_content_part_text)
+                .collect::<Vec<_>>();
+            join_chat_content_parts(&parts)
+        }
+        _ => String::new(),
+    }
+}
+
+fn join_chat_content_parts(parts: &[&str]) -> String {
+    let mut text = String::new();
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        if content_parts_need_separator(&text, part) {
+            text.push(' ');
+        }
+        text.push_str(part);
+    }
+    text
+}
+
+fn content_parts_need_separator(left: &str, right: &str) -> bool {
+    if left.ends_with(char::is_whitespace) || right.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let Some(prev) = left.chars().next_back() else {
+        return false;
+    };
+    let Some(next) = right.chars().next() else {
+        return false;
+    };
+    // Glue hyphenated/contracted fragments ("re-" + "audit"). Insert a space
+    // before a new word after letters *or* sentence punctuation ("Done." +
+    // "Now let me"), so array parts stay readable and continue-guard prefixes
+    // still tokenize.
+    if matches!(prev, '-' | '\'') || matches!(next, '-' | '\'') {
+        return false;
+    }
+    next.is_alphanumeric()
+}
+
+fn chat_content_part_text(item: &Value) -> Option<&str> {
+    if let Some(text) = item.as_str() {
+        return Some(text);
+    }
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("reasoning" | "reasoning_text" | "reasoning_summary_text")
+    ) {
+        return None;
+    }
+    item.get("text")
+        .or_else(|| item.get("input_text"))
+        .or_else(|| item.get("output_text"))
+        .or_else(|| item.get("content"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
 }
 
 /// Returns only the new reasoning text to append for a streaming delta.
