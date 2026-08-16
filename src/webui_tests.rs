@@ -544,6 +544,23 @@ fn reject_truncated_env_replacement_blocks_reclassified_prefix() {
 }
 
 #[test]
+fn named_template_create_rejects_truncated_env_replacement() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    assert_eq!(
+        template.provider.api_key_env.as_deref(),
+        Some("OPENCODE_GO_API_KEY")
+    );
+    let mut fields =
+        persist_credentials(OptionalPatch::Set("OPENCODE".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key, OptionalPatch::Set(_)));
+    let err = reject_truncated_env_replacement(template.provider.api_key_env.as_deref(), &fields)
+        .unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("shortened environment variable name"));
+}
+
+#[test]
 fn javascript_credential_helpers_stay_in_sync_with_rust() {
     let app = include_str!("webui_static/app-main.js");
     assert!(
@@ -598,8 +615,8 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "an unchanged loaded env name must keep instead of re-applying credentials"
     );
     assert!(
-        app.contains("function setCredentialInput(raw, preview = \"\", saved = false)"),
-        "template prefills must not be treated as already-saved credentials"
+        app.contains("looksLikeEnvVarName(template.api_key_env || \"\")"),
+        "named-template env prefills must count as loaded names for truncation checks"
     );
     assert!(
         app.contains("p.managed ? (p.api_key_preview || \"\") : \"\",\n        true,"),
@@ -618,8 +635,8 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "pasting the masked preview must not persist as the secret"
     );
     assert!(
-        app.contains("async function ensureProviderTemplates("),
-        "Add provider must wait for templates before opening the create form"
+        app.contains("async function openProviderForm(p = null) {\n    try {\n      await ensureProviderTemplates();"),
+        "create and edit forms must wait for templates before matching named vs custom"
     );
     assert!(
         app.contains("if (credentialFieldTomlLocked) {\n      return { kind: \"keep\" };"),

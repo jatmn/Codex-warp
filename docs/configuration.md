@@ -482,7 +482,9 @@ secret; replacing it requires Clear saved credentials, then a new value.
 Leaving a loaded environment variable name unchanged omits the credential fields.
 Editing a stored environment variable name into a truncation of that name
 (for example `OPENAI_API_KEY` → `OPENAI`) is rejected by the editor and by
-`PUT /api/providers/{id}`. Unrelated values such as `AKIA…` are treated as a new
+`PUT /api/providers/{id}`. Creating a provider from a named example template
+rejects the same truncation against the template's bundled env name on
+`POST /api/providers`. Unrelated values such as `AKIA…` are treated as a new
 inline key. Pasting a masked preview (any value containing `•`) is rejected by
 the editor and by `PUT`/`POST` `/api/providers`. Managed overlay databases are
 opened with owner-only permissions (`0600` on Unix) because they may contain

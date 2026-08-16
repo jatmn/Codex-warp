@@ -992,7 +992,11 @@
     idInput.value = template.id || "";
     providerForm.querySelector("[name=name]").value = template.name || "";
     providerForm.querySelector("[name=base_url]").value = template.base_url || "";
-    setCredentialInput(template.api_key_env || "");
+    setCredentialInput(
+      template.api_key_env || "",
+      "",
+      looksLikeEnvVarName(template.api_key_env || ""),
+    );
     providerForm.querySelector("[name=auth_header]").value =
       template.auth_header || "authorization";
     providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme || "Bearer";
@@ -1026,13 +1030,11 @@
   }
 
   async function openProviderForm(p = null) {
-    if (!p) {
-      try {
-        await ensureProviderTemplates();
-      } catch (e) {
-        status(`Error: ${e.message}`);
-        return;
-      }
+    try {
+      await ensureProviderTemplates();
+    } catch (e) {
+      status(`Error: ${e.message}`);
+      return;
     }
     selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");

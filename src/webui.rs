@@ -1008,19 +1008,20 @@ fn build_provider_view(
     provider: &ProviderConfig,
     routed_models: &[String],
 ) -> ProviderView {
+    let managed = provider_is_managed(state, id);
     ProviderView {
         id: id.to_string(),
         display_name: provider_display_name(id, provider),
         name: provider.name.clone(),
         base_url: provider.base_url.clone(),
         enabled: provider.enabled,
-        managed: provider_is_managed(state, id),
+        managed,
         has_api_key: provider.api_key().is_some(),
         has_inline_api_key: provider
             .api_key
             .as_deref()
             .is_some_and(|value| !value.is_empty()),
-        api_key_preview: if provider_is_managed(state, id) {
+        api_key_preview: if managed {
             provider
                 .api_key
                 .as_deref()
@@ -1030,7 +1031,7 @@ fn build_provider_view(
             None
         },
         api_key_env: provider.api_key_env.clone(),
-        headers: if provider_is_managed(state, id) {
+        headers: if managed {
             provider.headers.clone()
         } else {
             BTreeMap::new()
@@ -1614,6 +1615,7 @@ async fn create_provider(
             }
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
+            reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_credentials(&mut provider, &fields);
             (id, provider)
         }
