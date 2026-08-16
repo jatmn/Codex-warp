@@ -1085,9 +1085,9 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    "up") are stripped before the object is classified, so "check back
     //    with you" is a hand-off and "follow up soon" is not a work object.
     //    Wrap-up verbs, person complements, offer clauses on unlisted verbs,
-    //    and leftover adverbs/pronouns do not count ("Now let me summarize",
-    //    "I'll update you", "I'll do it next", "I'll sit tight",
-    //    "look at your PR").
+    //    leftover adverbs/pronouns, and light nouns plus deferral do not count
+    //    ("Now let me summarize", "I'll update you", "I'll do it next",
+    //    "I'll sit tight", "I'll take another look later", "look at your PR").
     // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues.
     // 4. Dangling `:`/`...` only when the last sentence still talks about
@@ -1178,9 +1178,9 @@ fn remainder_is_work_action(rest: &str) -> bool {
     // Known work verbs may stand alone ("Let me check.") and may take a
     // pronoun object ("I'll inspect it next"). Unlisted verbs need a
     // concrete noun object ("I'll clone the repo", "I'll add tests"), not
-    // a leftover pronoun, time adverb, state adjective, or offer clause
-    // ("I'll do it next", "I'll follow up soon", "I'll sit tight",
-    // "I'll take a look later if you want").
+    // a leftover pronoun, time adverb, state adjective, offer clause, or
+    // light noun plus deferral ("I'll do it next", "I'll follow up soon",
+    // "I'll sit tight", "I'll take another look later").
     if remainder_starts_with_work_verb(rest) {
         return true;
     }
@@ -1223,14 +1223,93 @@ fn complement_is_person_hand_off(complement: &str) -> bool {
 }
 
 fn complement_is_concrete_object(complement: &str) -> bool {
+    let complement = normalize_unlisted_verb_complement(complement);
     if complement.is_empty()
         || complement_is_generic_pronoun(complement)
+        || complement_is_person_hand_off(complement)
         || complement_is_non_object_head(complement)
         || complement_has_offer_clause(complement)
+        || complement_is_light_noun_without_object(complement)
     {
         return false;
     }
     true
+}
+
+fn normalize_unlisted_verb_complement(mut complement: &str) -> &str {
+    loop {
+        let stripped = strip_complement_fillers(strip_leading_determiners(complement));
+        let peeled = peel_trailing_deferral(stripped);
+        if peeled == complement {
+            return peeled;
+        }
+        complement = peeled;
+    }
+}
+
+fn strip_leading_determiners(mut complement: &str) -> &str {
+    loop {
+        let Some(next) = [
+            "a ", "an ", "the ", "another ", "some ", "any ", "more ", "one ",
+        ]
+        .iter()
+        .find_map(|determiner| complement.strip_prefix(determiner)) else {
+            return complement;
+        };
+        complement = next;
+    }
+}
+
+fn peel_trailing_deferral(complement: &str) -> &str {
+    let mut complement = complement
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace());
+    loop {
+        let last = complement
+            .rsplit(|c: char| c.is_ascii_whitespace() || !c.is_ascii_alphabetic())
+            .find(|token| !token.is_empty())
+            .unwrap_or("");
+        if last.is_empty() || !is_deferral_token(last) {
+            return complement.trim_end();
+        }
+        let Some(end) = complement.rfind(last) else {
+            return complement.trim_end();
+        };
+        complement = complement[..end].trim_end();
+    }
+}
+
+fn is_deferral_token(token: &str) -> bool {
+    matches!(
+        token,
+        "soon"
+            | "later"
+            | "now"
+            | "today"
+            | "tomorrow"
+            | "tonight"
+            | "afterwards"
+            | "instead"
+            | "anyway"
+            | "already"
+            | "currently"
+            | "next"
+            | "still"
+    )
+}
+
+fn complement_is_light_noun_without_object(complement: &str) -> bool {
+    if !matches!(
+        complement_head(complement),
+        "look" | "glance" | "peek" | "moment" | "break"
+    ) {
+        return false;
+    }
+    let after_noun = action_complement(complement);
+    let object = normalize_unlisted_verb_complement(after_noun);
+    object.is_empty()
+        || complement_is_generic_pronoun(object)
+        || complement_is_person_hand_off(object)
+        || complement_is_non_object_head(object)
 }
 
 fn complement_is_generic_pronoun(complement: &str) -> bool {
