@@ -1641,15 +1641,15 @@
       ctx.stroke();
     };
     ring(yTokens(point.total_tokens || 0), colors.tokens);
-    if ((point.cached_tokens || 0) > 0) {
-      // The cached ring is drawn last so its stroke stays visible inside the
-      // total ring when the two coincide on fully-cached buckets. Skip
-      // zero-cached buckets so no baseline ring is implied where no cached
-      // activity exists.
-      ring(yTokens(point.cached_tokens || 0), colors.cached, 3);
-    }
     ring(yPrompts(point.prompts || 0), colors.prompts);
     ring(ySessions(point.sessions || 0), colors.sessions);
+    if ((point.cached_tokens || 0) > 0) {
+      // The cached ring is drawn last so no later surface-filled ring can
+      // overpaint it: at coincidence the r=3 cached ring stays visible inside
+      // the r=5 total ring. Skip zero-cached buckets so no baseline ring is
+      // implied where no cached activity exists.
+      ring(yTokens(point.cached_tokens || 0), colors.cached, 3);
+    }
   }
 
   function drawBarChart(canvas, rows, range) {
