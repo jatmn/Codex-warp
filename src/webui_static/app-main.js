@@ -512,19 +512,35 @@
       + chars.slice(n - suffix).join("");
   }
 
-  function credentialInputValue() {
-    const draft = String(apiKeyInput.dataset.draft || "").trim();
-    if (draft) return draft;
-    if (apiKeyInput.dataset.preview) return "";
-    return String(apiKeyInput.value || "").trim();
+  const credentialState = {
+    draft: "",
+    preview: "",
+    hadEnv: false,
+    reveal: false,
+  };
+
+  function credentialPatch() {
+    const draft = String(credentialState.draft || "").trim();
+    if (draft.includes("•")) {
+      return { kind: "keep" };
+    }
+    if (draft) {
+      return { kind: "set", value: draft };
+    }
+    if (credentialState.hadEnv) {
+      return { kind: "clear" };
+    }
+    if (credentialState.preview) {
+      return { kind: "keep" };
+    }
+    return { kind: "set", value: null };
   }
 
   function renderCredentialInput() {
-    const draft = apiKeyInput.dataset.draft || "";
-    const preview = apiKeyInput.dataset.preview || "";
-    const reveal = apiKeyInput.dataset.reveal === "1";
+    const draft = credentialState.draft || "";
+    const preview = credentialState.preview || "";
     if (draft) {
-      apiKeyInput.value = (!reveal && !looksLikeEnvVarName(draft))
+      apiKeyInput.value = (!credentialState.reveal && !looksLikeEnvVarName(draft))
         ? maskApiKey(draft)
         : draft;
       return;
@@ -533,32 +549,33 @@
   }
 
   function setCredentialInput(raw, preview = "") {
-    apiKeyInput.dataset.draft = raw || "";
-    apiKeyInput.dataset.preview = preview || "";
-    apiKeyInput.dataset.reveal = "0";
+    credentialState.draft = raw || "";
+    credentialState.preview = preview || "";
+    credentialState.hadEnv = looksLikeEnvVarName(credentialState.draft);
+    credentialState.reveal = false;
     renderCredentialInput();
   }
 
   apiKeyInput.addEventListener("focus", () => {
     if (apiKeyInput.readOnly) return;
-    const draft = apiKeyInput.dataset.draft || "";
+    const draft = credentialState.draft || "";
     if (draft) {
-      apiKeyInput.dataset.reveal = "1";
+      credentialState.reveal = true;
       apiKeyInput.value = draft;
       return;
     }
-    if (apiKeyInput.dataset.preview) {
+    if (credentialState.preview) {
       apiKeyInput.value = "";
     }
   });
   apiKeyInput.addEventListener("input", () => {
-    apiKeyInput.dataset.draft = apiKeyInput.value;
-    apiKeyInput.dataset.reveal = "1";
+    credentialState.draft = apiKeyInput.value;
+    credentialState.reveal = true;
   });
   apiKeyInput.addEventListener("blur", () => {
-    apiKeyInput.dataset.reveal = "0";
-    if (apiKeyInput.dataset.draft) {
-      apiKeyInput.dataset.draft = String(apiKeyInput.dataset.draft).trim();
+    credentialState.reveal = false;
+    if (credentialState.draft) {
+      credentialState.draft = String(credentialState.draft).trim();
     }
     renderCredentialInput();
   });
@@ -576,14 +593,15 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
-    const apiKeyInputValue = credentialInputValue();
-    const keepExistingCredential =
-      mode === "edit"
-      && !apiKeyInputValue;
+    const credential = credentialPatch();
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: keepExistingCredential ? undefined : (apiKeyInputValue || null),
+      ...(credential.kind === "keep"
+        ? {}
+        : credential.kind === "clear"
+          ? { api_key_env: null, api_key: null }
+          : { api_key_env: credential.value }),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -608,7 +626,8 @@
           : {
               template: template.key,
               id: template.id,
-              api_key_env: body.api_key_env,
+              ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
+              ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
               enabled: body.enabled,
               ...(headers ? { headers } : {}),
             };
@@ -627,7 +646,8 @@
           body: JSON.stringify({
             name: body.name,
             base_url: body.base_url,
-            api_key_env: body.api_key_env,
+            ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
+            ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
             auth_header: body.auth_header,
             auth_scheme: body.auth_scheme,
             responses_path: body.responses_path,

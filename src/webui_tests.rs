@@ -426,9 +426,9 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     let dual_view = build_provider_view(&state, "dual", &dual, &[]);
     assert!(dual_view.has_inline_api_key);
     assert!(dual_view.has_api_key);
-    assert_eq!(
-        dual_view.api_key_preview.as_deref(),
-        Some(mask_api_key("inline-secret").as_str())
+    assert!(
+        dual_view.api_key_preview.is_none(),
+        "TOML-backed views must not expose inline-key preview material"
     );
     let dual_json = serde_json::to_string(&dual_view).expect("serialize provider view");
     assert!(
@@ -1330,6 +1330,10 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("nameInput.readOnly = isNamed"));
     assert!(app.contains("function maskApiKey("));
     assert!(app.contains("function looksLikeEnvVarName("));
+    assert!(app.contains("function credentialPatch("));
+    assert!(app.contains("kind === \"clear\""));
+    assert!(app.contains("{ api_key_env: null, api_key: null }"));
+    assert!(!app.contains("dataset.draft"));
     assert!(app.contains("providerTemplates.find((template) => template.key === \"custom\")"));
     assert!(!app.contains("template.key === \"openrouter\""));
     assert!(app.contains("\"Add provider\""));

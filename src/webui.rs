@@ -1012,11 +1012,15 @@ fn build_provider_view(
             .api_key
             .as_deref()
             .is_some_and(|value| !value.is_empty()),
-        api_key_preview: provider
-            .api_key
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .map(mask_api_key),
+        api_key_preview: if provider_is_managed(state, id) {
+            provider
+                .api_key
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(mask_api_key)
+        } else {
+            None
+        },
         api_key_env: provider.api_key_env.clone(),
         headers: if provider_is_managed(state, id) {
             provider.headers.clone()

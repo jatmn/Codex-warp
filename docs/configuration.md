@@ -460,15 +460,18 @@ are not valid HTTP headers are rejected so they cannot be stored and then
 silently dropped on the upstream request. Managed (Web UI-created) providers
 persist `api_key`, `api_key_env`, and request `headers` in the SQLite overlay
 because they have no TOML snapshot. `GET /api/providers` never returns a raw
-inline key; it reports `has_inline_api_key`, an `api_key_preview` that shows only
-a short prefix and suffix, and `has_api_key` when a usable key can be resolved
-(inline or from `api_key_env`). Overlay headers are returned so the editor can
-round-trip them. TOML-backed views omit header values because TOML remains the
-source of truth. TOML-backed overlays still strip `api_key` and headers, and
-ignore Web UI `headers` and credential patches. For a TOML-backed provider,
-`api_key` and `api_key_env` remain TOML-owned: the Web UI cannot set or clear
-them, so a later TOML credential rotation cannot be overwritten by an old SQLite
-snapshot.
+inline key. Managed views report `has_inline_api_key`, an `api_key_preview` that
+shows only a short prefix and suffix, and `has_api_key` when a usable key can be
+resolved (inline or from `api_key_env`). TOML-backed views omit `api_key_preview`
+and header values because TOML remains the source of truth. Overlay headers are
+returned for managed providers so the editor can round-trip them. TOML-backed
+overlays still strip `api_key` and headers, and ignore Web UI `headers` and
+credential patches. For a TOML-backed provider, `api_key` and `api_key_env`
+remain TOML-owned: the Web UI cannot set or clear them, so a later TOML
+credential rotation cannot be overwritten by an old SQLite snapshot. In the Web
+UI editor, clearing an environment variable name sends JSON `null` for both
+credential fields; leaving a masked saved key unchanged omits the fields and
+keeps the stored secret.
 
 CLI overrides:
 
