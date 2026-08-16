@@ -514,6 +514,20 @@ check("pieSliceIndexAt hits the correct slice and rejects misses", () => {
   assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy), -1);
 });
 
+check("pieSliceIndexAt tolerates floating-point circumference hits", () => {
+  const { slices } = charts.pieSlices([1, 1, 1, 1]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // A point computed from radius * cos/sin can land one ULP outside outerR;
+  // it must still hit the intended slice instead of becoming a dead zone.
+  const angle = -Math.PI / 2 - 0.01;
+  assert.equal(
+    charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + Math.cos(angle) * r, cy + Math.sin(angle) * r),
+    3,
+  );
+});
+
 check("pieSliceIndexAt skips zero-width slices", () => {
   const { slices } = charts.pieSlices([5, 0, 5]);
   const cx = 100;

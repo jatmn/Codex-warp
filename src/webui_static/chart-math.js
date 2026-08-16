@@ -555,7 +555,12 @@
     const dx = x - cx;
     const dy = y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (!(dist > 0) || dist > outerR || dist < innerR) return -1;
+    // Floating-point coordinates that land exactly on the circumference (e.g.
+    // radius * cos/sin in tests, or a pointer at the painted edge) can compute
+    // one ULP past outerR and become an invisible dead zone. Tolerate a tiny
+    // epsilon instead of rejecting those hits.
+    const eps = 1e-6 * Math.max(1, Number(outerR) || 1);
+    if (!(dist > 0) || dist > outerR + eps || dist < innerR - eps) return -1;
     let angle = Math.atan2(dy, dx);
     if (angle < -Math.PI / 2) angle += Math.PI * 2;
     for (let i = 0; i < slices.length; i += 1) {

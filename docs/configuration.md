@@ -411,8 +411,9 @@ The UI can:
   token usage over time with a bar chart (global, per provider, and per model)
 - chart model usage over time with per-model lines for both sessions and
   prompts (global, per provider, and per model)
-- inspect provider usage, model usage per provider, and overall model usage
-  with pie charts
+- inspect token usage breakdowns with pie charts: provider usage, model usage
+  per provider (shown while a provider filter is selected), and overall model
+  usage (global even while a provider filter is active)
 - view process logs and the sanitized debug JSONL log, and change debug logging
   settings without restarting Warp
 

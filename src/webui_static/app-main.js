@@ -1023,7 +1023,7 @@
     drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider), {
       emptyText: activeProvider
         ? "Select All providers to see provider usage."
-        : "No provider usage in this range.",
+        : "No token usage in this range.",
     });
     // Overall model usage ignores the provider filter (by_model_overall), so
     // the overall pie stays global while a provider filter narrows the
@@ -1032,7 +1032,7 @@
       // The backend now fills by_model_overall even under a model filter (the
       // selected model's own window total), so an empty state means there is
       // genuinely no usage for the current filter combination.
-      emptyText: "No model usage in this range.",
+      emptyText: "No token usage in this range.",
     });
     // Per-provider model breakdown exists only while a provider filter is
     // active and the model filter is clear (the API omits by_model otherwise).
@@ -1042,7 +1042,7 @@
         ? "Select a provider to see model usage per provider."
         : activeModel
           ? "Select All models to see model usage per provider."
-          : "No model usage for this provider in this range.",
+          : "No token usage for this provider in this range.",
     });
   }
 
@@ -1391,13 +1391,17 @@
   function modelTooltipHtml(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const present = models.filter((model) => model.points[idx]);
+    // A zero-filled gap bucket has no activity: list only models with a value
+    // in this bucket so the tooltip does not claim "0" rows are present.
+    const present = models.filter(
+      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
+    );
     const shown = present.slice(0, 12);
     const rows = [];
     shown.forEach((model, i) => {
       rows.push([
         model.model,
-        model.points[idx][metric] || 0,
+        model.points[idx][metric],
         paletteColor(models.indexOf(model)),
       ]);
     });
@@ -1405,17 +1409,24 @@
     if (present.length > shown.length) {
       html += `<div class="tt-row"><span class="tt-key">+${present.length - shown.length} more models</span></div>`;
     }
+    if (!rows.length) {
+      html = `<div class="tt-title">${esc(title)}</div>` +
+        `<div class="tt-row"><span class="tt-key">No ${metric} in this bucket</span></div>`;
+    }
     return html;
   }
 
   function modelTooltipSummary(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
     const label = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const present = models.filter((model) => model.points[idx]);
+    const present = models.filter(
+      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
+    );
     const parts = present
       .slice(0, 4)
-      .map((model) => `${model.model} ${fmtInt(model.points[idx][metric] || 0)}`);
+      .map((model) => `${model.model} ${fmtInt(model.points[idx][metric])}`);
     if (present.length > 4) parts.push(`+${present.length - 4} more models`);
+    if (!parts.length) return `${label}: no ${metric}`;
     return `${label}: ${parts.join(", ")}`;
   }
 
@@ -2311,8 +2322,11 @@
     ctx.stroke();
     ctx.setLineDash([]);
     state.series.forEach((model, index) => {
-      if (!model.points[idx]) return;
-      const y = yAt(model.points[idx][state.metric] || 0);
+      const value = model.points[idx] ? model.points[idx][state.metric] || 0 : 0;
+      // A zero-filled gap bucket has no activity at this point; drawing a
+      // marker ring there would imply the model was used in this bucket.
+      if (value <= 0) return;
+      const y = yAt(value);
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fillStyle = colors.surface;
@@ -2402,6 +2416,7 @@
       const my = ((canvas.__mouse.y - rect.top) * h) / rect.height;
       const hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
       if (hitIdx >= 0) effectiveHoverIdx = hitIdx;
+      else effectiveHoverIdx = -1;
     }
     canvas.__chart = {
       kind: "pie",
