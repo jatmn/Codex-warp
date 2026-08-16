@@ -479,10 +479,16 @@
   const templateDescription = $("#template-description");
   const templateCatalogPreview = $("#template-catalog-preview");
   const templateField = $("#template-field");
+  const providerIdInput = providerForm.querySelector("[name=id]");
+  const apiKeyInput = providerForm.querySelector("[name=api_key_env]");
+  const providerHeadersSection = $("#provider-headers");
+  const providerHeadersRows = $("#provider-headers-rows");
+  const addProviderHeaderBtn = $("#provider-headers-add");
 
   $("#btn-add-provider").addEventListener("click", () => openProviderForm());
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
+  addProviderHeaderBtn.addEventListener("click", () => addProviderHeaderRow());
 
   providerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -492,10 +498,20 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
+    const apiKeyInputValue = String(apiKeyInput.value || "").trim();
+    const clearInlineApiKey = !!providerForm.querySelector("[name=clear_inline_api_key]")?.checked;
+    const keepInlineApiKey =
+      mode === "edit"
+      && providerForm.dataset.hasInlineApiKey === "true"
+      && !apiKeyInputValue
+      && !clearInlineApiKey;
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: String(fd.get("api_key_env") || "").trim() || null,
+      api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
+      ...(clearInlineApiKey && !apiKeyInputValue && providerForm.dataset.hasInlineApiKey === "true"
+        ? { api_key: null }
+        : {}),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -506,13 +522,15 @@
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
     };
     try {
+      const headers = collectProviderHeadersFromForm(mode);
       if (mode === "create") {
         const isCustom = !template || template.key === "custom";
         const payload = isCustom
           ? {
               template: "custom",
-              id,
+              ...(id ? { id } : {}),
               ...body,
+              ...(headers ? { headers } : {}),
               model_catalog: selectedTemplateCatalog,
             }
           : {
@@ -520,33 +538,137 @@
               id: template.id,
               api_key_env: body.api_key_env,
               enabled: body.enabled,
+              ...(headers ? { headers } : {}),
             };
-        await api("/providers", {
+        const created = await api("/providers", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        providerDialog.close();
+        await loadProviders({ refreshRoutes: false });
+        status(`Provider ${created.id} created`);
+        return;
       } else {
-        await api(`/providers/${encodeURIComponent(id)}`, {
+        const targetId = id;
+        await api(`/providers/${encodeURIComponent(targetId)}`, {
           method: "PUT",
           body: JSON.stringify({
             name: body.name,
             base_url: body.base_url,
             api_key_env: body.api_key_env,
+            ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
             auth_header: body.auth_header,
             auth_scheme: body.auth_scheme,
             responses_path: body.responses_path,
             chat_completions_path: body.chat_completions_path,
             models_path: body.models_path,
+            ...(headers ? { headers } : {}),
             model_catalog_only: body.model_catalog_only,
             enabled: body.enabled,
           }),
         });
+        providerDialog.close();
+        await loadProviders({ refreshRoutes: false });
+        status(`Provider ${targetId} updated`);
       }
-      providerDialog.close();
-      await loadProviders({ refreshRoutes: false });
-      status(mode === "create" ? `Provider ${id} created` : `Provider ${id} updated`);
     } catch (e) { status(`Error: ${e.message}`); }
   });
+
+  function addProviderHeaderRow(name = "", value = "") {
+    const row = document.createElement("div");
+    row.className = "provider-header-row";
+    const headerName = document.createElement("label");
+    headerName.textContent = "Header";
+    const nameInput = document.createElement("input");
+    nameInput.name = "provider-header-name";
+    nameInput.placeholder = "X-Header";
+    nameInput.value = name;
+    headerName.append(nameInput);
+
+    const headerValue = document.createElement("label");
+    headerValue.textContent = "Value";
+    const valueInput = document.createElement("input");
+    valueInput.name = "provider-header-value";
+    valueInput.placeholder = "value";
+    valueInput.value = value;
+    headerValue.append(valueInput);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn small danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      row.remove();
+      if (!providerHeadersRows.children.length) {
+        addProviderHeaderRow();
+      }
+    });
+    row.append(headerName, headerValue, remove);
+    providerHeadersRows.append(row);
+  }
+
+  function collectProviderHeadersFromForm(mode = "create") {
+    const rows = Array.from(
+      providerHeadersRows.querySelectorAll(".provider-header-row"),
+    );
+    const headers = {};
+    const seen = Object.create(null);
+    for (const row of rows) {
+      const rawName = row.querySelector("[name=provider-header-name]");
+      const rawValue = row.querySelector("[name=provider-header-value]");
+      if (!rawName || !rawValue) {
+        continue;
+      }
+      const key = String(rawName.value || "").trim();
+      if (!key) {
+        continue;
+      }
+      const folded = asciiHeaderNameKey(key);
+      if (Object.hasOwn(seen, folded)) {
+        throw new Error(`Duplicate custom header "${key}"`);
+      }
+      seen[folded] = key;
+      headers[key] = String(rawValue.value || "");
+    }
+    if (Object.keys(headers).length) {
+      return headers;
+    }
+    // Custom edit with only blank rows is an explicit clear. Named/template
+    // edits hide the section and must omit headers to preserve TOML values.
+    if (mode === "edit" && !providerHeadersSection.hidden) {
+      return {};
+    }
+    return null;
+  }
+
+  function asciiHeaderNameKey(name) {
+    return String(name).replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 32));
+  }
+
+  function applyProviderHeaders(headers = null) {
+    providerHeadersRows.innerHTML = "";
+    if (!headers) {
+      return;
+    }
+    const entries = Object.entries(headers);
+    if (!entries.length) {
+      return;
+    }
+    for (const [name, value] of entries) {
+      addProviderHeaderRow(name, value);
+    }
+  }
+
+  function setCustomHeadersMode(isCustom) {
+    providerHeadersSection.hidden = !isCustom;
+    if (!isCustom) {
+      providerHeadersRows.innerHTML = "";
+      return;
+    }
+    if (!providerHeadersRows.children.length) {
+      addProviderHeaderRow();
+    }
+  }
 
   function templateOptionValue(template) {
     return template.key;
@@ -588,24 +710,18 @@
     const identity = $("#provider-identity-fields");
     const advanced = $("#provider-advanced");
     const idInput = providerForm.querySelector("[name=id]");
+    const nameInput = providerForm.querySelector("[name=name]");
     const baseUrlInput = providerForm.querySelector("[name=base_url]");
     identity.classList.toggle("template-locked", isNamed);
     advanced.hidden = isNamed;
-    idInput.readOnly = isNamed;
     baseUrlInput.readOnly = isNamed;
-    providerForm.querySelector("[name=name]").readOnly = isNamed;
+    nameInput.readOnly = isNamed;
     ["auth_header", "auth_scheme", "responses_path", "chat_completions_path", "models_path"]
       .forEach((name) => {
         providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
       });
     providerForm.querySelector("[name=model_catalog_only]").disabled = isNamed;
-    if (isNamed) {
-      idInput.removeAttribute("required");
-      baseUrlInput.removeAttribute("required");
-    } else {
-      idInput.setAttribute("required", "required");
-      baseUrlInput.setAttribute("required", "required");
-    }
+    idInput.readOnly = true;
   }
 
   function applySelectedTemplate() {
@@ -616,6 +732,7 @@
       templateDescription.textContent = "";
       renderCatalogPreview([]);
       setNamedTemplateMode(false);
+      setCustomHeadersMode(true);
       return;
     }
     const isNamed = template.key !== "custom";
@@ -638,12 +755,9 @@
     providerForm.querySelector("[name=model_catalog_only]").checked = !!template.model_catalog_only;
     providerForm.querySelector("[name=enabled]").checked = true;
     setNamedTemplateMode(isNamed);
+    setCustomHeadersMode(true);
     renderCatalogPreview(selectedTemplateCatalog);
-    if (!isNamed) {
-      idInput.focus();
-    } else {
-      providerForm.querySelector("[name=api_key_env]").focus();
-    }
+    providerForm.querySelector("[name=api_key_env]").focus();
   }
 
   function findTemplateForProvider(provider) {
@@ -665,6 +779,8 @@
       templateField.hidden = false;
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
+      const isNamed = matching?.key !== "custom";
+      const allowCustomHeaders = !!p.managed;
       templateSelect.value = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
@@ -676,8 +792,6 @@
         "This provider does not match a bundled example template.";
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
-      setNamedTemplateMode(false);
-      $("#provider-advanced").hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
       providerForm.querySelector("[name=name]").value = p.name || "";
@@ -696,10 +810,47 @@
       providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
+      if (allowCustomHeaders) {
+        applyProviderHeaders(p.headers);
+      } else {
+        applyProviderHeaders(null);
+      }
+      setNamedTemplateMode(isNamed);
+      setCustomHeadersMode(allowCustomHeaders);
+      $("#provider-advanced").hidden = false;
+      apiKeyInput.value = p.api_key_env || "";
+      apiKeyInput.placeholder = p.has_inline_api_key
+        ? "Configured for this process"
+        : "PROVIDER_API_KEY";
+      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
+      const clearInlineRow = $("#provider-clear-inline-key");
+      if (clearInline) {
+        clearInline.checked = false;
+      }
+      if (clearInlineRow) {
+        clearInlineRow.hidden = !(p.managed && p.has_inline_api_key);
+      }
+      providerForm.dataset.hasInlineApiKey =
+        p.managed && p.has_inline_api_key ? "true" : "false";
+      if (isNamed) {
+        providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
+      }
     } else {
       providerForm.reset();
+      providerIdInput.value = "";
+      applyProviderHeaders(null);
       providerForm.querySelector("[name=api_key_env]").readOnly = false;
       providerForm.querySelector("[name=api_key_env]").title = "";
+      providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
+      providerForm.dataset.hasInlineApiKey = "false";
+      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
+      const clearInlineRow = $("#provider-clear-inline-key");
+      if (clearInline) {
+        clearInline.checked = false;
+      }
+      if (clearInlineRow) {
+        clearInlineRow.hidden = true;
+      }
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;

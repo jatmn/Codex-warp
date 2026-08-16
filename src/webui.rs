@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -11,6 +11,8 @@ use axum::extract::Path;
 use axum::extract::Query;
 use axum::extract::Request;
 use axum::extract::State;
+use axum::http::HeaderName;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::middleware;
@@ -378,7 +380,10 @@ struct ProviderPersist {
     enabled: Option<bool>,
     #[serde(default)]
     api_key_env: OptionalPatch<String>,
-    api_key: Option<String>,
+    #[serde(default)]
+    api_key: OptionalPatch<String>,
+    #[serde(default)]
+    headers: OptionalPatch<BTreeMap<String, String>>,
     auth_header: Option<String>,
     auth_scheme: Option<String>,
     responses_path: Option<String>,
@@ -408,7 +413,7 @@ struct ModelPersist {
 
 #[derive(Debug, Deserialize)]
 struct CreateProviderBody {
-    id: String,
+    id: Option<String>,
     /// Bundled example key (`openrouter`, `custom`, …). Named templates apply
     /// the full example provider snapshot server-side.
     #[serde(default)]
@@ -428,7 +433,9 @@ struct ProviderView {
     enabled: bool,
     managed: bool,
     has_api_key: bool,
+    has_inline_api_key: bool,
     api_key_env: Option<String>,
+    headers: BTreeMap<String, String>,
     auth_header: String,
     auth_scheme: String,
     responses_path: String,
@@ -998,7 +1005,16 @@ fn build_provider_view(
         enabled: provider.enabled,
         managed: provider_is_managed(state, id),
         has_api_key: provider.api_key().is_some(),
+        has_inline_api_key: provider
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()),
         api_key_env: provider.api_key_env.clone(),
+        headers: if provider_is_managed(state, id) {
+            provider.headers.clone()
+        } else {
+            BTreeMap::new()
+        },
         auth_header: provider.auth_header.clone(),
         auth_scheme: provider.auth_scheme.clone(),
         responses_path: provider.responses_path.clone(),
@@ -1038,27 +1054,207 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     {
         return Err(ApiError::bad_request("base_url cannot be empty"));
     }
-    if fields.api_key.is_some() {
+    let has_api_key =
+        matches!(&fields.api_key, OptionalPatch::Set(value) if !value.trim().is_empty());
+    let has_api_key_env =
+        matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
+    if has_api_key && has_api_key_env {
         return Err(ApiError::bad_request(
-            "api_key cannot be set via API; use api_key_env instead",
+            "set either api_key or api_key_env, not both",
         ));
+    }
+    if let OptionalPatch::Set(headers) = &fields.headers {
+        validate_provider_headers(headers)?;
     }
     Ok(())
 }
 
-/// TOML owns the credential selector for a TOML-backed provider.  Persisting a
-/// whole provider snapshot as an overlay cannot distinguish a deliberate UI
-/// credential change from an old snapshot after the operator rotates TOML, so
-/// reject that change instead of accepting an edit which will disappear on
-/// restart.
+/// Persist the same header identity `upstream_headers` uses: HTTP `HeaderName`
+/// / `HeaderValue`, with case-insensitive duplicate detection so two names
+/// cannot collapse into one request header.
+fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), ApiError> {
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for (name, value) in headers {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request("header names cannot be empty"));
+        }
+        if trimmed != name {
+            return Err(ApiError::bad_request(format!(
+                "header name `{name}` must not have surrounding whitespace"
+            )));
+        }
+        if HeaderName::try_from(trimmed).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "invalid custom header name `{trimmed}`"
+            )));
+        }
+        if HeaderValue::from_str(value).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "invalid custom header value for `{trimmed}`"
+            )));
+        }
+        let folded = trimmed.to_ascii_lowercase();
+        if let Some(previous) = seen.get(&folded) {
+            return Err(ApiError::bad_request(format!(
+                "duplicate custom header `{trimmed}` (conflicts with `{previous}`)"
+            )));
+        }
+        seen.insert(folded, trimmed.to_string());
+    }
+    Ok(())
+}
+
+fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
+    match &mut fields.api_key_env {
+        OptionalPatch::Set(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                fields.api_key_env = OptionalPatch::Absent;
+            } else if looks_like_env_var_name(trimmed) {
+                // Env-shaped names are durable overlay fields. Do not rewrite an
+                // unset name into inline `api_key`; overlays never persist that.
+                *raw = trimmed.to_string();
+            } else {
+                fields.api_key = OptionalPatch::Set(trimmed.to_string());
+                fields.api_key_env = OptionalPatch::Absent;
+            }
+        }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
+    }
+    match &mut fields.api_key {
+        OptionalPatch::Set(api_key) => {
+            let trimmed = api_key.trim();
+            if trimmed.is_empty() {
+                fields.api_key = OptionalPatch::Clear;
+            } else {
+                *api_key = trimmed.to_string();
+            }
+        }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
+    }
+}
+
+fn looks_like_env_var_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let first = match chars.next() {
+        Some(ch) => ch,
+        None => return false,
+    };
+    if !(first.is_ascii_uppercase() || first == '_') {
+        return false;
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return false;
+    }
+    value.contains('_')
+}
+
+fn sanitize_provider_id_fragment(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_dash = false;
+    for c in input.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+            previous_dash = false;
+        } else if !out.is_empty() && !previous_dash {
+            out.push('-');
+            previous_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    if out.is_empty() {
+        "provider".to_string()
+    } else {
+        out
+    }
+}
+
+fn make_provider_id_from_base_url(base_url: &str) -> String {
+    let mut tail = base_url.trim().to_string();
+    if let Some((_, rest)) = tail.split_once("://") {
+        tail = rest.to_string();
+    }
+    tail = tail
+        .split(&['?', '#'][..])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    let (host, path) = tail
+        .split_once('/')
+        .map_or((tail.as_str(), ""), |(host, path)| (host, path));
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    let host_parts: Vec<_> = host
+        .split('.')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut seed = if host_parts.is_empty() {
+        "gateway".to_string()
+    } else {
+        host_parts.join("-")
+    };
+    let path_seed = path
+        .split('/')
+        .find(|segment| !segment.trim().is_empty())
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or_default();
+    if !path_seed.is_empty() {
+        if !seed.is_empty() {
+            seed.push('-');
+        }
+        seed.push_str(path_seed);
+    }
+    sanitize_provider_id_fragment(&seed)
+}
+
+fn provider_id_is_taken(state: &AppState, id: &str) -> bool {
+    if id == PRIMARY_PROVIDER_ID {
+        return true;
+    }
+    if bundled_provider_templates()
+        .iter()
+        .any(|template| !template.id.is_empty() && template.id == id)
+    {
+        return true;
+    }
+    state.read_config().providers.contains_key(id)
+}
+
+fn unique_provider_id(state: &AppState, base_id: &str) -> String {
+    let sanitized = sanitize_provider_id_fragment(base_id);
+    let mut candidate = sanitized.clone();
+    let mut suffix = 2;
+    while provider_id_is_taken(state, &candidate) {
+        candidate = format!("{sanitized}-{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
+/// TOML owns credentials for a TOML-backed provider. Overlays never persist
+/// `api_key`, and `api_key_env` is restored from TOML on restart, so a Web UI
+/// mutation cannot be distinguished from a stale snapshot after the operator
+/// rotates TOML. Reject both rather than accepting an edit that disappears.
 fn validate_toml_owned_credential_selector(
     managed: bool,
     before: &ProviderConfig,
     after: &ProviderConfig,
 ) -> Result<(), ApiError> {
-    if !managed && before.api_key_env != after.api_key_env {
+    if !managed && (before.api_key_env != after.api_key_env || before.api_key != after.api_key) {
         return Err(ApiError::bad_request(
-            "api_key_env for TOML-backed providers is managed in TOML; create a managed provider to configure it in the Web UI",
+            "credentials for TOML-backed providers are managed in TOML; create a managed provider to configure them in the Web UI",
         ));
     }
     Ok(())
@@ -1080,6 +1276,8 @@ fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -
         || before.models_path != after.models_path
         || before.model_catalog_only != after.model_catalog_only
         || before.api_key_env != after.api_key_env
+        || before.api_key != after.api_key
+        || before.headers != after.headers
         || before.auth_header != after.auth_header
         || before.auth_scheme != after.auth_scheme
 }
@@ -1099,14 +1297,7 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(enabled) = fields.enabled {
         provider.enabled = enabled;
     }
-    match &fields.api_key_env {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => provider.api_key_env = None,
-        OptionalPatch::Set(api_key_env) => {
-            let trimmed = api_key_env.trim();
-            provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-    }
+    apply_named_template_credentials(provider, fields);
     if let Some(auth_header) = &fields.auth_header {
         provider.auth_header = auth_header.clone();
     }
@@ -1124,6 +1315,40 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
+    }
+}
+
+/// Named templates keep bundled endpoint/auth paths. Credentials and extra
+/// headers are operator-owned on the managed overlay created from the template.
+fn apply_named_template_credentials(provider: &mut ProviderConfig, fields: &ProviderPersist) {
+    match &fields.api_key_env {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.api_key_env = None,
+        OptionalPatch::Set(api_key_env) => {
+            let trimmed = api_key_env.trim();
+            provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+            if provider.api_key_env.is_some() {
+                provider.api_key = None;
+            }
+        }
+    }
+    match &fields.api_key {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.api_key = None,
+        OptionalPatch::Set(api_key) => {
+            let trimmed = api_key.trim();
+            if trimmed.is_empty() {
+                provider.api_key = None;
+            } else {
+                provider.api_key = Some(trimmed.to_string());
+                provider.api_key_env = None;
+            }
+        }
+    }
+    match &fields.headers {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.headers.clear(),
+        OptionalPatch::Set(headers) => provider.headers = headers.clone(),
     }
 }
 
@@ -1205,7 +1430,22 @@ async fn list_providers(
 }
 
 async fn list_provider_templates() -> Json<Vec<crate::provider_templates::ProviderTemplate>> {
-    Json(bundled_provider_templates())
+    let mut templates = bundled_provider_templates();
+    templates.sort_by(|left, right| {
+        let left_custom = left.key == "custom";
+        let right_custom = right.key == "custom";
+        if left_custom != right_custom {
+            return if left_custom {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
+        }
+        left.label
+            .to_ascii_lowercase()
+            .cmp(&right.label.to_ascii_lowercase())
+    });
+    Json(templates)
 }
 
 async fn create_provider(
@@ -1213,7 +1453,9 @@ async fn create_provider(
     Json(body): Json<CreateProviderBody>,
 ) -> Result<(StatusCode, Json<ProviderView>), ApiError> {
     let _mutation = state.mutation_lock.lock().await;
-    validate_provider_persist(&body.fields)?;
+    let mut fields = body.fields;
+    normalize_provider_api_key_fields(&mut fields);
+    validate_provider_persist(&fields)?;
 
     let template_key = body
         .template
@@ -1225,13 +1467,7 @@ async fn create_provider(
             ApiError::bad_request(format!("unknown provider template `{template_key}`"))
         })?;
         if template.key == "custom" {
-            let id = body.id.trim();
-            validate_provider_id(id)?;
-            if id == PRIMARY_PROVIDER_ID {
-                return Err(ApiError::bad_request("cannot create default provider id"));
-            }
-            let base_url = body
-                .fields
+            let base_url = fields
                 .base_url
                 .as_deref()
                 .map(str::trim)
@@ -1239,10 +1475,28 @@ async fn create_provider(
                 .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
             let mut provider = template.provider;
             provider.base_url = base_url.to_string();
-            provider.enabled = body.fields.enabled.unwrap_or(true);
+            provider.enabled = fields.enabled.unwrap_or(true);
             provider.model_catalog = body.model_catalog.clone();
-            apply_provider_persist(&mut provider, &body.fields);
-            (id.to_string(), provider)
+            apply_provider_persist(&mut provider, &fields);
+            let requested_id = body
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let id = if let Some(id) = requested_id {
+                validate_provider_id(id)?;
+                if provider_id_is_taken(&state, id) {
+                    return Err(ApiError::bad_request("provider already exists"));
+                }
+                id.to_string()
+            } else {
+                unique_provider_id(&state, &make_provider_id_from_base_url(base_url))
+            };
+            validate_provider_id(&id)?;
+            if id == PRIMARY_PROVIDER_ID {
+                return Err(ApiError::bad_request("cannot create default provider id"));
+            }
+            (id, provider)
         } else {
             // Named example profiles always use the bundled provider id + snapshot.
             let id = template.id.clone();
@@ -1251,25 +1505,25 @@ async fn create_provider(
                 return Err(ApiError::bad_request("cannot create default provider id"));
             }
             let mut provider = template.provider;
-            provider.enabled = body.fields.enabled.unwrap_or(true);
-            match &body.fields.api_key_env {
-                OptionalPatch::Absent => {}
-                OptionalPatch::Clear => provider.api_key_env = None,
-                OptionalPatch::Set(api_key_env) => {
-                    let trimmed = api_key_env.trim();
-                    provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
-                }
-            }
+            provider.enabled = fields.enabled.unwrap_or(true);
+            apply_named_template_credentials(&mut provider, &fields);
             (id, provider)
         }
     } else {
-        let id = body.id.trim();
+        let id = body
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("id is required"))?;
         validate_provider_id(id)?;
+        if provider_id_is_taken(&state, id) {
+            return Err(ApiError::bad_request("provider already exists"));
+        }
         if id == PRIMARY_PROVIDER_ID {
             return Err(ApiError::bad_request("cannot create default provider id"));
         }
-        let base_url = body
-            .fields
+        let base_url = fields
             .base_url
             .as_deref()
             .map(str::trim)
@@ -1277,11 +1531,11 @@ async fn create_provider(
             .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
         let mut provider = ProviderConfig {
             base_url: base_url.to_string(),
-            enabled: body.fields.enabled.unwrap_or(true),
+            enabled: fields.enabled.unwrap_or(true),
             model_catalog: body.model_catalog.clone(),
             ..ProviderConfig::default()
         };
-        apply_provider_persist(&mut provider, &body.fields);
+        apply_provider_persist(&mut provider, &fields);
         (id.to_string(), provider)
     };
     validate_model_catalog(&provider.model_catalog)?;
@@ -1329,13 +1583,17 @@ async fn create_provider(
 async fn update_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(fields): Json<ProviderPersist>,
+    Json(mut fields): Json<ProviderPersist>,
 ) -> Result<Json<ProviderView>, ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
+    normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
+    if !managed {
+        fields.headers = OptionalPatch::Absent;
+    }
 
     let (snapshot, previous_enabled, refresh_discovery) = {
         let config = state.read_config();

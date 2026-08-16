@@ -147,15 +147,28 @@
           <p id="template-description" class="hint muted"></p>
           <div id="template-catalog-preview" class="catalog-preview muted" hidden></div>
           <div id="provider-identity-fields">
-            <label>ID <input name="id" required pattern="[A-Za-z0-9_-]+"></label>
-            <label>Name <input name="name"></label>
+            <input type="hidden" name="id">
+            <label>Name <input name="name" placeholder="Friendly gateway label"></label>
             <label>Base URL <input name="base_url" required placeholder="https://provider.example/v1"></label>
           </div>
           <label>
-            API key env
-            <input name="api_key_env" placeholder="PROVIDER_API_KEY">
+            API key env or value
+            <input name="api_key_env" type="password" placeholder="PROVIDER_API_KEY" autocomplete="off" spellcheck="false">
           </label>
-          <p class="hint muted">Export this env var in the process that runs Codex Warp, then enable the provider. Inline API keys are not stored by the Web UI.</p>
+          <p class="hint muted">
+            Enter an environment variable name (for example <code>PROVIDER_API_KEY</code>) to persist credentials across restart. A raw API key is used only until Codex Warp restarts.
+          </p>
+          <label id="provider-clear-inline-key" class="checkbox-row" hidden>
+            <input type="checkbox" name="clear_inline_api_key">
+            Remove the in-process API key
+          </label>
+          <div id="provider-headers" class="provider-headers">
+            <div class="provider-headers-head">
+              <span>Custom headers</span>
+              <button type="button" class="btn small" id="provider-headers-add">Add header</button>
+            </div>
+            <div id="provider-headers-rows"></div>
+          </div>
           <details id="provider-advanced">
             <summary>Advanced paths</summary>
             <label>Auth header <input name="auth_header" value="authorization"></label>

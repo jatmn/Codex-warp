@@ -326,7 +326,9 @@ impl Store {
             if let Some(config_json) = &overlay.config_json {
                 let overlay_provider: ProviderConfig = match serde_json::from_str(config_json) {
                     Ok(mut provider) => {
-                        strip_sensitive_provider_headers(&mut provider);
+                        if !overlay.managed {
+                            strip_sensitive_provider_headers(&mut provider);
+                        }
                         provider.api_key = None;
                         provider
                     }
@@ -546,12 +548,7 @@ impl Store {
         provider: Option<&ProviderConfig>,
     ) -> anyhow::Result<()> {
         let config_json = provider
-            .map(|provider| {
-                let mut stripped = provider.clone();
-                stripped.api_key = None;
-                strip_sensitive_provider_headers(&mut stripped);
-                serde_json::to_string(&stripped)
-            })
+            .map(|provider| provider_overlay_config_json(provider, managed))
             .transpose()
             .context("serialize provider overlay")?;
         let db = self.db.lock().expect("sqlite lock poisoned");
@@ -703,10 +700,8 @@ impl Store {
         provider: &ProviderConfig,
         catalog: &[ModelCatalogEntry],
     ) -> anyhow::Result<()> {
-        let mut stripped = provider.clone();
-        stripped.api_key = None;
-        strip_sensitive_provider_headers(&mut stripped);
-        let config_json = serde_json::to_string(&stripped).context("serialize provider overlay")?;
+        let config_json =
+            provider_overlay_config_json(provider, true).context("serialize provider overlay")?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute("BEGIN IMMEDIATE", [])?;
         let result: anyhow::Result<()> = (|| {
@@ -799,7 +794,7 @@ impl Store {
         model_id: &str,
         provider_snapshot: &ProviderConfig,
     ) -> anyhow::Result<()> {
-        let config_json = provider_overlay_config_json(provider_snapshot)?;
+        let config_json = provider_overlay_config_json(provider_snapshot, true)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute("BEGIN IMMEDIATE", [])?;
         let result: anyhow::Result<()> = (|| {
@@ -825,7 +820,7 @@ impl Store {
         model_id: &str,
         provider_snapshot: &ProviderConfig,
     ) -> anyhow::Result<()> {
-        let config_json = provider_overlay_config_json(provider_snapshot)?;
+        let config_json = provider_overlay_config_json(provider_snapshot, true)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         db.execute("BEGIN IMMEDIATE", [])?;
         let result: anyhow::Result<()> = (|| {
@@ -1348,10 +1343,15 @@ fn route_seeds_from_overlay_rows(
         .collect()
 }
 
-fn provider_overlay_config_json(provider: &ProviderConfig) -> anyhow::Result<String> {
+fn provider_overlay_config_json(
+    provider: &ProviderConfig,
+    persist_headers: bool,
+) -> anyhow::Result<String> {
     let mut stripped = provider.clone();
     stripped.api_key = None;
-    strip_sensitive_provider_headers(&mut stripped);
+    if !persist_headers {
+        strip_sensitive_provider_headers(&mut stripped);
+    }
     serde_json::to_string(&stripped).context("serialize provider overlay")
 }
 
@@ -1453,9 +1453,11 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
 }
 
 fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {
-    // Overlays must not persist request headers: secrets may use arbitrary
-    // header names, and TOML remains the source of truth for header auth.
-    // merge_provider_overlay restores TOML headers for non-managed providers.
+    // TOML-backed overlays must not persist request headers: secrets may use
+    // arbitrary header names, and TOML remains the source of truth for header
+    // auth. Managed Web UI providers have no TOML snapshot, so their headers
+    // stay in overlay JSON. merge_provider_overlay restores TOML headers for
+    // non-managed providers.
     provider.headers.clear();
 }
 

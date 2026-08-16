@@ -32,6 +32,43 @@ fn test_state() -> AppState {
     )
 }
 
+fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
+    ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    }
+}
+
+fn persist_credentials(
+    api_key_env: OptionalPatch<String>,
+    api_key: OptionalPatch<String>,
+) -> ProviderPersist {
+    ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env,
+        api_key,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    }
+}
+
 fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
     let selector_at = css
         .find(selector)
@@ -76,7 +113,8 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Absent,
-        api_key: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -102,7 +140,8 @@ fn provider_persist_null_clears_optional_name_and_api_key_env() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Clear,
-        api_key: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -129,6 +168,8 @@ fn provider_persist_deserializes_omitted_as_absent() {
         serde_json::from_str(r#"{"base_url":"https://x"}"#).expect("deserialize");
     assert_eq!(fields.name, OptionalPatch::Absent);
     assert_eq!(fields.api_key_env, OptionalPatch::Absent);
+    assert_eq!(fields.api_key, OptionalPatch::Absent);
+    assert_eq!(fields.headers, OptionalPatch::Absent);
     assert_eq!(fields.base_url.as_deref(), Some("https://x"));
 }
 
@@ -234,13 +275,14 @@ fn model_persist_deserializes_omitted_enabled_as_none() {
 }
 
 #[test]
-fn validate_provider_persist_rejects_api_key() {
+fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,
         base_url: None,
         enabled: None,
-        api_key_env: OptionalPatch::Absent,
-        api_key: Some("secret".into()),
+        api_key_env: OptionalPatch::Set("OPENAI_API_KEY".into()),
+        api_key: OptionalPatch::Set("secret".into()),
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -250,10 +292,7 @@ fn validate_provider_persist_rejects_api_key() {
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-    assert!(
-        err.message.contains("api_key_env"),
-        "expected api_key_env hint in error message"
-    );
+    assert!(err.message.contains("set either api_key or api_key_env"));
 }
 
 #[test]
@@ -263,7 +302,8 @@ fn validate_provider_persist_rejects_empty_base_url() {
         base_url: Some("   ".into()),
         enabled: None,
         api_key_env: OptionalPatch::Absent,
-        api_key: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -273,6 +313,398 @@ fn validate_provider_persist_rejects_empty_base_url() {
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn validate_provider_persist_rejects_case_insensitive_duplicate_headers() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Api-Key".into(), "one".into());
+    headers.insert("x-api-key".into(), "two".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("duplicate custom header"));
+}
+
+#[test]
+fn validate_provider_persist_accepts_distinct_headers() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Title".into(), "Codex Warp".into());
+    headers.insert("HTTP-Referer".into(), "https://example.local".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    validate_provider_persist(&fields).expect("distinct header names");
+}
+
+#[test]
+fn validate_provider_persist_rejects_invalid_http_header_names() {
+    let mut headers = BTreeMap::new();
+    headers.insert("Not A Header".into(), "x".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("invalid custom header name"));
+}
+
+#[test]
+fn validate_provider_persist_rejects_empty_and_whitespace_header_names() {
+    let mut empty = BTreeMap::new();
+    empty.insert("".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(empty)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("header names cannot be empty"));
+
+    let mut whitespace_only = BTreeMap::new();
+    whitespace_only.insert("   ".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(whitespace_only)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("header names cannot be empty"));
+
+    let mut surrounding = BTreeMap::new();
+    surrounding.insert(" X-Header".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(surrounding)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("must not have surrounding whitespace"));
+}
+
+#[test]
+fn validate_provider_persist_rejects_invalid_http_header_values() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Invalid-Value".into(), "value\nwith-newline".into());
+    let err = validate_provider_persist(&persist_headers(headers)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("invalid custom header value"));
+}
+
+#[test]
+fn build_provider_view_separates_inline_secret_from_resolved_auth() {
+    let state = test_state();
+    let dual = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("VIEW_TEST_API_KEY_ENV".into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    let dual_view = build_provider_view(&state, "dual", &dual, &[]);
+    assert!(dual_view.has_inline_api_key);
+    assert!(dual_view.has_api_key);
+    assert_eq!(
+        dual_view.api_key_env.as_deref(),
+        Some("VIEW_TEST_API_KEY_ENV")
+    );
+    assert!(dual_view.headers.is_empty());
+
+    // A unique name that this process does not set. Do not mutate the
+    // environment: other tests may read env vars concurrently.
+    const UNSET_ENV: &str = "CODEXWARP_VIEW_UNSET_API_KEY_ENV_0001";
+    assert!(
+        std::env::var(UNSET_ENV).is_err(),
+        "{UNSET_ENV} must stay unset so has_api_key reflects occupancy, not a leaked process secret"
+    );
+    let env_only = ProviderConfig {
+        api_key_env: Some(UNSET_ENV.into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    let env_view = build_provider_view(&state, "env", &env_only, &[]);
+    assert!(!env_view.has_inline_api_key);
+    assert!(!env_view.has_api_key);
+    assert_eq!(env_view.api_key_env.as_deref(), Some(UNSET_ENV));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_keeps_unset_env_name() {
+    const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
+    let mut fields =
+        persist_credentials(OptionalPatch::Set(NAME.to_string()), OptionalPatch::Absent);
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert!(matches!(fields.api_key, OptionalPatch::Absent));
+    assert_eq!(fields.api_key_env, OptionalPatch::Set(NAME.to_string()));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_empty_api_key_env_as_absent() {
+    let mut fields = persist_credentials(OptionalPatch::Set("   ".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+    assert!(matches!(fields.api_key, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_empty_api_key_as_clear() {
+    let mut fields = persist_credentials(OptionalPatch::Absent, OptionalPatch::Set("   ".into()));
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key, OptionalPatch::Clear));
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk-live-not-an-env".into())
+    );
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_underscore_secret_as_api_key() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("sk_live_not_an_env".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk_live_not_an_env".into())
+    );
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_uppercase_token_without_underscore_as_api_key() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into())
+    );
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn unique_provider_id_suffixes_use_sanitized_base() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "my-gateway".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "my-gateway-2".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v2".into(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    // The base id contains characters that must be sanitized; every suffix
+    // variant must stay sanitized so the generated id remains valid.
+    let id = unique_provider_id(&state, "My Gateway!");
+    assert_eq!(id, "my-gateway-3");
+    validate_provider_id(&id).expect("generated id must be valid");
+}
+
+#[test]
+fn unique_provider_id_skips_bundled_template_ids() {
+    let state = test_state();
+    let id = unique_provider_id(&state, "opencode_go");
+    assert_eq!(id, "opencode_go-2");
+    validate_provider_id(&id).expect("generated id must be valid");
+}
+
+#[test]
+fn apply_provider_persist_clears_opposite_credential() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("OLD_KEY".into()),
+        ..ProviderConfig::default()
+    };
+    let env_fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("NEW_KEY".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    env_fields.apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert_eq!(provider.api_key_env.as_deref(), Some("NEW_KEY"));
+
+    let inline_fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set("sk-live-not-an-env".into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    inline_fields.apply_to(&mut provider);
+    assert_eq!(provider.api_key.as_deref(), Some("sk-live-not-an-env"));
+    assert!(provider.api_key_env.is_none());
+}
+
+#[test]
+fn apply_provider_persist_null_clears_inline_api_key_and_headers() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        ..ProviderConfig::default()
+    };
+    provider
+        .headers
+        .insert("X-Test".into(), "secret-header".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Clear,
+        headers: OptionalPatch::Clear,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    fields.apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert!(provider.headers.is_empty());
+}
+
+#[test]
+fn provider_persist_deserializes_null_api_key_and_headers_as_clear() {
+    let fields: ProviderPersist =
+        serde_json::from_str(r#"{"api_key":null,"headers":null}"#).expect("deserialize");
+    assert_eq!(fields.api_key, OptionalPatch::Clear);
+    assert_eq!(fields.headers, OptionalPatch::Clear);
+}
+
+#[test]
+fn named_template_credentials_apply_headers_without_replacing_catalog() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    assert!(
+        !template.provider.model_catalog.is_empty(),
+        "bundled named templates ship a catalog"
+    );
+    let mut provider = template.provider;
+    let catalog_len = provider.model_catalog.len();
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Test".into(), "1".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: Some("https://should-not-apply.example/v1".into()),
+        enabled: None,
+        api_key_env: OptionalPatch::Set("OPENCODE_GO_API_KEY".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers.clone()),
+        auth_header: Some("x-should-not-apply".into()),
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    apply_named_template_credentials(&mut provider, &fields);
+    assert_eq!(provider.model_catalog.len(), catalog_len);
+    assert_eq!(
+        provider.headers.get("X-Test").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(provider.api_key_env.as_deref(), Some("OPENCODE_GO_API_KEY"));
+    assert_ne!(provider.auth_header, "x-should-not-apply");
 }
 
 #[test]
@@ -288,6 +720,24 @@ fn toml_backed_provider_cannot_change_api_key_env() {
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(err.message.contains("TOML-backed"));
     assert!(validate_toml_owned_credential_selector(true, &before, &after).is_ok());
+}
+
+#[test]
+fn toml_backed_provider_cannot_change_inline_api_key() {
+    let before = ProviderConfig {
+        api_key: Some("toml-secret".into()),
+        ..ProviderConfig::default()
+    };
+    let mut cleared = before.clone();
+    cleared.api_key = None;
+    let err = validate_toml_owned_credential_selector(false, &before, &cleared).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("TOML-backed"));
+
+    let mut replaced = before.clone();
+    replaced.api_key = Some("ui-secret".into());
+    assert!(validate_toml_owned_credential_selector(false, &before, &replaced).is_err());
+    assert!(validate_toml_owned_credential_selector(true, &before, &cleared).is_ok());
 }
 
 #[test]
@@ -848,6 +1298,22 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
 }
 
 #[test]
+fn provider_form_matches_credential_and_header_ownership() {
+    let app = include_str!("webui_static/app-main.js");
+    let index = include_str!("webui_static/index.html");
+    assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
+    assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
+    assert!(app.contains("nameInput.readOnly = isNamed"));
+    assert!(
+        app.contains("p.managed && p.has_inline_api_key"),
+        "inline-key clear uses the inline occupancy flag, not resolved auth"
+    );
+    assert!(!app.contains("p.has_api_key && !p.api_key_env"));
+    assert!(app.contains("function asciiHeaderNameKey("));
+    assert!(app.contains("const folded = asciiHeaderNameKey(key)"));
+}
+
+#[test]
 fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     let app = include_str!("webui_static/app-main.js");
     let index = include_str!("webui_static/index.html");
@@ -1105,7 +1571,7 @@ fn create_provider_body_accepts_named_template_payload() {
     )
     .expect("deserialize template create body");
     assert_eq!(body.template.as_deref(), Some("opencode_go"));
-    assert_eq!(body.id, "opencode_go");
+    assert_eq!(body.id.as_deref(), Some("opencode_go"));
     assert_eq!(
         body.fields.api_key_env,
         OptionalPatch::Set("OPENCODE_GO_API_KEY".into())
@@ -1147,7 +1613,8 @@ fn discovery_settings_changed_detects_credential_request_edits() {
         base_url: Some("https://example.test/v1".into()),
         enabled: Some(true),
         api_key_env: OptionalPatch::Set("NEW_KEY".into()),
-        api_key: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: Some("authorization".into()),
         auth_scheme: Some("Bearer".into()),
         responses_path: Some("/responses".into()),
@@ -1159,9 +1626,15 @@ fn discovery_settings_changed_detects_credential_request_edits() {
     fields.apply_to(&mut after);
     assert!(discovery_settings_changed(&before, &after));
 
+    assert!(!discovery_settings_changed(&before, &before));
+
     let mut name_only = before.clone();
     name_only.name = Some("Renamed".into());
     assert!(!discovery_settings_changed(&before, &name_only));
+
+    let mut enabled_only = before.clone();
+    enabled_only.enabled = !before.enabled;
+    assert!(!discovery_settings_changed(&before, &enabled_only));
 
     let mut auth_header_only = before.clone();
     auth_header_only.auth_header = "x-api-key".into();
@@ -1170,6 +1643,16 @@ fn discovery_settings_changed_detects_credential_request_edits() {
     let mut auth_scheme_only = before.clone();
     auth_scheme_only.auth_scheme.clear();
     assert!(discovery_settings_changed(&before, &auth_scheme_only));
+
+    let mut api_key_changed = before.clone();
+    api_key_changed.api_key = Some("raw-key".into());
+    assert!(discovery_settings_changed(&before, &api_key_changed));
+
+    let mut headers_changed = before.clone();
+    headers_changed
+        .headers
+        .insert("X-Test-Header".into(), "test-value".into());
+    assert!(discovery_settings_changed(&before, &headers_changed));
 }
 
 #[test]

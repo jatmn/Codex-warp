@@ -531,6 +531,37 @@ dialog label {
   overflow: auto;
 }
 .catalog-preview strong { color: var(--text); }
+#provider-headers {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.55rem 0.7rem;
+  background: var(--surface-2);
+}
+#provider-headers .provider-headers-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+#provider-headers .provider-headers-head span {
+  font-size: 0.82rem;
+  color: var(--muted);
+  letter-spacing: -0.01em;
+}
+#provider-headers .provider-header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+}
+#provider-headers .provider-header-row:last-child { margin-bottom: 0; }
+#provider-headers .provider-header-row label {
+  margin: 0;
+}
+#provider-headers .provider-header-row .btn.small {
+  margin-top: 0.2rem;
+}
 #provider-template:disabled {
   opacity: 0.85;
   cursor: not-allowed;
