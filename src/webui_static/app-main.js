@@ -500,7 +500,7 @@
       : null;
     const apiKeyInputValue = String(apiKeyInput.value || "").trim();
     const keepInlineApiKey =
-      mode === "edit" && providerForm.dataset.hasApiKey === "true" && !apiKeyInputValue;
+      mode === "edit" && providerForm.dataset.hasInlineApiKey === "true" && !apiKeyInputValue;
     const body = {
       base_url: String(fd.get("base_url") || "").trim(),
       api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
@@ -755,6 +755,7 @@
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
       const isNamed = matching?.key !== "custom";
+      const allowCustomHeaders = !!p.managed && !isNamed;
       templateSelect.value = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
@@ -767,6 +768,7 @@
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
       setNamedTemplateMode(isNamed);
+      setCustomHeadersMode(allowCustomHeaders);
       $("#provider-advanced").hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
@@ -785,7 +787,7 @@
       providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
-      if (!isNamed) {
+      if (allowCustomHeaders) {
         applyProviderHeaders(p.headers);
       } else {
         applyProviderHeaders(null);
@@ -794,7 +796,8 @@
       apiKeyInput.placeholder = p.has_api_key && !p.api_key_env
         ? "Configured for this process"
         : "PROVIDER_API_KEY";
-      providerForm.dataset.hasApiKey = p.has_api_key ? "true" : "false";
+      providerForm.dataset.hasInlineApiKey =
+        p.has_api_key && !p.api_key_env ? "true" : "false";
       if (isNamed) {
         providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
       }
@@ -805,7 +808,7 @@
       providerForm.querySelector("[name=api_key_env]").readOnly = false;
       providerForm.querySelector("[name=api_key_env]").title = "";
       providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
-      providerForm.dataset.hasApiKey = "false";
+      providerForm.dataset.hasInlineApiKey = "false";
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;

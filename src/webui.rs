@@ -1091,16 +1091,12 @@ fn looks_like_env_var_name(value: &str) -> bool {
         Some(ch) => ch,
         None => return false,
     };
-    if !(first.is_ascii_alphabetic() || first == '_') {
+    if !(first.is_ascii_uppercase() || first == '_') {
         return false;
     }
-    if !value
+    value
         .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    {
-        return false;
-    }
-    true
+        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
 }
 
 fn sanitize_provider_id_fragment(input: &str) -> String {
@@ -1474,6 +1470,9 @@ async fn create_provider(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| ApiError::bad_request("id is required"))?;
         validate_provider_id(id)?;
+        if provider_id_is_taken(&state, id) {
+            return Err(ApiError::bad_request("provider already exists"));
+        }
         if id == PRIMARY_PROVIDER_ID {
             return Err(ApiError::bad_request("cannot create default provider id"));
         }
