@@ -1695,8 +1695,6 @@ async fn update_provider(
 ) -> Result<Json<ProviderView>, ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
-    let replacing_credentials = matches!(fields.api_key, OptionalPatch::Clear)
-        || matches!(fields.api_key_env, OptionalPatch::Clear);
     normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
@@ -1714,9 +1712,7 @@ async fn update_provider(
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        if !replacing_credentials {
-            reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
-        }
+        reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
         let previous_enabled = provider.enabled;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);

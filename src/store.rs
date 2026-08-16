@@ -270,7 +270,7 @@ impl Store {
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
         connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
         restrict_sqlite_file_mode(path)?;
-        restrict_sqlite_sidecar_mode(path);
+        restrict_sqlite_sidecar_mode(path)?;
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
         })
@@ -1369,19 +1369,20 @@ fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn restrict_sqlite_sidecar_mode(path: &Path) {
+fn restrict_sqlite_sidecar_mode(path: &Path) -> anyhow::Result<()> {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return;
+        return Ok(());
     };
     let Some(parent) = path.parent() else {
-        return;
+        return Ok(());
     };
     for suffix in ["-wal", "-shm"] {
         let sidecar = parent.join(format!("{name}{suffix}"));
         if sidecar.exists() {
-            let _ = restrict_sqlite_file_mode(&sidecar);
+            restrict_sqlite_file_mode(&sidecar)?;
         }
     }
+    Ok(())
 }
 
 fn provider_overlay_config_json(

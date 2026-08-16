@@ -549,7 +549,6 @@
 
   function isAmbiguousEnvReplacement(draft) {
     return credentialState.loadedKind === "env"
-      && !credentialState.cleared
       && isTruncatedEnvName(credentialState.loadedRaw, draft);
   }
 
@@ -608,6 +607,9 @@
 
   function credentialPatch() {
     const draft = String(credentialState.draft || "").trim();
+    if (credentialFieldTomlLocked) {
+      return { kind: "keep" };
+    }
     if (isInlineKeyLocked()) {
       return { kind: "keep" };
     }
@@ -693,7 +695,6 @@
     clearCredentialsBtn.addEventListener("click", () => {
       credentialState.draft = "";
       credentialState.preview = "";
-      credentialState.loadedRaw = "";
       credentialState.cleared = true;
       credentialState.reveal = false;
       renderCredentialInput();
@@ -758,10 +759,7 @@
         ? {}
         : credential.kind === "clear"
           ? { api_key_env: null, api_key: null }
-          : {
-              api_key_env: credential.value,
-              ...(credentialState.cleared ? { api_key: null } : {}),
-            }),
+          : { api_key_env: credential.value }),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",

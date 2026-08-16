@@ -534,6 +534,13 @@ fn reject_truncated_env_replacement_blocks_reclassified_prefix() {
     normalize_provider_api_key_fields(&mut replacement);
     reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &replacement)
         .expect("unrelated all-caps tokens are not truncations");
+
+    let mut cleared_then_truncated =
+        persist_credentials(OptionalPatch::Set("OPENAI".into()), OptionalPatch::Clear);
+    normalize_provider_api_key_fields(&mut cleared_then_truncated);
+    let err = reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &cleared_then_truncated)
+        .unwrap_err();
+    assert!(err.message.contains("shortened environment variable name"));
 }
 
 #[test]
@@ -615,8 +622,8 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "Add provider must wait for templates before opening the create form"
     );
     assert!(
-        app.contains("...(credentialState.cleared ? { api_key: null } : {})"),
-        "replacing after Clear must send api_key null so the server skips truncation rejection"
+        app.contains("if (credentialFieldTomlLocked) {\n      return { kind: \"keep\" };"),
+        "TOML-backed credential fields must omit patches so inline TOML keys are not cleared"
     );
     assert!(
         !app.contains("if (credentialState.preview) {\n      apiKeyInput.value = \"\";"),
