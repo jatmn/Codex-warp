@@ -445,6 +445,8 @@ struct ProviderView {
     chat_completions_path: String,
     models_path: String,
     model_catalog_only: bool,
+    /// True when `id` matches a bundled named example template.
+    named_template: bool,
     models: Vec<ModelView>,
 }
 
@@ -1042,6 +1044,9 @@ fn build_provider_view(
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),
         model_catalog_only: provider.model_catalog_only,
+        named_template: bundled_provider_templates().iter().any(|template| {
+            template.key != "custom" && !template.id.is_empty() && template.id == id
+        }),
         models: build_model_views(state, id, provider, routed_models),
     }
 }

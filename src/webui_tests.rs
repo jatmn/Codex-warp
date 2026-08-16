@@ -639,8 +639,18 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "create and edit forms must wait for templates before matching named vs custom"
     );
     assert!(
-        app.contains("const isNamed = !!matching && matching.key !== \"custom\";"),
-        "a missing template match must stay custom, not lock the form as a named template"
+        app.contains("const isNamed = !!p.named_template;"),
+        "named vs custom edit lock must come from the provider view, not the template catalog"
+    );
+    assert!(
+        app.contains(
+            "function setCredentialInput(raw, preview = \"\", saved = false, inlineSaved = false)"
+        ),
+        "a managed inline key without a preview must still count as a loaded inline secret"
+    );
+    assert!(
+        app.contains("return template && template.key ? template.key : \"\";"),
+        "edit must not throw when the template catalog is empty"
     );
     assert!(
         app.contains("if (!p) return;"),
@@ -695,6 +705,7 @@ fn managed_provider_view_exposes_only_masked_api_key() {
 
     let view = build_provider_view(&state, "managed", &provider, &[]);
     assert!(view.managed);
+    assert!(!view.named_template);
     assert!(view.has_inline_api_key);
     assert!(view.has_api_key);
     let preview = view
@@ -713,6 +724,16 @@ fn managed_provider_view_exposes_only_masked_api_key() {
     );
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn bundled_named_provider_view_sets_named_template() {
+    let state = test_state();
+    let provider = ProviderConfig::default();
+    let named = build_provider_view(&state, "opencode_go", &provider, &[]);
+    assert!(named.named_template);
+    let custom = build_provider_view(&state, "my-custom", &provider, &[]);
+    assert!(!custom.named_template);
 }
 
 #[test]

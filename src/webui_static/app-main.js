@@ -663,7 +663,7 @@
     updateCredentialClassHint();
   }
 
-  function setCredentialInput(raw, preview = "", saved = false) {
+  function setCredentialInput(raw, preview = "", saved = false, inlineSaved = false) {
     const trimmed = String(raw || "").trim();
     credentialState.draft = trimmed;
     credentialState.preview = preview || "";
@@ -675,7 +675,7 @@
     } else if (looksLikeEnvVarName(trimmed)) {
       credentialState.loadedRaw = trimmed;
       credentialState.loadedKind = "env";
-    } else if (preview) {
+    } else if (preview || inlineSaved) {
       credentialState.loadedRaw = "";
       credentialState.loadedKind = "inline";
     } else {
@@ -920,7 +920,7 @@
   }
 
   function templateOptionValue(template) {
-    return template.key;
+    return template && template.key ? template.key : "";
   }
 
   function findTemplateByOptionValue(value) {
@@ -1048,17 +1048,22 @@
       templateField.hidden = false;
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
-      const isNamed = !!matching && matching.key !== "custom";
+      const isNamed = !!p.named_template;
       const allowCustomHeaders = !!p.managed;
-      templateSelect.value = matching
+      const selectedOption = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
             providerTemplates.find((template) => template.key === "custom") ||
               providerTemplates[0],
           );
+      if (selectedOption) {
+        templateSelect.value = selectedOption;
+      }
       templateDescription.textContent =
         matching?.description ||
-        "This provider does not match a bundled example template.";
+        (p.named_template
+          ? "This provider was created from a bundled example template."
+          : "This provider does not match a bundled example template.");
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
       idInput.value = p.id;
@@ -1070,6 +1075,7 @@
         p.api_key_env || "",
         p.managed ? (p.api_key_preview || "") : "",
         true,
+        !!(p.managed && p.has_inline_api_key && !p.api_key_env),
       );
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
       providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
