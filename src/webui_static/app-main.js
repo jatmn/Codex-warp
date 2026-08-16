@@ -1267,6 +1267,19 @@
     return frag;
   }
 
+  // Key-only tooltip row (no numeric value). Used for empty-bucket copy and
+  // overflow counts so those lines stay on the same DOM contract as line/bar
+  // tooltips instead of injecting HTML strings.
+  function tooltipNoteRow(text) {
+    const row = document.createElement("div");
+    row.className = "tt-row";
+    const key = document.createElement("span");
+    key.className = "tt-key";
+    key.textContent = text;
+    row.append(key);
+    return row;
+  }
+
   function lineTooltipEl(point, labelStyle, colors, hasCached) {
     return tooltipEl(formatBucketLabel(point.ts, labelStyle), tooltipRowsFor(point, colors, hasCached));
   }
@@ -1388,8 +1401,10 @@
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
-  function modelTooltipHtml(models, idx, labelStyle, metric) {
-    if (!models.length || !models[0].points[idx]) return "";
+  function modelTooltipEl(models, idx, labelStyle, metric) {
+    if (!models.length || !models[0].points[idx]) {
+      return document.createDocumentFragment();
+    }
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
     // A zero-filled gap bucket has no activity: list only models with a value
     // in this bucket so the tooltip does not claim "0" rows are present.
@@ -1397,23 +1412,21 @@
       (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
     );
     const shown = present.slice(0, 12);
-    const rows = [];
-    shown.forEach((model, i) => {
-      rows.push([
-        model.model,
-        model.points[idx][metric],
-        paletteColor(models.indexOf(model)),
-      ]);
-    });
-    let html = `<div class="tt-title">${esc(title)}</div>` + tooltipRowsHtml(rows);
-    if (present.length > shown.length) {
-      html += `<div class="tt-row"><span class="tt-key">+${present.length - shown.length} more models</span></div>`;
-    }
+    const rows = shown.map((model) => [
+      model.model,
+      model.points[idx][metric],
+      paletteColor(models.indexOf(model)),
+    ]);
     if (!rows.length) {
-      html = `<div class="tt-title">${esc(title)}</div>` +
-        `<div class="tt-row"><span class="tt-key">No ${metric} in this bucket</span></div>`;
+      const empty = tooltipEl(title, []);
+      empty.append(tooltipNoteRow(`No ${metric} in this bucket`));
+      return empty;
     }
-    return html;
+    const frag = tooltipEl(title, rows);
+    if (present.length > shown.length) {
+      frag.append(tooltipNoteRow(`+${present.length - shown.length} more models`));
+    }
+    return frag;
   }
 
   function modelTooltipSummary(models, idx, labelStyle, metric) {
@@ -1437,7 +1450,7 @@
       canvas,
       pos.x,
       pos.y,
-      modelTooltipHtml(state.series, idx, state.labelStyle, state.metric),
+      modelTooltipEl(state.series, idx, state.labelStyle, state.metric),
     );
     announceChartData(
       canvas,
@@ -1445,15 +1458,12 @@
     );
   }
 
-  function pieTooltipHtml(row, total, color) {
+  function pieTooltipEl(row, total, color) {
     const pct = total > 0 ? (row.value / total) * 100 : 0;
-    return (
-      `<div class="tt-title">${esc(row.key)}</div>` +
-      tooltipRowsHtml([
-        ["Tokens", row.value, color],
-        ["Share (%)", Math.round(pct * 10) / 10, null],
-      ])
-    );
+    return tooltipEl(row.key, [
+      ["Tokens", row.value, color],
+      ["Share (%)", Math.round(pct * 10) / 10, null],
+    ]);
   }
 
   function pieTooltipSummary(row, total) {
@@ -1469,7 +1479,7 @@
       g.cx + Math.cos(mid) * g.r * 0.6,
       g.cy + Math.sin(mid) * g.r * 0.6,
     );
-    showChartTooltip(canvas, pos.x, pos.y, pieTooltipHtml(state.rows[idx], state.total, paletteColor(idx)));
+    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total, paletteColor(idx)));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2072,7 +2082,7 @@
       canvas,
       event.clientX,
       event.clientY,
-      modelTooltipHtml(state.series, idx, state.labelStyle, state.metric),
+      modelTooltipEl(state.series, idx, state.labelStyle, state.metric),
     );
     announceChartData(
       canvas,
@@ -2084,7 +2094,7 @@
     if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
     const idx = resolvePieIdx(state);
     if (idx < 0) return;
-    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipHtml(state.rows[idx], state.total, paletteColor(idx)));
+    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total, paletteColor(idx)));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2293,7 +2303,7 @@
           canvas,
           canvas.__mouse.x,
           canvas.__mouse.y,
-          modelTooltipHtml(models, idx, labelStyle, metric),
+          modelTooltipEl(models, idx, labelStyle, metric),
         );
         announceChartData(
           canvas,
@@ -2495,11 +2505,11 @@
           canvas,
           canvas.__mouse.x,
           canvas.__mouse.y,
-          pieTooltipHtml(sorted[hidx], total, paletteColor(hidx)),
+          pieTooltipEl(state.rows[hidx], total, paletteColor(hidx)),
         );
         announceChartData(
           canvas,
-          Charts.liveRegionText(hidx, pieTooltipSummary(sorted[hidx], total)),
+          Charts.liveRegionText(hidx, pieTooltipSummary(state.rows[hidx], total)),
         );
       } else {
         showPieTooltipFor(canvas, state, hidx);

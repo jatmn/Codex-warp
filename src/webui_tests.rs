@@ -857,7 +857,11 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     let app = include_str!("webui_static/app-main.js");
     assert!(app.contains("function drawModelUsageChart("));
     assert!(app.contains("function drawPieChart("));
-    assert!(app.contains("function pieTooltipHtml("));
+    assert!(app.contains("function pieTooltipEl("));
+    assert!(app.contains("function modelTooltipEl("));
+    assert!(app.contains("function tooltipNoteRow("));
+    assert!(!app.contains("tooltipRowsHtml"));
+    assert!(!app.contains("${esc("));
     assert!(app.contains("function renderChartLegend("));
     assert!(app.contains("chart-pie-provider"));
     assert!(app.contains("chart-model-sessions"));
