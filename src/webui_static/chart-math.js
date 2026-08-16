@@ -402,9 +402,20 @@
     return idx;
   }
 
+  // Map a client coordinate on one axis into the canvas paint space used after
+  // fitCanvasMetrics (CSS pixels, not layout/clientHeight). X and Y share this
+  // projector so pie hit-testing cannot drift between mousemove and redraw.
+  function pointerCssCoord(client, rectOrigin, rectSize, cssSize) {
+    if (!rectSize) return 0;
+    return ((client - rectOrigin) * cssSize) / rectSize;
+  }
+
   function pointerCssX(clientX, rectLeft, rectWidth, cssW) {
-    if (!rectWidth) return 0;
-    return ((clientX - rectLeft) * cssW) / rectWidth;
+    return pointerCssCoord(clientX, rectLeft, rectWidth, cssW);
+  }
+
+  function pointerCssY(clientY, rectTop, rectHeight, cssH) {
+    return pointerCssCoord(clientY, rectTop, rectHeight, cssH);
   }
 
   function resolveIdxByTs(points, hoverTs) {
@@ -684,7 +695,9 @@
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,
+    pointerCssCoord,
     pointerCssX,
+    pointerCssY,
     resolveIdxByTs,
     reconcileHoverTs,
     nextKeyboardIdx,

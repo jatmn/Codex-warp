@@ -205,6 +205,27 @@ check("pointerCssX maps client X into CSS chart coordinates", () => {
   assert.equal(charts.pointerCssX(100, 100, 0, 400), 0);
 });
 
+check("pointerCssY maps client Y into paint-space height, not layout height", () => {
+  assert.equal(charts.pointerCssY(150, 100, 200, 400), 100);
+  assert.equal(charts.pointerCssY(100, 100, 0, 260), 0);
+  // A pie painted at cssH=260 inside a 200px layout rect: the vertical
+  // midpoint must hit paint Y 130, not layout Y 100.
+  const rectTop = 50;
+  const rectHeight = 200;
+  const cssH = 260;
+  const clientY = rectTop + rectHeight / 2;
+  assert.equal(charts.pointerCssY(clientY, rectTop, rectHeight, cssH), 130);
+  assert.notEqual(charts.pointerCssY(clientY, rectTop, rectHeight, cssH), rectHeight / 2);
+  assert.equal(
+    charts.pointerCssY(clientY, rectTop, rectHeight, cssH),
+    charts.pointerCssX(clientY, rectTop, rectHeight, cssH),
+  );
+  assert.equal(
+    charts.pointerCssCoord(clientY, rectTop, rectHeight, cssH),
+    charts.pointerCssY(clientY, rectTop, rectHeight, cssH),
+  );
+});
+
 check("reconcileHoverTs drops identity when the bucket disappears", () => {
   const full = [{ ts: 1 }, { ts: 2 }, { ts: 3 }];
   assert.equal(charts.reconcileHoverTs(full, 3), 3);

@@ -741,7 +741,9 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("chartSurface"));
     assert!(body.contains("chartCanvasAttrs"));
     assert!(body.contains("pieSlices"));
-    assert!(body.contains("pieSliceIndexAt"));
+    assert!(body.contains("pointerCssX"));
+    assert!(body.contains("pointerCssY"));
+    assert!(body.contains("pointerCssCoord"));
     assert!(body.contains("pieMidAngle"));
     assert!(body.contains("reconcilePieHover"));
     assert!(!body.contains("CodexWarpFooter"));
@@ -860,6 +862,14 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("function pieTooltipEl("));
     assert!(app.contains("function modelTooltipEl("));
     assert!(app.contains("function tooltipNoteRow("));
+    assert!(app.contains("function tooltipEl("));
+    assert!(app.contains("tip.replaceChildren(content)"));
+    assert!(app.contains("return tooltipEl(row.key, ["));
+    assert!(app.contains("const empty = tooltipEl(title, []);"));
+    assert!(app.contains("canvas.__cssH = metrics.cssH;"));
+    assert!(app.contains("g.cssH || canvas.__cssH"));
+    assert!(app.contains("Charts.pointerCssY("));
+    assert!(app.contains("cssW: w, cssH: h }"));
     assert!(!app.contains("tooltipRowsHtml"));
     assert!(!app.contains("${esc("));
     assert!(app.contains("function renderChartLegend("));

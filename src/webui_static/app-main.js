@@ -1172,6 +1172,7 @@
       cssHeight || 220,
     );
     canvas.__cssW = metrics.cssW;
+    canvas.__cssH = metrics.cssH;
     if (canvas.width !== metrics.bufferW || canvas.height !== metrics.bufferH) {
       canvas.width = metrics.bufferW;
       canvas.height = metrics.bufferH;
@@ -1363,7 +1364,7 @@
   function chartToClient(canvas, cssX, cssY) {
     const rect = canvas.getBoundingClientRect();
     const cssW = canvas.__cssW || canvas.clientWidth || 1;
-    const cssH = canvas.clientHeight || 220;
+    const cssH = canvas.__cssH || canvas.clientHeight || 220;
     return {
       x: rect.left + (cssX * rect.width) / cssW,
       y: rect.top + (cssY * rect.height) / cssH,
@@ -1886,11 +1887,9 @@
       return best < 0 ? null : buckets[best].ts;
     }
     if (state.kind === "pie") {
-      const rect = canvas.getBoundingClientRect();
-      const cssW = state.geometry.cssW || canvas.__cssW || canvas.clientWidth || 1;
-      const cssH = canvas.clientHeight || 260;
-      const my = ((event.clientY - rect.top) * cssH) / rect.height;
       const g = state.geometry;
+      const cssH = g.cssH || canvas.__cssH || 260;
+      const my = Charts.pointerCssY(event.clientY, rect.top, rect.height, cssH);
       // The hover ring is painted at radius + 4, so the hit zone must extend
       // to the same band or moving the pointer onto the ring dismisses the
       // selection it indicates.
@@ -2423,7 +2422,7 @@
         rect.width,
         w,
       );
-      const my = ((canvas.__mouse.y - rect.top) * h) / rect.height;
+      const my = Charts.pointerCssY(canvas.__mouse.y, rect.top, rect.height, h);
       const hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
       if (hitIdx >= 0) effectiveHoverIdx = hitIdx;
       else effectiveHoverIdx = -1;
@@ -2433,7 +2432,7 @@
       rows: active,
       legendRows,
       total,
-      geometry: { cx, cy, r: radius, slices },
+      geometry: { cx, cy, r: radius, slices, cssW: w, cssH: h },
       hoverTs: effectiveHoverIdx >= 0 ? effectiveHoverIdx : null,
       hoverKey:
         effectiveHoverIdx >= 0 ? active[effectiveHoverIdx].key : null,
