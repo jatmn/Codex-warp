@@ -129,6 +129,205 @@
     };
   }
 
+  // Pack legend chips into a bounded number of rows in the top padding band.
+  // Layout and paint share this chrome: pad + swatch + label gap + right pad.
+  // Never shrink a chip below the swatch box; ellipsize labels down to a
+  // single character instead of blanking them. Overflow is allowed only when
+  // even two rows of min-width chips cannot fit the budget.
+  function legendChipChrome(options) {
+    const pad = options && options.pad != null ? Number(options.pad) : 4;
+    const swatch = options && options.swatch != null ? Number(options.swatch) : 8;
+    const labelGap = options && options.labelGap != null ? Number(options.labelGap) : 4;
+    const rightPad = options && options.rightPad != null ? Number(options.rightPad) : 6;
+    const labelX = pad + swatch + labelGap;
+    return {
+      pad,
+      swatch,
+      labelGap,
+      rightPad,
+      labelX,
+      chrome: labelX + rightPad,
+      minChip: pad + swatch + pad,
+    };
+  }
+
+  // Vertical pitch of legend rows in the reserved top band. Paint and padT
+  // extra must share this so a packed second row cannot sit on the clip edge.
+  const LEGEND_ROW_PITCH = 24;
+  const LEGEND_ROW_Y0 = 6;
+
+  function legendChipRowY(rowIndex) {
+    return LEGEND_ROW_Y0 + (Number(rowIndex) || 0) * LEGEND_ROW_PITCH;
+  }
+
+  // Extra top padding follows packed row count, not horizontal overflow.
+  // Overflow still paints every packed row (clip handles width); withholding
+  // padT would clip those rows vertically.
+  function legendSecondRowPad(layout) {
+    const rows = layout && layout.rows;
+    const count = rows && rows.length ? rows.length : 0;
+    if (count <= 1) return 0;
+    return (count - 1) * LEGEND_ROW_PITCH;
+  }
+
+  function layoutLegendChips(items, measureText, rowBudget, options) {
+    const gap = options && options.gap != null ? Number(options.gap) : 6;
+    const style = legendChipChrome(options);
+    const maxRows = Math.max(1, options && options.maxRows != null ? Number(options.maxRows) : 2);
+    const budget = Number(rowBudget);
+    const list = (items || []).map((item) => {
+      if (Array.isArray(item)) return { label: String(item[0] || ""), color: item[1] };
+      return { label: String(item && item.label ? item.label : ""), color: item && item.color };
+    });
+    const measure = (text) => {
+      if (typeof measureText !== "function") return String(text || "").length;
+      const width = Number(measureText(text == null ? "" : String(text)));
+      return Number.isFinite(width) && width > 0 ? width : 0;
+    };
+    const finiteBudget = Number.isFinite(budget) ? budget : 0;
+    const chipWidth = (label) => {
+      const text = label || "";
+      if (!text) return style.minChip;
+      return Math.max(style.minChip, style.chrome + measure(text));
+    };
+    const rowPixelWidth = (labels) =>
+      labels.reduce((sum, label, i) => sum + chipWidth(label) + (i ? gap : 0), 0);
+
+    function partitionSizes(n, rowCount) {
+      if (rowCount <= 0 || n <= 0) return [];
+      if (rowCount === 1) return [[n]];
+      if (rowCount > n) return [];
+      const out = [];
+      for (let first = 1; first <= n - rowCount + 1; first++) {
+        for (const rest of partitionSizes(n - first, rowCount - 1)) {
+          out.push([first, ...rest]);
+        }
+      }
+      return out;
+    }
+
+    function groupsBySizes(source, sizes) {
+      const groups = [];
+      let start = 0;
+      for (const size of sizes) {
+        groups.push(source.slice(start, start + size));
+        start += size;
+      }
+      return groups;
+    }
+
+    function ellipsize(labels) {
+      const out = labels.map((label) => String(label || ""));
+      let guard = 0;
+      while (rowPixelWidth(out) > finiteBudget && guard++ < 400) {
+        let idx = -1;
+        let widest = -1;
+        for (let i = 0; i < out.length; i++) {
+          const base = out[i].endsWith("…") ? out[i].slice(0, -1) : out[i];
+          if (!base || base.length <= 1) continue;
+          const width = chipWidth(out[i]);
+          if (width > widest) {
+            widest = width;
+            idx = i;
+          }
+        }
+        if (idx < 0) break;
+        const current = out[idx];
+        const base = current.endsWith("…") ? current.slice(0, -1) : current;
+        out[idx] = `${base.slice(0, -1)}…`;
+      }
+      return out;
+    }
+
+    function fitLabels(labels, allowOverflow) {
+      const out = ellipsize(labels);
+      const total = rowPixelWidth(out);
+      if (!allowOverflow && total > finiteBudget) return null;
+      return out.map((label) => ({ label, width: chipWidth(label) }));
+    }
+
+    function toChips(group, fitted) {
+      return fitted.map((chip, i) => ({
+        label: chip.label,
+        color: group[i].color,
+        width: chip.width,
+        pad: style.pad,
+        swatch: style.swatch,
+        labelX: style.labelX,
+      }));
+    }
+
+    function scorePacked(packed) {
+      const labels = packed.flat().map((chip) => chip.label || "");
+      const readable = labels.filter((label) => String(label).trim()).length;
+      const chars = labels.reduce((sum, label) => sum + String(label).length, 0);
+      return readable * 1000 + chars;
+    }
+
+    function pack(rowCount, allowOverflow) {
+      const sizeOptions =
+        rowCount === 1 ? [[list.length]] : partitionSizes(list.length, rowCount);
+      let best = null;
+      let bestScore = -1;
+      for (const sizes of sizeOptions) {
+        const groups = groupsBySizes(list, sizes);
+        const packed = [];
+        for (const group of groups) {
+          const fitted = fitLabels(
+            group.map((item) => item.label),
+            allowOverflow,
+          );
+          if (!fitted) {
+            packed.length = 0;
+            break;
+          }
+          packed.push(toChips(group, fitted));
+        }
+        if (!packed.length) continue;
+        const score = scorePacked(packed);
+        if (score > bestScore) {
+          bestScore = score;
+          best = packed;
+        }
+      }
+      return best;
+    }
+
+    if (!list.length) return { rows: [], style, overflow: false };
+    const capped = Math.min(maxRows, list.length);
+    // Score every non-overflow row count. First-fit prefers a 1-row pack that
+    // "fits" only after shrinking labels to one character, even when two rows
+    // would keep the series names readable. Tie-break toward fewer rows so a
+    // wide canvas stays on one line.
+    let best = null;
+    let bestScore = -1;
+    let bestRowCount = Infinity;
+    for (let rowCount = 1; rowCount <= capped; rowCount++) {
+      const packed = pack(rowCount, false);
+      if (!packed) continue;
+      const score = scorePacked(packed);
+      if (score > bestScore || (score === bestScore && rowCount < bestRowCount)) {
+        best = packed;
+        bestScore = score;
+        bestRowCount = rowCount;
+      }
+    }
+    if (best) return { rows: best, style, overflow: false };
+    return { rows: pack(capped, true) || [], style, overflow: true };
+  }
+
+  // Legend paint is clipped to the reserved top band. Packing may still emit
+  // min-width swatches when the budget cannot hold them; clip keeps those
+  // boxes off the plot and the right-axis column.
+  function legendPaintClip(startX, budget, height) {
+    return {
+      x: Number(startX) || 0,
+      y: 0,
+      width: Math.max(0, Number(budget) || 0),
+      height: Math.max(0, Number(height) || 0),
+    };
+  }
+
   // Gap is a remainder of each slot, never an independent cost that can consume
   // the whole plot and leave barW at 0. Hit-testing should use `slot`, not barW.
   function barSlotLayout(plotW, n) {
@@ -162,6 +361,16 @@
   // axis mapping. Subpixel values sit on a 1px bar at the baseline.
   function barAnchorY(val, top, plotH, padT) {
     return (Number(padT) || 0) + barPaintRect(val, top, plotH).y;
+  }
+
+  // Keyboard/non-pointer line-chart tooltips sit on the highest token-axis
+  // marker for the bucket. Cached can exceed total (cache reads reported
+  // outside input tokens), so the anchor must follow the painted rings.
+  function tokenAxisAnchorTokens(total, cached, hasCachedData) {
+    const totalTokens = Number(total) || 0;
+    if (!hasCachedData) return totalTokens;
+    const cachedTokens = Number(cached) || 0;
+    return cachedTokens > 0 ? Math.max(totalTokens, cachedTokens) : totalTokens;
   }
 
   // Pointer tooltips follow the cursor. Keyboard (and pointer-without-coords)
@@ -384,9 +593,15 @@
     canvasCssWidth,
     fitCanvasMetrics,
     layoutChartPlot,
+    legendChipChrome,
+    legendChipRowY,
+    legendSecondRowPad,
+    layoutLegendChips,
+    legendPaintClip,
     barSlotLayout,
     barPaintRect,
     barAnchorY,
+    tokenAxisAnchorTokens,
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,

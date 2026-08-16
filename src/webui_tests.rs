@@ -815,6 +815,40 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
 }
 
 #[test]
+fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
+    let app = include_str!("webui_static/app-main.js");
+    let index = include_str!("webui_static/index.html");
+    // Line and bar tooltips must surface cached tokens for the hovered bucket,
+    // the line chart must paint a cached series, and the keyboard/live summary
+    // must announce it as well.
+    assert!(app.contains("[\"Cached tokens\", point.cached_tokens || 0, colors.cached]"));
+    assert!(app.contains("tooltipRowsFor(point, {}, hasCached)"));
+    assert!(app.contains(".map(([name, value]) => `${name} ${fmtInt(value)}`)"));
+    assert!(app.contains("strokeSeries(cachedVals, yTokens, colors.cached, true, true)"));
+    assert!(app.contains("drawDots(cachedVals, yTokens, colors.cached, 2, true)"));
+    assert!(app.contains("ring(yTokens(point.cached_tokens || 0), colors.cached, 3)"));
+    assert!(app.contains("[\"Cached tokens\", colors.cached]"));
+    // The legend only advertises the cached series when the range has data.
+    assert!(app.contains("...(hasCachedData ? [[\"Cached tokens\", colors.cached]] : [])"));
+    // Tooltip rows and the live summary share tooltipRowsFor so field order cannot drift.
+    assert!(app.contains(
+        "...(hasCached ? [[\"Cached tokens\", point.cached_tokens || 0, colors.cached]] : [])"
+    ));
+    assert!(app.contains("Charts.layoutLegendChips("));
+    assert!(app.contains("Charts.legendPaintClip("));
+    assert!(app.contains("Charts.legendSecondRowPad("));
+    assert!(app.contains("Charts.legendChipRowY("));
+    assert!(app.contains("Charts.tokenAxisAnchorTokens("));
+    assert!(app.contains("lineChartTooltipAnchorY("));
+    assert!(app.contains("chip.labelX"));
+    assert!(app.contains("ctx.measureText(\"tokens\").width"));
+    // Keyboard help copy lists the fields each bucket reports in tooltip order.
+    assert!(index.contains(
+        "total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions"
+    ));
+}
+
+#[test]
 fn webui_app_bundle_joins_fragments_on_a_line_boundary() {
     let footer = "first\n";
     let main = "second\n";

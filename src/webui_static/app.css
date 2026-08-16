@@ -18,6 +18,7 @@
   --chart-sessions: #16a34a;
   --chart-input: #2563eb;
   --chart-output: #7c3aed;
+  --chart-cached: #be185d;
   --radius: 10px;
   --radius-sm: 6px;
   --shadow: 0 1px 2px rgba(24, 24, 27, 0.04), 0 4px 16px rgba(24, 24, 27, 0.06);
@@ -47,6 +48,7 @@ html[data-theme="dark"] {
   --chart-sessions: #4ade80;
   --chart-input: #60a5fa;
   --chart-output: #a78bfa;
+  --chart-cached: #fb7185;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.28);
   --shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.55);
   color-scheme: dark;

@@ -56,8 +56,53 @@ fn store_records_usage_and_aggregates_ranges() {
     assert_eq!(summary.prompts, 2);
     assert_eq!(summary.sessions, 2);
     assert_eq!(summary.total_tokens, 43);
+    assert_eq!(summary.cached_tokens, 2);
     assert_eq!(summary.by_provider.len(), 2);
     assert!(!summary.series.is_empty());
+    // Last24Hours is hourly, so two near-now events leave empty buckets that
+    // fill_series_gaps must synthesize. The Web UI reads series[].cached_tokens
+    // on every bucket (including those zeros); omitting the field on empty
+    // points would still sum to 2 if we defaulted missing values.
+    let json = serde_json::to_value(&summary).expect("serialize analytics summary");
+    let series_json = json["series"].as_array().expect("series array");
+    assert_eq!(summary.series.len(), series_json.len());
+    let mut cached_sum = 0i64;
+    let mut gap_filled = 0usize;
+    for (point, point_json) in summary.series.iter().zip(series_json.iter()) {
+        let cached = point_json["cached_tokens"]
+            .as_i64()
+            .expect("series[].cached_tokens i64");
+        assert_eq!(cached, point.cached_tokens);
+        cached_sum += cached;
+        let empty = point.prompts == 0
+            && point.sessions == 0
+            && point.input_tokens == 0
+            && point.output_tokens == 0
+            && point.total_tokens == 0;
+        if empty {
+            gap_filled += 1;
+            assert_eq!(
+                point.cached_tokens, 0,
+                "gap-filled buckets must not inherit cached tokens"
+            );
+        }
+        // Cached usage came from the 15-token alpha event, not the 28-token
+        // beta event. A bucket that carries those two cached tokens must also
+        // carry alpha's totals (alone or combined with beta in the same hour).
+        match point.cached_tokens {
+            0 => {}
+            2 => assert!(
+                point.total_tokens == 15 || point.total_tokens == 43,
+                "cached tokens attributed to a bucket without the alpha event"
+            ),
+            other => panic!("unexpected per-bucket cached_tokens {other}"),
+        }
+    }
+    assert_eq!(cached_sum, 2);
+    assert!(
+        gap_filled > 0,
+        "Last24Hours with two events must include gap-filled buckets"
+    );
 
     let filtered = store
         .analytics(AnalyticsRange::Last24Hours, Some("alpha"), None)
