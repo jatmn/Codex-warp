@@ -11,7 +11,8 @@
 
 ## Validation
 
-- [ ] `cargo fmt --check`
+- [ ] `bash scripts/source-checks.sh` (fmt, typos, docs prose, JS, clippy on changed lines)
+- [ ] `cargo update --workspace --locked` (CI also runs this)
 - [ ] `cargo test --locked`
 - [ ] `cargo build --locked`
 - [ ] `target/debug/codex-warp --version`

@@ -141,16 +141,17 @@ Studio Build Tools, or run from a Developer PowerShell.
 Run these before committing code changes:
 
 ```bash
-cargo fmt --check
+bash scripts/source-checks.sh
 cargo test --locked
 cargo build --locked
 git diff --check
-node --check src/webui_static/theme-bootstrap.js
-node --check src/webui_static/chart-math.js
-node --check src/webui_static/footer-status.js
-node --check src/webui_static/app-main.js
-node scripts/webui_chart_harness.js
 ```
+
+`scripts/source-checks.sh` runs rustfmt, `typos`, docs whitespace, docs
+contraction capitalization (lowercase first-person contractions outside code
+spans), `node --check` for the Web UI scripts, the chart harness, and Clippy
+on added or edited Rust lines. Those Clippy hits are review findings. Install
+the spell checker with `cargo install typos-cli --locked`.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
 ownership, pointer reclaim only on hit, paint only with a measured CSS width,
@@ -158,12 +159,11 @@ live-region clear, canvas interactivity attrs, bar paint anchors) and
 `footer-status.js` (analytics footer copy when chart-math is missing, boot
 errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
 
-For documentation-only changes, `git diff --check` and a quick trailing
-whitespace scan are usually enough:
+For documentation-only changes:
 
 ```bash
+SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh
 git diff --check
-rg -n "[ \t]+$" README.md AGENTS.md docs
 ```
 
 ## Continuous Integration
@@ -171,13 +171,17 @@ rg -n "[ \t]+$" README.md AGENTS.md docs
 GitHub Actions runs the source gate on pushes and pull requests to `main`.
 The CI job performs:
 
-- `cargo fmt --check`
+- `cargo update --workspace --locked` so `Cargo.lock` stays in sync with
+  `Cargo.toml`
+- `typos` spell check (`_typos.toml`)
+- `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
+  capitalization, Web UI JavaScript syntax and chart harness, Clippy on added
+  or edited Rust lines; existing Clippy warnings on untouched lines stay for a
+  follow-up cleanup)
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
-- `node --check` for `theme-bootstrap.js`, `chart-math.js`, `footer-status.js`, and `app-main.js`, plus `scripts/webui_chart_harness.js` (`chart-math.js` policy tests and `footer-status.js` overlay tests, not a browser canvas stub)
 - `git diff --check`
-- trailing-whitespace checks for README, AGENTS.md, and docs
 
 ## Source Layout
 

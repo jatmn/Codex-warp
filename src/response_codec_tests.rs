@@ -3595,7 +3595,7 @@ fn reasoning_stream_delta_handles_incremental_and_cumulative_fragments() {
     assert_eq!(reasoning_stream_delta("A", "B"), Some("B"));
     assert_eq!(reasoning_stream_delta("A", "AB"), Some("B"));
     assert_eq!(reasoning_stream_delta("AB", "AB"), None);
-    assert_eq!(reasoning_stream_delta("Hel", "Hello"), Some("lo"));
+    assert_eq!(reasoning_stream_delta("Hell", "Hello"), Some("o"));
 }
 
 #[test]
@@ -3674,7 +3674,7 @@ fn chat_stream_reasoning_content_deduplicates_cumulative_strings() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
         "choices": [{
-            "delta": {"reasoning_content": "Hel"}
+            "delta": {"reasoning_content": "Hell"}
         }]
     }));
     accum.apply_chat_chunk(&json!({

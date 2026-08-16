@@ -13,6 +13,7 @@ Guidance for coding agents working in this repository.
 - [Source Layout](#source-layout)
 - [Testing Layout](#testing-layout)
 - [Development](#development)
+- [Self-Review Gates](#self-review-gates)
 - [Secrets And Live Providers](#secrets-and-live-providers)
 - [Commits](#commits)
 
@@ -142,15 +143,10 @@ readability more than a separate test file. Avoid adding new large inline
 Run these for code changes:
 
 ```bash
-cargo fmt --check
+bash scripts/source-checks.sh
 cargo test --locked
 cargo build --locked
 git diff --check
-node --check src/webui_static/theme-bootstrap.js
-node --check src/webui_static/chart-math.js
-node --check src/webui_static/footer-status.js
-node --check src/webui_static/app-main.js
-node scripts/webui_chart_harness.js
 ```
 
 The chart harness exercises `chart-math.js` policy (ticks, hover identity, keyboard
@@ -162,9 +158,38 @@ errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
 For documentation-only changes:
 
 ```bash
+SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh
 git diff --check
-rg -n "[ \t]+$" README.md AGENTS.md docs
 ```
+
+## Self-Review Gates
+
+These checks exist so the first local review finds nits instead of dripping
+them into the next fix/push/review round. They do not replace review. A later
+reviewer (or Cubic/Sourcery) finding a typo, capitalization nit, or Clippy
+warning in a file you changed means this pass was skipped or incomplete.
+
+Before you call implementation or a local review done:
+
+1. Run `bash scripts/source-checks.sh`. Fix every failure (`cargo fmt`, `typos`,
+   trailing whitespace, lowercase docs contractions such as `i'll`, JavaScript
+   syntax, chart harness).
+2. Read the Clippy output from that script. The script fails on Clippy
+   warnings that overlap added or edited Rust lines. Those are defects to
+   fix or an explicit, justified `allow` with a comment. Do not leave them
+   for the next review round. Warnings on untouched lines are existing
+   baseline and belong in a dedicated Clippy cleanup PR, not a drive-by in
+   a feature or gate PR.
+3. Inspect changed comments, docs, user-visible strings, and test fixtures for
+   spelling, grammar, and capitalization. `typos` misses some prose nits
+   (contractions, title case). Those are still findings.
+4. After each fix round, re-run the script before starting another review.
+   Do not ping Cubic/Sourcery or re-run a full AI review until the mechanical
+   gates are green and changed-file Clippy warnings are gone.
+
+Install the spell checker with `cargo install typos-cli --locked` (Rust, not
+Python). Add `_typos.toml` exceptions only for confirmed identifiers or
+fixtures, never to hide a real misspelling.
 
 Use `apply_patch` for manual edits. Avoid unrelated refactors while fixing a
 specific compatibility issue.
