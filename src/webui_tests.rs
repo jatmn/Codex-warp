@@ -503,6 +503,40 @@ fn looks_like_env_var_name_matches_webui_classifier() {
 }
 
 #[test]
+fn is_truncated_env_name_matches_loaded_name_not_secret_shape() {
+    assert!(is_truncated_env_name("OPENAI_API_KEY", "OPENAI"));
+    assert!(is_truncated_env_name("OPENAI_API_KEY", "OPENAIAPIKEY"));
+    assert!(!is_truncated_env_name(
+        "OPENAI_API_KEY",
+        "AKIAIOSFODNN7EXAMPLE"
+    ));
+    assert!(!is_truncated_env_name(
+        "OPENAI_API_KEY",
+        "sk-live-not-an-env"
+    ));
+    assert!(!is_truncated_env_name("OPENAI_API_KEY", "OPENAI_API_KEY"));
+    assert!(!is_truncated_env_name("OPENAI_API_KEY", "OPENAI_LIVE"));
+}
+
+#[test]
+fn reject_truncated_env_replacement_blocks_reclassified_prefix() {
+    let mut fields =
+        persist_credentials(OptionalPatch::Set("OPENAI".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    let err = reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("shortened environment variable name"));
+
+    let mut replacement = persist_credentials(
+        OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into()),
+        OptionalPatch::Absent,
+    );
+    normalize_provider_api_key_fields(&mut replacement);
+    reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &replacement)
+        .expect("unrelated all-caps tokens are not truncations");
+}
+
+#[test]
 fn javascript_credential_helpers_stay_in_sync_with_rust() {
     let app = include_str!("webui_static/app-main.js");
     assert!(
@@ -512,6 +546,10 @@ fn javascript_credential_helpers_stay_in_sync_with_rust() {
     assert!(
         app.contains("Keep in lockstep with mask_api_key"),
         "JS mask helper must document the Rust twin"
+    );
+    assert!(
+        app.contains("Keep in lockstep with is_truncated_env_name"),
+        "JS truncation helper must document the Rust twin"
     );
     assert!(app.contains("/^[A-Z_][A-Z0-9_]*$/"));
     assert!(app.contains("return value.includes(\"_\")"));
@@ -535,6 +573,10 @@ fn javascript_credential_state_machine_locks_inline_keys() {
     assert!(
         app.contains("if (isInlineKeyLocked()) {\n      return { kind: \"keep\" };"),
         "masked inline keys must keep until an explicit clear/replace"
+    );
+    assert!(
+        app.contains("function isTruncatedEnvName("),
+        "truncated env names are compared to the loaded name, not a secret-shape heuristic"
     );
     assert!(
         app.contains("function isAmbiguousEnvReplacement("),
@@ -567,6 +609,14 @@ fn javascript_credential_state_machine_locks_inline_keys() {
     assert!(
         app.contains("draft.includes(\"•\")"),
         "pasting the masked preview must not persist as the secret"
+    );
+    assert!(
+        app.contains("async function ensureProviderTemplates("),
+        "Add provider must wait for templates before opening the create form"
+    );
+    assert!(
+        app.contains("...(credentialState.cleared ? { api_key: null } : {})"),
+        "replacing after Clear must send api_key null so the server skips truncation rejection"
     );
     assert!(
         !app.contains("if (credentialState.preview) {\n      apiKeyInput.value = \"\";"),
@@ -871,6 +921,18 @@ fn apply_provider_persist_null_clears_inline_api_key_and_headers() {
     fields.apply_to(&mut provider);
     assert!(provider.api_key.is_none());
     assert!(provider.headers.is_empty());
+}
+
+#[test]
+fn apply_provider_persist_clearing_env_also_clears_inline_secret() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("OPENAI_API_KEY".into()),
+        ..ProviderConfig::default()
+    };
+    persist_credentials(OptionalPatch::Clear, OptionalPatch::Absent).apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert!(provider.api_key_env.is_none());
 }
 
 #[test]
@@ -1524,7 +1586,7 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("function credentialPatch("));
     assert!(app.contains("function isInlineKeyLocked("));
     assert!(app.contains("function isAmbiguousEnvReplacement("));
-    assert!(app.contains("function looksLikeInlineSecret("));
+    assert!(app.contains("function isTruncatedEnvName("));
     assert!(app.contains("kind === \"clear\""));
     assert!(app.contains("kind === \"invalid\""));
     assert!(app.contains("{ api_key_env: null, api_key: null }"));

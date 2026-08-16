@@ -474,12 +474,19 @@ digits, and underscores, starts with `A–Z` or `_`, and contains at least one
 underscore (for example `OPENROUTER_API_KEY`). Every other value is stored as an
 inline `api_key`. Environment variable names stay visible in `GET /api/providers`;
 inline keys do not. Clearing an environment variable name or using Clear saved
-credentials sends JSON `null` for both credential fields. A masked saved key is
+credentials sends JSON `null` for both credential fields. A `PUT` that sends
+`null` for only one credential field also clears the other, because a provider
+has a single credential slot. A masked saved key is
 not editable in place: leaving it unchanged omits the fields and keeps the stored
 secret; replacing it requires Clear saved credentials, then a new value.
 Leaving a loaded environment variable name unchanged omits the credential fields.
-Pasting a masked preview (any value containing `•`) is rejected by the editor and
-by `PUT`/`POST` `/api/providers`.
+Editing a stored environment variable name into a truncation of that name
+(for example `OPENAI_API_KEY` → `OPENAI`) is rejected by the editor and by
+`PUT /api/providers/{id}`. Unrelated values such as `AKIA…` are treated as a new
+inline key. Pasting a masked preview (any value containing `•`) is rejected by
+the editor and by `PUT`/`POST` `/api/providers`. Managed overlay databases are
+opened with owner-only permissions (`0600` on Unix) because they may contain
+inline `api_key` values.
 
 CLI overrides:
 

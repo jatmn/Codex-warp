@@ -369,7 +369,9 @@
       editBtn.type = "button";
       editBtn.className = "btn small";
       editBtn.textContent = "Edit";
-      editBtn.addEventListener("click", () => openProviderForm(p));
+      editBtn.addEventListener("click", () => {
+        void openProviderForm(p);
+      });
 
       const delBtn = document.createElement("button");
       delBtn.type = "button";
@@ -530,21 +532,25 @@
   let credentialFieldTomlLocked = false;
   const credentialClassHint = $("#provider-credential-class");
 
-  // Inline secrets are mixed-case or punctuated (sk-…, tokens with '.').
-  // All-caps strings without those markers are env-name edits, not new keys.
-  function looksLikeInlineSecret(value) {
-    return /[a-z]/.test(value) || /[-.]/.test(value);
+  // Editing a loaded env name into a truncation of that name
+  // (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY) must not become an inline
+  // secret. Unrelated tokens such as AKIA… are replacements, not truncations.
+  // Keep in lockstep with is_truncated_env_name in src/webui.rs.
+  function compactEnvName(value) {
+    return String(value || "").replaceAll("_", "");
   }
 
-  // Editing a loaded env name into something that is neither env-shaped nor
-  // secret-shaped (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY) must not become
-  // an inline secret. After Clear saved credentials, any new value is allowed.
+  function isTruncatedEnvName(loaded, draft) {
+    if (!draft || looksLikeEnvVarName(draft)) return false;
+    const loadedCompact = compactEnvName(loaded);
+    const draftCompact = compactEnvName(draft);
+    return !!draftCompact && loadedCompact.startsWith(draftCompact);
+  }
+
   function isAmbiguousEnvReplacement(draft) {
     return credentialState.loadedKind === "env"
       && !credentialState.cleared
-      && !!draft
-      && !looksLikeEnvVarName(draft)
-      && !looksLikeInlineSecret(draft);
+      && isTruncatedEnvName(credentialState.loadedRaw, draft);
   }
 
   function isInlineKeyLocked() {
@@ -724,7 +730,9 @@
     renderCredentialInput();
   });
 
-  $("#btn-add-provider").addEventListener("click", () => openProviderForm());
+  $("#btn-add-provider").addEventListener("click", () => {
+    void openProviderForm();
+  });
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
   addProviderHeaderBtn.addEventListener("click", () => addProviderHeaderRow());
@@ -750,7 +758,10 @@
         ? {}
         : credential.kind === "clear"
           ? { api_key_env: null, api_key: null }
-          : { api_key_env: credential.value }),
+          : {
+              api_key_env: credential.value,
+              ...(credentialState.cleared ? { api_key: null } : {}),
+            }),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -1008,7 +1019,23 @@
     );
   }
 
-  function openProviderForm(p = null) {
+  async function ensureProviderTemplates() {
+    if (providerTemplates.length) return;
+    await loadProviderTemplates();
+    if (!providerTemplates.length) {
+      throw new Error("Provider templates are not available yet.");
+    }
+  }
+
+  async function openProviderForm(p = null) {
+    if (!p) {
+      try {
+        await ensureProviderTemplates();
+      } catch (e) {
+        status(`Error: ${e.message}`);
+        return;
+      }
+    }
     selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");
     const enabledField = $("#provider-enabled-field");

@@ -486,7 +486,7 @@ fn store_applies_provider_and_model_overlays() {
         },
     );
 
-    store.set_provider_enabled("manual", false).unwrap();
+    store.set_provider_enabled("manual", false, false).unwrap();
     store
         .set_model_enabled("manual", "upstream-only", false)
         .unwrap();
@@ -861,6 +861,44 @@ fn apply_overlays_does_not_resurrect_removed_primary_toml_provider() {
         .unwrap();
 
     assert!(config.provider.base_url.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_provider_enabled_refuses_to_insert_non_managed_row_for_managed_provider() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-enable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("enable.db")).unwrap();
+    let err = store
+        .set_provider_enabled("managed", false, true)
+        .expect_err("missing managed overlay must not become managed=0");
+    assert!(err.to_string().contains("missing"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn store_open_restricts_database_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-mode-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("mode.db");
+    let _store = Store::open(&db_path).unwrap();
+    let mode = std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
     let _ = std::fs::remove_dir_all(dir);
 }
 

@@ -206,6 +206,7 @@ impl Store {
         }
         let connection = Connection::open(path)
             .with_context(|| format!("open sqlite database {}", path.display()))?;
+        restrict_sqlite_file_mode(path)?;
         connection.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -268,6 +269,8 @@ impl Store {
         );
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
         connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
+        restrict_sqlite_file_mode(path)?;
+        restrict_sqlite_sidecar_mode(path);
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
         })
@@ -576,6 +579,7 @@ impl Store {
         &self,
         provider_id: &str,
         enabled: bool,
+        managed: bool,
     ) -> anyhow::Result<()> {
         let db = self.db.lock().expect("sqlite lock poisoned");
         let updated = db.execute(
@@ -583,6 +587,11 @@ impl Store {
             params![i64::from(enabled), provider_id],
         )?;
         if updated == 0 {
+            if managed {
+                anyhow::bail!(
+                    "managed provider overlay `{provider_id}` is missing; refusing to insert a non-managed row"
+                );
+            }
             db.execute(
                 "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
                  VALUES (?1, ?2, 0, 0, NULL)",
@@ -1342,6 +1351,37 @@ fn route_seeds_from_overlay_rows(
             (provider_id, model_id, upstream_id)
         })
         .collect()
+}
+
+fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("stat sqlite database {}", path.display()))?;
+        let mut permissions = metadata.permissions();
+        if permissions.mode() & 0o077 != 0 {
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(path, permissions)
+                .with_context(|| format!("restrict sqlite database mode {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn restrict_sqlite_sidecar_mode(path: &Path) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = parent.join(format!("{name}{suffix}"));
+        if sidecar.exists() {
+            let _ = restrict_sqlite_file_mode(&sidecar);
+        }
+    }
 }
 
 fn provider_overlay_config_json(
