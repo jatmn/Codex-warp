@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mechanical nits that should fail before a human or AI review round.
-# Clippy is crate-wide: `cargo clippy --all-targets -- -D warnings`.
+# Clippy is crate-wide: `cargo clippy --locked --all-targets --all-features -- -D warnings`.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -58,7 +58,7 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 if [ "$run_clippy" = "1" ]; then
-  echo "source-checks: clippy --all-targets -D warnings"
+  echo "source-checks: cargo clippy --locked --all-targets --all-features -- -D warnings"
   if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
     echo "source-checks: clippy warnings are findings" >&2
     fail=1

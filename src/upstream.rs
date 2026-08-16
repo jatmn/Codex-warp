@@ -600,6 +600,7 @@ pub(crate) fn rewrite_model_for_upstream(
     }
 }
 
+// Upstream send needs headers, body, and stream policy together.
 #[allow(clippy::too_many_arguments)]
 async fn send_native_responses(
     state: AppState,

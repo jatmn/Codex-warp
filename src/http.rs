@@ -79,7 +79,7 @@ pub(crate) fn endpoint_url(provider: &ProviderConfig, path: &str) -> String {
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))] // tests cover the default Accept wrapper
 pub(crate) fn apply_headers(
     request: reqwest::RequestBuilder,
     provider: &ProviderConfig,

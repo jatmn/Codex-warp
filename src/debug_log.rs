@@ -596,7 +596,7 @@ pub(crate) fn validate_debug_settings(config: &mut DebugConfig) -> Result<(), St
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))] // tests pin log paths through this wrapper
 pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
     pin_debug_log_path(path, true)
 }

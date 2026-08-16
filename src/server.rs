@@ -226,7 +226,7 @@ fn apply_configured_tracing_filter(state: &AppState) -> anyhow::Result<()> {
     reload.reload(&filter).map_err(|err| anyhow::anyhow!(err))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))] // tests use this shorter initialize entry
 fn initialize_state(config: crate::config::AppConfig) -> anyhow::Result<AppState> {
     let store_enabled = webui_store_enabled(config.webui.enabled, false);
     initialize_state_with_store(

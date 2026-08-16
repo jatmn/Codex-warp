@@ -44,6 +44,7 @@ impl AppState {
         self.config.write().expect("config lock poisoned")
     }
 
+    // Assembled from independently initialized subsystems at startup.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         config: Arc<RwLock<AppConfig>>,

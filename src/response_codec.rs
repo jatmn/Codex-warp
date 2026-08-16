@@ -33,6 +33,7 @@ const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
 const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
 const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
 
+// Stream conversion carries request context rather than a new struct.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
@@ -220,6 +221,7 @@ pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     }
 }
 
+// Native SSE conversion carries the same request context.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn native_stream_to_responses(
     upstream: reqwest::Response,
@@ -1845,7 +1847,7 @@ fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))] // tests call this default-policy wrapper
 pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {
     chat_json_to_responses_with_policy(
         value,

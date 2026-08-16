@@ -639,6 +639,7 @@ fn output_to_text(value: &Value) -> String {
     }
 }
 
+// Tool conversion tracks names, diagnostics, and source index.
 #[allow(clippy::too_many_arguments)]
 fn convert_tool(
     tool: &Value,

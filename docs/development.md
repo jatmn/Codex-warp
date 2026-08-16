@@ -150,7 +150,7 @@ git diff --check
 `scripts/source-checks.sh` runs rustfmt, `typos`, docs whitespace, docs
 contraction capitalization (lowercase first-person contractions outside code
 spans), `node --check` for the Web UI scripts, the chart harness, and crate-wide
-Clippy (`cargo clippy --all-targets -- -D warnings`). Those Clippy hits are
+Clippy (`cargo clippy --locked --all-targets --all-features -- -D warnings`). Those Clippy hits are
 review findings. Install the spell checker with `cargo install typos-cli --locked`.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
@@ -176,7 +176,7 @@ The CI job performs:
 - `typos` spell check (`_typos.toml`)
 - `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
   capitalization, Web UI JavaScript syntax and chart harness, crate-wide
-  Clippy with `-D warnings`)
+  Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
