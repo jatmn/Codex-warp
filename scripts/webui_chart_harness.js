@@ -609,12 +609,50 @@ check("reconcilePieHover drops a key whose value collapsed to zero", () => {
   assert.equal(charts.reconcilePieHover(rows, "a"), "a");
 });
 
+check("paletteSlotKey namespaces provider and model identities", () => {
+  assert.equal(charts.paletteSlotKey("provider", "openai"), "provider:openai");
+  assert.equal(charts.paletteSlotKey("model", "openai"), "model:openai");
+  assert.notEqual(
+    charts.paletteSlotKey("provider", "openai"),
+    charts.paletteSlotKey("model", "openai"),
+  );
+  const assigned = {};
+  assert.equal(
+    charts.paletteIndexForKey(assigned, charts.paletteSlotKey("provider", "openai")),
+    0,
+  );
+  assert.equal(
+    charts.paletteIndexForKey(assigned, charts.paletteSlotKey("model", "openai")),
+    1,
+  );
+});
+
 check("paletteIndexForKey is stable across reorder and first-seen assignment", () => {
   const assigned = {};
   assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
   assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
   assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
   assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
+});
+
+check("paletteIndexForKey reuses holes after retainPaletteKeys", () => {
+  const assigned = {};
+  assert.equal(charts.paletteIndexForKey(assigned, "a"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "b"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+  charts.retainPaletteKeys(assigned, ["a", "c"]);
+  assert.equal(assigned.b, undefined);
+  assert.equal(charts.paletteIndexForKey(assigned, "a"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+  assert.equal(charts.paletteIndexForKey(assigned, "d"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+});
+
+check("effectivePieHoverIdx clears pointer misses and keeps keyboard hover", () => {
+  assert.equal(charts.effectivePieHoverIdx(2, true, 0), 0);
+  assert.equal(charts.effectivePieHoverIdx(2, true, -1), -1);
+  assert.equal(charts.effectivePieHoverIdx(2, false, -1), 2);
+  assert.equal(charts.effectivePieHoverIdx(-1, false, 1), -1);
 });
 
 check("modelTooltipPayload lists only active models and uses colorKey identity", () => {
@@ -625,12 +663,12 @@ check("modelTooltipPayload lists only active models and uses colorKey identity",
   const empty = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
   assert.equal(empty.title, "10:00");
   assert.deepEqual(empty.rows, [
-    { key: "beta", value: 2, colorKey: "beta" },
+    { key: "beta", value: 2, colorKey: "beta", colorKind: "model" },
   ]);
   assert.equal(empty.note, null);
   const gap = charts.modelTooltipPayload(models, 1, "11:00", "prompts");
   assert.deepEqual(gap.rows, [
-    { key: "alpha", value: 3, colorKey: "alpha" },
+    { key: "alpha", value: 3, colorKey: "alpha", colorKind: "model" },
   ]);
   const none = charts.modelTooltipPayload(
     [
@@ -646,6 +684,29 @@ check("modelTooltipPayload lists only active models and uses colorKey identity",
   assert.equal(charts.modelTooltipPayload([], 0, "x", "prompts"), null);
 });
 
+check("modelTooltipSummary speaks from the tooltip payload, not a second filter", () => {
+  const models = [];
+  for (let i = 0; i < 6; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: (i + 1) * 1000 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  assert.equal(
+    charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
+    "10:00: m0 1000, m1 2000, m2 3000, m3 4000, +2 more models",
+  );
+  const empty = charts.modelTooltipPayload(
+    [{ model: "gpt", points: [{ prompts: 0 }] }],
+    0,
+    "11:00",
+    "prompts",
+  );
+  assert.equal(
+    charts.modelTooltipSummary(empty, "prompts"),
+    "11:00: no prompts",
+  );
+  assert.equal(charts.modelTooltipSummary(null, "prompts"), "");
+});
+
 check("modelTooltipPayload caps listed models and reports overflow", () => {
   const models = [];
   for (let i = 0; i < 14; i += 1) {
@@ -658,14 +719,57 @@ check("modelTooltipPayload caps listed models and reports overflow", () => {
 });
 
 check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", () => {
-  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3, 2);
+  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3);
   assert.equal(payload.title, "openai");
   assert.deepEqual(payload.rows, [
-    { key: "Tokens", value: 1, colorIndex: 2 },
-    { key: "Share (%)", value: 33.3, colorIndex: null },
+    { key: "Tokens", value: 1, colorKey: "openai", colorKind: "model" },
+    { key: "Share (%)", value: 33.3, colorKey: null },
   ]);
   assert.equal(payload.note, null);
-  assert.equal(charts.pieTooltipPayload(null, 3, 0), null);
+  assert.equal(charts.pieTooltipPayload(null, 3), null);
+});
+
+check("tooltipRenderPlan maps payloads onto node-assembly data, not HTML", () => {
+  assert.deepEqual(charts.tooltipRenderPlan(null), {
+    kind: "empty",
+    title: "",
+    rows: [],
+    note: null,
+  });
+  const modelPlan = charts.tooltipRenderPlan(
+    charts.modelTooltipPayload(
+      [{ model: "gpt", points: [{ prompts: 4 }] }],
+      0,
+      "10:00",
+      "prompts",
+    ),
+  );
+  assert.equal(modelPlan.kind, "tooltip");
+  assert.equal(modelPlan.title, "10:00");
+  assert.deepEqual(modelPlan.rows, [
+    { key: "gpt", value: 4, color: { type: "key", kind: "model", key: "gpt" } },
+  ]);
+  assert.equal(modelPlan.note, null);
+  const emptyPlan = charts.tooltipRenderPlan(
+    charts.modelTooltipPayload(
+      [{ model: "gpt", points: [{ prompts: 0 }] }],
+      0,
+      "11:00",
+      "prompts",
+    ),
+  );
+  assert.deepEqual(emptyPlan.rows, []);
+  assert.equal(emptyPlan.note, "No prompts in this bucket");
+  const piePlan = charts.tooltipRenderPlan(
+    charts.pieTooltipPayload({ key: "openai", value: 1 }, 4),
+  );
+  assert.deepEqual(piePlan.rows, [
+    { key: "Tokens", value: 1, color: { type: "key", kind: "model", key: "openai" } },
+    { key: "Share (%)", value: 25, color: { type: "none" } },
+  ]);
+  const json = JSON.stringify(piePlan);
+  assert.equal(json.includes("<"), false);
+  assert.equal(json.includes("&"), false);
 });
 
 process.stdout.write("webui chart harness: all checks passed\n");

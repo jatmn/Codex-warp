@@ -749,6 +749,11 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("modelTooltipPayload"));
     assert!(body.contains("pieTooltipPayload"));
     assert!(body.contains("paletteIndexForKey"));
+    assert!(body.contains("retainPaletteKeys"));
+    assert!(body.contains("effectivePieHoverIdx"));
+    assert!(body.contains("paletteSlotKey"));
+    assert!(body.contains("modelTooltipSummary"));
+    assert!(body.contains("tooltipRenderPlan"));
     assert!(!body.contains("CodexWarpFooter"));
     assert!(!body.contains("analyticsDisplayStatus"));
 }
@@ -869,7 +874,13 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("function tooltipFromPayload("));
     assert!(app.contains("Charts.modelTooltipPayload("));
     assert!(app.contains("Charts.pieTooltipPayload("));
-    assert!(app.contains("function modelLineColor("));
+    assert!(app.contains("function identityColor("));
+    assert!(app.contains("function modelLiveSummary("));
+    assert!(app.contains("Charts.paletteSlotKey("));
+    assert!(app.contains("Charts.modelTooltipSummary("));
+    assert!(app.contains("Charts.tooltipRenderPlan("));
+    assert!(app.contains("Charts.retainPaletteKeys("));
+    assert!(app.contains("Charts.effectivePieHoverIdx("));
     assert!(app.contains("tip.replaceChildren(content)"));
     assert!(app.contains("canvas.__cssH = metrics.cssH;"));
     assert!(app.contains("g.cssH || canvas.__cssH"));

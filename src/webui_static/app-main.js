@@ -1011,6 +1011,25 @@
       range,
     );
     const modelSeries = data.model_series || [];
+    if (Charts.retainPaletteKeys && Charts.paletteSlotKey) {
+      const colorKeys = [];
+      const pushSlot = (kind, key) => {
+        if (key == null || key === "") return;
+        colorKeys.push(Charts.paletteSlotKey(kind, key));
+      };
+      for (const series of modelSeries) {
+        if (series) pushSlot("model", series.model);
+      }
+      for (const row of data.by_provider || []) {
+        if (row) pushSlot("provider", row.key);
+      }
+      for (const group of [data.by_model_overall, data.by_model]) {
+        for (const row of group || []) {
+          if (row) pushSlot("model", row.key);
+        }
+      }
+      Charts.retainPaletteKeys(identityPaletteAssigned, colorKeys);
+    }
     drawModelUsageChart($("#chart-model-sessions"), modelSeries, "sessions", range);
     drawModelUsageChart($("#chart-model-prompts"), modelSeries, "prompts", range);
 
@@ -1020,7 +1039,7 @@
     // per-provider pie for up to one round trip.
     const activeProvider = analyticsSnapshot.provider || "";
     const activeModel = analyticsSnapshot.model || "";
-    drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider), {
+    drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider, "provider"), {
       emptyText: activeProvider
         ? "Select All providers to see provider usage."
         : "No token usage in this range.",
@@ -1028,7 +1047,7 @@
     // Overall model usage ignores the provider filter (by_model_overall), so
     // the overall pie stays global while a provider filter narrows the
     // per-provider pie below.
-    drawPieChart($("#chart-pie-model"), pieRows(data.by_model_overall ?? data.by_model), {
+    drawPieChart($("#chart-pie-model"), pieRows(data.by_model_overall ?? data.by_model, "model"), {
       // The backend now fills by_model_overall even under a model filter (the
       // selected model's own window total), so an empty state means there is
       // genuinely no usage for the current filter combination.
@@ -1036,7 +1055,8 @@
     });
     // Per-provider model breakdown exists only while a provider filter is
     // active and the model filter is clear (the API omits by_model otherwise).
-    const perProviderRows = activeProvider && !activeModel ? pieRows(data.by_model) : [];
+    const perProviderRows =
+      activeProvider && !activeModel ? pieRows(data.by_model, "model") : [];
     drawPieChart($("#chart-pie-provider-models"), perProviderRows, {
       emptyText: !activeProvider
         ? "Select a provider to see model usage per provider."
@@ -1116,25 +1136,29 @@
   function paletteColor(index) {
     return CHART_PALETTE[Number(index) % CHART_PALETTE.length];
   }
-  // Shared across the sessions and prompts model charts so the same model
-  // keeps the same color on both canvases and across poll reorders.
-  const modelPaletteAssigned = {};
-  function modelLineColor(key) {
+  // Shared across model-over-time lines and pie slices so the same identity
+  // keeps the same color on every canvas and across poll reorders.
+  const identityPaletteAssigned = {};
+  function identityColor(kind, key) {
     if (!Charts || !Charts.paletteIndexForKey) return paletteColor(0);
-    return paletteColor(Charts.paletteIndexForKey(modelPaletteAssigned, key));
+    const slot =
+      Charts.paletteSlotKey ? Charts.paletteSlotKey(kind, key) : String(key ?? "");
+    return paletteColor(Charts.paletteIndexForKey(identityPaletteAssigned, slot));
   }
 
   // Breakdown rows become pie slices keyed by identity. Zero-token rows stay
   // in the legend with a "0" value so a provider/model with prompts or
   // sessions but no token spend does not vanish next to active summary cards.
-  function pieRows(breakdown) {
+  function pieRows(breakdown, kind) {
     // Keep zero-token rows: a provider/model with prompts or sessions but no
     // token spend would otherwise vanish from the pie, leaving an empty
     // "no usage" chart next to summary cards that clearly show activity.
     // Zero-token rows get zero-width slices and a "0" legend value.
+    const slotKind = kind === "provider" ? "provider" : "model";
     return (breakdown || [])
       .map((row) => ({
         key: row.key,
+        kind: slotKind,
         // Clamp negative totals (untrusted upstream accounting) to zero so
         // they cannot invert slice geometry or push model lines off-plot.
         value: Math.max(0, row.total_tokens || 0),
@@ -1410,18 +1434,20 @@
   }
 
   function tooltipFromPayload(payload) {
-    if (!payload) return document.createDocumentFragment();
-    const rows = (payload.rows || []).map((row) => [
+    const plan =
+      Charts && Charts.tooltipRenderPlan
+        ? Charts.tooltipRenderPlan(payload)
+        : null;
+    if (!plan || plan.kind === "empty") return document.createDocumentFragment();
+    const rows = (plan.rows || []).map((row) => [
       row.key,
       row.value,
-      row.colorKey != null
-        ? modelLineColor(row.colorKey)
-        : row.colorIndex == null
-          ? null
-          : paletteColor(row.colorIndex),
+      row.color && row.color.type === "key"
+        ? identityColor(row.color.kind, row.color.key)
+        : null,
     ]);
-    const frag = tooltipEl(payload.title, rows);
-    if (payload.note) frag.append(tooltipNoteRow(payload.note));
+    const frag = tooltipEl(plan.title, rows);
+    if (plan.note) frag.append(tooltipNoteRow(plan.note));
     return frag;
   }
 
@@ -1434,18 +1460,13 @@
     return tooltipFromPayload(payload);
   }
 
-  function modelTooltipSummary(models, idx, labelStyle, metric) {
+  function modelLiveSummary(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) return "";
-    const label = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const present = models.filter(
-      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
-    );
-    const parts = present
-      .slice(0, 4)
-      .map((model) => `${model.model} ${fmtInt(model.points[idx][metric])}`);
-    if (present.length > 4) parts.push(`+${present.length - 4} more models`);
-    if (!parts.length) return `${label}: no ${metric}`;
-    return `${label}: ${parts.join(", ")}`;
+    const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
+    const payload = Charts.modelTooltipPayload(models, idx, title, metric);
+    return Charts.modelTooltipSummary
+      ? Charts.modelTooltipSummary(payload, metric, fmtInt, 4)
+      : "";
   }
 
   function showModelTooltipFor(canvas, state, idx) {
@@ -1459,12 +1480,12 @@
     );
     announceChartData(
       canvas,
-      Charts.liveRegionText(idx, modelTooltipSummary(state.series, idx, state.labelStyle, state.metric)),
+      Charts.liveRegionText(idx, modelLiveSummary(state.series, idx, state.labelStyle, state.metric)),
     );
   }
 
-  function pieTooltipEl(row, total, colorIndex) {
-    return tooltipFromPayload(Charts.pieTooltipPayload(row, total, colorIndex));
+  function pieTooltipEl(row, total) {
+    return tooltipFromPayload(Charts.pieTooltipPayload(row, total));
   }
 
   function pieTooltipSummary(row, total) {
@@ -1480,7 +1501,7 @@
       g.cx + Math.cos(mid) * g.r * 0.6,
       g.cy + Math.sin(mid) * g.r * 0.6,
     );
-    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total, idx));
+    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2085,7 +2106,7 @@
     );
     announceChartData(
       canvas,
-      Charts.liveRegionText(idx, modelTooltipSummary(state.series, idx, state.labelStyle, state.metric)),
+      Charts.liveRegionText(idx, modelLiveSummary(state.series, idx, state.labelStyle, state.metric)),
     );
   }
 
@@ -2093,7 +2114,7 @@
     if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
     const idx = resolvePieIdx(state);
     if (idx < 0) return;
-    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total, idx));
+    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2259,7 +2280,7 @@
     }
 
     models.forEach((model) => {
-      const color = modelLineColor(model.model);
+      const color = identityColor("model", model.model);
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.lineJoin = "round";
@@ -2275,7 +2296,7 @@
     });
     if (n === 1 || models.length <= 6) {
       models.forEach((model) => {
-        ctx.fillStyle = modelLineColor(model.model);
+        ctx.fillStyle = identityColor("model", model.model);
         model.points.forEach((point) => {
           ctx.beginPath();
           ctx.arc(xAt(point.ts), yAt(point[metric] || 0), 3, 0, Math.PI * 2);
@@ -2288,7 +2309,7 @@
       legend,
       models.map((model) => ({
         key: model.model,
-        color: modelLineColor(model.model),
+        color: identityColor("model", model.model),
         value: modelTotal(model, metric),
       })),
     );
@@ -2306,7 +2327,7 @@
         );
         announceChartData(
           canvas,
-          Charts.liveRegionText(idx, modelTooltipSummary(models, idx, labelStyle, metric)),
+          Charts.liveRegionText(idx, modelLiveSummary(models, idx, labelStyle, metric)),
         );
       } else {
         showModelTooltipFor(canvas, state, idx);
@@ -2340,15 +2361,15 @@
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fillStyle = colors.surface;
       ctx.fill();
-      ctx.strokeStyle = modelLineColor(model.model);
+      ctx.strokeStyle = identityColor("model", model.model);
       ctx.lineWidth = 2;
       ctx.stroke();
     });
   }
 
   // Full pie (no donut hole) with a hover ring and percentage labels on
-  // slices that have enough room. Rows are value-sorted so slice colors are
-  // stable across polls.
+  // slices that have enough room. Slice colors follow identity, not sort
+  // rank, so a poll that reorders wedges cannot swap colors.
   function drawPieChart(canvas, rows, options) {
     if (!Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW)) return;
     const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 260);
@@ -2382,9 +2403,9 @@
       if (legend) {
         renderChartLegend(
           legend,
-          legendRows.map((row, index) => ({
+          legendRows.map((row) => ({
             key: row.key,
-            color: paletteColor(index),
+            color: identityColor(row.kind || "model", row.key),
             value: row.value,
           })),
         );
@@ -2406,15 +2427,14 @@
     const hoverIdx = hoverKey == null ? -1 : active.findIndex((row) => row.key === hoverKey);
     // A poll redraw can reorder slices under a stationary pointer. When the
     // pointer still owns the hover, trust the slice under the cursor so the
-    // tooltip never describes a slice the user is not pointing at.
-    let effectiveHoverIdx = hoverIdx;
-    if (
-      Charts.tooltipFollowsPointer(
-        prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
-        canvas.__mouse,
-      ) &&
-      canvas.__mouse
-    ) {
+    // tooltip never describes a slice the user is not pointing at. Padding
+    // misses clear on purpose (same policy as mousemove via chartInputStep).
+    let hitIdx = -1;
+    const pointerOwned = Charts.tooltipFollowsPointer(
+      prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
+      canvas.__mouse,
+    );
+    if (pointerOwned && canvas.__mouse) {
       const rect = canvas.getBoundingClientRect();
       const mx = Charts.pointerCssX(
         canvas.__mouse.x,
@@ -2423,10 +2443,13 @@
         w,
       );
       const my = Charts.pointerCssY(canvas.__mouse.y, rect.top, rect.height, h);
-      const hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
-      if (hitIdx >= 0) effectiveHoverIdx = hitIdx;
-      else effectiveHoverIdx = -1;
+      hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
     }
+    const effectiveHoverIdx = Charts.effectivePieHoverIdx
+      ? Charts.effectivePieHoverIdx(hoverIdx, pointerOwned, hitIdx)
+      : pointerOwned
+        ? hitIdx
+        : hoverIdx;
     canvas.__chart = {
       kind: "pie",
       rows: active,
@@ -2447,7 +2470,7 @@
       ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, radius, slice.start, slice.end);
       ctx.closePath();
-      ctx.fillStyle = paletteColor(index);
+      ctx.fillStyle = identityColor(row.kind || "model", row.key);
       ctx.fill();
       ctx.strokeStyle = colors.surface;
       ctx.lineWidth = 2;
@@ -2465,7 +2488,10 @@
       ctx.arc(cx, cy, radius + 4, slice.start, slice.end);
       ctx.arc(cx, cy, radius, slice.end, slice.start, true);
       ctx.closePath();
-      ctx.fillStyle = paletteColor(hidx);
+      ctx.fillStyle = identityColor(
+        state.rows[hidx].kind || "model",
+        state.rows[hidx].key,
+      );
       ctx.fill();
       ctx.strokeStyle = colors.tokens;
       ctx.lineWidth = 1.5;
@@ -2481,7 +2507,7 @@
       const span = slice.end - slice.start;
       if (span < 0.36 || slice.value / total < 0.05) return;
       const mid = Charts.pieMidAngle(slice);
-      ctx.fillStyle = pieLabelColor(paletteColor(index));
+      ctx.fillStyle = pieLabelColor(identityColor(row.kind || "model", row.key));
       ctx.fillText(
         `${Math.round((slice.value / total) * 100)}%`,
         cx + Math.cos(mid) * radius * 0.62,
@@ -2491,9 +2517,9 @@
 
     renderChartLegend(
       legend,
-      legendRows.map((row, index) => ({
+      legendRows.map((row) => ({
         key: row.key,
-        color: paletteColor(index),
+        color: identityColor(row.kind || "model", row.key),
         value: row.value,
       })),
     );
@@ -2504,7 +2530,7 @@
           canvas,
           canvas.__mouse.x,
           canvas.__mouse.y,
-          pieTooltipEl(state.rows[hidx], total, hidx),
+          pieTooltipEl(state.rows[hidx], total),
         );
         announceChartData(
           canvas,

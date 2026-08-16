@@ -594,16 +594,58 @@
     return row && row.value > 0 ? hoverKey : null;
   }
 
-  // First-seen key keeps its palette slot across polls and across the two
-  // model-over-time charts. Rank-after-sort would swap colors when totals
-  // change or when sessions vs prompts sort differently.
+  // First-seen key keeps its palette slot across polls, the two model-over-time
+  // charts, and the pies. Rank-after-sort would swap colors when totals change
+  // or when sessions vs prompts sort differently.
+  // Allocate the lowest unused index so dropping a departed key (see
+  // retainPaletteKeys) cannot collide with a still-assigned slot: counting
+  // remaining keys would reuse an in-use index.
+  // Provider pies and model lines share one assignment map. Bare string keys
+  // collide when a provider id equals a model id (both then steal one slot).
+  // Namespace the slot so "openai" the provider and "openai" the model stay
+  // independent even when they appear in the same snapshot.
+  function paletteSlotKey(kind, key) {
+    const id = String(key ?? "");
+    if (kind === "provider") return `provider:${id}`;
+    if (kind === "model") return `model:${id}`;
+    return `key:${id}`;
+  }
+
   function paletteIndexForKey(assigned, key) {
     const map = assigned && typeof assigned === "object" ? assigned : {};
     const id = String(key ?? "");
     if (Object.prototype.hasOwnProperty.call(map, id)) return map[id];
-    const index = Object.keys(map).length;
+    const used = new Set(Object.keys(map).map((item) => map[item]));
+    let index = 0;
+    while (used.has(index)) index += 1;
     map[id] = index;
     return index;
+  }
+
+  // Bound the first-seen map to identities in the current analytics snapshot.
+  // Without this, every model/provider that ever appeared in the page session
+  // keeps a slot forever. Holes left here are safe because paletteIndexForKey
+  // scans for the lowest unused index rather than using Object.keys.length.
+  function retainPaletteKeys(assigned, keys) {
+    if (!assigned || typeof assigned !== "object" || !Array.isArray(keys)) {
+      return assigned;
+    }
+    const keep = new Set(keys.map((key) => String(key ?? "")));
+    for (const key of Object.keys(assigned)) {
+      if (!keep.has(key)) delete assigned[key];
+    }
+    return assigned;
+  }
+
+  // Pointer-owned pie redraws must describe the slice under the cursor. A miss
+  // (padding, or the wedge moved off the pointer) clears hover; keeping the
+  // previous key would leave a tooltip on a slice the user is not pointing at.
+  // Keyboard ownership ignores the pointer and keeps the reconciled index.
+  function effectivePieHoverIdx(reconciledIdx, pointerOwned, hitIdx) {
+    if (!pointerOwned) {
+      return typeof reconciledIdx === "number" ? reconciledIdx : -1;
+    }
+    return typeof hitIdx === "number" && hitIdx >= 0 ? hitIdx : -1;
   }
 
   // Tooltip content policy, independent of DOM. App-main maps this onto
@@ -625,6 +667,7 @@
         key: model.model,
         value: model.points[idx][metric],
         colorKey: model.model,
+        colorKind: "model",
       })),
       note:
         present.length > shown.length
@@ -633,16 +676,66 @@
     };
   }
 
-  function pieTooltipPayload(row, total, colorIndex) {
+  // Live-region copy is the same payload as the visual tooltip, abbreviated
+  // for speech. Re-filtering models in app-main would drift from this policy
+  // (caps, empty-bucket wording, which models count as present).
+  function modelTooltipSummary(payload, metric, formatValue, limit) {
+    if (!payload) return "";
+    const cap = Number.isFinite(Number(limit)) ? Math.max(0, Number(limit)) : 4;
+    const format =
+      typeof formatValue === "function" ? formatValue : (value) => String(value);
+    const rows = payload.rows || [];
+    const shown = rows.slice(0, cap);
+    const extra = rows.length - shown.length;
+    const parts = shown.map((row) => `${row.key} ${format(row.value)}`);
+    if (extra > 0) parts.push(`+${extra} more models`);
+    if (payload.note && !shown.length) {
+      return `${payload.title}: no ${metric}`;
+    }
+    if (payload.note && extra <= 0) parts.push(payload.note);
+    if (!parts.length) return `${payload.title}: no ${metric}`;
+    return `${payload.title}: ${parts.join(", ")}`;
+  }
+
+  function pieTooltipPayload(row, total) {
     if (!row) return null;
     const pct = total > 0 ? (row.value / total) * 100 : 0;
     return {
       title: row.key,
       rows: [
-        { key: "Tokens", value: row.value, colorIndex },
-        { key: "Share (%)", value: Math.round(pct * 10) / 10, colorIndex: null },
+        { key: "Tokens", value: row.value, colorKey: row.key, colorKind: row.kind || "model" },
+        { key: "Share (%)", value: Math.round(pct * 10) / 10, colorKey: null },
       ],
       note: null,
+    };
+  }
+
+  // DOM-independent tooltip assembly plan. App-main maps this onto Nodes so
+  // showChartTooltip never receives HTML strings; the harness asserts the
+  // plan itself (title/rows/note/color refs) instead of stubbing Document.
+  function tooltipColorRef(row) {
+    if (!row) return { type: "none" };
+    if (row.colorKey != null && row.colorKey !== "") {
+      return {
+        type: "key",
+        kind: row.colorKind === "provider" ? "provider" : "model",
+        key: row.colorKey,
+      };
+    }
+    return { type: "none" };
+  }
+
+  function tooltipRenderPlan(payload) {
+    if (!payload) return { kind: "empty", title: "", rows: [], note: null };
+    return {
+      kind: "tooltip",
+      title: payload.title == null ? "" : String(payload.title),
+      rows: (payload.rows || []).map((row) => ({
+        key: row.key,
+        value: row.value,
+        color: tooltipColorRef(row),
+      })),
+      note: payload.note ? String(payload.note) : null,
     };
   }
 
@@ -761,9 +854,15 @@
     textColorOn,
     pieSliceIndexAt,
     reconcilePieHover,
+    paletteSlotKey,
     paletteIndexForKey,
+    retainPaletteKeys,
+    effectivePieHoverIdx,
     modelTooltipPayload,
+    modelTooltipSummary,
     pieTooltipPayload,
+    tooltipColorRef,
+    tooltipRenderPlan,
     announceIfChanged,
     liveRegionText,
     chartsLiveLayout,
