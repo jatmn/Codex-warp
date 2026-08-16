@@ -1200,7 +1200,8 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    `pending` is a status label ("Review pending:", "Approval
     //    pending:"), not speaker work; speaker pending uses a copula
     //    ("This is still pending:", "verification is pending:").
-    //    Unfinished headers such as "Tasks remaining:" still continue.
+    //    Remaining is predicative ("Tasks remaining:", "still remaining"),
+    //    not an attributive noun modifier ("Summary and remaining tasks:").
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1622,11 +1623,27 @@ fn clause_has_unfinished_speaker_work(clause: &str) -> bool {
     // Copular pending is speaker status ("this is still pending",
     // "verification is pending"). Bare "pending" is a label on some other
     // actor or process ("review pending", "approval pending", "ci pending").
+    // Remaining is unfinished only as a predicate ("tasks remaining",
+    // "work is remaining"), not as a modifier ("remaining tasks") that
+    // `and`-splitting would otherwise promote into a fake header.
     clause.contains("still pending")
         || clause.contains("is pending")
         || clause.contains("are pending")
-        || clause.contains("still remaining")
-        || clause.contains("remaining")
+        || remaining_is_predicative(clause)
+}
+
+fn remaining_is_predicative(clause: &str) -> bool {
+    clause.contains("still remaining")
+        || clause.contains("is remaining")
+        || clause.contains("are remaining")
+        || clause_last_alpha_token(clause) == "remaining"
+}
+
+fn clause_last_alpha_token(clause: &str) -> &str {
+    clause
+        .rsplit(|c: char| !c.is_ascii_alphabetic())
+        .find(|token| !token.is_empty())
+        .unwrap_or("")
 }
 
 fn clause_clears_remaining_work(clause: &str) -> bool {
@@ -1806,7 +1823,7 @@ fn content_parts_need_separator(left: &str, right: &str) -> bool {
     let Some(next) = right.chars().next() else {
         return false;
     };
-    prev.is_ascii_alphanumeric() && next.is_ascii_alphanumeric()
+    prev.is_alphanumeric() && next.is_alphanumeric()
 }
 
 fn chat_content_part_text(item: &Value) -> Option<&str> {
