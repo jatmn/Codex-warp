@@ -913,7 +913,7 @@ fn apply_overlays_skips_corrupt_overlay_json() {
 
     assert!(config.providers.contains_key("manual"));
     // Corrupt config_json is skipped, but the overlay enabled column still applies.
-    assert_eq!(config.providers["manual"].enabled, false);
+    assert!(!config.providers["manual"].enabled);
     assert_eq!(config.providers["manual"].name.as_deref(), Some("Manual"));
 
     let _ = std::fs::remove_dir_all(dir);
@@ -1545,10 +1545,13 @@ fn record_completed_counts_prompt_without_usage_metadata() {
 
 #[test]
 fn usage_events_cap_untrusted_token_counts_before_aggregation() {
-    assert!(
-        MAX_USAGE_TOKENS_PER_EVENT * MAX_USAGE_EVENTS_BEFORE_TRIM <= 9_007_199_254_740_991,
-        "even the batched-retention overshoot must stay exactly representable in the Web UI"
-    );
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(
+            MAX_USAGE_TOKENS_PER_EVENT * MAX_USAGE_EVENTS_BEFORE_TRIM <= 9_007_199_254_740_991,
+            "even the batched-retention overshoot must stay exactly representable in the Web UI"
+        );
+    }
     let usage = serde_json::json!({
         "input_tokens": i64::MAX,
         "output_tokens": i64::MAX,

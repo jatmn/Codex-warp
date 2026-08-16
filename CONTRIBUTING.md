@@ -83,8 +83,8 @@ git diff --check
 
 `scripts/source-checks.sh` is the mechanical review gate: rustfmt, `typos`
 spelling, docs whitespace, docs contraction capitalization, Web UI JavaScript
-syntax, the chart harness, and Clippy on added or edited Rust lines. Treat
-those Clippy hits as review findings, not as optional style. Install `typos`
+syntax, the chart harness, and crate-wide Clippy (`-D warnings`). Treat
+Clippy hits as review findings, not as optional style. Install `typos`
 with `cargo install typos-cli --locked`.
 
 For documentation-only changes, run:
@@ -102,8 +102,7 @@ is part of the change.
 
 Re-run `bash scripts/source-checks.sh` after every fix commit and before
 requesting another AI or human review. Mechanical nits (spelling, rustfmt,
-docs capitalization, Clippy on added or edited Rust lines) belong in that pass, not in
-round two.
+docs capitalization, Clippy) belong in that pass, not in round two.
 
 Please stay engaged after opening a PR.
 

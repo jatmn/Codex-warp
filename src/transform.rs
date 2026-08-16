@@ -158,9 +158,9 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
     if !converted.is_empty() {
         out.insert("tools".to_string(), Value::Array(converted));
-        if !transform.drop_empty_tool_choice {
-            copy_if_present(&request, &mut out, "tool_choice");
-        } else if request.get("tool_choice").and_then(Value::as_str) != Some("auto") {
+        if !transform.drop_empty_tool_choice
+            || request.get("tool_choice").and_then(Value::as_str) != Some("auto")
+        {
             copy_if_present(&request, &mut out, "tool_choice");
         }
         if let Some(choice) = out.get_mut("tool_choice") {
@@ -639,6 +639,8 @@ fn output_to_text(value: &Value) -> String {
     }
 }
 
+// Tool conversion tracks names, diagnostics, and source index.
+#[allow(clippy::too_many_arguments)]
 fn convert_tool(
     tool: &Value,
     transform: &TransformConfig,

@@ -226,6 +226,7 @@ fn apply_configured_tracing_filter(state: &AppState) -> anyhow::Result<()> {
     reload.reload(&filter).map_err(|err| anyhow::anyhow!(err))
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // tests use this shorter initialize entry
 fn initialize_state(config: crate::config::AppConfig) -> anyhow::Result<AppState> {
     let store_enabled = webui_store_enabled(config.webui.enabled, false);
     initialize_state_with_store(
@@ -370,7 +371,7 @@ fn load_optional_webui_token(env_name: Option<&str>) -> anyhow::Result<Option<St
 }
 
 pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> Response {
-    if provider_entries(&*state.read_config()).is_empty() {
+    if provider_entries(&state.read_config()).is_empty() {
         return no_provider_response();
     }
     if let Some(model) = body

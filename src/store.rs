@@ -562,7 +562,7 @@ impl Store {
                 config_json = COALESCE(excluded.config_json, provider_overlays.config_json)",
             params![
                 provider_id,
-                enabled.map(|value| i64::from(value)),
+                enabled.map(i64::from),
                 i64::from(removed),
                 i64::from(managed),
                 config_json,
@@ -1525,7 +1525,7 @@ impl UsageRecorder {
             })
             .or_else(|| {
                 request.get("conversation").and_then(|value| match value {
-                    Value::String(id) => (!id.is_empty()).then(|| id.as_str()),
+                    Value::String(id) => (!id.is_empty()).then_some(id.as_str()),
                     Value::Object(map) => map
                         .get("id")
                         .and_then(Value::as_str)

@@ -221,18 +221,16 @@ Before you call implementation or a local review done:
 1. Run `bash scripts/source-checks.sh`. Fix every failure (`cargo fmt`, `typos`,
    trailing whitespace, lowercase docs contractions such as `i'll`, JavaScript
    syntax, chart harness).
-2. Read the Clippy output from that script. The script fails on Clippy
-   warnings that overlap added or edited Rust lines. Those are defects to
-   fix or an explicit, justified `allow` with a comment. Do not leave them
-   for the next review round. Warnings on untouched lines are existing
-   baseline and belong in a dedicated Clippy cleanup PR, not a drive-by in
-   a feature or gate PR.
+2. Read the Clippy output from that script. The script fails on any Clippy
+   warning (`-D warnings`). Those are defects to fix or an explicit, justified
+   `allow` with a comment. Do not leave them for the next review round. Do not
+   expand crate-level Clippy allows to silence one call site.
 3. Inspect changed comments, docs, user-visible strings, and test fixtures for
    spelling, grammar, and capitalization. `typos` misses some prose nits
    (contractions, title case). Those are still findings.
 4. After each fix round, re-run the script before starting another review.
    Do not ping Cubic/Sourcery or re-run a full AI review until the mechanical
-   gates are green and changed-file Clippy warnings are gone.
+   gates are green and crate-wide Clippy is clean.
 
 Install the spell checker with `cargo install typos-cli --locked` (Rust, not
 Python). Add `_typos.toml` exceptions only for confirmed identifiers or

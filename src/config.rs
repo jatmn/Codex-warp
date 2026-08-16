@@ -97,18 +97,13 @@ impl Default for ToolPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicyMode {
     Observe,
+    #[default]
     Assist,
     Enforce,
-}
-
-impl Default for ToolPolicyMode {
-    fn default() -> Self {
-        Self::Assist
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,47 +138,32 @@ impl Default for ToolPolicyRuleConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicyMatchKind {
     Any,
+    #[default]
     CommandPrefix,
     GithubAuthToken,
 }
 
-impl Default for ToolPolicyMatchKind {
-    fn default() -> Self {
-        Self::CommandPrefix
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicyShellRequirement {
     Any,
+    #[default]
     Simple,
     Complex,
 }
 
-impl Default for ToolPolicyShellRequirement {
-    fn default() -> Self {
-        Self::Simple
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolPolicyRuleOutcome {
     AllowHint,
+    #[default]
     Manual,
     ForceManual,
     Deny,
-}
-
-impl Default for ToolPolicyRuleOutcome {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -226,20 +206,15 @@ impl Default for ContinueGuardConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinueGuardMode {
     Observe,
+    #[default]
     EndTurnFalse,
 }
 
-impl Default for ContinueGuardMode {
-    fn default() -> Self {
-        Self::EndTurnFalse
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DebugConfig {
     pub enabled: bool,
@@ -252,20 +227,6 @@ pub struct DebugConfig {
     /// When unset, Warp uses the process default captured from `RUST_LOG`
     /// (or `info`) when tracing started.
     pub tracing_filter: Option<String>,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            log_path: None,
-            include_bodies: false,
-            include_stream_bodies: false,
-            max_log_mb: None,
-            max_log_age_days: None,
-            tracing_filter: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -716,31 +677,21 @@ fn default_chat_request_morphs() -> Vec<RequestMorph> {
     ]
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
+    #[default]
     OpenAiChat,
     Responses,
 }
 
-impl Default for Backend {
-    fn default() -> Self {
-        Self::OpenAiChat
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnsupportedToolStrategy {
     Drop,
+    #[default]
     AsFunction,
     Passthrough,
-}
-
-impl Default for UnsupportedToolStrategy {
-    fn default() -> Self {
-        Self::AsFunction
-    }
 }
 
 #[cfg(test)]

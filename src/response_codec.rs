@@ -33,6 +33,8 @@ const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
 const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
 const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
 
+// Stream conversion carries request context rather than a new struct.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
     response_id: String,
@@ -219,6 +221,8 @@ pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     }
 }
 
+// Native SSE conversion carries the same request context.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn native_stream_to_responses(
     upstream: reqwest::Response,
     custom_tool_names: BTreeSet<String>,
@@ -241,10 +245,7 @@ pub(crate) fn native_stream_to_responses(
             let chunk = chunk.map_err(std::io::Error::other)?;
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                yield Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    SSE_FRAME_BUFFER_EXCEEDED_MESSAGE,
-                ));
+                yield Err(std::io::Error::other(SSE_FRAME_BUFFER_EXCEEDED_MESSAGE));
                 return;
             }
             while let Some((frame_end, delimiter_len)) = next_sse_frame_bytes(&pending) {
@@ -273,10 +274,10 @@ pub(crate) fn native_stream_to_responses(
                 );
                 let terminal = native_sse_terminal(&frame);
                 terminal_received |= terminal.is_some();
-                if terminal == Some(NativeSseTerminal::Completed) {
-                    if let Some(recorder) = usage_recorder.take() {
-                        recorder.record_completed(pending_usage.as_ref());
-                    }
+                if terminal == Some(NativeSseTerminal::Completed)
+                    && let Some(recorder) = usage_recorder.take()
+                {
+                    recorder.record_completed(pending_usage.as_ref());
                 }
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
@@ -1016,7 +1017,7 @@ fn evict_continue_guard_budgets_if_needed(budgets: &mut BTreeMap<String, u8>) {
 fn latest_active_plan(request: &Value) -> Option<ActivePlanSummary> {
     let mut plans = Vec::new();
     collect_update_plan_arguments(request, &mut plans);
-    plans.into_iter().filter_map(parse_plan_summary).last()
+    plans.into_iter().filter_map(parse_plan_summary).next_back()
 }
 
 fn collect_update_plan_arguments(value: &Value, plans: &mut Vec<Value>) {
@@ -1595,7 +1596,7 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         return false;
     }
     let last_sentence = normalized
-        .rsplit(|c| matches!(c, '.' | '!' | '?' | ';'))
+        .rsplit(['.', '!', '?', ';'])
         .next()
         .unwrap_or(normalized)
         .trim();
@@ -1846,6 +1847,7 @@ fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     .any(|marker| normalized.contains(marker))
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // tests call this default-policy wrapper
 pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<String>) -> Value {
     chat_json_to_responses_with_policy(
         value,
@@ -1926,7 +1928,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
         }
     }
 
-    let end_turn = ChatAccum::from_chat_completion(&value).end_turn(continue_guard);
+    let end_turn = ChatAccum::from_chat_completion(value).end_turn(continue_guard);
     json!({
         "id": response_id,
         "object": "response",
@@ -2024,8 +2026,7 @@ fn reasoning_stream_delta<'a>(accumulated: &'a str, incoming: &'a str) -> Option
     if accumulated.is_empty() {
         return Some(incoming);
     }
-    if incoming.starts_with(accumulated) {
-        let suffix = &incoming[accumulated.len()..];
+    if let Some(suffix) = incoming.strip_prefix(accumulated) {
         return (!suffix.is_empty()).then_some(suffix);
     }
     Some(incoming)

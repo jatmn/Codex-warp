@@ -11,7 +11,7 @@
 
 ## Validation
 
-- [ ] `bash scripts/source-checks.sh` (fmt, typos, docs prose, JS, clippy on changed lines)
+- [ ] `bash scripts/source-checks.sh` (fmt, typos, docs prose, JS, crate-wide clippy)
 - [ ] `cargo update --workspace --locked` (CI also runs this)
 - [ ] `cargo test --locked`
 - [ ] `cargo build --locked`

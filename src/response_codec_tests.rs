@@ -4291,8 +4291,11 @@ fn continue_guard_budget_eviction_is_noop_under_cap() {
 #[test]
 fn sse_frame_buffer_max_bytes_is_reasonable() {
     // Sanity-check the constant is in a sensible range (8 MB – 64 MB).
-    assert!(SSE_FRAME_BUFFER_MAX_BYTES >= 8 * 1024 * 1024);
-    assert!(SSE_FRAME_BUFFER_MAX_BYTES <= 64 * 1024 * 1024);
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(SSE_FRAME_BUFFER_MAX_BYTES >= 8 * 1024 * 1024);
+        assert!(SSE_FRAME_BUFFER_MAX_BYTES <= 64 * 1024 * 1024);
+    }
 }
 
 #[tokio::test]

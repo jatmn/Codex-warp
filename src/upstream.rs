@@ -80,7 +80,7 @@ pub(crate) async fn proxy_native_responses(
 ) -> Response {
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
     rewrite_model_for_upstream(
-        &*state.read_config(),
+        &state.read_config(),
         &selected.id,
         &selected.provider,
         &mut body,
@@ -128,7 +128,7 @@ pub(crate) async fn proxy_chat_responses(
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
     let (continue_guard_config, tool_policy) = {
         let config = state.read_config();
-        rewrite_model_for_upstream(&*config, &selected.id, &selected.provider, &mut body);
+        rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
         (config.continue_guard.clone(), config.tool_policy.clone())
     };
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
@@ -600,6 +600,8 @@ pub(crate) fn rewrite_model_for_upstream(
     }
 }
 
+// Upstream send needs headers, body, and stream policy together.
+#[allow(clippy::too_many_arguments)]
 async fn send_native_responses(
     state: AppState,
     provider: &ProviderConfig,

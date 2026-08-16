@@ -214,6 +214,7 @@ pub(crate) struct TracingReload {
     /// Holds the reload layer when it is not installed as the global subscriber.
     /// Tests drop this slot to simulate `Handle::reload` failing after a live apply.
     #[cfg(test)]
+    #[allow(clippy::type_complexity)]
     layer_slot: Option<Arc<Mutex<Option<reload::Layer<TracingLayer, Registry>>>>>,
 }
 
