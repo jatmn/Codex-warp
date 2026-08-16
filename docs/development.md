@@ -216,7 +216,7 @@ file:
 Most unit tests live in sibling files named `src/<module>_tests.rs`, included
 from the production module with `#[cfg(test)]` and `#[path = "..."]`. Keep new
 tests near the module they exercise instead of adding a new root-level test
-bundle.
+bundle. Test-quality rules live in [`AGENTS.md`](../AGENTS.md).
 
 ## Running From Source
 

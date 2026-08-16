@@ -64,6 +64,10 @@ Every PR must:
 - Include tests or focused validation appropriate to the change.
 - Pass CI before review and after every update.
 
+Test-quality rules (one failing test per change, JSON field assertions, no
+process-wide environment mutation) live in [`AGENTS.md`](AGENTS.md). Do not
+restate or invent extra rules here.
+
 You are responsible for keeping your PR green. If review feedback requires new
 commits, re-run the relevant checks after those commits and make sure CI passes
 again.

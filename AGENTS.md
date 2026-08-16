@@ -12,6 +12,7 @@ Guidance for coding agents working in this repository.
 - [Versioning](#versioning)
 - [Source Layout](#source-layout)
 - [Testing Layout](#testing-layout)
+- [Common Bug Classes](#common-bug-classes)
 - [Development](#development)
 - [Self-Review Gates](#self-review-gates)
 - [Secrets And Live Providers](#secrets-and-live-providers)
@@ -138,6 +139,52 @@ Small, highly local tests may live near the code only when that improves
 readability more than a separate test file. Avoid adding new large inline
 `mod tests` blocks to production modules.
 
+### Test Quality
+
+New branches and bug fixes need a test that would fail without the change.
+Do not add extra tests, snapshots, or fixtures just to look thorough.
+
+When asserting JSON or other structured values, check that the field exists.
+Do not hide a missing key with `unwrap_or(0)`, `unwrap_or("")`, or similar
+defaults in tests. Use `get` plus `assert!`/`unwrap` on the option, or match
+the exact `Value`:
+
+```rust
+let input = body
+    .get("usage")
+    .and_then(|usage| usage.get("input_tokens"))
+    .and_then(Value::as_u64)
+    .expect("usage.input_tokens");
+assert_eq!(input, 3);
+```
+
+Reuse existing sanitization and fixture helpers instead of copying a new
+redaction path. Do not introduce process-wide `env::set_var` / `env::remove_var`
+in tests; they race and leak across cases. Thread config, temp files, or
+explicit function arguments instead, for example
+`fn apply(config: &DebugConfig)` or a `tempfile` path, never
+`std::env::set_var("RUST_LOG", ...)`.
+
+Do not use `innerHTML` in the Web UI. Keep the existing DOM APIs
+(`textContent`, `createElement`, and the current icon helper).
+
+Do not weaken assertions (`unwrap_or` on required fields, `is_ok()` without
+checking the value, constant `assert!(true)`) to make a test pass.
+
+## Common Bug Classes
+
+These come up in this repo. Fix the class, not only the one call site, when
+you touch the area:
+
+- Provider quirks belong in TOML catalogs and morphs, not new Rust special
+  cases, unless the runtime needs a generic capability.
+- Secrets and API keys in logs, Web UI, or tests must stay redacted previews.
+  Never commit real credentials or dump full tokens in fixtures.
+- Web UI XSS: no `innerHTML` for untrusted or interpolated strings.
+- Tests must not use process-wide environment mutation.
+- Response/chat conversion and usage fields: assert the JSON shape you care
+  about. A default of zero is not proof the proxy emitted the field.
+
 ## Development
 
 Run these for code changes:
@@ -193,6 +240,14 @@ fixtures, never to hide a real misspelling.
 
 Use `apply_patch` for manual edits. Avoid unrelated refactors while fixing a
 specific compatibility issue.
+
+Do not drive-by reformat files, rename identifiers, expand Clippy allows, or
+add `_typos.toml` words to silence a gate. If a gate fails, fix the underlying
+issue or document a justified, local `allow` with a comment.
+
+Do not bump `Cargo.toml` version. Do not add Python. Do not add extra CI jobs,
+coverage percentages, or new linters in a feature PR. Those belong in their
+own stacked CI PRs.
 
 ## Secrets And Live Providers
 
