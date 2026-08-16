@@ -594,6 +594,58 @@
     return row && row.value > 0 ? hoverKey : null;
   }
 
+  // First-seen key keeps its palette slot across polls and across the two
+  // model-over-time charts. Rank-after-sort would swap colors when totals
+  // change or when sessions vs prompts sort differently.
+  function paletteIndexForKey(assigned, key) {
+    const map = assigned && typeof assigned === "object" ? assigned : {};
+    const id = String(key ?? "");
+    if (Object.prototype.hasOwnProperty.call(map, id)) return map[id];
+    const index = Object.keys(map).length;
+    map[id] = index;
+    return index;
+  }
+
+  // Tooltip content policy, independent of DOM. App-main maps this onto
+  // tooltipEl/tooltipRowsEl so showChartTooltip always receives Nodes.
+  function modelTooltipPayload(models, idx, title, metric) {
+    if (!models || !models.length || !models[0].points || !models[0].points[idx]) {
+      return null;
+    }
+    const present = models.filter(
+      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
+    );
+    const shown = present.slice(0, 12);
+    if (!shown.length) {
+      return { title, rows: [], note: `No ${metric} in this bucket` };
+    }
+    return {
+      title,
+      rows: shown.map((model) => ({
+        key: model.model,
+        value: model.points[idx][metric],
+        colorKey: model.model,
+      })),
+      note:
+        present.length > shown.length
+          ? `+${present.length - shown.length} more models`
+          : null,
+    };
+  }
+
+  function pieTooltipPayload(row, total, colorIndex) {
+    if (!row) return null;
+    const pct = total > 0 ? (row.value / total) * 100 : 0;
+    return {
+      title: row.key,
+      rows: [
+        { key: "Tokens", value: row.value, colorIndex },
+        { key: "Share (%)", value: Math.round(pct * 10) / 10, colorIndex: null },
+      ],
+      note: null,
+    };
+  }
+
   function announceIfChanged(previous, next) {
     const prev = previous == null ? "" : String(previous);
     const value = next == null ? "" : String(next);
@@ -709,6 +761,9 @@
     textColorOn,
     pieSliceIndexAt,
     reconcilePieHover,
+    paletteIndexForKey,
+    modelTooltipPayload,
+    pieTooltipPayload,
     announceIfChanged,
     liveRegionText,
     chartsLiveLayout,

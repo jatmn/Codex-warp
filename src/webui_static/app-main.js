@@ -1116,6 +1116,13 @@
   function paletteColor(index) {
     return CHART_PALETTE[Number(index) % CHART_PALETTE.length];
   }
+  // Shared across the sessions and prompts model charts so the same model
+  // keeps the same color on both canvases and across poll reorders.
+  const modelPaletteAssigned = {};
+  function modelLineColor(key) {
+    if (!Charts || !Charts.paletteIndexForKey) return paletteColor(0);
+    return paletteColor(Charts.paletteIndexForKey(modelPaletteAssigned, key));
+  }
 
   // Breakdown rows become pie slices keyed by identity. Zero-token rows stay
   // in the legend with a "0" value so a provider/model with prompts or
@@ -1402,32 +1409,29 @@
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
+  function tooltipFromPayload(payload) {
+    if (!payload) return document.createDocumentFragment();
+    const rows = (payload.rows || []).map((row) => [
+      row.key,
+      row.value,
+      row.colorKey != null
+        ? modelLineColor(row.colorKey)
+        : row.colorIndex == null
+          ? null
+          : paletteColor(row.colorIndex),
+    ]);
+    const frag = tooltipEl(payload.title, rows);
+    if (payload.note) frag.append(tooltipNoteRow(payload.note));
+    return frag;
+  }
+
   function modelTooltipEl(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) {
       return document.createDocumentFragment();
     }
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    // A zero-filled gap bucket has no activity: list only models with a value
-    // in this bucket so the tooltip does not claim "0" rows are present.
-    const present = models.filter(
-      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
-    );
-    const shown = present.slice(0, 12);
-    const rows = shown.map((model) => [
-      model.model,
-      model.points[idx][metric],
-      paletteColor(models.indexOf(model)),
-    ]);
-    if (!rows.length) {
-      const empty = tooltipEl(title, []);
-      empty.append(tooltipNoteRow(`No ${metric} in this bucket`));
-      return empty;
-    }
-    const frag = tooltipEl(title, rows);
-    if (present.length > shown.length) {
-      frag.append(tooltipNoteRow(`+${present.length - shown.length} more models`));
-    }
-    return frag;
+    const payload = Charts.modelTooltipPayload(models, idx, title, metric);
+    return tooltipFromPayload(payload);
   }
 
   function modelTooltipSummary(models, idx, labelStyle, metric) {
@@ -1459,12 +1463,8 @@
     );
   }
 
-  function pieTooltipEl(row, total, color) {
-    const pct = total > 0 ? (row.value / total) * 100 : 0;
-    return tooltipEl(row.key, [
-      ["Tokens", row.value, color],
-      ["Share (%)", Math.round(pct * 10) / 10, null],
-    ]);
+  function pieTooltipEl(row, total, colorIndex) {
+    return tooltipFromPayload(Charts.pieTooltipPayload(row, total, colorIndex));
   }
 
   function pieTooltipSummary(row, total) {
@@ -1480,7 +1480,7 @@
       g.cx + Math.cos(mid) * g.r * 0.6,
       g.cy + Math.sin(mid) * g.r * 0.6,
     );
-    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total, paletteColor(idx)));
+    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total, idx));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2093,7 +2093,7 @@
     if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
     const idx = resolvePieIdx(state);
     if (idx < 0) return;
-    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total, paletteColor(idx)));
+    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total, idx));
     announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
   }
 
@@ -2258,8 +2258,8 @@
       );
     }
 
-    models.forEach((model, index) => {
-      const color = paletteColor(index);
+    models.forEach((model) => {
+      const color = modelLineColor(model.model);
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.lineJoin = "round";
@@ -2274,8 +2274,8 @@
       ctx.stroke();
     });
     if (n === 1 || models.length <= 6) {
-      models.forEach((model, index) => {
-        ctx.fillStyle = paletteColor(index);
+      models.forEach((model) => {
+        ctx.fillStyle = modelLineColor(model.model);
         model.points.forEach((point) => {
           ctx.beginPath();
           ctx.arc(xAt(point.ts), yAt(point[metric] || 0), 3, 0, Math.PI * 2);
@@ -2286,9 +2286,9 @@
 
     renderChartLegend(
       legend,
-      models.map((model, index) => ({
+      models.map((model) => ({
         key: model.model,
-        color: paletteColor(index),
+        color: modelLineColor(model.model),
         value: modelTotal(model, metric),
       })),
     );
@@ -2330,7 +2330,7 @@
     ctx.lineTo(x, padT + plotH);
     ctx.stroke();
     ctx.setLineDash([]);
-    state.series.forEach((model, index) => {
+    state.series.forEach((model) => {
       const value = model.points[idx] ? model.points[idx][state.metric] || 0 : 0;
       // A zero-filled gap bucket has no activity at this point; drawing a
       // marker ring there would imply the model was used in this bucket.
@@ -2340,7 +2340,7 @@
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fillStyle = colors.surface;
       ctx.fill();
-      ctx.strokeStyle = paletteColor(index);
+      ctx.strokeStyle = modelLineColor(model.model);
       ctx.lineWidth = 2;
       ctx.stroke();
     });
@@ -2504,7 +2504,7 @@
           canvas,
           canvas.__mouse.x,
           canvas.__mouse.y,
-          pieTooltipEl(state.rows[hidx], total, paletteColor(hidx)),
+          pieTooltipEl(state.rows[hidx], total, hidx),
         );
         announceChartData(
           canvas,

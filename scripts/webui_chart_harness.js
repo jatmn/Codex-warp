@@ -609,4 +609,63 @@ check("reconcilePieHover drops a key whose value collapsed to zero", () => {
   assert.equal(charts.reconcilePieHover(rows, "a"), "a");
 });
 
+check("paletteIndexForKey is stable across reorder and first-seen assignment", () => {
+  const assigned = {};
+  assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
+});
+
+check("modelTooltipPayload lists only active models and uses colorKey identity", () => {
+  const models = [
+    { model: "alpha", points: [{ prompts: 0 }, { prompts: 3 }] },
+    { model: "beta", points: [{ prompts: 2 }, { prompts: 0 }] },
+  ];
+  const empty = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  assert.equal(empty.title, "10:00");
+  assert.deepEqual(empty.rows, [
+    { key: "beta", value: 2, colorKey: "beta" },
+  ]);
+  assert.equal(empty.note, null);
+  const gap = charts.modelTooltipPayload(models, 1, "11:00", "prompts");
+  assert.deepEqual(gap.rows, [
+    { key: "alpha", value: 3, colorKey: "alpha" },
+  ]);
+  const none = charts.modelTooltipPayload(
+    [
+      { model: "alpha", points: [{ prompts: 0 }] },
+      { model: "beta", points: [{ prompts: 0 }] },
+    ],
+    0,
+    "12:00",
+    "sessions",
+  );
+  assert.deepEqual(none.rows, []);
+  assert.equal(none.note, "No sessions in this bucket");
+  assert.equal(charts.modelTooltipPayload([], 0, "x", "prompts"), null);
+});
+
+check("modelTooltipPayload caps listed models and reports overflow", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "now", "prompts");
+  assert.equal(payload.rows.length, 12);
+  assert.equal(payload.note, "+2 more models");
+  assert.equal(payload.rows[0].colorKey, "m0");
+});
+
+check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", () => {
+  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3, 2);
+  assert.equal(payload.title, "openai");
+  assert.deepEqual(payload.rows, [
+    { key: "Tokens", value: 1, colorIndex: 2 },
+    { key: "Share (%)", value: 33.3, colorIndex: null },
+  ]);
+  assert.equal(payload.note, null);
+  assert.equal(charts.pieTooltipPayload(null, 3, 0), null);
+});
+
 process.stdout.write("webui chart harness: all checks passed\n");
