@@ -523,23 +523,27 @@
     draft: "",
     preview: "",
     loadedKind: "none",
-    loadedEnvName: "",
     cleared: false,
     reveal: false,
   };
   let credentialFieldTomlLocked = false;
   const credentialClassHint = $("#provider-credential-class");
 
-  function compactEnvName(value) {
-    return String(value || "").replace(/_/g, "");
+  // Inline secrets are mixed-case or punctuated (sk-…, tokens with '.').
+  // All-caps strings without those markers are env-name edits, not new keys.
+  function looksLikeInlineSecret(value) {
+    return /[a-z]/.test(value) || /[-.]/.test(value);
   }
 
-  // Deleting characters from OPENAI_API_KEY into OPENAI is still an env-name
-  // edit, not a new inline secret. Compact so OPENAI_API vs OPENAIAPI match.
-  function isTruncatedEnvNameEdit(loadedEnvName, draft) {
-    const loaded = compactEnvName(loadedEnvName);
-    const current = compactEnvName(draft);
-    return !!(loaded && current && loaded !== current && loaded.startsWith(current));
+  // Editing a loaded env name into something that is neither env-shaped nor
+  // secret-shaped (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY) must not become
+  // an inline secret. After Clear saved credentials, any new value is allowed.
+  function isAmbiguousEnvReplacement(draft) {
+    return credentialState.loadedKind === "env"
+      && !credentialState.cleared
+      && !!draft
+      && !looksLikeEnvVarName(draft)
+      && !looksLikeInlineSecret(draft);
   }
 
   function isInlineKeyLocked() {
@@ -579,10 +583,7 @@
       }
     } else if (looksLikeEnvVarName(draft)) {
       text = "Will be stored as an environment variable name and read from the process environment. It is not stored as a secret.";
-    } else if (
-      credentialState.loadedKind === "env"
-      && isTruncatedEnvNameEdit(credentialState.loadedEnvName, draft)
-    ) {
+    } else if (isAmbiguousEnvReplacement(draft)) {
       text = "This looks like a shortened environment variable name. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….";
     } else {
       text = "Will be stored as an API key. After save, only a short prefix and suffix are shown.";
@@ -600,11 +601,7 @@
       return { kind: "keep" };
     }
     if (draft) {
-      if (
-        credentialState.loadedKind === "env"
-        && !looksLikeEnvVarName(draft)
-        && isTruncatedEnvNameEdit(credentialState.loadedEnvName, draft)
-      ) {
+      if (isAmbiguousEnvReplacement(draft)) {
         return {
           kind: "invalid",
           message: "That value looks like a shortened environment variable name, not a new API key. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….",
@@ -649,13 +646,10 @@
     credentialState.reveal = false;
     if (looksLikeEnvVarName(trimmed)) {
       credentialState.loadedKind = "env";
-      credentialState.loadedEnvName = trimmed;
     } else if (preview) {
       credentialState.loadedKind = "inline";
-      credentialState.loadedEnvName = "";
     } else {
       credentialState.loadedKind = "none";
-      credentialState.loadedEnvName = "";
     }
     renderCredentialInput();
   }

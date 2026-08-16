@@ -516,8 +516,8 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "masked inline keys must keep until an explicit clear/replace"
     );
     assert!(
-        app.contains("loaded.startsWith(current)"),
-        "env-name edits that only drop characters must not become inline secrets"
+        app.contains("function isAmbiguousEnvReplacement("),
+        "env-name edits that are not secret-shaped must not become inline secrets"
     );
     assert!(
         app.contains("That value looks like a shortened environment variable name"),
@@ -1452,7 +1452,8 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("function looksLikeEnvVarName("));
     assert!(app.contains("function credentialPatch("));
     assert!(app.contains("function isInlineKeyLocked("));
-    assert!(app.contains("function isTruncatedEnvNameEdit("));
+    assert!(app.contains("function isAmbiguousEnvReplacement("));
+    assert!(app.contains("function looksLikeInlineSecret("));
     assert!(app.contains("kind === \"clear\""));
     assert!(app.contains("kind === \"invalid\""));
     assert!(app.contains("{ api_key_env: null, api_key: null }"));
