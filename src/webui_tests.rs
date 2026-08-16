@@ -753,6 +753,7 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("effectivePieHoverIdx"));
     assert!(body.contains("paletteSlotKey"));
     assert!(body.contains("modelTooltipSummary"));
+    assert!(body.contains("pieTooltipSummary"));
     assert!(body.contains("tooltipRenderPlan"));
     assert!(!body.contains("CodexWarpFooter"));
     assert!(!body.contains("analyticsDisplayStatus"));
@@ -867,17 +868,17 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     let app = include_str!("webui_static/app-main.js");
     assert!(app.contains("function drawModelUsageChart("));
     assert!(app.contains("function drawPieChart("));
-    assert!(app.contains("function pieTooltipEl("));
-    assert!(app.contains("function modelTooltipEl("));
+    assert!(app.contains("function pieTooltipView("));
+    assert!(app.contains("function modelTooltipView("));
     assert!(app.contains("function tooltipNoteRow("));
     assert!(app.contains("function tooltipEl("));
     assert!(app.contains("function tooltipFromPayload("));
     assert!(app.contains("Charts.modelTooltipPayload("));
     assert!(app.contains("Charts.pieTooltipPayload("));
     assert!(app.contains("function identityColor("));
-    assert!(app.contains("function modelLiveSummary("));
     assert!(app.contains("Charts.paletteSlotKey("));
     assert!(app.contains("Charts.modelTooltipSummary("));
+    assert!(app.contains("Charts.pieTooltipSummary("));
     assert!(app.contains("Charts.tooltipRenderPlan("));
     assert!(app.contains("Charts.retainPaletteKeys("));
     assert!(app.contains("Charts.effectivePieHoverIdx("));

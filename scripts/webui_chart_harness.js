@@ -744,6 +744,11 @@ check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", ()
   ]);
   assert.equal(payload.note, null);
   assert.equal(charts.pieTooltipPayload(null, 3), null);
+  assert.equal(
+    charts.pieTooltipSummary(payload, (value) => String(value)),
+    "openai: 1 tokens (33.3%)",
+  );
+  assert.equal(charts.pieTooltipSummary(null), "");
 });
 
 check("tooltipRenderPlan maps payloads onto node-assembly data, not HTML", () => {

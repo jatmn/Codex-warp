@@ -722,6 +722,21 @@
     };
   }
 
+  // Spoken pie copy must use the payload's already-rounded share. App-main
+  // toFixed(1) on the raw ratio can disagree with Math.round(pct * 10) / 10
+  // (the visual tooltip) on half-up / floating-point boundaries.
+  function pieTooltipSummary(payload, formatValue) {
+    if (!payload) return "";
+    const format =
+      typeof formatValue === "function" ? formatValue : (value) => String(value);
+    const rows = payload.rows || [];
+    const tokens = rows[0];
+    const share = rows[1];
+    if (!tokens) return payload.title == null ? "" : String(payload.title);
+    const pct = share && share.value != null ? share.value : 0;
+    return `${payload.title}: ${format(tokens.value)} tokens (${pct}%)`;
+  }
+
   // DOM-independent tooltip assembly plan. App-main maps this onto Nodes so
   // showChartTooltip never receives HTML strings; the harness asserts the
   // plan itself (title/rows/note/color refs) instead of stubbing Document.
@@ -873,6 +888,7 @@
     modelTooltipPayload,
     modelTooltipSummary,
     pieTooltipPayload,
+    pieTooltipSummary,
     tooltipColorRef,
     tooltipRenderPlan,
     announceIfChanged,

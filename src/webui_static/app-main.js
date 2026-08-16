@@ -1451,46 +1451,36 @@
     return frag;
   }
 
-  function modelTooltipEl(models, idx, labelStyle, metric) {
+  function modelTooltipView(models, idx, labelStyle, metric) {
     if (!models.length || !models[0].points[idx]) {
-      return document.createDocumentFragment();
+      return { content: document.createDocumentFragment(), summary: "" };
     }
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
     const payload = Charts.modelTooltipPayload(models, idx, title, metric);
-    return tooltipFromPayload(payload);
-  }
-
-  function modelLiveSummary(models, idx, labelStyle, metric) {
-    if (!models.length || !models[0].points[idx]) return "";
-    const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
-    const payload = Charts.modelTooltipPayload(models, idx, title, metric);
-    return Charts.modelTooltipSummary
-      ? Charts.modelTooltipSummary(payload, metric, fmtInt, 4)
-      : "";
+    return {
+      content: tooltipFromPayload(payload),
+      summary: Charts.modelTooltipSummary
+        ? Charts.modelTooltipSummary(payload, metric, fmtInt, 4)
+        : "",
+    };
   }
 
   function showModelTooltipFor(canvas, state, idx) {
     const g = state.geometry;
     const pos = chartToClient(canvas, g.xAt(g.buckets[idx].ts), g.yAt(0));
-    showChartTooltip(
-      canvas,
-      pos.x,
-      pos.y,
-      modelTooltipEl(state.series, idx, state.labelStyle, state.metric),
-    );
-    announceChartData(
-      canvas,
-      Charts.liveRegionText(idx, modelLiveSummary(state.series, idx, state.labelStyle, state.metric)),
-    );
+    const view = modelTooltipView(state.series, idx, state.labelStyle, state.metric);
+    showChartTooltip(canvas, pos.x, pos.y, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
   }
 
-  function pieTooltipEl(row, total) {
-    return tooltipFromPayload(Charts.pieTooltipPayload(row, total));
-  }
-
-  function pieTooltipSummary(row, total) {
-    const pct = total > 0 ? ((row.value / total) * 100).toFixed(1) : "0";
-    return `${row.key}: ${fmtInt(row.value)} tokens (${pct}%)`;
+  function pieTooltipView(row, total) {
+    const payload = Charts.pieTooltipPayload(row, total);
+    return {
+      content: tooltipFromPayload(payload),
+      summary: Charts.pieTooltipSummary
+        ? Charts.pieTooltipSummary(payload, fmtInt)
+        : "",
+    };
   }
 
   function showPieTooltipFor(canvas, state, idx) {
@@ -1501,8 +1491,9 @@
       g.cx + Math.cos(mid) * g.r * 0.6,
       g.cy + Math.sin(mid) * g.r * 0.6,
     );
-    showChartTooltip(canvas, pos.x, pos.y, pieTooltipEl(state.rows[idx], state.total));
-    announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
+    const view = pieTooltipView(state.rows[idx], state.total);
+    showChartTooltip(canvas, pos.x, pos.y, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
   }
 
   // Hover state is stored as the bucket's timestamp (`hoverTs`) and resolved
@@ -2098,24 +2089,18 @@
     if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
     const idx = resolveModelIdx(state);
     if (idx < 0) return;
-    showChartTooltip(
-      canvas,
-      event.clientX,
-      event.clientY,
-      modelTooltipEl(state.series, idx, state.labelStyle, state.metric),
-    );
-    announceChartData(
-      canvas,
-      Charts.liveRegionText(idx, modelLiveSummary(state.series, idx, state.labelStyle, state.metric)),
-    );
+    const view = modelTooltipView(state.series, idx, state.labelStyle, state.metric);
+    showChartTooltip(canvas, event.clientX, event.clientY, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
   }
 
   function handlePieChartHover(canvas, event, state) {
     if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
     const idx = resolvePieIdx(state);
     if (idx < 0) return;
-    showChartTooltip(canvas, event.clientX, event.clientY, pieTooltipEl(state.rows[idx], state.total));
-    announceChartData(canvas, Charts.liveRegionText(idx, pieTooltipSummary(state.rows[idx], state.total)));
+    const view = pieTooltipView(state.rows[idx], state.total);
+    showChartTooltip(canvas, event.clientX, event.clientY, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
   }
 
   function legendElFor(canvas) {
@@ -2319,16 +2304,9 @@
     if (idx >= 0) {
       renderModelHover(canvas, state, idx);
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(
-          canvas,
-          canvas.__mouse.x,
-          canvas.__mouse.y,
-          modelTooltipEl(models, idx, labelStyle, metric),
-        );
-        announceChartData(
-          canvas,
-          Charts.liveRegionText(idx, modelLiveSummary(models, idx, labelStyle, metric)),
-        );
+        const view = modelTooltipView(models, idx, labelStyle, metric);
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, view.content);
+        announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
       } else {
         showModelTooltipFor(canvas, state, idx);
       }
@@ -2526,16 +2504,9 @@
 
     if (hidx >= 0) {
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(
-          canvas,
-          canvas.__mouse.x,
-          canvas.__mouse.y,
-          pieTooltipEl(state.rows[hidx], total),
-        );
-        announceChartData(
-          canvas,
-          Charts.liveRegionText(hidx, pieTooltipSummary(state.rows[hidx], total)),
-        );
+        const view = pieTooltipView(state.rows[hidx], total);
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, view.content);
+        announceChartData(canvas, Charts.liveRegionText(hidx, view.summary));
       } else {
         showPieTooltipFor(canvas, state, hidx);
       }
