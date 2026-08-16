@@ -149,9 +149,14 @@
       const width = Number(measureText(text == null ? "" : String(text)));
       return Number.isFinite(width) && width > 0 ? width : 0;
     };
-    const chipWidth = (label) => Math.max(minChip, chrome + measure(label || ""));
-    const rowPixelWidth = (labels) =>
-      labels.reduce((sum, label, i) => sum + chipWidth(label) + (i ? gap : 0), 0);
+    const finiteBudget = Number.isFinite(budget) ? budget : 0;
+    const chipWidth = (label, chromeW, minW) =>
+      Math.max(minW, chromeW + measure(label || ""));
+    const rowPixelWidth = (labels, chromeW, minW) =>
+      labels.reduce(
+        (sum, label, i) => sum + chipWidth(label, chromeW, minW) + (i ? gap : 0),
+        0,
+      );
 
     function splitRows(source, rowCount) {
       const rows = [];
@@ -164,10 +169,10 @@
       return rows;
     }
 
-    function fitLabels(labels, allowOverflow) {
+    function ellipsize(labels) {
       const out = labels.map((label) => String(label || ""));
       let guard = 0;
-      while (rowPixelWidth(out) > budget && guard++ < 400) {
+      while (rowPixelWidth(out, chrome, minChip) > finiteBudget && guard++ < 400) {
         let idx = 0;
         for (let i = 1; i < out.length; i++) {
           const a = out[i].replace(/…$/u, "");
@@ -179,8 +184,38 @@
         if (!base) break;
         out[idx] = base.length === 1 ? "" : `${base.slice(0, -1)}…`;
       }
-      if (!allowOverflow && rowPixelWidth(out) > budget) return null;
-      return out.map((label) => ({ label, width: chipWidth(label) }));
+      return out;
+    }
+
+    function widthsFor(labels, chromeW, minW) {
+      return labels.map((label) => chipWidth(label, chromeW, minW));
+    }
+
+    function totalWidth(ws) {
+      return ws.reduce((sum, width, i) => sum + width + (i ? gap : 0), 0);
+    }
+
+    function fitLabels(labels, allowOverflow) {
+      const out = ellipsize(labels);
+      let chromeW = chrome;
+      let minW = minChip;
+      let ws = widthsFor(out, chromeW, minW);
+      while (totalWidth(ws) > finiteBudget && chromeW > 0) {
+        chromeW -= 1;
+        minW = Math.min(minW, Math.max(1, chromeW));
+        ws = widthsFor(out, chromeW, minW);
+      }
+      if (totalWidth(ws) > finiteBudget && finiteBudget > 0 && out.length) {
+        const gapTotal = gap * Math.max(0, out.length - 1);
+        const available = Math.max(0, finiteBudget - gapTotal);
+        const naturalSum = ws.reduce((sum, width) => sum + width, 0);
+        ws =
+          naturalSum > 0
+            ? ws.map((width) => (width / naturalSum) * available)
+            : ws.map(() => available / out.length);
+      }
+      if (!allowOverflow && totalWidth(ws) > finiteBudget) return null;
+      return out.map((label, i) => ({ label, width: ws[i] }));
     }
 
     function pack(rowCount, allowOverflow) {

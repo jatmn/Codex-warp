@@ -82,6 +82,19 @@ fn store_records_usage_and_aggregates_ranges() {
             .sum::<i64>(),
         2
     );
+    // Cached usage came from the 15-token alpha event, not the 28-token beta
+    // event. A bucket that carries those two cached tokens must also carry
+    // alpha's totals (alone or combined with beta in the same hour).
+    for point in &summary.series {
+        match point.cached_tokens {
+            0 => {}
+            2 => assert!(
+                point.total_tokens == 15 || point.total_tokens == 43,
+                "cached tokens attributed to a bucket without the alpha event"
+            ),
+            other => panic!("unexpected per-bucket cached_tokens {other}"),
+        }
+    }
 
     let filtered = store
         .analytics(AnalyticsRange::Last24Hours, Some("alpha"), None)
