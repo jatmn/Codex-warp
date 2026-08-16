@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -29,13 +28,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Format
-        run: cargo fmt --check
+      - name: Lockfile
+        run: cargo update --workspace --locked
+
+      - name: Spell Check
+        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
+
+      - name: Source Checks
+        run: SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh
 
       - name: Test
         run: cargo test --locked
@@ -47,14 +52,6 @@ jobs:
         run: |
           target/debug/codex-warp --version
           target/debug/codex-warp --help
-
-      - name: Web UI JavaScript
-        run: |
-          node --check src/webui_static/theme-bootstrap.js
-          node --check src/webui_static/chart-math.js
-          node --check src/webui_static/footer-status.js
-          node --check src/webui_static/app-main.js
-          node scripts/webui_chart_harness.js
 
       - name: Diff Whitespace
         run: |
@@ -68,7 +65,3 @@ jobs:
               git show --check --format= HEAD
             fi
           fi
-
-      - name: Docs Whitespace
-        run: |
-          ! grep -RInE '[[:blank:]]$' README.md AGENTS.md docs

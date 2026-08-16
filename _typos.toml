@@ -1,0 +1,6 @@
+# Spell check config for `typos` (https://github.com/crate-ci/typos).
+# This is a review gate, not a way to hide findings: add extend-words only for
+# confirmed identifiers or fixtures, never to silence a real misspelling.
+
+[files]
+extend-exclude = ["Cargo.lock"]
