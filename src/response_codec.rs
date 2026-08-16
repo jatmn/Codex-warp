@@ -1073,7 +1073,9 @@ fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
 /// `max_followups` caps only consecutive text-only stops rather than every
 /// mid-task stop in a long session. `update_plan` is planning, not progress:
 /// treating it as tool work would reset the budget on every plan-only turn
-/// and let text-only pause loops run past `max_followups`.
+/// and let text-only pause loops run past `max_followups`. Tool outputs and
+/// chat `role=tool` messages count only when they match a non-plan call id
+/// already in the request; missing or unmatched ids are not progress.
 fn request_shows_tool_progress(request: &Value) -> bool {
     if let Some(input) = request.get("input").and_then(Value::as_array) {
         return input
@@ -1091,23 +1093,23 @@ fn request_shows_tool_progress(request: &Value) -> bool {
 fn item_shows_tool_progress(item: &Value, items: &[Value]) -> bool {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call_output" | "custom_tool_call_output") => {
-            !output_belongs_to_update_plan(item, items)
+            output_matches_non_plan_call(item, items)
         }
         Some("function_call" | "tool_call" | "custom_tool_call") => !item_is_update_plan(item),
         _ => false,
     }
 }
 
-fn output_belongs_to_update_plan(output: &Value, items: &[Value]) -> bool {
+fn output_matches_non_plan_call(output: &Value, items: &[Value]) -> bool {
     let Some(call_id) = output_call_id(output) else {
         return false;
     };
     items.iter().any(|item| {
-        item_is_update_plan(item)
-            && item
-                .get("call_id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id == call_id)
+        matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "tool_call" | "custom_tool_call")
+        ) && !item_is_update_plan(item)
+            && call_item_id(item).is_some_and(|id| id == call_id)
     })
 }
 
@@ -1131,14 +1133,14 @@ fn chat_messages_show_tool_progress(messages: &[Value]) -> bool {
         return false;
     };
     if last.get("role").and_then(Value::as_str) == Some("tool") {
-        return !tool_message_belongs_to_update_plan(last, messages);
+        return tool_message_matches_non_plan_call(last, messages);
     }
     last.get("tool_calls")
         .and_then(Value::as_array)
         .is_some_and(|calls| calls.iter().any(|call| !item_is_update_plan(call)))
 }
 
-fn tool_message_belongs_to_update_plan(message: &Value, messages: &[Value]) -> bool {
+fn tool_message_matches_non_plan_call(message: &Value, messages: &[Value]) -> bool {
     let Some(call_id) = output_call_id(message) else {
         return false;
     };
@@ -1148,14 +1150,16 @@ fn tool_message_belongs_to_update_plan(message: &Value, messages: &[Value]) -> b
             .and_then(Value::as_array)
             .is_some_and(|calls| {
                 calls.iter().any(|call| {
-                    item_is_update_plan(call)
-                        && call
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .is_some_and(|id| id == call_id)
+                    !item_is_update_plan(call) && call_item_id(call).is_some_and(|id| id == call_id)
                 })
             })
     })
+}
+
+fn call_item_id(item: &Value) -> Option<&str> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
 }
 
 fn looks_like_mid_task_stop(text: &str) -> bool {
@@ -1974,13 +1978,23 @@ fn join_chat_content_parts(parts: &[&str]) -> String {
 }
 
 fn content_parts_need_separator(left: &str, right: &str) -> bool {
+    if left.ends_with(char::is_whitespace) || right.starts_with(char::is_whitespace) {
+        return false;
+    }
     let Some(prev) = left.chars().next_back() else {
         return false;
     };
     let Some(next) = right.chars().next() else {
         return false;
     };
-    prev.is_alphanumeric() && next.is_alphanumeric()
+    // Glue hyphenated/contracted fragments ("re-" + "audit"). Insert a space
+    // before a new word after letters *or* sentence punctuation ("Done." +
+    // "Now let me"), so array parts stay readable and continue-guard prefixes
+    // still tokenize.
+    if matches!(prev, '-' | '\'') || matches!(next, '-' | '\'') {
+        return false;
+    }
+    next.is_alphanumeric()
 }
 
 fn chat_content_part_text(item: &Value) -> Option<&str> {

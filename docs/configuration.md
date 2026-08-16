@@ -308,7 +308,9 @@ completed tool work (or a pending non-`update_plan` tool call), including
 requests that are not themselves suspected pauses, so a long
 session can keep auto-continuing through genuine mid-task pauses after real
 tool progress without letting a text-only loop run forever. A trailing
-`update_plan` does not count as progress. Requests without a
+`update_plan` does not count as progress. Tool outputs and chat `role=tool`
+messages also do not count unless they match a non-`update_plan` call id
+already present in the request. Requests without a
 `prompt_cache_key` are observed but not forced.
 
 Continue guard does not patch prompts, modify skills, or cross providers for
