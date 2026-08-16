@@ -402,9 +402,20 @@
     return idx;
   }
 
+  // Map a client coordinate on one axis into the canvas paint space used after
+  // fitCanvasMetrics (CSS pixels, not layout/clientHeight). X and Y share this
+  // projector so pie hit-testing cannot drift between mousemove and redraw.
+  function pointerCssCoord(client, rectOrigin, rectSize, cssSize) {
+    if (!rectSize) return 0;
+    return ((client - rectOrigin) * cssSize) / rectSize;
+  }
+
   function pointerCssX(clientX, rectLeft, rectWidth, cssW) {
-    if (!rectWidth) return 0;
-    return ((clientX - rectLeft) * cssW) / rectWidth;
+    return pointerCssCoord(clientX, rectLeft, rectWidth, cssW);
+  }
+
+  function pointerCssY(clientY, rectTop, rectHeight, cssH) {
+    return pointerCssCoord(clientY, rectTop, rectHeight, cssH);
   }
 
   function resolveIdxByTs(points, hoverTs) {
@@ -504,6 +515,300 @@
     return base;
   }
 
+  // Pie slices start at 12 o'clock and sweep clockwise. Zero-value slices get
+  // zero-width arcs so they cannot consume angle or become hittable.
+  function pieSlices(values) {
+    const items = (values || []).map((value) => {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    });
+    const total = items.reduce((sum, value) => sum + value, 0);
+    let start = -Math.PI / 2;
+    const slices = items.map((value) => {
+      const end = total > 0 ? start + (value / total) * Math.PI * 2 : start;
+      const slice = { value, start, end };
+      start = end;
+      return slice;
+    });
+    return { slices, total };
+  }
+
+  function pieMidAngle(slice) {
+    if (!slice) return 0;
+    return (slice.start + slice.end) / 2;
+  }
+
+  // Pick the more readable text color (white or near-black) for a solid hex
+  // fill using WCAG relative luminance. The naive NTSC-style weighted average
+  // misclassifies mid-tone colors, so use the sRGB channel formula instead.
+  function wcagLuminance(hex) {
+    const value = String(hex || "").replace("#", "");
+    if (!/^[0-9a-fA-F]{6}$/.test(value)) return 0;
+    const channel = (start) => {
+      const c = parseInt(value.slice(start, start + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
+  }
+
+  function contrastRatio(a, b) {
+    const lighter = Math.max(a, b);
+    const darker = Math.min(a, b);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  function textColorOn(hex) {
+    const lum = wcagLuminance(hex);
+    if (!(lum > 0)) return "#ffffff";
+    const darkHex = "#1f2937";
+    const white = contrastRatio(1, lum);
+    // Compare against the color that will actually paint, not pure black.
+    // Using 0.05 (black) overstates dark contrast and can pick #1f2937 when
+    // white would be more readable on the fill.
+    const dark = contrastRatio(wcagLuminance(darkHex), lum);
+    return dark > white ? darkHex : "#ffffff";
+  }
+
+  // Hit-test a point against the pie. A donut has a dead inner circle; a full
+  // pie passes innerR = 0. Angles below 12 o'clock are normalized into the
+  // sweep so the wrap-around slice is hit correctly.
+  function pieSliceIndexAt(cx, cy, outerR, innerR, slices, x, y) {
+    const dx = x - cx;
+    const dy = y - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    // Floating-point coordinates that land exactly on the circumference (e.g.
+    // radius * cos/sin in tests, or a pointer at the painted edge) can compute
+    // one ULP past outerR and become an invisible dead zone. Tolerate a tiny
+    // epsilon instead of rejecting those hits.
+    const eps = 1e-6 * Math.max(1, Number(outerR) || 1);
+    if (!(dist > 0) || dist > outerR + eps || dist < innerR - eps) return -1;
+    let angle = Math.atan2(dy, dx);
+    if (angle < -Math.PI / 2) angle += Math.PI * 2;
+    for (let i = 0; i < slices.length; i += 1) {
+      const slice = slices[i];
+      if (!(slice.value > 0)) continue;
+      if (angle >= slice.start && angle < slice.end) return i;
+    }
+    return -1;
+  }
+
+  // Pie hover identity is the slice key, not the positional index: a poll
+  // redraw can reorder slices when values change, and the selected slice must
+  // stay selected (or drop) instead of silently pointing at a different key.
+  // A row whose value collapsed to zero is no longer a selectable slice, so
+  // the key drops too — otherwise the hover ring/tooltip would point at a
+  // zero-width (invisible) slice after the redraw.
+  function reconcilePieHover(rows, hoverKey) {
+    if (hoverKey == null) return null;
+    const row = rows.find((candidate) => candidate.key === hoverKey);
+    return row && row.value > 0 ? hoverKey : null;
+  }
+
+  // First-seen key keeps its palette slot across polls, the two model-over-time
+  // charts, and the pies. Rank-after-sort would swap colors when totals change
+  // or when sessions vs prompts sort differently.
+  // Allocate the lowest unused index so dropping a departed key (see
+  // retainPaletteKeys) cannot collide with a still-assigned slot: counting
+  // remaining keys would reuse an in-use index.
+  // Provider pies and model lines share one assignment map. Bare string keys
+  // collide when a provider id equals a model id (both then steal one slot).
+  // Namespace the slot so "openai" the provider and "openai" the model stay
+  // independent even when they appear in the same snapshot.
+  function paletteSlotKey(kind, key) {
+    const id = String(key ?? "");
+    if (kind === "provider") return `provider:${id}`;
+    if (kind === "model") return `model:${id}`;
+    return `key:${id}`;
+  }
+
+  function paletteIndexForKey(assigned, key) {
+    const map = assigned && typeof assigned === "object" ? assigned : {};
+    const id = String(key ?? "");
+    if (Object.prototype.hasOwnProperty.call(map, id)) return map[id];
+    const used = new Set(Object.keys(map).map((item) => map[item]));
+    let index = 0;
+    while (used.has(index)) index += 1;
+    map[id] = index;
+    return index;
+  }
+
+  // Bound the first-seen map to identities in the current analytics snapshot.
+  // Without this, every model/provider that ever appeared in the page session
+  // keeps a slot forever. Holes left here are safe because paletteIndexForKey
+  // scans for the lowest unused index rather than using Object.keys.length.
+  function retainPaletteKeys(assigned, keys) {
+    if (!assigned || typeof assigned !== "object" || !Array.isArray(keys)) {
+      return assigned;
+    }
+    const keep = new Set(keys.map((key) => String(key ?? "")));
+    for (const key of Object.keys(assigned)) {
+      if (!keep.has(key)) delete assigned[key];
+    }
+    return assigned;
+  }
+
+  // Pointer-owned pie redraws must describe the slice under the cursor. A miss
+  // (padding, or the wedge moved off the pointer) clears hover; keeping the
+  // previous key would leave a tooltip on a slice the user is not pointing at.
+  // Keyboard ownership ignores the pointer and keeps the reconciled index.
+  function effectivePieHoverIdx(reconciledIdx, pointerOwned, hitIdx) {
+    if (!pointerOwned) {
+      return typeof reconciledIdx === "number" ? reconciledIdx : -1;
+    }
+    return typeof hitIdx === "number" && hitIdx >= 0 ? hitIdx : -1;
+  }
+
+  // Shared activity predicate for model-over-time paint, hover rings, and
+  // tooltips. Gap-filled zeros (and non-finite values) are not usage: a
+  // marker or tooltip row at that bucket would imply the model was used.
+  function modelMetricValue(point, metric) {
+    if (!point) return 0;
+    const n = Number(point[metric]);
+    // Same floor as pieRows: negatives and non-finite values are not usage.
+    // Painting them would invert the Y scale or draw markers below the axis.
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  }
+
+  function modelPointActive(point, metric) {
+    return modelMetricValue(point, metric) > 0;
+  }
+
+  // Tooltip content policy, independent of DOM. App-main maps this onto
+  // tooltipEl/tooltipRowsEl so showChartTooltip always receives Nodes.
+  function modelTooltipPayload(models, idx, title, metric) {
+    if (!models || !models.length || !models[0].points || !models[0].points[idx]) {
+      return null;
+    }
+    // Rank by this bucket's metric, not the window-total order the chart
+    // used for legend/line stacking. A 12-row cap that inherited window
+    // rank could omit the model that actually led the hovered timestamp.
+    const present = models
+      .filter((model) => modelPointActive(model.points[idx], metric))
+      .slice()
+      .sort(
+        (a, b) =>
+          modelMetricValue(b.points[idx], metric) -
+          modelMetricValue(a.points[idx], metric),
+      );
+    const shown = present.slice(0, 12);
+    // `present` is the true bucket occupancy. `rows` is a display cap (12),
+    // so live-region overflow must use this count — not rows.length — or a
+    // spoken cap of 4 under-reports by (present - 12) when the tooltip
+    // already overflowed.
+    if (!shown.length) {
+      return {
+        title,
+        rows: [],
+        present: 0,
+        note: `No ${metric} in this bucket`,
+      };
+    }
+    return {
+      title,
+      present: present.length,
+      rows: shown.map((model) => ({
+        key: model.model,
+        value: modelMetricValue(model.points[idx], metric),
+        colorKey: model.model,
+        colorKind: "model",
+      })),
+      note:
+        present.length > shown.length
+          ? `+${present.length - shown.length} more models`
+          : null,
+    };
+  }
+
+  // Live-region copy is the same payload as the visual tooltip, abbreviated
+  // for speech. Re-filtering models in app-main would drift from this policy
+  // (caps, empty-bucket wording, which models count as present).
+  function modelTooltipSummary(payload, metric, formatValue, limit) {
+    if (!payload) return "";
+    const cap = Number.isFinite(Number(limit)) ? Math.max(0, Number(limit)) : 4;
+    const format =
+      typeof formatValue === "function" ? formatValue : (value) => String(value);
+    const rows = payload.rows || [];
+    const shown = rows.slice(0, cap);
+    const present = Number.isFinite(Number(payload.present))
+      ? Math.max(0, Number(payload.present))
+      : rows.length;
+    const extra = Math.max(0, present - shown.length);
+    const parts = shown.map((row) => `${row.key} ${format(row.value)}`);
+    if (extra > 0) parts.push(`+${extra} more models`);
+    // `parts` is built from `shown`, so an empty `shown` is the only empty
+    // summary path. Do not also test `parts.length` — that branch is dead.
+    if (!shown.length) {
+      return `${payload.title}: no ${metric}`;
+    }
+    return `${payload.title}: ${parts.join(", ")}`;
+  }
+
+  // One-decimal percent of the pie total. Canvas labels, tooltip share, and
+  // live-region copy must all use this so 1/3 cannot read "33%" on the wedge
+  // and "33.3%" in the hover UI.
+  function pieSharePercent(value, total) {
+    if (!(Number(total) > 0)) return 0;
+    const n = Number(value);
+    const amount = Number.isFinite(n) && n > 0 ? n : 0;
+    return Math.round((amount / total) * 1000) / 10;
+  }
+
+  function pieTooltipPayload(row, total) {
+    if (!row) return null;
+    return {
+      title: row.key,
+      rows: [
+        { key: "Tokens", value: row.value, colorKey: row.key, colorKind: row.kind || "model" },
+        { key: "Share (%)", value: pieSharePercent(row.value, total), colorKey: null },
+      ],
+      note: null,
+    };
+  }
+
+  // Spoken pie copy must use the payload's already-rounded share. App-main
+  // toFixed(1) on the raw ratio can disagree with Math.round(pct * 10) / 10
+  // (the visual tooltip) on half-up / floating-point boundaries.
+  function pieTooltipSummary(payload, formatValue) {
+    if (!payload) return "";
+    const format =
+      typeof formatValue === "function" ? formatValue : (value) => String(value);
+    const rows = payload.rows || [];
+    const tokens = rows[0];
+    const share = rows[1];
+    if (!tokens) return payload.title == null ? "" : String(payload.title);
+    const pct = share && share.value != null ? share.value : 0;
+    return `${payload.title}: ${format(tokens.value)} tokens (${pct}%)`;
+  }
+
+  // DOM-independent tooltip assembly plan. App-main maps this onto Nodes so
+  // showChartTooltip never receives HTML strings; the harness asserts the
+  // plan itself (title/rows/note/color refs) instead of stubbing Document.
+  function tooltipColorRef(row) {
+    if (!row) return { type: "none" };
+    if (row.colorKey != null && row.colorKey !== "") {
+      return {
+        type: "key",
+        kind: row.colorKind === "provider" ? "provider" : "model",
+        key: row.colorKey,
+      };
+    }
+    return { type: "none" };
+  }
+
+  function tooltipRenderPlan(payload) {
+    if (!payload) return { kind: "empty", title: "", rows: [], note: null };
+    return {
+      kind: "tooltip",
+      title: payload.title == null ? "" : String(payload.title),
+      rows: (payload.rows || []).map((row) => ({
+        key: row.key,
+        value: row.value,
+        color: tooltipColorRef(row),
+      })),
+      note: payload.note ? String(payload.note) : null,
+    };
+  }
+
   function announceIfChanged(previous, next) {
     const prev = previous == null ? "" : String(previous);
     const value = next == null ? "" : String(next);
@@ -541,6 +846,21 @@
     if (!mathLoaded) return "failed";
     if (Number(bucketCount) > 0 && liveLaidOut) return "interactive";
     return "idle";
+  }
+
+  // Navigable length is per canvas: pies use active slices, model/line/bar
+  // charts use time buckets. Empty pies next to a populated aggregate series
+  // must not inherit that series length.
+  function chartNavigableCount(state) {
+    if (!state) return 0;
+    if (state.kind === "pie") return (state.rows || []).length;
+    if (state.kind === "model") {
+      const buckets = state.geometry && state.geometry.buckets;
+      return buckets && buckets.length ? buckets.length : 0;
+    }
+    if (state.kind === "bar") return (state.rows || []).length;
+    if (state.kind === "line") return (state.series || []).length;
+    return 0;
   }
 
   function chartCanvasAttrs(surface) {
@@ -605,17 +925,39 @@
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,
+    pointerCssCoord,
     pointerCssX,
+    pointerCssY,
     resolveIdxByTs,
     reconcileHoverTs,
     nextKeyboardIdx,
     chartFocusAction,
     chartInputStep,
+    pieSlices,
+    pieMidAngle,
+    wcagLuminance,
+    textColorOn,
+    pieSliceIndexAt,
+    reconcilePieHover,
+    paletteSlotKey,
+    paletteIndexForKey,
+    retainPaletteKeys,
+    effectivePieHoverIdx,
+    modelMetricValue,
+    modelPointActive,
+    modelTooltipPayload,
+    modelTooltipSummary,
+    pieSharePercent,
+    pieTooltipPayload,
+    pieTooltipSummary,
+    tooltipColorRef,
+    tooltipRenderPlan,
     announceIfChanged,
     liveRegionText,
     chartsLiveLayout,
     shouldPaintCharts,
     chartSurface,
+    chartNavigableCount,
     chartCanvasAttrs,
   };
 

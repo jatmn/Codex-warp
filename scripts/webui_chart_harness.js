@@ -205,6 +205,27 @@ check("pointerCssX maps client X into CSS chart coordinates", () => {
   assert.equal(charts.pointerCssX(100, 100, 0, 400), 0);
 });
 
+check("pointerCssY maps client Y into paint-space height, not layout height", () => {
+  assert.equal(charts.pointerCssY(150, 100, 200, 400), 100);
+  assert.equal(charts.pointerCssY(100, 100, 0, 260), 0);
+  // A pie painted at cssH=260 inside a 200px layout rect: the vertical
+  // midpoint must hit paint Y 130, not layout Y 100.
+  const rectTop = 50;
+  const rectHeight = 200;
+  const cssH = 260;
+  const clientY = rectTop + rectHeight / 2;
+  assert.equal(charts.pointerCssY(clientY, rectTop, rectHeight, cssH), 130);
+  assert.notEqual(charts.pointerCssY(clientY, rectTop, rectHeight, cssH), rectHeight / 2);
+  assert.equal(
+    charts.pointerCssY(clientY, rectTop, rectHeight, cssH),
+    charts.pointerCssX(clientY, rectTop, rectHeight, cssH),
+  );
+  assert.equal(
+    charts.pointerCssCoord(clientY, rectTop, rectHeight, cssH),
+    charts.pointerCssY(clientY, rectTop, rectHeight, cssH),
+  );
+});
+
 check("reconcileHoverTs drops identity when the bucket disappears", () => {
   const full = [{ ts: 1 }, { ts: 2 }, { ts: 3 }];
   assert.equal(charts.reconcileHoverTs(full, 3), 3);
@@ -372,6 +393,28 @@ check("chartSurface is idle until math, buckets, and live layout exist", () => {
   assert.equal(charts.chartSurface(true, 3, charts.chartsLiveLayout(0)), "idle");
 });
 
+check("chartNavigableCount is per-canvas, not aggregate series length", () => {
+  assert.equal(charts.chartNavigableCount(null), 0);
+  assert.equal(charts.chartNavigableCount({ kind: "pie", rows: [] }), 0);
+  assert.equal(
+    charts.chartNavigableCount({ kind: "pie", rows: [{ key: "a" }, { key: "b" }] }),
+    2,
+  );
+  assert.equal(
+    charts.chartNavigableCount({ kind: "model", geometry: null, series: [{ model: "x" }] }),
+    0,
+  );
+  assert.equal(
+    charts.chartNavigableCount({
+      kind: "model",
+      geometry: { buckets: [{ ts: 1 }, { ts: 2 }] },
+    }),
+    2,
+  );
+  assert.equal(charts.chartNavigableCount({ kind: "line", series: [{}, {}, {}] }), 3);
+  assert.equal(charts.chartNavigableCount({ kind: "bar", rows: [{}] }), 1);
+});
+
 check("analyticsDisplayStatus remaps only the analytics tab when math is missing", () => {
   const fail = footer.chartsFailedStatus;
   assert.equal(fail, "Analytics charts failed to load (/ui/chart-math.js)");
@@ -459,6 +502,395 @@ check("chartInputStep deactivate drops pointer ownership like blur", () => {
   );
   assert.equal(keyed.hoverTs, null);
   assert.equal(keyed.inputMode, "pointer");
+});
+
+check("pieSlices starts at 12 o'clock and sweeps clockwise", () => {
+  const { slices, total } = charts.pieSlices([2, 1, 1]);
+  assert.equal(total, 4);
+  assert.equal(slices.length, 3);
+  assert.equal(slices[0].start, -Math.PI / 2);
+  assert.equal(slices[0].end, slices[0].start + Math.PI);
+  assert.equal(slices[1].start, slices[0].end);
+  assert.equal(slices[1].end, slices[1].start + Math.PI / 2);
+  assert.equal(slices[2].end, slices[2].start + Math.PI / 2);
+  assert.equal(slices[2].end, -Math.PI / 2 + Math.PI * 2);
+});
+
+check("pieSlices gives zero-width arcs to zero values", () => {
+  const { slices, total } = charts.pieSlices([0, 5, 0]);
+  assert.equal(total, 5);
+  assert.equal(slices[0].start, slices[0].end);
+  assert.equal(slices[1].end - slices[1].start, Math.PI * 2);
+  assert.equal(slices[2].start, slices[2].end);
+});
+
+check("pieSlices handles empty and all-zero input", () => {
+  const empty = charts.pieSlices([]);
+  assert.equal(empty.total, 0);
+  assert.deepEqual(empty.slices, []);
+  const zeros = charts.pieSlices([0, 0]);
+  assert.equal(zeros.total, 0);
+  assert.equal(zeros.slices[0].start, zeros.slices[0].end);
+  assert.equal(zeros.slices[1].start, zeros.slices[1].end);
+});
+
+check("pieSliceIndexAt hits the correct slice and rejects misses", () => {
+  const { slices } = charts.pieSlices([1, 1, 1, 1]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // 3 o'clock (angle 0) is the second quarter: start at -PI/2 + PI/2 = 0.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r, cy), 1);
+  // 6 o'clock (angle PI/2) is the third quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy + r), 2);
+  // 9 o'clock (angle PI) is the fourth quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx - r, cy), 3);
+  // 12 o'clock (angle -PI/2) is the first quarter.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy - r), 0);
+  // Outside the radius is a miss.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r * 2, cy), -1);
+  // Inside a donut hole is a miss.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 30, slices, cx + 10, cy), -1);
+  // The exact center of a full pie is ambiguous (atan2(0, 0) has no defined
+  // slice), so it is treated as a miss instead of arbitrarily selecting a
+  // slice.
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy), -1);
+});
+
+check("pieSliceIndexAt tolerates floating-point circumference hits", () => {
+  const { slices } = charts.pieSlices([1, 1, 1, 1]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // A point computed from radius * cos/sin can land one ULP outside outerR;
+  // it must still hit the intended slice instead of becoming a dead zone.
+  const angle = -Math.PI / 2 - 0.01;
+  assert.equal(
+    charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + Math.cos(angle) * r, cy + Math.sin(angle) * r),
+    3,
+  );
+});
+
+check("pieSliceIndexAt skips zero-width slices", () => {
+  const { slices } = charts.pieSlices([5, 0, 5]);
+  const cx = 100;
+  const cy = 100;
+  const r = 50;
+  // The zero slice consumed no angle: the first half still owns angle 0
+  // (3 o'clock) and the second half owns angle PI/2 (6 o'clock).
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx + r, cy), 0);
+  assert.equal(charts.pieSliceIndexAt(cx, cy, r, 0, slices, cx, cy + r), 2);
+});
+
+check("pieSlices clamps non-finite and negative values to zero", () => {
+  const { slices, total } = charts.pieSlices([5, Infinity, NaN, -3, 2]);
+  assert.equal(total, 7);
+  assert.equal(slices.length, 5);
+  // Only the finite positive values consume angle.
+  assert.equal(slices[1].end - slices[1].start, 0);
+  assert.equal(slices[2].end - slices[2].start, 0);
+  assert.equal(slices[3].end - slices[3].start, 0);
+  assert.ok(Number.isFinite(slices[4].end));
+});
+
+check("pieMidAngle is the slice center for labels", () => {
+  const { slices } = charts.pieSlices([1, 1]);
+  assert.equal(charts.pieMidAngle(slices[0]), -Math.PI / 2 + Math.PI / 2);
+  assert.equal(charts.pieMidAngle(null), 0);
+});
+
+check("textColorOn picks dark text on light fills with WCAG luminance", () => {
+  // Amber-600: white text was 3.19:1 (below AA); dark text is ~5:1.
+  assert.equal(charts.textColorOn("#d97706"), "#1f2937");
+  // Teal-700: white text on this fill passes comfortably.
+  assert.equal(charts.textColorOn("#0f766e"), "#ffffff");
+  // Invalid/missing colors default to white text.
+  assert.equal(charts.textColorOn(""), "#ffffff");
+  assert.equal(charts.textColorOn("nope"), "#ffffff");
+});
+
+check("textColorOn compares against painted #1f2937, not pure black", () => {
+  // Sky-600 is in CHART_PALETTE. Black contrast beats white, so the old
+  // formula painted #1f2937; the actual near-black loses to white on this fill.
+  const fill = "#0284c7";
+  const lum = charts.wcagLuminance(fill);
+  const white = (1 + 0.05) / (lum + 0.05);
+  const black = (lum + 0.05) / 0.05;
+  const painted =
+    (Math.max(lum, charts.wcagLuminance("#1f2937")) + 0.05)
+    / (Math.min(lum, charts.wcagLuminance("#1f2937")) + 0.05);
+  assert.ok(black > white);
+  assert.ok(painted < white);
+  assert.equal(charts.textColorOn(fill), "#ffffff");
+});
+
+check("reconcilePieHover keeps identity and drops removed keys", () => {
+  const rows = [
+    { key: "a", value: 5 },
+    { key: "b", value: 3 },
+  ];
+  assert.equal(charts.reconcilePieHover(rows, "b"), "b");
+  assert.equal(charts.reconcilePieHover(rows, "missing"), null);
+  assert.equal(charts.reconcilePieHover(rows, null), null);
+});
+
+check("reconcilePieHover drops a key whose value collapsed to zero", () => {
+  const rows = [
+    { key: "a", value: 100 },
+    { key: "b", value: 0 },
+  ];
+  assert.equal(charts.reconcilePieHover(rows, "a"), "a");
+  // A zero-value row has no visible slice; keeping its hover would leave a
+  // phantom ring/tooltip on an invisible wedge after a poll redraw.
+  assert.equal(charts.reconcilePieHover(rows, "b"), null);
+  assert.equal(charts.reconcilePieHover(rows, "a"), "a");
+});
+
+check("paletteSlotKey namespaces provider and model identities", () => {
+  assert.equal(charts.paletteSlotKey("provider", "openai"), "provider:openai");
+  assert.equal(charts.paletteSlotKey("model", "openai"), "model:openai");
+  assert.notEqual(
+    charts.paletteSlotKey("provider", "openai"),
+    charts.paletteSlotKey("model", "openai"),
+  );
+  const assigned = {};
+  assert.equal(
+    charts.paletteIndexForKey(assigned, charts.paletteSlotKey("provider", "openai")),
+    0,
+  );
+  assert.equal(
+    charts.paletteIndexForKey(assigned, charts.paletteSlotKey("model", "openai")),
+    1,
+  );
+});
+
+check("paletteIndexForKey is stable across reorder and first-seen assignment", () => {
+  const assigned = {};
+  assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "beta"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "alpha"), 1);
+});
+
+check("paletteIndexForKey reuses holes after retainPaletteKeys", () => {
+  const assigned = {};
+  assert.equal(charts.paletteIndexForKey(assigned, "a"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "b"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+  charts.retainPaletteKeys(assigned, ["a", "c"]);
+  assert.equal(assigned.b, undefined);
+  assert.equal(charts.paletteIndexForKey(assigned, "a"), 0);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+  assert.equal(charts.paletteIndexForKey(assigned, "d"), 1);
+  assert.equal(charts.paletteIndexForKey(assigned, "c"), 2);
+});
+
+check("effectivePieHoverIdx clears pointer misses and keeps keyboard hover", () => {
+  assert.equal(charts.effectivePieHoverIdx(2, true, 0), 0);
+  assert.equal(charts.effectivePieHoverIdx(2, true, -1), -1);
+  assert.equal(charts.effectivePieHoverIdx(2, false, -1), 2);
+  assert.equal(charts.effectivePieHoverIdx(-1, false, 1), -1);
+});
+
+check("modelTooltipPayload lists only active models and uses colorKey identity", () => {
+  const models = [
+    { model: "alpha", points: [{ prompts: 0 }, { prompts: 3 }] },
+    { model: "beta", points: [{ prompts: 2 }, { prompts: 0 }] },
+  ];
+  const empty = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  assert.equal(empty.title, "10:00");
+  assert.deepEqual(empty.rows, [
+    { key: "beta", value: 2, colorKey: "beta", colorKind: "model" },
+  ]);
+  assert.equal(empty.note, null);
+  assert.equal(empty.present, 1);
+  const gap = charts.modelTooltipPayload(models, 1, "11:00", "prompts");
+  assert.deepEqual(gap.rows, [
+    { key: "alpha", value: 3, colorKey: "alpha", colorKind: "model" },
+  ]);
+  assert.equal(gap.present, 1);
+  const none = charts.modelTooltipPayload(
+    [
+      { model: "alpha", points: [{ prompts: 0 }] },
+      { model: "beta", points: [{ prompts: 0 }] },
+    ],
+    0,
+    "12:00",
+    "sessions",
+  );
+  assert.deepEqual(none.rows, []);
+  assert.equal(none.present, 0);
+  assert.equal(none.note, "No sessions in this bucket");
+  assert.equal(charts.modelTooltipPayload([], 0, "x", "prompts"), null);
+});
+
+check("modelTooltipSummary speaks from the tooltip payload, not a second filter", () => {
+  const models = [];
+  for (let i = 0; i < 6; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: (i + 1) * 1000 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  assert.equal(
+    charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
+    "10:00: m5 6000, m4 5000, m3 4000, m2 3000, +2 more models",
+  );
+  const empty = charts.modelTooltipPayload(
+    [{ model: "gpt", points: [{ prompts: 0 }] }],
+    0,
+    "11:00",
+    "prompts",
+  );
+  assert.equal(
+    charts.modelTooltipSummary(empty, "prompts"),
+    "11:00: no prompts",
+  );
+  assert.equal(charts.modelTooltipSummary(null, "prompts"), "");
+});
+
+check("modelTooltipPayload ranks the hovered bucket, not window order", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "now", "prompts");
+  assert.equal(payload.rows.length, 12);
+  assert.equal(payload.present, 14);
+  assert.equal(payload.note, "+2 more models");
+  assert.equal(payload.rows[0].colorKey, "m13");
+  assert.equal(payload.rows[0].value, 14);
+  assert.equal(payload.rows[11].colorKey, "m2");
+  const windowLeader = {
+    model: "window-leader",
+    points: [{ prompts: 1 }, { prompts: 100 }],
+  };
+  const bucketLeader = {
+    model: "bucket-leader",
+    points: [{ prompts: 50 }, { prompts: 2 }],
+  };
+  const ranked = charts.modelTooltipPayload(
+    [windowLeader, bucketLeader],
+    0,
+    "10:00",
+    "prompts",
+  );
+  assert.equal(ranked.rows[0].colorKey, "bucket-leader");
+  assert.equal(ranked.rows[0].value, 50);
+});
+
+check("modelTooltipPayload caps listed models and reports overflow", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "now", "prompts");
+  assert.equal(payload.rows.length, 12);
+  assert.equal(payload.present, 14);
+  assert.equal(payload.note, "+2 more models");
+});
+
+check("modelTooltipSummary overflow uses present count, not capped rows", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  // Spoken cap 4 of 14 present: +10, not +8 (12 capped rows - 4).
+  assert.equal(
+    charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
+    "10:00: m13 14, m12 13, m11 12, m10 11, +10 more models",
+  );
+});
+
+check("modelPointActive is the shared zero-skip policy for dots, rings, and tooltips", () => {
+  assert.equal(charts.modelPointActive({ prompts: 3 }, "prompts"), true);
+  assert.equal(charts.modelPointActive({ prompts: 0 }, "prompts"), false);
+  assert.equal(charts.modelPointActive({ prompts: -1 }, "prompts"), false);
+  assert.equal(charts.modelPointActive({ prompts: NaN }, "prompts"), false);
+  assert.equal(charts.modelPointActive(null, "prompts"), false);
+  assert.equal(charts.modelMetricValue({ prompts: 3 }, "prompts"), 3);
+  assert.equal(charts.modelMetricValue({ prompts: 0 }, "prompts"), 0);
+  assert.equal(charts.modelMetricValue({ prompts: -1 }, "prompts"), 0);
+  const mixed = [
+    { model: "alpha", points: [{ prompts: 0 }, { prompts: 4 }] },
+    { model: "beta", points: [{ prompts: 2 }, { prompts: 0 }] },
+  ];
+  const gap = charts.modelTooltipPayload(mixed, 0, "10:00", "prompts");
+  assert.deepEqual(
+    gap.rows.map((row) => row.key),
+    mixed.filter((model) => charts.modelPointActive(model.points[0], "prompts")).map((model) => model.model),
+  );
+});
+
+check("pieSharePercent is the single rounding used by labels and tooltip share", () => {
+  assert.equal(charts.pieSharePercent(1, 3), 33.3);
+  assert.equal(charts.pieSharePercent(1, 4), 25);
+  assert.equal(charts.pieSharePercent(0, 4), 0);
+  assert.equal(charts.pieSharePercent(1, 0), 0);
+  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3);
+  assert.equal(payload.rows[1].value, charts.pieSharePercent(1, 3));
+  assert.equal(
+    charts.pieTooltipSummary(payload, (value) => String(value)),
+    `openai: 1 tokens (${charts.pieSharePercent(1, 3)}%)`,
+  );
+});
+
+check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", () => {
+  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3);
+  assert.equal(payload.title, "openai");
+  assert.deepEqual(payload.rows, [
+    { key: "Tokens", value: 1, colorKey: "openai", colorKind: "model" },
+    { key: "Share (%)", value: 33.3, colorKey: null },
+  ]);
+  assert.equal(payload.note, null);
+  assert.equal(charts.pieTooltipPayload(null, 3), null);
+  assert.equal(
+    charts.pieTooltipSummary(payload, (value) => String(value)),
+    "openai: 1 tokens (33.3%)",
+  );
+  assert.equal(charts.pieTooltipSummary(null), "");
+});
+
+check("tooltipRenderPlan maps payloads onto node-assembly data, not HTML", () => {
+  assert.deepEqual(charts.tooltipRenderPlan(null), {
+    kind: "empty",
+    title: "",
+    rows: [],
+    note: null,
+  });
+  const modelPlan = charts.tooltipRenderPlan(
+    charts.modelTooltipPayload(
+      [{ model: "gpt", points: [{ prompts: 4 }] }],
+      0,
+      "10:00",
+      "prompts",
+    ),
+  );
+  assert.equal(modelPlan.kind, "tooltip");
+  assert.equal(modelPlan.title, "10:00");
+  assert.deepEqual(modelPlan.rows, [
+    { key: "gpt", value: 4, color: { type: "key", kind: "model", key: "gpt" } },
+  ]);
+  assert.equal(modelPlan.note, null);
+  const emptyPlan = charts.tooltipRenderPlan(
+    charts.modelTooltipPayload(
+      [{ model: "gpt", points: [{ prompts: 0 }] }],
+      0,
+      "11:00",
+      "prompts",
+    ),
+  );
+  assert.deepEqual(emptyPlan.rows, []);
+  assert.equal(emptyPlan.note, "No prompts in this bucket");
+  const piePlan = charts.tooltipRenderPlan(
+    charts.pieTooltipPayload({ key: "openai", value: 1 }, 4),
+  );
+  assert.deepEqual(piePlan.rows, [
+    { key: "Tokens", value: 1, color: { type: "key", kind: "model", key: "openai" } },
+    { key: "Share (%)", value: 25, color: { type: "none" } },
+  ]);
+  const json = JSON.stringify(piePlan);
+  assert.equal(json.includes("<"), false);
+  assert.equal(json.includes("&"), false);
 });
 
 process.stdout.write("webui chart harness: all checks passed\n");

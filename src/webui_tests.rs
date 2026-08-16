@@ -32,6 +32,21 @@ fn test_state() -> AppState {
     )
 }
 
+fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
+    let selector_at = css
+        .find(selector)
+        .unwrap_or_else(|| panic!("{selector} rule must exist"));
+    let after_selector = &css[selector_at + selector.len()..];
+    let open = after_selector
+        .find('{')
+        .unwrap_or_else(|| panic!("{selector} must have a block"));
+    let body = &after_selector[open + 1..];
+    let close = body
+        .find('}')
+        .unwrap_or_else(|| panic!("{selector} must close its block"));
+    &body[..close]
+}
+
 #[test]
 fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
     let state = test_state();
@@ -739,7 +754,25 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("barPaintRect"));
     assert!(body.contains("barAnchorY"));
     assert!(body.contains("chartSurface"));
+    assert!(body.contains("chartNavigableCount"));
     assert!(body.contains("chartCanvasAttrs"));
+    assert!(body.contains("pieSlices"));
+    assert!(body.contains("pointerCssX"));
+    assert!(body.contains("pointerCssY"));
+    assert!(body.contains("pointerCssCoord"));
+    assert!(body.contains("pieMidAngle"));
+    assert!(body.contains("reconcilePieHover"));
+    assert!(body.contains("modelTooltipPayload"));
+    assert!(body.contains("modelPointActive"));
+    assert!(body.contains("pieSharePercent"));
+    assert!(body.contains("pieTooltipPayload"));
+    assert!(body.contains("paletteIndexForKey"));
+    assert!(body.contains("retainPaletteKeys"));
+    assert!(body.contains("effectivePieHoverIdx"));
+    assert!(body.contains("paletteSlotKey"));
+    assert!(body.contains("modelTooltipSummary"));
+    assert!(body.contains("pieTooltipSummary"));
+    assert!(body.contains("tooltipRenderPlan"));
     assert!(!body.contains("CodexWarpFooter"));
     assert!(!body.contains("analyticsDisplayStatus"));
 }
@@ -842,10 +875,81 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains("lineChartTooltipAnchorY("));
     assert!(app.contains("chip.labelX"));
     assert!(app.contains("ctx.measureText(\"tokens\").width"));
-    // Keyboard help copy lists the fields each bucket reports in tooltip order.
-    assert!(index.contains(
-        "total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions"
-    ));
+    // Keyboard help describes navigation shared by every chart, not line/bar
+    // field lists that pies and model-over-time charts do not speak.
+    assert!(index.contains("Each point reports its label and the values for that chart."));
+}
+
+#[test]
+fn webui_app_includes_model_and_pie_chart_renderers() {
+    let app = include_str!("webui_static/app-main.js");
+    assert!(app.contains("function drawModelUsageChart("));
+    assert!(app.contains("function drawPieChart("));
+    assert!(app.contains("function pieTooltipView("));
+    assert!(app.contains("function modelTooltipView("));
+    assert!(app.contains("function tooltipNoteRow("));
+    assert!(app.contains("function tooltipEl("));
+    assert!(app.contains("function tooltipFromPayload("));
+    assert!(app.contains("Charts.modelTooltipPayload("));
+    assert!(app.contains("Charts.modelPointActive("));
+    assert!(app.contains("Charts.modelMetricValue("));
+    assert!(app.contains("Charts.pieSharePercent("));
+    assert!(app.contains("Charts.pieTooltipPayload("));
+    assert!(app.contains("function identityColor("));
+    assert!(app.contains("Charts.paletteSlotKey("));
+    assert!(app.contains("Charts.modelTooltipSummary("));
+    assert!(app.contains("Charts.pieTooltipSummary("));
+    assert!(app.contains("Charts.tooltipRenderPlan("));
+    assert!(app.contains("Charts.retainPaletteKeys("));
+    assert!(app.contains("Charts.effectivePieHoverIdx("));
+    assert!(app.contains("Charts.chartNavigableCount"));
+    assert!(app.contains("modelTotal(series, metric) > 0"));
+    assert!(
+        app.contains("const analyticsFiltersChanged = () =>"),
+        "stale-filter comparison must live in one helper"
+    );
+    assert_eq!(
+        app.matches("if (analyticsFiltersChanged())").count(),
+        2,
+        "success and error paths must share the same stale-filter helper"
+    );
+    assert!(app.contains("ctx.arc(cx, cy, radius + 4, slice.start, slice.end);"));
+    let app_compact: String = app.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        !app_compact.contains("ctx.moveTo(cx,cy);ctx.arc(cx,cy,radius+4"),
+        "pie hover band must start on the outer arc, not the pie center"
+    );
+    assert!(app.contains("tip.replaceChildren(content)"));
+    assert!(app.contains("canvas.__cssH = metrics.cssH;"));
+    assert!(app.contains("g.cssH || canvas.__cssH"));
+    assert!(app.contains("Charts.pointerCssY("));
+    assert!(app.contains("cssW: w, cssH: h }"));
+    assert!(!app.contains("tooltipRowsHtml"));
+    assert!(!app.contains("${esc("));
+    assert!(app.contains("function renderChartLegend("));
+    assert!(app.contains("chart-pie-provider"));
+    assert!(app.contains("chart-model-sessions"));
+    assert!(app.contains("chart-model-prompts"));
+    let css = include_str!("webui_static/app.css");
+    // Flex items default to min-width:auto (content), which blocks shrinking
+    // so max-width + ellipsis never apply to long model ids.
+    let legend_label = css_rule_body(css, ".legend-label");
+    let legend_compact: String = legend_label
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for decl in [
+        "min-width:0",
+        "max-width:220px",
+        "overflow:hidden",
+        "text-overflow:ellipsis",
+        "white-space:nowrap",
+    ] {
+        assert!(
+            legend_compact.contains(decl),
+            ".legend-label must include {decl} so long model ids can ellipsize"
+        );
+    }
 }
 
 #[test]
@@ -875,6 +979,7 @@ async fn management_ui_index_loads_chart_math_before_app() {
     assert!(body.contains("aria-labelledby=\"chart-line-title\""));
     assert!(body.contains("id=\"chart-kbd-help\""));
     assert!(body.contains("Tab moves to the next control"));
+    assert!(body.contains("pie slices"));
     assert!(body.contains(
         "id=\"chart-line\" width=\"800\" height=\"220\" aria-labelledby=\"chart-line-title\""
     ));
@@ -883,10 +988,18 @@ async fn management_ui_index_loads_chart_math_before_app() {
     ));
     assert!(!body.contains("role=\"application\""));
     assert!(!body.contains("tabindex=\"0\""));
-    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 2);
-    assert_eq!(body.matches("role=\"status\"").count(), 2);
+    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 7);
+    assert_eq!(body.matches("role=\"status\"").count(), 7);
     assert!(!body.contains("By provider"));
-    assert_eq!(body.matches("class=\"chart-live").count(), 2);
+    assert_eq!(body.matches("class=\"chart-live").count(), 7);
+    assert!(body.contains("id=\"chart-model-sessions-title\">Model usage by sessions"));
+    assert!(body.contains("id=\"chart-model-prompts-title\">Model usage by prompts"));
+    assert!(body.contains("id=\"chart-pie-provider-title\">Provider usage"));
+    assert!(body.contains("id=\"chart-pie-model-title\">Model usage overall"));
+    assert!(body.contains("id=\"chart-pie-provider-models-title\">Model usage per provider"));
+    assert!(body.contains("id=\"chart-model-sessions-legend\""));
+    assert!(body.contains("id=\"chart-pie-provider-legend\""));
+    assert_eq!(body.matches("data-chart-kind=\"pie\"").count(), 3);
 }
 
 #[tokio::test]

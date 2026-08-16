@@ -162,8 +162,9 @@ for deployment examples.
 Warp can serve a lightweight management UI at `/ui/` on the same listen address.
 It is disabled by default; set `[webui] enabled = true` to turn it on. Use it to
 add or edit providers and models, toggle them with switches, chart
-token/session usage from a local SQLite database, and view or change logging
-from the Logs tab. See the
+token/session and model usage over time from a local SQLite database, inspect
+provider and model usage breakdowns, and view or change logging from the Logs
+tab. See the
 [configuration guide](docs/configuration.md#web-ui-and-analytics).
 
 ## Built-In Gateway Profiles

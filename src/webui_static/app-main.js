@@ -851,11 +851,23 @@
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
+    // One comparison for success and catch: a stale in-flight response must
+    // neither paint nor replace a newer request's error with this one's.
+    const analyticsFiltersChanged = () =>
+      $("#analytics-range").value !== range ||
+      $("#analytics-provider").value !== provider ||
+      $("#analytics-model").value !== model;
     const qs = new URLSearchParams({ range });
     if (provider) qs.set("provider", provider);
     if (model) qs.set("model", model);
     try {
       const data = await api(`/analytics?${qs}`);
+      // Filters can change while this request is in flight (queued follow-up
+      // runs in `finally`). Applying this payload would paint the old window
+      // against the new dropdowns until that follow-up returns.
+      if (analyticsFiltersChanged()) {
+        return;
+      }
       // Preserve provider identities from retained usage even after their live
       // configuration is removed. Filtered responses omit this breakdown.
       if (!provider) {
@@ -876,6 +888,8 @@
       analyticsSnapshot = {
         data,
         range,
+        provider,
+        model,
         barTitle: model
           ? `${model} over time`
           : provider
@@ -889,6 +903,9 @@
         else status(message);
       }
     } catch (e) {
+      if (analyticsFiltersChanged()) {
+        return;
+      }
       if (activeTab === "analytics") {
         const message = `Analytics error: ${e.message}`;
         if (reportFromPoll) pollStatus(message, { isError: true });
@@ -907,6 +924,35 @@
   // Chart math is a sibling deferred script. Missing it must not abort this
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
+  function applyChartCanvasAttrs(canvas, attrs) {
+    if (!canvas.dataset.labelledby) {
+      const labelled = canvas.getAttribute("aria-labelledby");
+      if (labelled) canvas.dataset.labelledby = labelled;
+    }
+    if (attrs.tabIndex == null) canvas.removeAttribute("tabindex");
+    else canvas.setAttribute("tabindex", String(attrs.tabIndex));
+    if (attrs.role) canvas.setAttribute("role", attrs.role);
+    else canvas.removeAttribute("role");
+    if (attrs.keyshortcuts) canvas.setAttribute("aria-keyshortcuts", attrs.keyshortcuts);
+    else canvas.removeAttribute("aria-keyshortcuts");
+    if (attrs.describedBy) canvas.setAttribute("aria-describedby", attrs.describedBy);
+    else canvas.removeAttribute("aria-describedby");
+    if (attrs.labelledBy && canvas.dataset.labelledby) {
+      canvas.setAttribute("aria-labelledby", canvas.dataset.labelledby);
+    } else {
+      canvas.removeAttribute("aria-labelledby");
+    }
+    if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
+    else canvas.removeAttribute("aria-hidden");
+    if (attrs.tabIndex == null && document.activeElement === canvas) canvas.blur();
+  }
+  function applyChartChrome(attrs) {
+    const kbdHelp = $("#chart-kbd-help");
+    if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
+    document.querySelectorAll(".chart-fallback").forEach((el) => {
+      el.hidden = !!attrs.fallbackHidden;
+    });
+  }
   function applyChartInteractivity(surface) {
     const attrs = Charts
       ? Charts.chartCanvasAttrs(surface)
@@ -921,32 +967,9 @@
           fallbackHidden: false,
         };
     document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
-      if (!canvas.dataset.labelledby) {
-        const labelled = canvas.getAttribute("aria-labelledby");
-        if (labelled) canvas.dataset.labelledby = labelled;
-      }
-      if (attrs.tabIndex == null) canvas.removeAttribute("tabindex");
-      else canvas.setAttribute("tabindex", String(attrs.tabIndex));
-      if (attrs.role) canvas.setAttribute("role", attrs.role);
-      else canvas.removeAttribute("role");
-      if (attrs.keyshortcuts) canvas.setAttribute("aria-keyshortcuts", attrs.keyshortcuts);
-      else canvas.removeAttribute("aria-keyshortcuts");
-      if (attrs.describedBy) canvas.setAttribute("aria-describedby", attrs.describedBy);
-      else canvas.removeAttribute("aria-describedby");
-      if (attrs.labelledBy && canvas.dataset.labelledby) {
-        canvas.setAttribute("aria-labelledby", canvas.dataset.labelledby);
-      } else {
-        canvas.removeAttribute("aria-labelledby");
-      }
-      if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
-      else canvas.removeAttribute("aria-hidden");
-      if (attrs.tabIndex == null && document.activeElement === canvas) canvas.blur();
+      applyChartCanvasAttrs(canvas, attrs);
     });
-    const kbdHelp = $("#chart-kbd-help");
-    if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
-    document.querySelectorAll(".chart-fallback").forEach((el) => {
-      el.hidden = !!attrs.fallbackHidden;
-    });
+    applyChartChrome(attrs);
   }
   function chartsLiveLayout() {
     const canvas = $("#chart-line") || $("#chart-bar");
@@ -958,10 +981,17 @@
       noteChartsUnavailable();
       return;
     }
-    const series = analyticsSnapshot && analyticsSnapshot.data
-      ? analyticsSnapshot.data.series || []
-      : [];
-    applyChartInteractivity(Charts.chartSurface(true, series.length, chartsLiveLayout()));
+    const live = chartsLiveLayout();
+    let anyInteractive = false;
+    document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
+      const count = Charts.chartNavigableCount
+        ? Charts.chartNavigableCount(canvas.__chart)
+        : 0;
+      const surface = Charts.chartSurface(true, count, live);
+      applyChartCanvasAttrs(canvas, Charts.chartCanvasAttrs(surface));
+      if (surface === "interactive") anyInteractive = true;
+    });
+    applyChartChrome(Charts.chartCanvasAttrs(anyInteractive ? "interactive" : "idle"));
   }
   function noteChartsUnavailable() {
     applyChartInteractivity("failed");
@@ -985,8 +1015,8 @@
       return;
     }
     const series = data.series || [];
-    syncChartSurface();
     if (!chartsLiveLayout()) {
+      syncChartSurface();
       if (activeTab === "analytics") scheduleChartResize();
       return;
     }
@@ -1008,6 +1038,61 @@
       })),
       range,
     );
+    const modelSeries = data.model_series || [];
+    if (Charts.retainPaletteKeys && Charts.paletteSlotKey) {
+      const colorKeys = [];
+      const pushSlot = (kind, key) => {
+        if (key == null || key === "") return;
+        colorKeys.push(Charts.paletteSlotKey(kind, key));
+      };
+      for (const series of modelSeries) {
+        if (series) pushSlot("model", series.model);
+      }
+      for (const row of data.by_provider || []) {
+        if (row) pushSlot("provider", row.key);
+      }
+      for (const group of [data.by_model_overall, data.by_model]) {
+        for (const row of group || []) {
+          if (row) pushSlot("model", row.key);
+        }
+      }
+      Charts.retainPaletteKeys(identityPaletteAssigned, colorKeys);
+    }
+    drawModelUsageChart($("#chart-model-sessions"), modelSeries, "sessions", range);
+    drawModelUsageChart($("#chart-model-prompts"), modelSeries, "prompts", range);
+
+    // Gate pies on the filter state the response was fetched with, not the
+    // live select values: a slow poll can otherwise render a response computed
+    // with different filters than the user currently sees, mislabeling the
+    // per-provider pie for up to one round trip.
+    const activeProvider = analyticsSnapshot.provider || "";
+    const activeModel = analyticsSnapshot.model || "";
+    drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider, "provider"), {
+      emptyText: activeProvider
+        ? "Select All providers to see provider usage."
+        : "No token usage in this range.",
+    });
+    // Overall model usage ignores the provider filter (by_model_overall), so
+    // the overall pie stays global while a provider filter narrows the
+    // per-provider pie below.
+    drawPieChart($("#chart-pie-model"), pieRows(data.by_model_overall ?? data.by_model, "model"), {
+      // The backend now fills by_model_overall even under a model filter (the
+      // selected model's own window total), so an empty state means there is
+      // genuinely no usage for the current filter combination.
+      emptyText: "No token usage in this range.",
+    });
+    // Per-provider model breakdown exists only while a provider filter is
+    // active and the model filter is clear (the API omits by_model otherwise).
+    const perProviderRows =
+      activeProvider && !activeModel ? pieRows(data.by_model, "model") : [];
+    drawPieChart($("#chart-pie-provider-models"), perProviderRows, {
+      emptyText: !activeProvider
+        ? "Select a provider to see model usage per provider."
+        : activeModel
+          ? "Select All models to see model usage per provider."
+          : "No token usage for this provider in this range.",
+    });
+    syncChartSurface();
   }
 
   window.addEventListener("codex-warp-theme-change", () => {
@@ -1068,6 +1153,55 @@
     };
   }
 
+  // Distinct mid-tone palette shared by model-over-time lines and pie slices.
+  // Values stay readable on both light and dark surfaces; slices stroke with
+  // the surface color to separate neighbors.
+  const CHART_PALETTE = [
+    "#0f766e", "#d97706", "#2563eb", "#7c3aed", "#16a34a",
+    "#dc2626", "#0891b2", "#db2777", "#65a30d", "#9333ea",
+    "#ca8a04", "#0ea5e9", "#ea580c", "#14b8a6", "#e11d48",
+    "#4f46e5", "#059669", "#b45309", "#0284c7", "#c026d3",
+  ];
+  function paletteColor(index) {
+    return CHART_PALETTE[Number(index) % CHART_PALETTE.length];
+  }
+  // Shared across model-over-time lines and pie slices so the same identity
+  // keeps the same color on every canvas and across poll reorders.
+  const identityPaletteAssigned = {};
+  function identityColor(kind, key) {
+    if (!Charts || !Charts.paletteIndexForKey) return paletteColor(0);
+    const slot =
+      Charts.paletteSlotKey ? Charts.paletteSlotKey(kind, key) : String(key ?? "");
+    return paletteColor(Charts.paletteIndexForKey(identityPaletteAssigned, slot));
+  }
+
+  // Breakdown rows become pie slices keyed by identity. Zero-token rows stay
+  // in the legend with a "0" value so a provider/model with prompts or
+  // sessions but no token spend does not vanish next to active summary cards.
+  function pieRows(breakdown, kind) {
+    // Keep zero-token rows: a provider/model with prompts or sessions but no
+    // token spend would otherwise vanish from the pie, leaving an empty
+    // "no usage" chart next to summary cards that clearly show activity.
+    // Zero-token rows get zero-width slices and a "0" legend value.
+    const slotKind = kind === "provider" ? "provider" : "model";
+    return (breakdown || [])
+      .map((row) => ({
+        key: row.key,
+        kind: slotKind,
+        // Clamp negative totals (untrusted upstream accounting) to zero so
+        // they cannot invert slice geometry or push model lines off-plot.
+        value: Math.max(0, row.total_tokens || 0),
+      }))
+      .filter((row) => row.key != null && row.key !== "");
+  }
+
+  // Percentage labels must stay readable on the fixed palette in both
+  // themes. Delegate to the chart-math WCAG relative-luminance helper so the
+  // contrast decision is unit-tested; fall back to white when math is absent.
+  function pieLabelColor(color) {
+    return Charts && Charts.textColorOn ? Charts.textColorOn(color) : "#ffffff";
+  }
+
   function fmtInt(n) {
     return Number(n || 0).toLocaleString();
   }
@@ -1098,6 +1232,7 @@
       cssHeight || 220,
     );
     canvas.__cssW = metrics.cssW;
+    canvas.__cssH = metrics.cssH;
     if (canvas.width !== metrics.bufferW || canvas.height !== metrics.bufferH) {
       canvas.width = metrics.bufferW;
       canvas.height = metrics.bufferH;
@@ -1193,6 +1328,19 @@
     return frag;
   }
 
+  // Key-only tooltip row (no numeric value). Used for empty-bucket copy and
+  // overflow counts so those lines stay on the same DOM contract as line/bar
+  // tooltips instead of injecting HTML strings.
+  function tooltipNoteRow(text) {
+    const row = document.createElement("div");
+    row.className = "tt-row";
+    const key = document.createElement("span");
+    key.className = "tt-key";
+    key.textContent = text;
+    row.append(key);
+    return row;
+  }
+
   function lineTooltipEl(point, labelStyle, colors, hasCached) {
     return tooltipEl(formatBucketLabel(point.ts, labelStyle), tooltipRowsFor(point, colors, hasCached));
   }
@@ -1222,7 +1370,15 @@
   }
 
   function chartCanvases() {
-    return [$("#chart-line"), $("#chart-bar")].filter(Boolean);
+    return [
+      $("#chart-line"),
+      $("#chart-bar"),
+      $("#chart-model-sessions"),
+      $("#chart-model-prompts"),
+      $("#chart-pie-provider"),
+      $("#chart-pie-model"),
+      $("#chart-pie-provider-models"),
+    ].filter(Boolean);
   }
 
   function deactivateCharts({ except } = {}) {
@@ -1243,6 +1399,18 @@
         if (state) {
           state.inputMode = next.inputMode;
           state.hoverTs = next.hoverTs;
+          if (state.kind === "pie") {
+            // Positional hoverTs is only an index; the slice key is what
+            // survives value-driven reorders across polls. Deactivation must
+            // clear it here exactly like applyChartInput does, otherwise the
+            // next pie redraw re-derives a live hover from the stale key.
+            state.hoverKey =
+              state.hoverTs == null
+                ? null
+                : state.rows[state.hoverTs]
+                  ? state.rows[state.hoverTs].key
+                  : null;
+          }
         }
       } else {
         canvas.__mouse = null;
@@ -1256,7 +1424,7 @@
   function chartToClient(canvas, cssX, cssY) {
     const rect = canvas.getBoundingClientRect();
     const cssW = canvas.__cssW || canvas.clientWidth || 1;
-    const cssH = canvas.clientHeight || 220;
+    const cssH = canvas.__cssH || canvas.clientHeight || 220;
     return {
       x: rect.left + (cssX * rect.width) / cssW,
       y: rect.top + (cssY * rect.height) / cssH,
@@ -1294,6 +1462,69 @@
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
+  function tooltipFromPayload(payload) {
+    const plan =
+      Charts && Charts.tooltipRenderPlan
+        ? Charts.tooltipRenderPlan(payload)
+        : null;
+    if (!plan || plan.kind === "empty") return document.createDocumentFragment();
+    const rows = (plan.rows || []).map((row) => [
+      row.key,
+      row.value,
+      row.color && row.color.type === "key"
+        ? identityColor(row.color.kind, row.color.key)
+        : null,
+    ]);
+    const frag = tooltipEl(plan.title, rows);
+    if (plan.note) frag.append(tooltipNoteRow(plan.note));
+    return frag;
+  }
+
+  function modelTooltipView(models, idx, labelStyle, metric) {
+    if (!models.length || !models[0].points[idx]) {
+      return { content: document.createDocumentFragment(), summary: "" };
+    }
+    const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
+    const payload = Charts.modelTooltipPayload(models, idx, title, metric);
+    return {
+      content: tooltipFromPayload(payload),
+      summary: Charts.modelTooltipSummary
+        ? Charts.modelTooltipSummary(payload, metric, fmtInt, 4)
+        : "",
+    };
+  }
+
+  function showModelTooltipFor(canvas, state, idx) {
+    const g = state.geometry;
+    const pos = chartToClient(canvas, g.xAt(g.buckets[idx].ts), g.yAt(0));
+    const view = modelTooltipView(state.series, idx, state.labelStyle, state.metric);
+    showChartTooltip(canvas, pos.x, pos.y, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
+  }
+
+  function pieTooltipView(row, total) {
+    const payload = Charts.pieTooltipPayload(row, total);
+    return {
+      content: tooltipFromPayload(payload),
+      summary: Charts.pieTooltipSummary
+        ? Charts.pieTooltipSummary(payload, fmtInt)
+        : "",
+    };
+  }
+
+  function showPieTooltipFor(canvas, state, idx) {
+    const g = state.geometry;
+    const mid = Charts.pieMidAngle(g.slices[idx]);
+    const pos = chartToClient(
+      canvas,
+      g.cx + Math.cos(mid) * g.r * 0.6,
+      g.cy + Math.sin(mid) * g.r * 0.6,
+    );
+    const view = pieTooltipView(state.rows[idx], state.total);
+    showChartTooltip(canvas, pos.x, pos.y, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
+  }
+
   // Hover state is stored as the bucket's timestamp (`hoverTs`) and resolved
   // against the current data on every redraw. Positional indices go stale the
   // moment the series changes (poll, range switch, theme redraw), which caused
@@ -1310,16 +1541,46 @@
     return Charts.resolveIdxByTs(state.rows, state.hoverTs);
   }
 
+  function resolveModelIdx(state) {
+    if (!state.geometry || !state.geometry.buckets) return -1;
+    return Charts.resolveIdxByTs(state.geometry.buckets, state.hoverTs);
+  }
+
+  function resolvePieIdx(state) {
+    if (!state.geometry || !state.rows.length) return -1;
+    const idx = state.hoverTs;
+    // JS coercion makes `null >= 0` true, which turned a no-hover pie state
+    // into `null` (not -1) and crashed the hover-ring block on slices[null].
+    // Guard explicitly so no-hover always means -1.
+    return typeof idx === "number" && idx >= 0 && idx < state.rows.length ? idx : -1;
+  }
+
   // Uniform point list across chart kinds so the shared focus/keyboard
   // handlers never assume a property that only one chart stores.
   function chartPoints(state) {
-    return state.kind === "line" ? state.series : state.rows;
+    if (state.kind === "line") return state.series;
+    if (state.kind === "bar") return state.rows;
+    // Pie identity resolves through positional hoverTs over pseudo points;
+    // the slice key keeps the selection stable across value-driven reorders.
+    if (state.kind === "pie") return state.rows.map((row, i) => ({ ts: i }));
+    if (state.kind === "model") {
+      return state.geometry && state.geometry.buckets ? state.geometry.buckets : [];
+    }
+    return state.series;
   }
 
   function redrawChart(canvas, state) {
     if (!state) return;
     if (state.kind === "line") drawLineChart(canvas, state.series, state.range);
-    else drawBarChart(canvas, state.rows, state.range);
+    else if (state.kind === "bar") drawBarChart(canvas, state.rows, state.range);
+    else if (state.kind === "model") {
+      drawModelUsageChart(canvas, state.series, state.metric, state.range);
+    } else if (state.kind === "pie") {
+      // Interaction redraws must feed the full row set (including zero-token
+      // rows kept in the legend); state.rows is the active, slice-able subset
+      // used for hover/keyboard resolution.
+      drawPieChart(canvas, state.legendRows || state.rows, state.pieOptions || {});
+    }
   }
 
   function attachChartHover(canvas) {
@@ -1344,6 +1605,12 @@
       if (Object.prototype.hasOwnProperty.call(next, "hoverTs")) {
         state.hoverTs = next.hoverTs;
       }
+      if (state.kind === "pie") {
+        // Positional hoverTs is only an index into the current rows; the
+        // slice key is what survives value-driven reorders across polls.
+        state.hoverKey =
+          state.hoverTs == null ? null : state.rows[state.hoverTs] ? state.rows[state.hoverTs].key : null;
+      }
       return next;
     }
 
@@ -1365,7 +1632,9 @@
         return;
       }
       if (state.kind === "line") handleLineChartHover(canvas, event, state);
-      else handleBarChartHover(canvas, event, state);
+      else if (state.kind === "bar") handleBarChartHover(canvas, event, state);
+      else if (state.kind === "model") handleModelChartHover(canvas, event, state);
+      else if (state.kind === "pie") handlePieChartHover(canvas, event, state);
     });
     canvas.addEventListener("mouseleave", () => {
       const next = Charts.chartInputStep(chartInputState(), { type: "mouseleave" });
@@ -1649,6 +1918,25 @@
       );
       return best < 0 ? null : state.series[best].ts;
     }
+    if (state.kind === "model") {
+      const buckets = state.geometry.buckets || [];
+      const best = Charts.nearestIdxByX(
+        buckets.map((bucket) => state.geometry.xAt(bucket.ts)),
+        mx,
+        14,
+      );
+      return best < 0 ? null : buckets[best].ts;
+    }
+    if (state.kind === "pie") {
+      const g = state.geometry;
+      const cssH = g.cssH || canvas.__cssH || 260;
+      const my = Charts.pointerCssY(event.clientY, rect.top, rect.height, cssH);
+      // The hover ring is painted at radius + 4, so the hit zone must extend
+      // to the same band or moving the pointer onto the ring dismisses the
+      // selection it indicates.
+      const idx = Charts.pieSliceIndexAt(g.cx, g.cy, g.r + 4, 0, g.slices, mx, my);
+      return idx < 0 ? null : idx;
+    }
     const idx = Charts.barIndexAtX(mx - state.geometry.padL, state.geometry.slot, state.rows.length);
     return idx < 0 ? null : state.rows[idx].ts;
   }
@@ -1824,6 +2112,441 @@
     const row = state.rows[idx];
     showChartTooltip(canvas, event.clientX, event.clientY, barTooltipEl(row, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
+  }
+
+  function handleModelChartHover(canvas, event, state) {
+    if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
+    const idx = resolveModelIdx(state);
+    if (idx < 0) return;
+    const view = modelTooltipView(state.series, idx, state.labelStyle, state.metric);
+    showChartTooltip(canvas, event.clientX, event.clientY, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
+  }
+
+  function handlePieChartHover(canvas, event, state) {
+    if (!Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) return;
+    const idx = resolvePieIdx(state);
+    if (idx < 0) return;
+    const view = pieTooltipView(state.rows[idx], state.total);
+    showChartTooltip(canvas, event.clientX, event.clientY, view.content);
+    announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
+  }
+
+  function legendElFor(canvas) {
+    const box = canvas.closest(".chart-box");
+    return box ? box.querySelector(".chart-legend") : null;
+  }
+
+  function renderChartLegend(container, items) {
+    if (!container) return;
+    container.innerHTML = "";
+    for (const item of items) {
+      const chip = document.createElement("span");
+      chip.className = "legend-chip";
+      const swatch = document.createElement("span");
+      swatch.className = "legend-swatch";
+      swatch.style.background = item.color;
+      const label = document.createElement("span");
+      label.className = "legend-label";
+      label.textContent = item.key;
+      const value = document.createElement("span");
+      value.className = "legend-value";
+      value.textContent = fmtInt(item.value);
+      chip.append(swatch, label, value);
+      container.append(chip);
+    }
+  }
+
+  function drawChartEmpty(ctx, w, h, message) {
+    ctx.font = "12px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = cssThemeColor("--muted", "#71717a");
+    ctx.fillText(message || "No data in this range.", w / 2, h / 2);
+  }
+
+  function modelTotal(model, metric) {
+    // Prefer the backend's window-scoped total: bucket-scoped distinct
+    // session counts double-count sessions that span buckets, so summing
+    // bucket points would inflate the sessions legend.
+    if (model.totals && model.totals[metric] != null) {
+      const n = Number(model.totals[metric]);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return model.points.reduce(
+      (sum, point) => sum + Charts.modelMetricValue(point, metric),
+      0,
+    );
+  }
+
+  // One line per model across the shared bucket window. Lines share the
+  // metric's own scale so relative model usage is visible on the same axis.
+  function drawModelUsageChart(canvas, modelSeries, metric, range) {
+    if (!Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW)) return;
+    const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 220);
+    ctx.clearRect(0, 0, w, h);
+    const legend = legendElFor(canvas);
+    const prev = canvas.__chart;
+    const models = (modelSeries || [])
+      .map((series) => ({
+        model: series.model,
+        points: series.points || [],
+        totals: series.totals || {
+          prompts: series.prompts || 0,
+          sessions: series.sessions || 0,
+          input_tokens: series.input_tokens || 0,
+          output_tokens: series.output_tokens || 0,
+          total_tokens: series.total_tokens || 0,
+        },
+      }))
+      .filter((series) => series.points.length && modelTotal(series, metric) > 0)
+      .sort((a, b) => modelTotal(b, metric) - modelTotal(a, metric));
+    if (!models.length) {
+      canvas.__chart = {
+        kind: "model",
+        series: [],
+        metric,
+        range,
+        geometry: null,
+        hoverTs: null,
+        inputMode: prev && prev.kind === "model" ? prev.inputMode || "pointer" : "pointer",
+        labelStyle: "time",
+      };
+      if (legend) legend.innerHTML = "";
+      drawChartEmpty(ctx, w, h, "No model usage in this range.");
+      dismissChartHoverUi(canvas);
+      return;
+    }
+    const buckets = models[0].points.map((point) => ({ ts: point.ts }));
+    const labelStyle = Charts.bucketLabelStyle(buckets);
+    let maxVal = 1;
+    for (const model of models) {
+      for (const point of model.points) {
+        const value = Charts.modelMetricValue(point, metric);
+        if (value > maxVal) maxVal = value;
+      }
+    }
+    const ticks = integerTicks(maxVal);
+    const { padT, padB, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
+      padL: 46,
+      padR: 16,
+      padT: 30,
+      padB: 26,
+    });
+    const tsMin = buckets[0].ts;
+    const tsMax = buckets[buckets.length - 1].ts;
+    const tsSpan = Math.max(1, tsMax - tsMin);
+    const xAt = (ts) => padL + ((ts - tsMin) / tsSpan) * plotW;
+    const yAt = (value) => padT + (1 - value / ticks.top) * plotH;
+    const colors = chartColors();
+    canvas.__chart = {
+      kind: "model",
+      series: models,
+      metric,
+      range,
+      labelStyle,
+      geometry: {
+        xAt,
+        yAt,
+        ticks,
+        padT,
+        padB,
+        padL,
+        padR,
+        plotW,
+        plotH,
+        cssW: w,
+        buckets,
+      },
+      hoverTs: Charts.reconcileHoverTs(
+        buckets,
+        prev && prev.kind === "model" ? prev.hoverTs : null,
+      ),
+      inputMode: prev && prev.kind === "model" ? prev.inputMode || "pointer" : "pointer",
+    };
+
+    ctx.font = "10px system-ui";
+    ctx.textBaseline = "middle";
+    for (const tick of ticks.ticks) {
+      const y = yAt(tick);
+      ctx.strokeStyle = colors.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      ctx.fillStyle = colors.muted;
+      ctx.textAlign = "right";
+      ctx.fillText(abbrev(tick), padL - 6, y);
+    }
+    ctx.fillStyle = colors.muted;
+    ctx.textAlign = "center";
+    ctx.fillText(metric, padL, 10);
+
+    const n = buckets.length;
+    // Thin the time labels to ~10 across any range width; label the first and
+    // last bucket always so the window edges stay identifiable.
+    const labelStep = Math.max(1, Math.ceil(n / 10));
+    ctx.textBaseline = "top";
+    for (let i = 0; i < n; i += 1) {
+      if (i !== 0 && i !== n - 1 && i % labelStep !== 0) continue;
+      ctx.fillStyle = colors.muted;
+      ctx.textAlign = "center";
+      ctx.fillText(
+        String(formatBucketLabel(buckets[i].ts, labelStyle)).slice(0, 12),
+        xAt(buckets[i].ts),
+        h - padB + 4,
+      );
+    }
+
+    models.forEach((model) => {
+      const color = identityColor("model", model.model);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      model.points.forEach((point, i) => {
+        const x = xAt(point.ts);
+        const y = yAt(Charts.modelMetricValue(point, metric));
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+    if (n === 1 || models.length <= 6) {
+      models.forEach((model) => {
+        ctx.fillStyle = identityColor("model", model.model);
+        model.points.forEach((point) => {
+          if (!Charts.modelPointActive(point, metric)) return;
+          ctx.beginPath();
+          ctx.arc(xAt(point.ts), yAt(Charts.modelMetricValue(point, metric)), 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      });
+    }
+
+    renderChartLegend(
+      legend,
+      models.map((model) => ({
+        key: model.model,
+        color: identityColor("model", model.model),
+        value: modelTotal(model, metric),
+      })),
+    );
+
+    const state = canvas.__chart;
+    const idx = resolveModelIdx(state);
+    if (idx >= 0) {
+      renderModelHover(canvas, state, idx);
+      if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
+        const view = modelTooltipView(models, idx, labelStyle, metric);
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, view.content);
+        announceChartData(canvas, Charts.liveRegionText(idx, view.summary));
+      } else {
+        showModelTooltipFor(canvas, state, idx);
+      }
+    } else {
+      dismissChartHoverUi(canvas);
+    }
+  }
+
+  function renderModelHover(canvas, state, idx) {
+    if (idx < 0 || !state.geometry || !state.geometry.buckets[idx]) return;
+    const colors = chartColors();
+    const ctx = canvas.getContext("2d");
+    const { xAt, yAt, padT, plotH, buckets } = state.geometry;
+    const x = xAt(buckets[idx].ts);
+    ctx.strokeStyle = colors.muted;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    state.series.forEach((model) => {
+      const point = model.points[idx];
+      if (!Charts.modelPointActive(point, state.metric)) return;
+      const y = yAt(Charts.modelMetricValue(point, state.metric));
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = colors.surface;
+      ctx.fill();
+      ctx.strokeStyle = identityColor("model", model.model);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+  }
+
+  // Full pie (no donut hole) with a hover ring and percentage labels on
+  // slices that have enough room. Slice colors follow identity, not sort
+  // rank, so a poll that reorders wedges cannot swap colors.
+  function drawPieChart(canvas, rows, options) {
+    if (!Charts.shouldPaintCharts(canvas.clientWidth, canvas.__cssW)) return;
+    const { ctx, cssW: w, cssH: h } = fitCanvas(canvas, 260);
+    ctx.clearRect(0, 0, w, h);
+    const legend = legendElFor(canvas);
+    const opts = options || {};
+    const prev = canvas.__chart;
+    const sorted = (rows || []).slice().sort((a, b) => b.value - a.value);
+    // Zero-token rows stay in the legend (a provider/model with prompts or
+    // sessions but no token spend should not vanish), but they have no slice,
+    // so the chart geometry, hover, and keyboard navigation only use rows with
+    // value > 0.
+    const legendRows = sorted.slice();
+    const active = sorted.filter((row) => row.value > 0);
+    if (!active.length) {
+      canvas.__chart = {
+        kind: "pie",
+        rows: [],
+        legendRows,
+        total: 0,
+        geometry: null,
+        hoverTs: null,
+        hoverKey: null,
+        inputMode: prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
+        pieOptions: opts,
+        cssW: w,
+      };
+      // Zero-token rows still name the providers/models behind the activity;
+      // keep them visible next to the empty-state message instead of wiping
+      // the legend entirely.
+      if (legend) {
+        renderChartLegend(
+          legend,
+          legendRows.map((row) => ({
+            key: row.key,
+            color: identityColor(row.kind || "model", row.key),
+            value: row.value,
+          })),
+        );
+      }
+      drawChartEmpty(ctx, w, h, opts.emptyText || "No data in this range.");
+      dismissChartHoverUi(canvas);
+      return;
+    }
+    const { slices, total } = Charts.pieSlices(active.map((row) => row.value));
+    const pad = 30;
+    const radius = Math.max(1, Math.min((w - pad * 2) / 2, (h - pad * 2) / 2));
+    const cx = w / 2;
+    const cy = h / 2;
+    const colors = chartColors();
+    const hoverKey = Charts.reconcilePieHover(
+      active,
+      prev && prev.kind === "pie" ? prev.hoverKey : null,
+    );
+    const hoverIdx = hoverKey == null ? -1 : active.findIndex((row) => row.key === hoverKey);
+    // A poll redraw can reorder slices under a stationary pointer. When the
+    // pointer still owns the hover, trust the slice under the cursor so the
+    // tooltip never describes a slice the user is not pointing at. Padding
+    // misses clear on purpose (same policy as mousemove via chartInputStep).
+    let hitIdx = -1;
+    const pointerOwned = Charts.tooltipFollowsPointer(
+      prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
+      canvas.__mouse,
+    );
+    if (pointerOwned && canvas.__mouse) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = Charts.pointerCssX(
+        canvas.__mouse.x,
+        rect.left,
+        rect.width,
+        w,
+      );
+      const my = Charts.pointerCssY(canvas.__mouse.y, rect.top, rect.height, h);
+      hitIdx = Charts.pieSliceIndexAt(cx, cy, radius + 4, 0, slices, mx, my);
+    }
+    const effectiveHoverIdx = Charts.effectivePieHoverIdx
+      ? Charts.effectivePieHoverIdx(hoverIdx, pointerOwned, hitIdx)
+      : pointerOwned
+        ? hitIdx
+        : hoverIdx;
+    canvas.__chart = {
+      kind: "pie",
+      rows: active,
+      legendRows,
+      total,
+      geometry: { cx, cy, r: radius, slices, cssW: w, cssH: h },
+      hoverTs: effectiveHoverIdx >= 0 ? effectiveHoverIdx : null,
+      hoverKey:
+        effectiveHoverIdx >= 0 ? active[effectiveHoverIdx].key : null,
+      inputMode: prev && prev.kind === "pie" ? prev.inputMode || "pointer" : "pointer",
+      pieOptions: opts,
+      cssW: w,
+    };
+
+    active.forEach((row, index) => {
+      const slice = slices[index];
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, slice.start, slice.end);
+      ctx.closePath();
+      ctx.fillStyle = identityColor(row.kind || "model", row.key);
+      ctx.fill();
+      ctx.strokeStyle = colors.surface;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    const state = canvas.__chart;
+    const hidx = resolvePieIdx(state);
+    if (hidx >= 0) {
+      const slice = slices[hidx];
+      ctx.beginPath();
+      // Start on the outer arc (empty-path `arc` moveTos its first point).
+      // A `moveTo(cx, cy)` would add radials through the center, so fill and
+      // stroke would paint the whole wedge instead of the radius..radius+4 band.
+      ctx.arc(cx, cy, radius + 4, slice.start, slice.end);
+      ctx.arc(cx, cy, radius, slice.end, slice.start, true);
+      ctx.closePath();
+      ctx.fillStyle = identityColor(
+        state.rows[hidx].kind || "model",
+        state.rows[hidx].key,
+      );
+      ctx.fill();
+      ctx.strokeStyle = colors.tokens;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    ctx.font = "10px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    active.forEach((row, index) => {
+      const slice = slices[index];
+      if (total <= 0) return;
+      const span = slice.end - slice.start;
+      if (span < 0.36 || slice.value / total < 0.05) return;
+      const mid = Charts.pieMidAngle(slice);
+      ctx.fillStyle = pieLabelColor(identityColor(row.kind || "model", row.key));
+      ctx.fillText(
+        `${Charts.pieSharePercent(slice.value, total)}%`,
+        cx + Math.cos(mid) * radius * 0.62,
+        cy + Math.sin(mid) * radius * 0.62,
+      );
+    });
+
+    renderChartLegend(
+      legend,
+      legendRows.map((row) => ({
+        key: row.key,
+        color: identityColor(row.kind || "model", row.key),
+        value: row.value,
+      })),
+    );
+
+    if (hidx >= 0) {
+      if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
+        const view = pieTooltipView(state.rows[hidx], total);
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, view.content);
+        announceChartData(canvas, Charts.liveRegionText(hidx, view.summary));
+      } else {
+        showPieTooltipFor(canvas, state, hidx);
+      }
+    } else {
+      dismissChartHoverUi(canvas);
+    }
   }
 
   function wireCharts() {

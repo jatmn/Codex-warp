@@ -147,7 +147,313 @@ fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
     assert_eq!(summary.sessions, 2);
     assert_eq!(summary.by_provider[0].sessions, 2);
     assert_eq!(summary.by_model[0].sessions, 2);
-    assert_eq!(summary.series.last().unwrap().sessions, 2);
+    // `record_usage` stamps each row with `now_ms()`. Two inserts can land in
+    // different hour buckets if the clock crosses a boundary between them, so
+    // do not require a single bucket to hold both sessions. Distinct identities
+    // still appear once each in the series.
+    assert_eq!(
+        summary
+            .series
+            .iter()
+            .map(|point| point.sessions)
+            .sum::<i64>(),
+        2
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-model-series-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    let hour = 3_600_000_i64;
+    let now = now_ms();
+    let base = now.div_euclid(hour) * hour;
+    let insert = |ts: i64, provider_id: &str, model: &str, session_key: Option<&str>| {
+        store
+            .record_usage(&UsageEvent {
+                provider_id: provider_id.into(),
+                model: model.into(),
+                session_key: session_key.map(str::to_string),
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                cached_tokens: 2,
+                reasoning_tokens: 1,
+            })
+            .unwrap();
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "UPDATE usage_events SET ts = ?1 WHERE id = (SELECT MAX(id) FROM usage_events)",
+            rusqlite::params![ts],
+        )
+        .unwrap();
+    };
+
+    // Model "alpha" appears twice in the same bucket (two prompts, one
+    // session) and once in an earlier bucket with a second session.
+    insert(base - hour, "alpha-provider", "alpha/model", Some("sess-a"));
+    insert(base - hour, "alpha-provider", "alpha/model", Some("sess-a"));
+    insert(
+        base - 2 * hour,
+        "alpha-provider",
+        "alpha/model",
+        Some("sess-b"),
+    );
+    // Model "beta" appears once in the newest bucket.
+    insert(base, "beta-provider", "beta/model", Some("sess-c"));
+    // Same model id on a second provider: by_model_overall must include this
+    // when the provider filter is stripped, while model_series under an
+    // alpha-provider filter must not.
+    insert(base, "gamma-provider", "alpha/model", Some("sess-g"));
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.model_series.len(), 2);
+
+    let alpha = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "alpha/model")
+        .expect("alpha/model series exists");
+    let beta = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "beta/model")
+        .expect("beta/model series exists");
+
+    // Both models span the same bucket-aligned window with zero-filled gaps.
+    assert_eq!(alpha.points.len(), beta.points.len());
+    // The window is bucket-aligned from (now - 24h) to now; the exact edges
+    // can straddle an hour boundary between the two now_ms() reads (test
+    // setup vs analytics()), so assert the bucket alignment and span rather
+    // than exact wall-clock edges.
+    let first_ts = alpha.points.first().unwrap().ts;
+    let last_ts = alpha.points.last().unwrap().ts;
+    assert!(first_ts <= base - 23 * hour && first_ts >= base - 25 * hour);
+    assert!(last_ts >= base - hour && last_ts <= base + hour);
+    assert_eq!(first_ts % hour, 0);
+    assert_eq!(last_ts % hour, 0);
+
+    let alpha_newest = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - hour)
+        .expect("alpha bucket at base - 1h");
+    assert_eq!(alpha_newest.prompts, 2);
+    assert_eq!(alpha_newest.sessions, 1);
+    assert_eq!(alpha_newest.input_tokens, 20);
+    assert_eq!(alpha_newest.total_tokens, 30);
+
+    let alpha_older = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - 2 * hour)
+        .expect("alpha bucket at base - 2h");
+    assert_eq!(alpha_older.prompts, 1);
+    assert_eq!(alpha_older.sessions, 1);
+
+    // A gap bucket between the two alpha buckets is zero-filled.
+    let alpha_gap = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base - 3 * hour)
+        .expect("gap bucket exists");
+    assert_eq!(alpha_gap.prompts, 0);
+    assert_eq!(alpha_gap.sessions, 0);
+    assert_eq!(alpha_gap.total_tokens, 0);
+
+    let beta_newest = beta
+        .points
+        .iter()
+        .find(|point| point.ts == base)
+        .expect("beta bucket at base");
+    assert_eq!(beta_newest.prompts, 1);
+    assert_eq!(beta_newest.sessions, 1);
+
+    let alpha_at_base = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base)
+        .expect("alpha bucket at base from gamma-provider");
+    assert_eq!(alpha_at_base.prompts, 1);
+    assert_eq!(alpha_at_base.sessions, 1);
+
+    // Window-scoped totals must not double-count distinct sessions that span
+    // buckets: alpha has four prompts across three sessions in the window
+    // (two sessions on alpha-provider plus one on gamma-provider).
+    assert_eq!(alpha.prompts, 4);
+    assert_eq!(alpha.sessions, 3);
+    assert_eq!(alpha.input_tokens, 40);
+    assert_eq!(alpha.output_tokens, 20);
+    assert_eq!(alpha.total_tokens, 60);
+    assert_eq!(beta.prompts, 1);
+    assert_eq!(beta.sessions, 1);
+
+    // Provider and model filters constrain the per-model series too.
+    let alpha_only = store
+        .analytics(AnalyticsRange::Last24Hours, Some("alpha-provider"), None)
+        .unwrap();
+    assert_eq!(alpha_only.model_series.len(), 1);
+    assert_eq!(alpha_only.model_series[0].model, "alpha/model");
+    assert_eq!(alpha_only.model_series[0].prompts, 3);
+    assert_eq!(alpha_only.model_series[0].sessions, 2);
+    let model_only = store
+        .analytics(AnalyticsRange::Last24Hours, None, Some("beta/model"))
+        .unwrap();
+    assert_eq!(model_only.model_series.len(), 1);
+    assert_eq!(model_only.model_series[0].model, "beta/model");
+    assert_eq!(model_only.model_series[0].prompts, 1);
+
+    // The "model usage overall" breakdown ignores the provider filter while
+    // the payload's by_model stays provider-scoped for the per-provider pie.
+    let provider_scoped = store
+        .analytics(AnalyticsRange::Last24Hours, Some("alpha-provider"), None)
+        .unwrap();
+    assert_eq!(provider_scoped.by_model.len(), 1);
+    assert_eq!(provider_scoped.by_model[0].key, "alpha/model");
+    assert_eq!(provider_scoped.by_model[0].prompts, 3);
+    assert_eq!(provider_scoped.by_model_overall.len(), 2);
+    let overall_keys: Vec<&str> = provider_scoped
+        .by_model_overall
+        .iter()
+        .map(|row| row.key.as_str())
+        .collect();
+    assert!(overall_keys.contains(&"alpha/model"));
+    assert!(overall_keys.contains(&"beta/model"));
+    let overall_alpha = provider_scoped
+        .by_model_overall
+        .iter()
+        .find(|row| row.key == "alpha/model")
+        .expect("overall alpha/model");
+    assert_eq!(overall_alpha.prompts, 4);
+    assert_eq!(overall_alpha.sessions, 3);
+
+    // With a model filter active, by_model_overall must still report the
+    // selected model's window total (the "Model usage overall" pie draws a
+    // truthful single-slice breakdown instead of an empty state).
+    let model_filtered = store
+        .analytics(AnalyticsRange::Last24Hours, None, Some("alpha/model"))
+        .unwrap();
+    assert_eq!(model_filtered.by_model_overall.len(), 1);
+    assert_eq!(model_filtered.by_model_overall[0].key, "alpha/model");
+    assert_eq!(model_filtered.by_model_overall[0].prompts, 4);
+    assert_eq!(model_filtered.by_model_overall[0].sessions, 3);
+
+    // Combined provider + model filters: series and payload by_model follow
+    // both clauses, while by_model_overall still reports the selected model's
+    // window total (provider clause stripped).
+    let both = store
+        .analytics(
+            AnalyticsRange::Last24Hours,
+            Some("alpha-provider"),
+            Some("alpha/model"),
+        )
+        .unwrap();
+    assert_eq!(both.model_series.len(), 1);
+    assert_eq!(both.model_series[0].model, "alpha/model");
+    assert_eq!(both.model_series[0].prompts, 3);
+    assert_eq!(both.model_series[0].sessions, 2);
+    assert!(
+        both.by_model.is_empty(),
+        "payload by_model is omitted while a model filter is active"
+    );
+    assert_eq!(both.by_model_overall.len(), 1);
+    assert_eq!(both.by_model_overall[0].key, "alpha/model");
+    // Cross-provider `alpha/model` on gamma-provider is included only because
+    // by_model_overall strips the provider clause (3 + 1 prompts, 2 + 1 sessions).
+    assert_eq!(both.by_model_overall[0].prompts, 4);
+    assert_eq!(both.by_model_overall[0].sessions, 3);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn analytics_model_series_groups_sessions_by_model() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-model-series-sessions-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "alpha".into(),
+            model: "alpha/model".into(),
+            session_key: Some("sess-1".into()),
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "alpha".into(),
+            model: "alpha/model".into(),
+            session_key: Some("sess-1".into()),
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+    store
+        .record_usage(&UsageEvent {
+            provider_id: "beta".into(),
+            model: "beta/model".into(),
+            session_key: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        })
+        .unwrap();
+
+    let summary = store
+        .analytics(AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    let alpha = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "alpha/model")
+        .expect("alpha/model series");
+    let beta = summary
+        .model_series
+        .iter()
+        .find(|series| series.model == "beta/model")
+        .expect("beta/model series");
+    // Window-scoped totals, not a single live-now bucket: two `record_usage`
+    // stamps can split across an hour boundary.
+    assert_eq!(alpha.prompts, 2);
+    assert_eq!(alpha.sessions, 1);
+    assert_eq!(beta.prompts, 1);
+    assert_eq!(beta.sessions, 1);
+    assert_eq!(
+        alpha.points.iter().map(|point| point.prompts).sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        beta.points.iter().map(|point| point.prompts).sum::<i64>(),
+        1
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
