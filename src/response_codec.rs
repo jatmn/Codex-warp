@@ -556,6 +556,51 @@ pub(crate) struct ToolCallAccum {
 }
 
 impl ChatAccum {
+    fn from_chat_completion(value: &Value) -> Self {
+        let mut accum = Self::default();
+        if let Some(usage) = value.get("usage") {
+            accum.usage = Some(chat_usage_to_responses_usage(Some(usage)));
+        }
+        let Some(choice) = value
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        else {
+            return accum;
+        };
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            accum.finish_reason = Some(finish_reason.to_string());
+        }
+        let message = choice.get("message").unwrap_or(&Value::Null);
+        if let Some(content) = message.get("content").and_then(Value::as_str) {
+            accum.text.push_str(content);
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let mut acc = ToolCallAccum::default();
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    acc.id = id.to_string();
+                }
+                if let Some(name) = call
+                    .get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    acc.name = name.to_string();
+                }
+                if let Some(arguments) = call
+                    .get("function")
+                    .and_then(|function| function.get("arguments"))
+                    .and_then(Value::as_str)
+                {
+                    acc.arguments.push_str(arguments);
+                }
+                accum.tool_calls.push(acc);
+            }
+        }
+        accum
+    }
+
     pub(crate) fn apply_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
         if let Some(usage) = chunk.get("usage") {
@@ -1129,17 +1174,22 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    with you" is a hand-off and "follow up soon" is not a work object.
     //    Discourse verbs such as "know"/"see"/"help" are not wrap-up vetoes:
     //    "let me know" and "see if you" stay hand-offs, while "know what
-    //    failed in the test output" / "see the test output" / "help fix"
-    //    still continue. Wrap-up verbs, person complements, offer clauses,
-    //    leftover adverbs/pronouns, and light nouns plus deferral do not
+    //    failed in the test output" / "see the test output" / "see if the
+    //    tests pass" / "help fix" still continue. `if`/`whether`/`when` are
+    //    person hand-offs only when the clause addresses the user, not when
+    //    they introduce speaker work. Wrap-up verbs, person complements,
+    //    offer clauses, leftover adverbs/pronouns, light nouns plus
+    //    deferral, and work verbs whose only complement is deferral do not
     //    count ("Now let me summarize", "I'll update you", "I'll do it next",
-    //    "I'll sit tight", "I'll take another look later", "look at your PR").
+    //    "I'll sit tight", "I'll take another look later", "look at your PR",
+    //    "I'll continue later").
     // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues, and
     //    "no actionable issues. Now let me audit file B" still continues.
     // 3. Dangling `:`/`...` only when the last sentence still talks about
     //    unfinished speaker work. Delivery frames ("Here is a summary of
-    //    remaining work:") are not pauses.
+    //    remaining work:") are not pauses; status copulas ("This is still
+    //    pending:") still are.
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1234,19 +1284,28 @@ fn remainder_is_work_action(rest: &str) -> bool {
         return false;
     }
     let complement = strip_complement_fillers(action_complement(rest));
-    if complement_is_person_hand_off(complement) {
+    // Person heads and person-addressing *if/whether/when* clauses are
+    // hand-offs even for work verbs ("look at your PR", "check if you
+    // need"). Trailing offer clauses after a real object still continue
+    // ("I'll inspect the tree if you want") because those do not open the
+    // complement. "Let me know if …" is an inform-me request, not speaker
+    // work, even without "you".
+    if complement_is_person_hand_off(complement) || remainder_is_inform_conditional(rest) {
         return false;
     }
     // Known work verbs may stand alone ("Let me check.") and may take a
-    // pronoun object ("I'll inspect it next"). Unlisted verbs need a
-    // concrete noun object ("I'll clone the repo", "I'll add tests"), not
-    // a leftover pronoun, time adverb, state adjective, offer clause, or
-    // light noun plus deferral ("I'll do it next", "I'll follow up soon",
-    // "I'll sit tight", "I'll take another look later"). Discourse verbs
-    // such as "know"/"see" also stay hand-offs when the complement still
-    // addresses the user ("Let me know what you'd like next").
+    // pronoun object ("I'll inspect it next"). A work verb whose only
+    // complement is deferral is postponement, not the next action
+    // ("I'll continue later"). Unlisted verbs need a concrete noun object
+    // ("I'll clone the repo", "I'll add tests"), not a leftover pronoun,
+    // time adverb, state adjective, offer clause, or light noun plus
+    // deferral ("I'll do it next", "I'll follow up soon", "I'll sit tight",
+    // "I'll take another look later"). Discourse verbs such as "know"/"see"
+    // stay hand-offs when the complement still addresses the user
+    // ("Let me know what you'd like next") and continue when it names
+    // speaker work ("Let me see if the tests pass").
     if remainder_starts_with_work_verb(rest) {
-        return true;
+        return !complement_is_deferral_only(complement);
     }
     if complement_addresses_person(complement) {
         return false;
@@ -1285,8 +1344,25 @@ fn complement_head(complement: &str) -> &str {
 fn complement_is_person_hand_off(complement: &str) -> bool {
     matches!(
         complement_head(complement),
-        "you" | "your" | "yourself" | "about" | "here" | "if" | "whether" | "when"
-    )
+        "you" | "your" | "yourself" | "about" | "here"
+    ) || complement_opens_with_person_clause(complement)
+}
+
+fn complement_opens_with_person_clause(complement: &str) -> bool {
+    matches!(complement_head(complement), "if" | "whether" | "when")
+        && complement_addresses_person(complement)
+}
+
+fn remainder_is_inform_conditional(rest: &str) -> bool {
+    token_starts_with_stem(rest, "know")
+        && matches!(
+            complement_head(strip_complement_fillers(action_complement(rest))),
+            "if" | "whether" | "when"
+        )
+}
+
+fn complement_is_deferral_only(complement: &str) -> bool {
+    !complement.is_empty() && peel_trailing_deferral(complement).is_empty()
 }
 
 fn complement_addresses_person(complement: &str) -> bool {
@@ -1490,6 +1566,8 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         "to do",
         "follow up",
         "follow-up",
+        "remaining",
+        "pending",
     ]
     .iter()
     .any(|cue| last_sentence.contains(cue))
@@ -1499,8 +1577,6 @@ fn last_sentence_is_delivery(last_sentence: &str) -> bool {
     last_sentence.starts_with("here is ")
         || last_sentence.starts_with("here's ")
         || last_sentence.starts_with("here are ")
-        || last_sentence.starts_with("this is ")
-        || last_sentence.starts_with("this was ")
         || last_sentence.starts_with("below is ")
         || last_sentence.contains("summary of ")
         || last_sentence.contains("final report")
@@ -1533,6 +1609,7 @@ pub(crate) fn chat_json_to_responses(value: Value, custom_tool_names: &BTreeSet<
         custom_tool_names,
         &NamespaceHelpers::default(),
         &ToolPolicyConfig::default(),
+        None,
     )
 }
 
@@ -1541,6 +1618,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
     custom_tool_names: &BTreeSet<String>,
     namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
+    continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
 ) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
@@ -1607,10 +1685,12 @@ pub(crate) fn chat_json_to_responses_with_policy(
         }
     }
 
+    let end_turn = ChatAccum::from_chat_completion(&value).end_turn(continue_guard);
     json!({
         "id": response_id,
         "object": "response",
         "status": "completed",
+        "end_turn": end_turn,
         "output": output,
         "usage": chat_usage_to_responses_usage(value.get("usage"))
     })

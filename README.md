@@ -120,7 +120,8 @@ Some chat-completions providers finish with text like `Now let me check...`
 instead of issuing the next tool call. The continue guard detects that case and
 asks Codex to continue the same turn with `end_turn = false`, so long agent
 sessions keep working instead of pausing for a manual `continue`. The guard is
-enabled by default across chat-completions providers; use the CLI flags only to
+enabled by default across chat-completions providers (SSE and non-stream JSON);
+use the CLI flags only to
 tune it for a specific session:
 
 ```bash

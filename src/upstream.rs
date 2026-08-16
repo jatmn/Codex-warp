@@ -458,6 +458,7 @@ pub(crate) async fn proxy_chat_responses(
                     &chat_transform.custom_tool_names,
                     &chat_transform.namespace_helpers,
                     &tool_policy,
+                    Some((&state.debug_log, &request_log_id, &continue_guard)),
                 ))
                 .into_response()
             }

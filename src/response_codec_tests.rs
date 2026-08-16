@@ -2103,6 +2103,87 @@ fn continue_guard_remaining_work_summary_colon_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_let_me_see_if_the_tests_pass_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Let me see if the tests pass.",
+        "continue-guard-test-see-if-tests-pass",
+    ));
+}
+
+#[test]
+fn continue_guard_let_me_check_if_the_tests_pass_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Let me check if the tests pass.",
+        "continue-guard-test-check-if-tests-pass",
+    ));
+}
+
+#[test]
+fn continue_guard_let_me_know_if_the_tests_pass_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Let me know if the tests pass.",
+        "continue-guard-test-know-if-tests-pass",
+    ));
+}
+
+#[test]
+fn continue_guard_this_is_still_pending_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "This is still pending:",
+        "continue-guard-test-this-is-still-pending",
+    ));
+}
+
+#[test]
+fn continue_guard_tasks_remaining_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Tasks remaining:",
+        "continue-guard-test-tasks-remaining",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_continue_later_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll continue later.",
+        "continue-guard-test-continue-later",
+    ));
+}
+
+#[test]
+fn continue_guard_json_completion_forces_followup_for_mid_task_stop() {
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-json-mid-task",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "Now let me inspect the tree."
+                },
+                "finish_reason": "stop"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert_eq!(value["end_turn"], false);
+}
+
+#[test]
 fn continue_guard_update_plan_tail_does_not_reset_followup_budget() {
     let build_accum = |text: &str| {
         let mut accum = ChatAccum::default();
@@ -3003,6 +3084,7 @@ fn chat_completion_tool_policy_decorates_github_pr_call() {
         &BTreeSet::new(),
         &NamespaceHelpers::default(),
         &config.tool_policy,
+        None,
     );
 
     let arguments = value["output"][0]["arguments"]
@@ -3042,6 +3124,7 @@ fn chat_completion_rewrites_spawn_agent_helper_to_namespaced_runtime() {
         &BTreeSet::new(),
         &helpers,
         &crate::config::ToolPolicyConfig::default(),
+        None,
     );
 
     assert_eq!(value["output"][0]["type"], "function_call");
@@ -3077,6 +3160,7 @@ fn chat_completion_tool_policy_blocks_github_token_call_in_enforce_mode() {
         &BTreeSet::new(),
         &NamespaceHelpers::default(),
         &config.tool_policy,
+        None,
     );
 
     assert_eq!(value["output"][0]["type"], "message");
@@ -3113,6 +3197,7 @@ fn chat_completion_tool_policy_blocks_github_token_call_in_assist_mode() {
         &BTreeSet::new(),
         &NamespaceHelpers::default(),
         &config.tool_policy,
+        None,
     );
 
     assert_eq!(value["output"][0]["type"], "message");

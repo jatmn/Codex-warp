@@ -241,7 +241,8 @@ Modes:
   `response.completed.response.end_turn = false` so Codex continues the turn.
   This is the default.
 
-The guard only applies to chat-completions streams that finish with
+The guard applies to chat-completions responses, both SSE streams and
+non-stream JSON, that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` when the next action is a known
 work verb or an unlisted verb with a concrete object such as `I'll clone the
@@ -250,16 +251,23 @@ repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
 `Then run the tests` continues but `Next I need a decision from you` does not;
 or a dangling `:`/`...` whose last sentence still talks about unfinished
 speaker work, not a delivery frame such as `Here is a summary of remaining
-work:`). Complement particles such as `back` and `up` are
+work:`). Status copulas such as `This is still pending:` and bare unfinished
+headers such as `Tasks remaining:` still continue. Complement particles such as `back` and `up` are
 stripped before the object is classified, so `I'll check back with you` and
 `I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
 complements, leftover adverbs or state words, offer clauses on unlisted verbs
-(`I'll take a look later if you want`, `I'll take another look later`), and
-generic pronouns (`I'll do it next`) also do not force a follow-up. Closings
+(`I'll take a look later if you want`, `I'll take another look later`),
+generic pronouns (`I'll do it next`), and work verbs whose only complement is
+deferral (`I'll continue later`) also do not force a follow-up. Closings
 such as `let me know`, `I'll leave the rest`, and delivery colons such as
 `Here is the final report:` stay `end_turn = true`, but investigative
 complements still continue (`Now let me know what failed in the test output`,
-`Let me see the test output`, `I'll help fix the failing tests`). Known work verbs may still
+`Let me see the test output`, `Let me see if the tests pass`,
+`I'll help fix the failing tests`). `if`/`whether`/`when` are person
+hand-offs only when the clause addresses the user (`Let me see if you need
+anything`, `Let me check if you need anything`); `Let me know if the tests
+pass` stays a hand-off because `know` plus a conditional is an inform-me
+request. Known work verbs may still
 take a pronoun object (`I'll inspect it next`) and may keep a trailing
 `if you want` after a real object (`I'll inspect the tree if you want`).
 Person complements still win over work verbs (`look at your PR`). Unlisted
@@ -280,7 +288,7 @@ tool progress without letting a text-only loop run forever. A trailing
 
 Continue guard does not patch prompts, modify skills, or cross providers for
 auto-review. It only changes the final Responses `end_turn` flag for a narrow
-streaming completion shape that Codex itself knows how to follow up.
+completion shape that Codex itself knows how to follow up.
 
 CLI overrides are available for test sessions:
 
