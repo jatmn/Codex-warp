@@ -750,6 +750,38 @@ check("modelTooltipSummary overflow uses present count, not capped rows", () => 
   );
 });
 
+check("modelPointActive is the shared zero-skip policy for dots, rings, and tooltips", () => {
+  assert.equal(charts.modelPointActive({ prompts: 3 }, "prompts"), true);
+  assert.equal(charts.modelPointActive({ prompts: 0 }, "prompts"), false);
+  assert.equal(charts.modelPointActive({ prompts: -1 }, "prompts"), false);
+  assert.equal(charts.modelPointActive({ prompts: NaN }, "prompts"), false);
+  assert.equal(charts.modelPointActive(null, "prompts"), false);
+  assert.equal(charts.modelMetricValue({ prompts: 3 }, "prompts"), 3);
+  assert.equal(charts.modelMetricValue({ prompts: 0 }, "prompts"), 0);
+  const mixed = [
+    { model: "alpha", points: [{ prompts: 0 }, { prompts: 4 }] },
+    { model: "beta", points: [{ prompts: 2 }, { prompts: 0 }] },
+  ];
+  const gap = charts.modelTooltipPayload(mixed, 0, "10:00", "prompts");
+  assert.deepEqual(
+    gap.rows.map((row) => row.key),
+    mixed.filter((model) => charts.modelPointActive(model.points[0], "prompts")).map((model) => model.model),
+  );
+});
+
+check("pieSharePercent is the single rounding used by labels and tooltip share", () => {
+  assert.equal(charts.pieSharePercent(1, 3), 33.3);
+  assert.equal(charts.pieSharePercent(1, 4), 25);
+  assert.equal(charts.pieSharePercent(0, 4), 0);
+  assert.equal(charts.pieSharePercent(1, 0), 0);
+  const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3);
+  assert.equal(payload.rows[1].value, charts.pieSharePercent(1, 3));
+  assert.equal(
+    charts.pieTooltipSummary(payload, (value) => String(value)),
+    `openai: 1 tokens (${charts.pieSharePercent(1, 3)}%)`,
+  );
+});
+
 check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", () => {
   const payload = charts.pieTooltipPayload({ key: "openai", value: 1 }, 3);
   assert.equal(payload.title, "openai");

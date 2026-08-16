@@ -658,14 +658,27 @@
     return typeof hitIdx === "number" && hitIdx >= 0 ? hitIdx : -1;
   }
 
+  // Shared activity predicate for model-over-time paint, hover rings, and
+  // tooltips. Gap-filled zeros (and non-finite values) are not usage: a
+  // marker or tooltip row at that bucket would imply the model was used.
+  function modelMetricValue(point, metric) {
+    if (!point) return 0;
+    const n = Number(point[metric]);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function modelPointActive(point, metric) {
+    return modelMetricValue(point, metric) > 0;
+  }
+
   // Tooltip content policy, independent of DOM. App-main maps this onto
   // tooltipEl/tooltipRowsEl so showChartTooltip always receives Nodes.
   function modelTooltipPayload(models, idx, title, metric) {
     if (!models || !models.length || !models[0].points || !models[0].points[idx]) {
       return null;
     }
-    const present = models.filter(
-      (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
+    const present = models.filter((model) =>
+      modelPointActive(model.points[idx], metric),
     );
     const shown = present.slice(0, 12);
     // `present` is the true bucket occupancy. `rows` is a display cap (12),
@@ -685,7 +698,7 @@
       present: present.length,
       rows: shown.map((model) => ({
         key: model.model,
-        value: model.points[idx][metric],
+        value: modelMetricValue(model.points[idx], metric),
         colorKey: model.model,
         colorKind: "model",
       })),
@@ -719,14 +732,23 @@
     return `${payload.title}: ${parts.join(", ")}`;
   }
 
+  // One-decimal percent of the pie total. Canvas labels, tooltip share, and
+  // live-region copy must all use this so 1/3 cannot read "33%" on the wedge
+  // and "33.3%" in the hover UI.
+  function pieSharePercent(value, total) {
+    if (!(Number(total) > 0)) return 0;
+    const n = Number(value);
+    const amount = Number.isFinite(n) && n > 0 ? n : 0;
+    return Math.round((amount / total) * 1000) / 10;
+  }
+
   function pieTooltipPayload(row, total) {
     if (!row) return null;
-    const pct = total > 0 ? (row.value / total) * 100 : 0;
     return {
       title: row.key,
       rows: [
         { key: "Tokens", value: row.value, colorKey: row.key, colorKind: row.kind || "model" },
-        { key: "Share (%)", value: Math.round(pct * 10) / 10, colorKey: null },
+        { key: "Share (%)", value: pieSharePercent(row.value, total), colorKey: null },
       ],
       note: null,
     };
@@ -895,8 +917,11 @@
     paletteIndexForKey,
     retainPaletteKeys,
     effectivePieHoverIdx,
+    modelMetricValue,
+    modelPointActive,
     modelTooltipPayload,
     modelTooltipSummary,
+    pieSharePercent,
     pieTooltipPayload,
     pieTooltipSummary,
     tooltipColorRef,

@@ -747,6 +747,8 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("pieMidAngle"));
     assert!(body.contains("reconcilePieHover"));
     assert!(body.contains("modelTooltipPayload"));
+    assert!(body.contains("modelPointActive"));
+    assert!(body.contains("pieSharePercent"));
     assert!(body.contains("pieTooltipPayload"));
     assert!(body.contains("paletteIndexForKey"));
     assert!(body.contains("retainPaletteKeys"));
@@ -874,6 +876,9 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("function tooltipEl("));
     assert!(app.contains("function tooltipFromPayload("));
     assert!(app.contains("Charts.modelTooltipPayload("));
+    assert!(app.contains("Charts.modelPointActive("));
+    assert!(app.contains("Charts.modelMetricValue("));
+    assert!(app.contains("Charts.pieSharePercent("));
     assert!(app.contains("Charts.pieTooltipPayload("));
     assert!(app.contains("function identityColor("));
     assert!(app.contains("Charts.paletteSlotKey("));

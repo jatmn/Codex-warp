@@ -2283,8 +2283,9 @@
       models.forEach((model) => {
         ctx.fillStyle = identityColor("model", model.model);
         model.points.forEach((point) => {
+          if (!Charts.modelPointActive(point, metric)) return;
           ctx.beginPath();
-          ctx.arc(xAt(point.ts), yAt(point[metric] || 0), 3, 0, Math.PI * 2);
+          ctx.arc(xAt(point.ts), yAt(Charts.modelMetricValue(point, metric)), 3, 0, Math.PI * 2);
           ctx.fill();
         });
       });
@@ -2330,11 +2331,9 @@
     ctx.stroke();
     ctx.setLineDash([]);
     state.series.forEach((model) => {
-      const value = model.points[idx] ? model.points[idx][state.metric] || 0 : 0;
-      // A zero-filled gap bucket has no activity at this point; drawing a
-      // marker ring there would imply the model was used in this bucket.
-      if (value <= 0) return;
-      const y = yAt(value);
+      const point = model.points[idx];
+      if (!Charts.modelPointActive(point, state.metric)) return;
+      const y = yAt(Charts.modelMetricValue(point, state.metric));
       ctx.beginPath();
       ctx.arc(x, y, 5, 0, Math.PI * 2);
       ctx.fillStyle = colors.surface;
@@ -2487,7 +2486,7 @@
       const mid = Charts.pieMidAngle(slice);
       ctx.fillStyle = pieLabelColor(identityColor(row.kind || "model", row.key));
       ctx.fillText(
-        `${Math.round((slice.value / total) * 100)}%`,
+        `${Charts.pieSharePercent(slice.value, total)}%`,
         cx + Math.cos(mid) * radius * 0.62,
         cy + Math.sin(mid) * radius * 0.62,
       );
