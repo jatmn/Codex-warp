@@ -2240,6 +2240,30 @@ fn continue_guard_approval_pending_colon_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_review_pending_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Review pending:",
+        "continue-guard-test-review-pending",
+    ));
+}
+
+#[test]
+fn continue_guard_ci_pending_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "CI pending:",
+        "continue-guard-test-ci-pending",
+    ));
+}
+
+#[test]
+fn continue_guard_cleared_pending_with_still_need_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Nothing pending on my side, but I still need to:",
+        "continue-guard-test-cleared-pending-still-need",
+    ));
+}
+
+#[test]
 fn continue_guard_json_completion_forces_followup_for_mid_task_stop() {
     let value = continue_guard_json(
         "Now let me inspect the tree.",
@@ -2288,6 +2312,56 @@ fn continue_guard_json_tool_call_stays_end_turn() {
         }])),
     );
     assert_eq!(value["end_turn"], true);
+}
+
+#[test]
+fn continue_guard_json_length_reason_stays_end_turn() {
+    let value = continue_guard_json(
+        "Now let me inspect the tree.",
+        "continue-guard-test-json-length",
+        Some("length"),
+        None,
+    );
+    assert_eq!(value["end_turn"], true);
+}
+
+#[test]
+fn continue_guard_json_array_content_forces_followup() {
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-json-array-content",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Now let me "},
+                        {"type": "text", "text": "inspect the tree."}
+                    ]
+                },
+                "finish_reason": "stop"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+    assert_eq!(value["end_turn"], false);
+    assert_eq!(
+        value["output"][0]["content"][0]["text"],
+        "Now let me inspect the tree."
+    );
 }
 
 #[test]

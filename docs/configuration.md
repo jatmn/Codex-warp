@@ -253,9 +253,12 @@ repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
 or a dangling `:`/`...` whose last sentence still talks about unfinished
 speaker work, not a delivery frame such as `Here is a summary of remaining
 work:`). Status copulas such as `This is still pending:` and bare unfinished
-headers such as `Tasks remaining:` still continue. Cleared remaining/pending
-polarity (`No issues remaining:`) and waits on someone else
-(`Approval pending:`) stay `end_turn = true`. Complement particles such as `back` and `up` are
+headers such as `Tasks remaining:` still continue. Cleared remaining polarity
+(`No issues remaining:`) stays `end_turn = true` unless a later unfinished
+speaker cue is still present (`Nothing pending, but I still need to:`). Bare
+`pending` is a status label on some other actor or process
+(`Approval pending:`, `Review pending:`, `CI pending:`) and stays
+`end_turn = true`. Complement particles such as `back` and `up` are
 stripped before the object is classified, so `I'll check back with you` and
 `I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
 complements, leftover adverbs or state words, offer clauses on unlisted verbs

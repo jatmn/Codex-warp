@@ -569,9 +569,7 @@ impl ChatAccum {
             return accum;
         };
         let message = choice.get("message").unwrap_or(&Value::Null);
-        if let Some(content) = message.get("content").and_then(Value::as_str) {
-            accum.text.push_str(content);
-        }
+        accum.text.push_str(&chat_message_text(message));
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
                 let mut acc = ToolCallAccum::default();
@@ -598,10 +596,10 @@ impl ChatAccum {
         if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
             accum.finish_reason = Some(finish_reason.to_string());
         } else if accum.tool_calls.iter().all(|call| call.name.is_empty()) {
-            // Non-stream providers often omit finish_reason on a completed
-            // text-only choice. That is the same premature-stop shape as
-            // `stop`, unlike truncated streams that never emit a terminal
-            // reason.
+            // Completed JSON text with omitted or null finish_reason is the
+            // same premature-stop shape as `stop`. Explicit terminal reasons
+            // (`length`, `content_filter`, `tool_calls`) are taken from the
+            // field above and never rewritten.
             accum.finish_reason = Some("stop".to_string());
         }
         accum
@@ -676,9 +674,8 @@ impl ChatAccum {
                 ));
             }
 
-            if let Some(content) = delta.get("content").and_then(Value::as_str)
-                && !content.is_empty()
-            {
+            let content = chat_content_text(delta.get("content"));
+            if !content.is_empty() {
                 if self.message_item_id.is_none() {
                     let item_id = generated_id("msg");
                     self.message_item_id = Some(item_id.clone());
@@ -695,7 +692,7 @@ impl ChatAccum {
                         }),
                     ));
                 }
-                self.text.push_str(content);
+                self.text.push_str(&content);
                 events.push(sse(
                     "response.output_text.delta",
                     json!({
@@ -1195,11 +1192,13 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    "no actionable issues. Now let me audit file B" still continues.
     // 3. Dangling `:`/`...` only when the last sentence still talks about
     //    unfinished speaker work. Delivery frames ("Here is a summary of
-    //    remaining work:"), cleared remaining/pending polarity
-    //    ("No issues remaining:"), and waits on someone else
-    //    ("Approval pending:") are not pauses; speaker status copulas
-    //    ("This is still pending:") and unfinished headers
-    //    ("Tasks remaining:") still are.
+    //    remaining work:") are not pauses. Remaining/pending polarity is
+    //    per-cue, not a sentence veto: "No issues remaining:" stays done,
+    //    but "Nothing pending, but I still need to:" still continues.
+    //    Bare `pending` is a status label ("Review pending:",
+    //    "Approval pending:"), not speaker work; speaker pending uses a
+    //    copula ("This is still pending:", "verification is pending:").
+    //    Unfinished headers such as "Tasks remaining:" still continue.
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1581,17 +1580,14 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         .next()
         .unwrap_or(normalized)
         .trim();
-    if last_sentence_is_delivery(last_sentence)
-        || last_sentence_clears_remaining_work(last_sentence)
-        || last_sentence_waits_on_other(last_sentence)
-    {
+    if last_sentence_is_delivery(last_sentence) {
         return false;
     }
-    [
-        "still pending",
-        "is pending",
-        "are pending",
-        "still remaining",
+    last_sentence_has_unfinished_speaker_work(last_sentence)
+}
+
+fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
+    const SPEAKER_WORK_CUES: [&str; 8] = [
         "still need",
         "still have",
         "next step",
@@ -1600,39 +1596,33 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         "to do",
         "follow up",
         "follow-up",
-        "remaining",
-        "pending",
-    ]
-    .iter()
-    .any(|cue| last_sentence.contains(cue))
+    ];
+    if SPEAKER_WORK_CUES
+        .iter()
+        .any(|cue| last_sentence.contains(cue))
+    {
+        return true;
+    }
+    if last_sentence_clears_remaining_work(last_sentence) {
+        return false;
+    }
+    // Copular pending is speaker status ("this is still pending",
+    // "verification is pending"). Bare "pending" is a label on some other
+    // actor or process ("review pending", "approval pending", "ci pending").
+    last_sentence.contains("still pending")
+        || last_sentence.contains("is pending")
+        || last_sentence.contains("are pending")
+        || last_sentence.contains("still remaining")
+        || last_sentence.contains("remaining")
 }
 
 fn last_sentence_clears_remaining_work(last_sentence: &str) -> bool {
-    // Bare remaining/pending cues mean unfinished speaker work unless the
-    // sentence negates them ("No issues remaining:", "nothing pending:").
+    // Remaining/pending cues mean unfinished speaker work unless the
+    // sentence negates those cues ("No issues remaining:", "nothing pending:").
     // Do not treat generic "not" as clearance: "not yet" is unfinished.
     ["no ", "none ", "nothing ", "without ", "zero "]
         .iter()
         .any(|negation| last_sentence.contains(negation))
-        && ["remaining", "pending"]
-            .iter()
-            .any(|cue| last_sentence.contains(cue))
-}
-
-fn last_sentence_waits_on_other(last_sentence: &str) -> bool {
-    [
-        "approval pending",
-        "sign-off pending",
-        "signoff pending",
-        "sign off pending",
-        "go-ahead pending",
-        "permission pending",
-        "awaiting approval",
-        "awaiting sign-off",
-        "awaiting sign off",
-    ]
-    .iter()
-    .any(|cue| last_sentence.contains(cue))
 }
 
 fn last_sentence_is_delivery(last_sentence: &str) -> bool {
@@ -1697,16 +1687,14 @@ pub(crate) fn chat_json_to_responses_with_policy(
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
-        let content = message.get("content").and_then(Value::as_str);
+        let content = chat_message_text(message);
         let mut message_parts = Vec::new();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
         {
             message_parts.push(json!({"type": "reasoning_summary_text", "text": reasoning}));
         }
-        if let Some(content) = message.get("content").and_then(Value::as_str)
-            && !content.is_empty()
-        {
+        if !content.is_empty() {
             message_parts.push(json!({"type": "output_text", "text": content}));
         }
         if !message_parts.is_empty() {
@@ -1715,7 +1703,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                 "role": "assistant",
                 "content": message_parts
             }));
-        } else if content.is_some() {
+        } else if message.get("content").is_some() {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -1756,6 +1744,38 @@ pub(crate) fn chat_json_to_responses_with_policy(
         "output": output,
         "usage": chat_usage_to_responses_usage(value.get("usage"))
     })
+}
+
+fn chat_message_text(message: &Value) -> String {
+    chat_content_text(message.get("content"))
+}
+
+fn chat_content_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(chat_content_part_text)
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn chat_content_part_text(item: &Value) -> Option<&str> {
+    if let Some(text) = item.as_str() {
+        return Some(text);
+    }
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("reasoning" | "reasoning_text" | "reasoning_summary_text")
+    ) {
+        return None;
+    }
+    item.get("text")
+        .or_else(|| item.get("content"))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
 }
 
 /// Returns only the new reasoning text to append for a streaming delta.
