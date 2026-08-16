@@ -1653,7 +1653,7 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("\"Add provider\""));
     assert!(!app.contains("Add from example template"));
     assert!(!app.contains("clear_inline_api_key"));
-    assert!(!app.contains("p.managed && p.has_inline_api_key"));
+    assert!(app.contains("p.managed && p.has_inline_api_key && !p.api_key_env"));
     assert!(!app.contains("p.has_api_key && !p.api_key_env"));
     assert!(app.contains("function asciiHeaderNameKey("));
     assert!(app.contains("const folded = asciiHeaderNameKey(key)"));
