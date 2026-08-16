@@ -856,6 +856,16 @@
     if (model) qs.set("model", model);
     try {
       const data = await api(`/analytics?${qs}`);
+      // Filters can change while this request is in flight (queued follow-up
+      // runs in `finally`). Applying this payload would paint the old window
+      // against the new dropdowns until that follow-up returns.
+      if (
+        $("#analytics-range").value !== range ||
+        $("#analytics-provider").value !== provider ||
+        $("#analytics-model").value !== model
+      ) {
+        return;
+      }
       // Preserve provider identities from retained usage even after their live
       // configuration is removed. Filtered responses omit this breakdown.
       if (!provider) {
@@ -891,6 +901,13 @@
         else status(message);
       }
     } catch (e) {
+      if (
+        $("#analytics-range").value !== range ||
+        $("#analytics-provider").value !== provider ||
+        $("#analytics-model").value !== model
+      ) {
+        return;
+      }
       if (activeTab === "analytics") {
         const message = `Analytics error: ${e.message}`;
         if (reportFromPoll) pollStatus(message, { isError: true });
@@ -909,6 +926,35 @@
   // Chart math is a sibling deferred script. Missing it must not abort this
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
+  function applyChartCanvasAttrs(canvas, attrs) {
+    if (!canvas.dataset.labelledby) {
+      const labelled = canvas.getAttribute("aria-labelledby");
+      if (labelled) canvas.dataset.labelledby = labelled;
+    }
+    if (attrs.tabIndex == null) canvas.removeAttribute("tabindex");
+    else canvas.setAttribute("tabindex", String(attrs.tabIndex));
+    if (attrs.role) canvas.setAttribute("role", attrs.role);
+    else canvas.removeAttribute("role");
+    if (attrs.keyshortcuts) canvas.setAttribute("aria-keyshortcuts", attrs.keyshortcuts);
+    else canvas.removeAttribute("aria-keyshortcuts");
+    if (attrs.describedBy) canvas.setAttribute("aria-describedby", attrs.describedBy);
+    else canvas.removeAttribute("aria-describedby");
+    if (attrs.labelledBy && canvas.dataset.labelledby) {
+      canvas.setAttribute("aria-labelledby", canvas.dataset.labelledby);
+    } else {
+      canvas.removeAttribute("aria-labelledby");
+    }
+    if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
+    else canvas.removeAttribute("aria-hidden");
+    if (attrs.tabIndex == null && document.activeElement === canvas) canvas.blur();
+  }
+  function applyChartChrome(attrs) {
+    const kbdHelp = $("#chart-kbd-help");
+    if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
+    document.querySelectorAll(".chart-fallback").forEach((el) => {
+      el.hidden = !!attrs.fallbackHidden;
+    });
+  }
   function applyChartInteractivity(surface) {
     const attrs = Charts
       ? Charts.chartCanvasAttrs(surface)
@@ -923,32 +969,9 @@
           fallbackHidden: false,
         };
     document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
-      if (!canvas.dataset.labelledby) {
-        const labelled = canvas.getAttribute("aria-labelledby");
-        if (labelled) canvas.dataset.labelledby = labelled;
-      }
-      if (attrs.tabIndex == null) canvas.removeAttribute("tabindex");
-      else canvas.setAttribute("tabindex", String(attrs.tabIndex));
-      if (attrs.role) canvas.setAttribute("role", attrs.role);
-      else canvas.removeAttribute("role");
-      if (attrs.keyshortcuts) canvas.setAttribute("aria-keyshortcuts", attrs.keyshortcuts);
-      else canvas.removeAttribute("aria-keyshortcuts");
-      if (attrs.describedBy) canvas.setAttribute("aria-describedby", attrs.describedBy);
-      else canvas.removeAttribute("aria-describedby");
-      if (attrs.labelledBy && canvas.dataset.labelledby) {
-        canvas.setAttribute("aria-labelledby", canvas.dataset.labelledby);
-      } else {
-        canvas.removeAttribute("aria-labelledby");
-      }
-      if (attrs.ariaHidden) canvas.setAttribute("aria-hidden", "true");
-      else canvas.removeAttribute("aria-hidden");
-      if (attrs.tabIndex == null && document.activeElement === canvas) canvas.blur();
+      applyChartCanvasAttrs(canvas, attrs);
     });
-    const kbdHelp = $("#chart-kbd-help");
-    if (kbdHelp) kbdHelp.hidden = !!attrs.kbdHelpHidden;
-    document.querySelectorAll(".chart-fallback").forEach((el) => {
-      el.hidden = !!attrs.fallbackHidden;
-    });
+    applyChartChrome(attrs);
   }
   function chartsLiveLayout() {
     const canvas = $("#chart-line") || $("#chart-bar");
@@ -960,10 +983,17 @@
       noteChartsUnavailable();
       return;
     }
-    const series = analyticsSnapshot && analyticsSnapshot.data
-      ? analyticsSnapshot.data.series || []
-      : [];
-    applyChartInteractivity(Charts.chartSurface(true, series.length, chartsLiveLayout()));
+    const live = chartsLiveLayout();
+    let anyInteractive = false;
+    document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
+      const count = Charts.chartNavigableCount
+        ? Charts.chartNavigableCount(canvas.__chart)
+        : 0;
+      const surface = Charts.chartSurface(true, count, live);
+      applyChartCanvasAttrs(canvas, Charts.chartCanvasAttrs(surface));
+      if (surface === "interactive") anyInteractive = true;
+    });
+    applyChartChrome(Charts.chartCanvasAttrs(anyInteractive ? "interactive" : "idle"));
   }
   function noteChartsUnavailable() {
     applyChartInteractivity("failed");
@@ -987,8 +1017,8 @@
       return;
     }
     const series = data.series || [];
-    syncChartSurface();
     if (!chartsLiveLayout()) {
+      syncChartSurface();
       if (activeTab === "analytics") scheduleChartResize();
       return;
     }
@@ -1064,6 +1094,7 @@
           ? "Select All models to see model usage per provider."
           : "No token usage for this provider in this range.",
     });
+    syncChartSurface();
   }
 
   window.addEventListener("codex-warp-theme-change", () => {
@@ -2140,8 +2171,14 @@
     // Prefer the backend's window-scoped total: bucket-scoped distinct
     // session counts double-count sessions that span buckets, so summing
     // bucket points would inflate the sessions legend.
-    if (model.totals && model.totals[metric] != null) return model.totals[metric];
-    return model.points.reduce((sum, point) => sum + (point[metric] || 0), 0);
+    if (model.totals && model.totals[metric] != null) {
+      const n = Number(model.totals[metric]);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return model.points.reduce(
+      (sum, point) => sum + Charts.modelMetricValue(point, metric),
+      0,
+    );
   }
 
   // One line per model across the shared bucket window. Lines share the
@@ -2164,7 +2201,7 @@
           total_tokens: series.total_tokens || 0,
         },
       }))
-      .filter((series) => series.points.length)
+      .filter((series) => series.points.length && modelTotal(series, metric) > 0)
       .sort((a, b) => modelTotal(b, metric) - modelTotal(a, metric));
     if (!models.length) {
       canvas.__chart = {
@@ -2187,7 +2224,7 @@
     let maxVal = 1;
     for (const model of models) {
       for (const point of model.points) {
-        const value = point[metric] || 0;
+        const value = Charts.modelMetricValue(point, metric);
         if (value > maxVal) maxVal = value;
       }
     }
@@ -2273,7 +2310,7 @@
       ctx.beginPath();
       model.points.forEach((point, i) => {
         const x = xAt(point.ts);
-        const y = yAt(point[metric] || 0);
+        const y = yAt(Charts.modelMetricValue(point, metric));
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });

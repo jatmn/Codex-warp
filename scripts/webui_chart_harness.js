@@ -393,6 +393,28 @@ check("chartSurface is idle until math, buckets, and live layout exist", () => {
   assert.equal(charts.chartSurface(true, 3, charts.chartsLiveLayout(0)), "idle");
 });
 
+check("chartNavigableCount is per-canvas, not aggregate series length", () => {
+  assert.equal(charts.chartNavigableCount(null), 0);
+  assert.equal(charts.chartNavigableCount({ kind: "pie", rows: [] }), 0);
+  assert.equal(
+    charts.chartNavigableCount({ kind: "pie", rows: [{ key: "a" }, { key: "b" }] }),
+    2,
+  );
+  assert.equal(
+    charts.chartNavigableCount({ kind: "model", geometry: null, series: [{ model: "x" }] }),
+    0,
+  );
+  assert.equal(
+    charts.chartNavigableCount({
+      kind: "model",
+      geometry: { buckets: [{ ts: 1 }, { ts: 2 }] },
+    }),
+    2,
+  );
+  assert.equal(charts.chartNavigableCount({ kind: "line", series: [{}, {}, {}] }), 3);
+  assert.equal(charts.chartNavigableCount({ kind: "bar", rows: [{}] }), 1);
+});
+
 check("analyticsDisplayStatus remaps only the analytics tab when math is missing", () => {
   const fail = footer.chartsFailedStatus;
   assert.equal(fail, "Analytics charts failed to load (/ui/chart-math.js)");
@@ -710,7 +732,7 @@ check("modelTooltipSummary speaks from the tooltip payload, not a second filter"
   const payload = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
   assert.equal(
     charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
-    "10:00: m0 1000, m1 2000, m2 3000, m3 4000, +2 more models",
+    "10:00: m5 6000, m4 5000, m3 4000, m2 3000, +2 more models",
   );
   const empty = charts.modelTooltipPayload(
     [{ model: "gpt", points: [{ prompts: 0 }] }],
@@ -725,6 +747,36 @@ check("modelTooltipSummary speaks from the tooltip payload, not a second filter"
   assert.equal(charts.modelTooltipSummary(null, "prompts"), "");
 });
 
+check("modelTooltipPayload ranks the hovered bucket, not window order", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "now", "prompts");
+  assert.equal(payload.rows.length, 12);
+  assert.equal(payload.present, 14);
+  assert.equal(payload.note, "+2 more models");
+  assert.equal(payload.rows[0].colorKey, "m13");
+  assert.equal(payload.rows[0].value, 14);
+  assert.equal(payload.rows[11].colorKey, "m2");
+  const windowLeader = {
+    model: "window-leader",
+    points: [{ prompts: 1 }, { prompts: 100 }],
+  };
+  const bucketLeader = {
+    model: "bucket-leader",
+    points: [{ prompts: 50 }, { prompts: 2 }],
+  };
+  const ranked = charts.modelTooltipPayload(
+    [windowLeader, bucketLeader],
+    0,
+    "10:00",
+    "prompts",
+  );
+  assert.equal(ranked.rows[0].colorKey, "bucket-leader");
+  assert.equal(ranked.rows[0].value, 50);
+});
+
 check("modelTooltipPayload caps listed models and reports overflow", () => {
   const models = [];
   for (let i = 0; i < 14; i += 1) {
@@ -734,7 +786,6 @@ check("modelTooltipPayload caps listed models and reports overflow", () => {
   assert.equal(payload.rows.length, 12);
   assert.equal(payload.present, 14);
   assert.equal(payload.note, "+2 more models");
-  assert.equal(payload.rows[0].colorKey, "m0");
 });
 
 check("modelTooltipSummary overflow uses present count, not capped rows", () => {
@@ -746,7 +797,7 @@ check("modelTooltipSummary overflow uses present count, not capped rows", () => 
   // Spoken cap 4 of 14 present: +10, not +8 (12 capped rows - 4).
   assert.equal(
     charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
-    "10:00: m0 1, m1 2, m2 3, m3 4, +10 more models",
+    "10:00: m13 14, m12 13, m11 12, m10 11, +10 more models",
   );
 });
 

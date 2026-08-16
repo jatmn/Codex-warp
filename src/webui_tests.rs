@@ -739,6 +739,7 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("barPaintRect"));
     assert!(body.contains("barAnchorY"));
     assert!(body.contains("chartSurface"));
+    assert!(body.contains("chartNavigableCount"));
     assert!(body.contains("chartCanvasAttrs"));
     assert!(body.contains("pieSlices"));
     assert!(body.contains("pointerCssX"));
@@ -859,9 +860,10 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains("lineChartTooltipAnchorY("));
     assert!(app.contains("chip.labelX"));
     assert!(app.contains("ctx.measureText(\"tokens\").width"));
-    // Keyboard help copy lists the fields each bucket reports in tooltip order.
+    // Keyboard help describes navigation shared by every chart, not line/bar
+    // field lists that pies and model-over-time charts do not speak.
     assert!(index.contains(
-        "total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions"
+        "Each point reports its label and the values for that chart."
     ));
 }
 
@@ -887,6 +889,12 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("Charts.tooltipRenderPlan("));
     assert!(app.contains("Charts.retainPaletteKeys("));
     assert!(app.contains("Charts.effectivePieHoverIdx("));
+    assert!(app.contains("Charts.chartNavigableCount"));
+    assert!(app.contains("modelTotal(series, metric) > 0"));
+    assert!(
+        app.contains("$(\"#analytics-range\").value !== range"),
+        "stale analytics responses must not paint after filters change"
+    );
     assert!(app.contains("ctx.arc(cx, cy, radius + 4, slice.start, slice.end);"));
     assert!(
         !app.contains("ctx.moveTo(cx, cy);\n      ctx.arc(cx, cy, radius + 4"),

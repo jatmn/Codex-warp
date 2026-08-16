@@ -677,9 +677,17 @@
     if (!models || !models.length || !models[0].points || !models[0].points[idx]) {
       return null;
     }
-    const present = models.filter((model) =>
-      modelPointActive(model.points[idx], metric),
-    );
+    // Rank by this bucket's metric, not the window-total order the chart
+    // used for legend/line stacking. A 12-row cap that inherited window
+    // rank could omit the model that actually led the hovered timestamp.
+    const present = models
+      .filter((model) => modelPointActive(model.points[idx], metric))
+      .slice()
+      .sort(
+        (a, b) =>
+          modelMetricValue(b.points[idx], metric) -
+          modelMetricValue(a.points[idx], metric),
+      );
     const shown = present.slice(0, 12);
     // `present` is the true bucket occupancy. `rows` is a display cap (12),
     // so live-region overflow must use this count — not rows.length — or a
@@ -838,6 +846,21 @@
     return "idle";
   }
 
+  // Navigable length is per canvas: pies use active slices, model/line/bar
+  // charts use time buckets. Empty pies next to a populated aggregate series
+  // must not inherit that series length.
+  function chartNavigableCount(state) {
+    if (!state) return 0;
+    if (state.kind === "pie") return (state.rows || []).length;
+    if (state.kind === "model") {
+      const buckets = state.geometry && state.geometry.buckets;
+      return buckets && buckets.length ? buckets.length : 0;
+    }
+    if (state.kind === "bar") return (state.rows || []).length;
+    if (state.kind === "line") return (state.series || []).length;
+    return 0;
+  }
+
   function chartCanvasAttrs(surface) {
     const kind =
       surface === true || surface === "interactive"
@@ -932,6 +955,7 @@
     chartsLiveLayout,
     shouldPaintCharts,
     chartSurface,
+    chartNavigableCount,
     chartCanvasAttrs,
   };
 
