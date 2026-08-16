@@ -1080,9 +1080,12 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     // 1. Closers that contain work-like substrings ("let me know").
     // 2. First-person / let-me prefixes: after stripping adverbs and nested
     //    prefixes, the next action is work when it is a known work verb, or
-    //    an unlisted verb with a non-hand-off object ("I'll clone the repo",
-    //    "I'll add tests"). Wrap-up verbs and hand-off complements do not
-    //    count ("Now let me summarize", "I'll update you", "look at your PR").
+    //    an unlisted verb with a concrete object ("I'll clone the repo",
+    //    "I'll add tests"). Particles in the complement ("back", "ahead")
+    //    are stripped before the object is classified, so "check back with
+    //    you" is a hand-off. Wrap-up verbs, person complements, and generic
+    //    pronouns on unlisted verbs do not count ("Now let me summarize",
+    //    "I'll update you", "I'll do it next", "look at your PR").
     // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues.
     // 4. Dangling `:`/`...` only when the last sentence still talks about
@@ -1166,14 +1169,19 @@ fn remainder_is_work_action(rest: &str) -> bool {
     if rest.is_empty() || remainder_starts_with_wrap_up_action(rest) {
         return false;
     }
-    let complement = strip_leading_prepositions(action_complement(rest));
-    if complement_is_hand_off(complement) {
+    let complement = strip_complement_fillers(action_complement(rest));
+    if complement_is_person_hand_off(complement) {
         return false;
     }
-    // Known work verbs may stand alone ("Let me check."). Unlisted verbs are
-    // work only when they act on an object ("I'll clone the repo", "I'll add
-    // tests"), not because the token is long ("I'll think about this").
-    remainder_starts_with_work_verb(rest) || !complement.is_empty()
+    // Known work verbs may stand alone ("Let me check.") and may take a
+    // pronoun object ("I'll inspect it next"). Unlisted verbs need a
+    // concrete object ("I'll clone the repo", "I'll add tests"), not a
+    // leftover pronoun ("I'll do it next") or an adverbial particle that
+    // was only hiding "you" ("I'll get back to you").
+    if remainder_starts_with_work_verb(rest) {
+        return true;
+    }
+    !complement.is_empty() && !complement_is_generic_pronoun(complement)
 }
 
 fn action_complement(rest: &str) -> &str {
@@ -1183,26 +1191,38 @@ fn action_complement(rest: &str) -> &str {
     rest[end..].trim_start()
 }
 
-fn strip_leading_prepositions(mut complement: &str) -> &str {
+fn strip_complement_fillers(mut complement: &str) -> &str {
     loop {
         let Some(next) = [
-            "at ", "in ", "on ", "into ", "from ", "with ", "for ", "of ",
+            "back ", "ahead ", "along ", "again ", "around ", "at ", "in ", "on ", "into ",
+            "from ", "with ", "for ", "of ", "to ",
         ]
         .iter()
-        .find_map(|preposition| complement.strip_prefix(preposition)) else {
+        .find_map(|filler| complement.strip_prefix(filler)) else {
             return complement;
         };
         complement = next;
     }
 }
 
-fn complement_is_hand_off(complement: &str) -> bool {
+fn complement_head(complement: &str) -> &str {
     let end = complement
         .find(|c: char| !c.is_ascii_alphabetic())
         .unwrap_or(complement.len());
+    &complement[..end]
+}
+
+fn complement_is_person_hand_off(complement: &str) -> bool {
     matches!(
-        &complement[..end],
-        "you" | "your" | "about" | "here" | "if" | "whether" | "when"
+        complement_head(complement),
+        "you" | "your" | "yourself" | "about" | "here" | "if" | "whether" | "when"
+    )
+}
+
+fn complement_is_generic_pronoun(complement: &str) -> bool {
+    matches!(
+        complement_head(complement),
+        "it" | "this" | "that" | "them" | "these" | "those" | "something" | "anything"
     )
 }
 
