@@ -1824,9 +1824,28 @@ async fn set_provider_enabled(
     }
 
     let managed = lookup_provider_managed(&state, &id)?;
-    store
-        .set_provider_enabled(&id, body.enabled, managed)
-        .map_err(|err| ApiError::internal(err.to_string()))?;
+    if managed
+        && !store
+            .provider_overlay_exists(&id)
+            .map_err(|err| ApiError::internal(err.to_string()))?
+    {
+        let mut provider = {
+            let config = state.read_config();
+            configured_provider_entries(&config)
+                .into_iter()
+                .find(|(provider_id, _)| *provider_id == id)
+                .map(|(_, provider)| provider.clone())
+                .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
+        };
+        provider.enabled = body.enabled;
+        store
+            .upsert_provider_overlay(&id, Some(body.enabled), false, true, Some(&provider))
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    } else {
+        store
+            .set_provider_enabled(&id, body.enabled, managed)
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
 
     {
         let mut config = state.write_config();

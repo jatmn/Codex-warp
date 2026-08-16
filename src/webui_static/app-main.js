@@ -1034,7 +1034,9 @@
       await ensureProviderTemplates();
     } catch (e) {
       status(`Error: ${e.message}`);
-      return;
+      // Create needs a template catalog. Edit can still open: a missing
+      // match must be treated as custom, not as a named template.
+      if (!p) return;
     }
     selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");
@@ -1046,7 +1048,7 @@
       templateField.hidden = false;
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
-      const isNamed = matching?.key !== "custom";
+      const isNamed = !!matching && matching.key !== "custom";
       const allowCustomHeaders = !!p.managed;
       templateSelect.value = matching
         ? templateOptionValue(matching)

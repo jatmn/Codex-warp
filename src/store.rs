@@ -39,6 +39,10 @@ const MAX_USAGE_TOKENS_PER_EVENT: i64 = 9_007_199_254_740_991 / MAX_USAGE_EVENTS
 #[derive(Clone)]
 pub(crate) struct Store {
     db: Arc<Mutex<Connection>>,
+    /// Provider ids created or loaded as managed in this process. A missing
+    /// overlay row must not be treated as TOML-backed while this set still
+    /// knows the provider was managed.
+    remembered_managed: Arc<Mutex<BTreeSet<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,6 +277,7 @@ impl Store {
         restrict_sqlite_sidecar_mode(path)?;
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
+            remembered_managed: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -302,6 +307,7 @@ impl Store {
         // its retained model overlays cannot be replayed into that empty slot
         // (or into a later command-line destination override).
         let mut removed_provider_ids = BTreeSet::new();
+        let mut remembered_managed = BTreeSet::new();
         for overlay in overlays {
             if overlay.removed {
                 removed_provider_ids.insert(overlay.provider_id.clone());
@@ -357,6 +363,7 @@ impl Store {
                         provider.enabled = enabled;
                     }
                     set_provider_config(config, &overlay.provider_id, provider);
+                    remembered_managed.insert(overlay.provider_id.clone());
                 } else if let Some(existing) = provider_config_mut(config, &overlay.provider_id) {
                     merge_provider_overlay(existing, &overlay_provider);
                     if let Some(enabled) = overlay.enabled {
@@ -521,6 +528,10 @@ impl Store {
                 }
             }
         }
+        *self
+            .remembered_managed
+            .lock()
+            .expect("sqlite lock poisoned") = remembered_managed;
         Ok(())
     }
 
@@ -572,6 +583,8 @@ impl Store {
                 config_json,
             ],
         )?;
+        drop(db);
+        self.remember_managed(provider_id, managed);
         Ok(())
     }
 
@@ -618,6 +631,8 @@ impl Store {
         match result {
             Ok(()) => {
                 db.execute("COMMIT", [])?;
+                drop(db);
+                self.remember_managed(provider_id, false);
                 Ok(())
             }
             Err(err) => {
@@ -758,6 +773,8 @@ impl Store {
         match result {
             Ok(()) => {
                 db.execute("COMMIT", [])?;
+                drop(db);
+                self.remember_managed(provider_id, true);
                 Ok(())
             }
             Err(err) => {
@@ -1227,9 +1244,53 @@ impl Store {
                 params![provider_id],
                 |row| row.get::<_, i64>(0),
             )
-            .optional()?
-            .unwrap_or(0);
-        Ok(managed != 0)
+            .optional()?;
+        drop(db);
+        match managed {
+            Some(value) => Ok(value != 0),
+            None => Ok(self
+                .remembered_managed
+                .lock()
+                .expect("sqlite lock poisoned")
+                .contains(provider_id)),
+        }
+    }
+
+    pub(crate) fn provider_overlay_exists(&self, provider_id: &str) -> anyhow::Result<bool> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let found: Option<i64> = db
+            .query_row(
+                "SELECT 1 FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    fn remember_managed(&self, provider_id: &str, managed: bool) {
+        let mut ids = self
+            .remembered_managed
+            .lock()
+            .expect("sqlite lock poisoned");
+        if managed {
+            ids.insert(provider_id.to_string());
+        } else {
+            ids.remove(provider_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_delete_overlay_row_keep_memory(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "DELETE FROM provider_overlays WHERE provider_id = ?1",
+            params![provider_id],
+        )?;
+        Ok(())
     }
 }
 

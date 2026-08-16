@@ -488,7 +488,9 @@ rejects the same truncation against the template's bundled env name on
 inline key. Pasting a masked preview (any value containing `•`) is rejected by
 the editor and by `PUT`/`POST` `/api/providers`. Managed overlay databases are
 opened with owner-only permissions (`0600` on Unix) because they may contain
-inline `api_key` values.
+inline `api_key` values. If a managed overlay row disappears while Codex Warp is
+still running, this process still treats that provider as managed so a later
+save or enable toggle cannot rewrite it as TOML-backed and drop the inline key.
 
 CLI overrides:
 

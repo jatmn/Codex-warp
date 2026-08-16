@@ -639,6 +639,14 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "create and edit forms must wait for templates before matching named vs custom"
     );
     assert!(
+        app.contains("const isNamed = !!matching && matching.key !== \"custom\";"),
+        "a missing template match must stay custom, not lock the form as a named template"
+    );
+    assert!(
+        app.contains("if (!p) return;"),
+        "template-load failure must not block editing an existing provider"
+    );
+    assert!(
         app.contains("if (credentialFieldTomlLocked) {\n      return { kind: \"keep\" };"),
         "TOML-backed credential fields must omit patches so inline TOML keys are not cleared"
     );

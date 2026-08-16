@@ -882,6 +882,48 @@ fn set_provider_enabled_refuses_to_insert_non_managed_row_for_managed_provider()
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn missing_overlay_row_stays_managed_for_this_process() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-memory-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("memory.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store
+        .debug_delete_overlay_row_keep_memory("managed")
+        .unwrap();
+    assert!(
+        store.provider_is_managed("managed").unwrap(),
+        "a vanished overlay row must not look TOML-backed in this process"
+    );
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'managed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(json.contains("secret-key"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn store_open_restricts_database_file_mode() {
