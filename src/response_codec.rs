@@ -593,13 +593,13 @@ impl ChatAccum {
                 accum.tool_calls.push(acc);
             }
         }
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+        if let Some(finish_reason) = chat_finish_reason(choice) {
             accum.finish_reason = Some(finish_reason.to_string());
         } else if accum.tool_calls.iter().all(|call| call.name.is_empty()) {
-            // Completed JSON text with omitted or null finish_reason is the
-            // same premature-stop shape as `stop`. Explicit terminal reasons
-            // (`length`, `content_filter`, `tool_calls`) are taken from the
-            // field above and never rewritten.
+            // Completed JSON text with omitted, null, or empty finish_reason
+            // is the same premature-stop shape as `stop`. Explicit terminal
+            // reasons (`length`, `content_filter`, `tool_calls`) are taken
+            // from the field above and never rewritten.
             accum.finish_reason = Some("stop".to_string());
         }
         accum
@@ -617,7 +617,7 @@ impl ChatAccum {
             .unwrap_or_default();
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
-            if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            if let Some(finish_reason) = chat_finish_reason(&choice) {
                 self.finish_reason = Some(finish_reason.to_string());
             }
             if let Some(incoming) = chat_reasoning_text(delta)
@@ -1193,11 +1193,13 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     // 3. Dangling `:`/`...` only when the last sentence still talks about
     //    unfinished speaker work. Delivery frames ("Here is a summary of
     //    remaining work:") are not pauses. Remaining/pending polarity is
-    //    per-cue, not a sentence veto: "No issues remaining:" stays done,
-    //    but "Nothing pending, but I still need to:" still continues.
-    //    Bare `pending` is a status label ("Review pending:",
-    //    "Approval pending:"), not speaker work; speaker pending uses a
-    //    copula ("This is still pending:", "verification is pending:").
+    //    per clause, not a sentence veto: "No issues remaining:" stays
+    //    done, "Nothing pending, but I still need to:" still continues,
+    //    and "Nothing pending, verification is pending:" still continues
+    //    because the copular pending clause is not itself cleared. Bare
+    //    `pending` is a status label ("Review pending:", "Approval
+    //    pending:"), not speaker work; speaker pending uses a copula
+    //    ("This is still pending:", "verification is pending:").
     //    Unfinished headers such as "Tasks remaining:" still continue.
     if contains_work_intent(&normalized) {
         return true;
@@ -1587,6 +1589,20 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
 }
 
 fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
+    last_sentence_clauses(last_sentence).any(clause_has_unfinished_speaker_work)
+}
+
+fn last_sentence_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
+    last_sentence
+        .split(',')
+        .flat_map(|part| part.split(" but "))
+        .flat_map(|part| part.split(" and "))
+        .flat_map(|part| part.split(" yet "))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn clause_has_unfinished_speaker_work(clause: &str) -> bool {
     const SPEAKER_WORK_CUES: [&str; 8] = [
         "still need",
         "still have",
@@ -1597,32 +1613,29 @@ fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
         "follow up",
         "follow-up",
     ];
-    if SPEAKER_WORK_CUES
-        .iter()
-        .any(|cue| last_sentence.contains(cue))
-    {
+    if SPEAKER_WORK_CUES.iter().any(|cue| clause.contains(cue)) {
         return true;
     }
-    if last_sentence_clears_remaining_work(last_sentence) {
+    if clause_clears_remaining_work(clause) {
         return false;
     }
     // Copular pending is speaker status ("this is still pending",
     // "verification is pending"). Bare "pending" is a label on some other
     // actor or process ("review pending", "approval pending", "ci pending").
-    last_sentence.contains("still pending")
-        || last_sentence.contains("is pending")
-        || last_sentence.contains("are pending")
-        || last_sentence.contains("still remaining")
-        || last_sentence.contains("remaining")
+    clause.contains("still pending")
+        || clause.contains("is pending")
+        || clause.contains("are pending")
+        || clause.contains("still remaining")
+        || clause.contains("remaining")
 }
 
-fn last_sentence_clears_remaining_work(last_sentence: &str) -> bool {
-    // Remaining/pending cues mean unfinished speaker work unless the
-    // sentence negates those cues ("No issues remaining:", "nothing pending:").
+fn clause_clears_remaining_work(clause: &str) -> bool {
+    // Remaining/pending cues mean unfinished speaker work unless this
+    // clause negates those cues ("No issues remaining:", "nothing pending:").
     // Do not treat generic "not" as clearance: "not yet" is unfinished.
     ["no ", "none ", "nothing ", "without ", "zero "]
         .iter()
-        .any(|negation| last_sentence.contains(negation))
+        .any(|negation| clause.contains(negation))
 }
 
 fn last_sentence_is_delivery(last_sentence: &str) -> bool {
@@ -1746,6 +1759,14 @@ pub(crate) fn chat_json_to_responses_with_policy(
     })
 }
 
+fn chat_finish_reason(choice: &Value) -> Option<&str> {
+    choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+}
+
 fn chat_message_text(message: &Value) -> String {
     chat_content_text(message.get("content"))
 }
@@ -1753,13 +1774,39 @@ fn chat_message_text(message: &Value) -> String {
 fn chat_content_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(chat_content_part_text)
-            .collect::<Vec<_>>()
-            .join(""),
+        Some(Value::Array(items)) => {
+            let parts = items
+                .iter()
+                .filter_map(chat_content_part_text)
+                .collect::<Vec<_>>();
+            join_chat_content_parts(&parts)
+        }
         _ => String::new(),
     }
+}
+
+fn join_chat_content_parts(parts: &[&str]) -> String {
+    let mut text = String::new();
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        if content_parts_need_separator(&text, part) {
+            text.push(' ');
+        }
+        text.push_str(part);
+    }
+    text
+}
+
+fn content_parts_need_separator(left: &str, right: &str) -> bool {
+    let Some(prev) = left.chars().next_back() else {
+        return false;
+    };
+    let Some(next) = right.chars().next() else {
+        return false;
+    };
+    prev.is_ascii_alphanumeric() && next.is_ascii_alphanumeric()
 }
 
 fn chat_content_part_text(item: &Value) -> Option<&str> {
@@ -1773,6 +1820,8 @@ fn chat_content_part_text(item: &Value) -> Option<&str> {
         return None;
     }
     item.get("text")
+        .or_else(|| item.get("input_text"))
+        .or_else(|| item.get("output_text"))
         .or_else(|| item.get("content"))
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())

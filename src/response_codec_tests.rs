@@ -2264,6 +2264,14 @@ fn continue_guard_cleared_pending_with_still_need_colon_triggers_followup() {
 }
 
 #[test]
+fn continue_guard_cleared_pending_then_copular_pending_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Nothing pending, verification is pending:",
+        "continue-guard-test-cleared-then-copular-pending",
+    ));
+}
+
+#[test]
 fn continue_guard_json_completion_forces_followup_for_mid_task_stop() {
     let value = continue_guard_json(
         "Now let me inspect the tree.",
@@ -2362,6 +2370,130 @@ fn continue_guard_json_array_content_forces_followup() {
         value["output"][0]["content"][0]["text"],
         "Now let me inspect the tree."
     );
+}
+
+#[test]
+fn continue_guard_json_input_text_array_forces_followup() {
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-json-input-text",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "input_text", "input_text": "Now let me inspect the tree."}
+                    ]
+                },
+                "finish_reason": "stop"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+    assert_eq!(value["end_turn"], false);
+    assert_eq!(
+        value["output"][0]["content"][0]["text"],
+        "Now let me inspect the tree."
+    );
+}
+
+#[test]
+fn continue_guard_json_array_parts_without_space_forces_followup() {
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-json-array-glue",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Now let me"},
+                        {"type": "text", "text": "inspect the tree."}
+                    ]
+                },
+                "finish_reason": "stop"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+    assert_eq!(value["end_turn"], false);
+    assert_eq!(
+        value["output"][0]["content"][0]["text"],
+        "Now let me inspect the tree."
+    );
+}
+
+#[test]
+fn continue_guard_json_empty_finish_reason_forces_followup() {
+    let value = continue_guard_json(
+        "Now let me inspect the tree.",
+        "continue-guard-test-json-empty-finish",
+        Some(""),
+        None,
+    );
+    assert_eq!(value["end_turn"], false);
+}
+
+#[test]
+fn continue_guard_stream_array_content_forces_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "content": [
+                    {"type": "text", "text": "Now let me "},
+                    {"type": "text", "text": "inspect the tree."}
+                ]
+            }
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-stream-array",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    assert!(!completed_end_turn(&accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    )));
 }
 
 #[test]

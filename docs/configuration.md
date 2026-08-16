@@ -244,7 +244,7 @@ Modes:
 The guard applies to chat-completions responses, both SSE streams and
 non-stream JSON, that finish with
 `finish_reason = "stop"` (text-only JSON completions that omit
-`finish_reason` are treated the same), emit no tool call, and end with continuation phrasing
+`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` when the next action is a known
 work verb or an unlisted verb with a concrete object such as `I'll clone the
 repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
@@ -255,7 +255,9 @@ speaker work, not a delivery frame such as `Here is a summary of remaining
 work:`). Status copulas such as `This is still pending:` and bare unfinished
 headers such as `Tasks remaining:` still continue. Cleared remaining polarity
 (`No issues remaining:`) stays `end_turn = true` unless a later unfinished
-speaker cue is still present (`Nothing pending, but I still need to:`). Bare
+speaker cue is still present (`Nothing pending, but I still need to:`) or a
+later clause still has speaker pending (`Nothing pending, verification is
+pending:`). Bare
 `pending` is a status label on some other actor or process
 (`Approval pending:`, `Review pending:`, `CI pending:`) and stays
 `end_turn = true`. Complement particles such as `back` and `up` are
