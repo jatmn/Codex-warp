@@ -658,11 +658,21 @@
       (model) => model.points[idx] && (model.points[idx][metric] || 0) > 0,
     );
     const shown = present.slice(0, 12);
+    // `present` is the true bucket occupancy. `rows` is a display cap (12),
+    // so live-region overflow must use this count — not rows.length — or a
+    // spoken cap of 4 under-reports by (present - 12) when the tooltip
+    // already overflowed.
     if (!shown.length) {
-      return { title, rows: [], note: `No ${metric} in this bucket` };
+      return {
+        title,
+        rows: [],
+        present: 0,
+        note: `No ${metric} in this bucket`,
+      };
     }
     return {
       title,
+      present: present.length,
       rows: shown.map((model) => ({
         key: model.model,
         value: model.points[idx][metric],
@@ -686,13 +696,15 @@
       typeof formatValue === "function" ? formatValue : (value) => String(value);
     const rows = payload.rows || [];
     const shown = rows.slice(0, cap);
-    const extra = rows.length - shown.length;
+    const present = Number.isFinite(Number(payload.present))
+      ? Math.max(0, Number(payload.present))
+      : rows.length;
+    const extra = Math.max(0, present - shown.length);
     const parts = shown.map((row) => `${row.key} ${format(row.value)}`);
     if (extra > 0) parts.push(`+${extra} more models`);
-    if (payload.note && !shown.length) {
+    if (!shown.length) {
       return `${payload.title}: no ${metric}`;
     }
-    if (payload.note && extra <= 0) parts.push(payload.note);
     if (!parts.length) return `${payload.title}: no ${metric}`;
     return `${payload.title}: ${parts.join(", ")}`;
   }

@@ -666,10 +666,12 @@ check("modelTooltipPayload lists only active models and uses colorKey identity",
     { key: "beta", value: 2, colorKey: "beta", colorKind: "model" },
   ]);
   assert.equal(empty.note, null);
+  assert.equal(empty.present, 1);
   const gap = charts.modelTooltipPayload(models, 1, "11:00", "prompts");
   assert.deepEqual(gap.rows, [
     { key: "alpha", value: 3, colorKey: "alpha", colorKind: "model" },
   ]);
+  assert.equal(gap.present, 1);
   const none = charts.modelTooltipPayload(
     [
       { model: "alpha", points: [{ prompts: 0 }] },
@@ -680,6 +682,7 @@ check("modelTooltipPayload lists only active models and uses colorKey identity",
     "sessions",
   );
   assert.deepEqual(none.rows, []);
+  assert.equal(none.present, 0);
   assert.equal(none.note, "No sessions in this bucket");
   assert.equal(charts.modelTooltipPayload([], 0, "x", "prompts"), null);
 });
@@ -714,8 +717,22 @@ check("modelTooltipPayload caps listed models and reports overflow", () => {
   }
   const payload = charts.modelTooltipPayload(models, 0, "now", "prompts");
   assert.equal(payload.rows.length, 12);
+  assert.equal(payload.present, 14);
   assert.equal(payload.note, "+2 more models");
   assert.equal(payload.rows[0].colorKey, "m0");
+});
+
+check("modelTooltipSummary overflow uses present count, not capped rows", () => {
+  const models = [];
+  for (let i = 0; i < 14; i += 1) {
+    models.push({ model: `m${i}`, points: [{ prompts: i + 1 }] });
+  }
+  const payload = charts.modelTooltipPayload(models, 0, "10:00", "prompts");
+  // Spoken cap 4 of 14 present: +10, not +8 (12 capped rows - 4).
+  assert.equal(
+    charts.modelTooltipSummary(payload, "prompts", (value) => String(value), 4),
+    "10:00: m0 1, m1 2, m2 3, m3 4, +10 more models",
+  );
 });
 
 check("pieTooltipPayload is data, not HTML, and rounds share to one decimal", () => {
