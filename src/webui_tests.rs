@@ -835,6 +835,8 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
         "...(hasCached ? [[\"Cached tokens\", point.cached_tokens || 0, colors.cached]] : [])"
     ));
     assert!(app.contains("Charts.layoutLegendChips("));
+    assert!(app.contains("chip.labelX"));
+    assert!(app.contains("ctx.measureText(\"tokens\").width"));
     // Keyboard help copy lists the fields each bucket reports in tooltip order.
     assert!(index.contains(
         "total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions"

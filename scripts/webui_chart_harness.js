@@ -84,25 +84,38 @@ check("layoutLegendChips keeps every series within two rows", () => {
     ["Prompts", "p"],
     ["Sessions", "s"],
   ];
+  const style = charts.legendChipChrome();
   const rowWidth = (row, gap = 6) =>
     row.reduce((sum, chip, i) => sum + chip.width + (i ? gap : 0), 0);
+  const assertPaintable = (chip) => {
+    assert.ok(chip.width + 1e-6 >= style.minChip);
+    assert.equal(chip.pad, style.pad);
+    assert.equal(chip.swatch, style.swatch);
+    assert.equal(chip.labelX, style.labelX);
+    if (chip.label) {
+      assert.ok(chip.width + 1e-6 >= chip.labelX + measure(chip.label));
+    }
+  };
   const wide = charts.layoutLegendChips(items, measure, 800, { maxRows: 2 });
   assert.equal(wide.rows.length, 1);
   assert.equal(wide.rows[0].length, 4);
   assert.equal(wide.rows[0][1].label, "Cached tokens");
   assert.ok(rowWidth(wide.rows[0]) <= 800);
+  wide.rows.flat().forEach(assertPaintable);
   const narrow = charts.layoutLegendChips(items, measure, 80, { maxRows: 2 });
   assert.ok(narrow.rows.length >= 1);
   assert.ok(narrow.rows.length <= 2);
   assert.equal(narrow.rows.flat().length, 4);
   assert.equal(narrow.rows.flat().map((chip) => chip.color).join(""), "tcps");
   for (const row of narrow.rows) assert.ok(rowWidth(row) <= 80 + 1e-6);
+  narrow.rows.flat().forEach(assertPaintable);
   const tiny = charts.layoutLegendChips(items, measure, 20, { maxRows: 2 });
   assert.ok(tiny.rows.length <= 2);
   assert.equal(tiny.rows.flat().length, 4);
-  for (const row of tiny.rows) assert.ok(rowWidth(row) <= 20 + 1e-6);
+  tiny.rows.flat().forEach(assertPaintable);
   const emptyBudget = charts.layoutLegendChips(items, measure, 0, { maxRows: 2 });
   assert.equal(emptyBudget.rows.flat().length, 4);
+  emptyBudget.rows.flat().forEach(assertPaintable);
 });
 
 check("barSlotLayout keeps a drawable slot when gaps would overflow", () => {

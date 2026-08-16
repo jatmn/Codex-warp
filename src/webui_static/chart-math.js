@@ -130,14 +130,30 @@
   }
 
   // Pack legend chips into a bounded number of rows in the top padding band.
-  // Wrap-first packing either ate the plot (one chip per row) or dropped a
-  // drawn series when the row budget was smaller than a chip. Fit labels into
-  // at most maxRows, shrinking text (then chrome) so every series keeps an
-  // entry. Only a budget too small for a single swatch is allowed to overflow.
+  // Layout and paint share this chrome: pad + swatch + label gap + right pad.
+  // Never shrink a chip below the swatch box; ellipsize (then drop) labels
+  // instead. Overflow is allowed only when even two rows of swatch-only chips
+  // cannot fit the budget.
+  function legendChipChrome(options) {
+    const pad = options && options.pad != null ? Number(options.pad) : 4;
+    const swatch = options && options.swatch != null ? Number(options.swatch) : 8;
+    const labelGap = options && options.labelGap != null ? Number(options.labelGap) : 4;
+    const rightPad = options && options.rightPad != null ? Number(options.rightPad) : 6;
+    const labelX = pad + swatch + labelGap;
+    return {
+      pad,
+      swatch,
+      labelGap,
+      rightPad,
+      labelX,
+      chrome: labelX + rightPad,
+      minChip: pad + swatch + pad,
+    };
+  }
+
   function layoutLegendChips(items, measureText, rowBudget, options) {
     const gap = options && options.gap != null ? Number(options.gap) : 6;
-    const chrome = options && options.chrome != null ? Number(options.chrome) : 22;
-    const minChip = options && options.minChip != null ? Number(options.minChip) : 16;
+    const style = legendChipChrome(options);
     const maxRows = Math.max(1, options && options.maxRows != null ? Number(options.maxRows) : 2);
     const budget = Number(rowBudget);
     const list = (items || []).map((item) => {
@@ -150,13 +166,13 @@
       return Number.isFinite(width) && width > 0 ? width : 0;
     };
     const finiteBudget = Number.isFinite(budget) ? budget : 0;
-    const chipWidth = (label, chromeW, minW) =>
-      Math.max(minW, chromeW + measure(label || ""));
-    const rowPixelWidth = (labels, chromeW, minW) =>
-      labels.reduce(
-        (sum, label, i) => sum + chipWidth(label, chromeW, minW) + (i ? gap : 0),
-        0,
-      );
+    const chipWidth = (label) => {
+      const text = label || "";
+      if (!text) return style.minChip;
+      return Math.max(style.minChip, style.chrome + measure(text));
+    };
+    const rowPixelWidth = (labels) =>
+      labels.reduce((sum, label, i) => sum + chipWidth(label) + (i ? gap : 0), 0);
 
     function splitRows(source, rowCount) {
       const rows = [];
@@ -172,7 +188,7 @@
     function ellipsize(labels) {
       const out = labels.map((label) => String(label || ""));
       let guard = 0;
-      while (rowPixelWidth(out, chrome, minChip) > finiteBudget && guard++ < 400) {
+      while (rowPixelWidth(out) > finiteBudget && guard++ < 400) {
         let idx = 0;
         for (let i = 1; i < out.length; i++) {
           const a = out[i].replace(/…$/u, "");
@@ -187,35 +203,22 @@
       return out;
     }
 
-    function widthsFor(labels, chromeW, minW) {
-      return labels.map((label) => chipWidth(label, chromeW, minW));
-    }
-
-    function totalWidth(ws) {
-      return ws.reduce((sum, width, i) => sum + width + (i ? gap : 0), 0);
-    }
-
     function fitLabels(labels, allowOverflow) {
       const out = ellipsize(labels);
-      let chromeW = chrome;
-      let minW = minChip;
-      let ws = widthsFor(out, chromeW, minW);
-      while (totalWidth(ws) > finiteBudget && chromeW > 0) {
-        chromeW -= 1;
-        minW = Math.min(minW, Math.max(1, chromeW));
-        ws = widthsFor(out, chromeW, minW);
-      }
-      if (totalWidth(ws) > finiteBudget && finiteBudget > 0 && out.length) {
-        const gapTotal = gap * Math.max(0, out.length - 1);
-        const available = Math.max(0, finiteBudget - gapTotal);
-        const naturalSum = ws.reduce((sum, width) => sum + width, 0);
-        ws =
-          naturalSum > 0
-            ? ws.map((width) => (width / naturalSum) * available)
-            : ws.map(() => available / out.length);
-      }
-      if (!allowOverflow && totalWidth(ws) > finiteBudget) return null;
-      return out.map((label, i) => ({ label, width: ws[i] }));
+      const total = rowPixelWidth(out);
+      if (!allowOverflow && total > finiteBudget) return null;
+      return out.map((label) => ({ label, width: chipWidth(label) }));
+    }
+
+    function toChips(group, fitted) {
+      return fitted.map((chip, i) => ({
+        label: chip.label,
+        color: group[i].color,
+        width: chip.width,
+        pad: style.pad,
+        swatch: style.swatch,
+        labelX: style.labelX,
+      }));
     }
 
     function pack(rowCount, allowOverflow) {
@@ -227,24 +230,18 @@
           allowOverflow,
         );
         if (!fitted) return null;
-        packed.push(
-          fitted.map((chip, i) => ({
-            label: chip.label,
-            color: group[i].color,
-            width: chip.width,
-          })),
-        );
+        packed.push(toChips(group, fitted));
       }
       return packed;
     }
 
-    if (!list.length) return { rows: [] };
+    if (!list.length) return { rows: [], style };
     const capped = Math.min(maxRows, list.length);
     for (let rowCount = 1; rowCount <= capped; rowCount++) {
       const packed = pack(rowCount, false);
-      if (packed) return { rows: packed };
+      if (packed) return { rows: packed, style };
     }
-    return { rows: pack(capped, true) || [] };
+    return { rows: pack(capped, true) || [], style };
   }
 
   // Gap is a remainder of each slot, never an independent cost that can consume
@@ -502,6 +499,7 @@
     canvasCssWidth,
     fitCanvasMetrics,
     layoutChartPlot,
+    legendChipChrome,
     layoutLegendChips,
     barSlotLayout,
     barPaintRect,

@@ -1429,14 +1429,18 @@
       padT: 30,
       padB: 26,
     });
-    const legendStartX = baseLayout.padL + 24;
+    // Axis titles sit in this same top band, centered on each axis x. Start
+    // the legend after the measured "tokens" title so the two cannot overlap.
+    const titleHalf = ctx.measureText("tokens").width / 2;
+    const legendStartX = baseLayout.padL + titleHalf + legendGap;
     const legendBudget = w - baseLayout.padR - legendStartX;
-    const legendRows = Charts.layoutLegendChips(
+    const legendLayout = Charts.layoutLegendChips(
       legendItems,
       (text) => ctx.measureText(text).width,
       legendBudget,
       { gap: legendGap, maxRows: 2 },
-    ).rows;
+    );
+    const legendRows = legendLayout.rows;
 
     const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
       padL: wantL,
@@ -1563,15 +1567,22 @@
       let lx = legendStartX;
       const ly = 6 + rowIndex * 24;
       for (const chip of chips) {
+        const pad = chip.pad != null ? chip.pad : 4;
+        const swatch = chip.swatch != null ? chip.swatch : 8;
+        const labelX = chip.labelX != null ? chip.labelX : pad + swatch + 4;
         ctx.fillStyle = colors.surface;
         ctx.strokeStyle = colors.grid;
         ctx.fillRect(lx, ly, chip.width, 16);
         ctx.strokeRect(lx, ly, chip.width, 16);
-        ctx.fillStyle = chip.color;
-        ctx.fillRect(lx + 4, ly + 4, 8, 8);
+        if (chip.width >= pad + swatch) {
+          ctx.fillStyle = chip.color;
+          ctx.fillRect(lx + pad, ly + pad, swatch, swatch);
+        }
         ctx.fillStyle = colors.text;
         ctx.textAlign = "left";
-        if (chip.label) ctx.fillText(chip.label, lx + 16, ly + 8);
+        if (chip.label && chip.width >= labelX) {
+          ctx.fillText(chip.label, lx + labelX, ly + 8);
+        }
         lx += chip.width + legendGap;
       }
     });
