@@ -155,12 +155,16 @@
             API key or environment variable
             <input name="api_key_env" type="text" placeholder="PROVIDER_API_KEY or sk-…" autocomplete="off" spellcheck="false">
           </label>
-          <p class="hint muted">
+          <p class="hint muted" id="provider-credential-hint">
             Paste an API key or an environment variable name such as <code>PROVIDER_API_KEY</code>.
             Credentials are saved with the provider. Environment variable names stay visible.
             Saved API keys show the first and last characters only; the full key is shown while you type a new one.
-            Clearing an environment variable name removes stored credentials. Leave a saved key unchanged to keep it.
+            Clearing an environment variable name or using Clear saved credentials removes stored credentials.
+            Leave a saved key unchanged to keep it.
           </p>
+          <button type="button" class="btn small" id="provider-clear-credentials" hidden>
+            Clear saved credentials
+          </button>
           <div id="provider-headers" class="provider-headers">
             <div class="provider-headers-head">
               <span>Custom headers</span>

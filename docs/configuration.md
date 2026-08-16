@@ -469,9 +469,9 @@ overlays still strip `api_key` and headers, and ignore Web UI `headers` and
 credential patches. For a TOML-backed provider, `api_key` and `api_key_env`
 remain TOML-owned: the Web UI cannot set or clear them, so a later TOML
 credential rotation cannot be overwritten by an old SQLite snapshot. In the Web
-UI editor, clearing an environment variable name sends JSON `null` for both
-credential fields; leaving a masked saved key unchanged omits the fields and
-keeps the stored secret.
+UI editor, clearing an environment variable name or using Clear saved credentials
+sends JSON `null` for both credential fields; leaving a masked saved key unchanged
+omits the fields and keeps the stored secret.
 
 CLI overrides:
 

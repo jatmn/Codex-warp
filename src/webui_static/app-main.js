@@ -485,6 +485,8 @@
   const providerHeadersRows = $("#provider-headers-rows");
   const addProviderHeaderBtn = $("#provider-headers-add");
 
+  const clearCredentialsBtn = $("#provider-clear-credentials");
+
   function looksLikeEnvVarName(value) {
     if (!value) return false;
     if (!/^[A-Z_][A-Z0-9_]*$/.test(value)) return false;
@@ -521,7 +523,7 @@
 
   function credentialPatch() {
     const draft = String(credentialState.draft || "").trim();
-    if (draft.includes("•")) {
+    if (draft && credentialState.preview && draft === credentialState.preview) {
       return { kind: "keep" };
     }
     if (draft) {
@@ -556,6 +558,22 @@
     renderCredentialInput();
   }
 
+  function setClearCredentialsVisible(visible) {
+    if (clearCredentialsBtn) {
+      clearCredentialsBtn.hidden = !visible;
+    }
+  }
+
+  if (clearCredentialsBtn) {
+    clearCredentialsBtn.addEventListener("click", () => {
+      credentialState.draft = "";
+      credentialState.preview = "";
+      credentialState.hadEnv = true;
+      credentialState.reveal = false;
+      renderCredentialInput();
+      apiKeyInput.focus();
+    });
+  }
   apiKeyInput.addEventListener("focus", () => {
     if (apiKeyInput.readOnly) return;
     const draft = credentialState.draft || "";
@@ -914,6 +932,9 @@
       apiKeyInput.placeholder = p.api_key_env
         ? "PROVIDER_API_KEY"
         : (p.has_inline_api_key ? "Saved API key" : "PROVIDER_API_KEY or sk-…");
+      setClearCredentialsVisible(
+        p.managed && !!(p.api_key_env || p.has_inline_api_key),
+      );
     } else {
       providerForm.reset();
       providerIdInput.value = "";
@@ -922,6 +943,7 @@
       apiKeyInput.title = "";
       apiKeyInput.placeholder = "PROVIDER_API_KEY or sk-…";
       setCredentialInput("");
+      setClearCredentialsVisible(false);
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add provider";
       templateField.hidden = false;

@@ -1322,6 +1322,7 @@ fn provider_form_matches_credential_and_header_ownership() {
     let index = include_str!("webui_static/index.html");
     assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
     assert!(index.contains("API key or environment variable"));
+    assert!(index.contains("Clear saved credentials"));
     assert!(!index.contains("Remove the in-process API key"));
     assert!(!index.contains("used only until Codex Warp restarts"));
     assert!(index.contains("name=\"api_key_env\" type=\"text\""));
