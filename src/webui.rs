@@ -378,9 +378,10 @@ struct ProviderPersist {
     enabled: Option<bool>,
     #[serde(default)]
     api_key_env: OptionalPatch<String>,
-    api_key: Option<String>,
     #[serde(default)]
-    headers: Option<BTreeMap<String, String>>,
+    api_key: OptionalPatch<String>,
+    #[serde(default)]
+    headers: OptionalPatch<BTreeMap<String, String>>,
     auth_header: Option<String>,
     auth_scheme: Option<String>,
     responses_path: Option<String>,
@@ -1046,10 +1047,8 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     {
         return Err(ApiError::bad_request("base_url cannot be empty"));
     }
-    let has_api_key = fields
-        .api_key
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty());
+    let has_api_key =
+        matches!(&fields.api_key, OptionalPatch::Set(value) if !value.trim().is_empty());
     let has_api_key_env =
         matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
     if has_api_key && has_api_key_env {
@@ -1071,17 +1070,22 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
                 // unset name into inline `api_key`; overlays never persist that.
                 *raw = trimmed.to_string();
             } else {
-                fields.api_key = Some(trimmed.to_string());
+                fields.api_key = OptionalPatch::Set(trimmed.to_string());
                 fields.api_key_env = OptionalPatch::Absent;
             }
         }
         OptionalPatch::Clear | OptionalPatch::Absent => {}
     }
-    if let Some(api_key) = fields.api_key.as_mut() {
-        *api_key = api_key.trim().to_string();
-        if api_key.trim().is_empty() {
-            fields.api_key = None;
+    match &mut fields.api_key {
+        OptionalPatch::Set(api_key) => {
+            let trimmed = api_key.trim();
+            if trimmed.is_empty() {
+                fields.api_key = OptionalPatch::Clear;
+            } else {
+                *api_key = trimmed.to_string();
+            }
         }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
     }
 }
 
@@ -1248,29 +1252,7 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(enabled) = fields.enabled {
         provider.enabled = enabled;
     }
-    match &fields.api_key_env {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => provider.api_key_env = None,
-        OptionalPatch::Set(api_key_env) => {
-            let trimmed = api_key_env.trim();
-            provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
-            if provider.api_key_env.is_some() {
-                provider.api_key = None;
-            }
-        }
-    }
-    if let Some(api_key) = fields
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        provider.api_key = Some(api_key.to_string());
-        provider.api_key_env = None;
-    }
-    if let Some(headers) = &fields.headers {
-        provider.headers = headers.clone();
-    }
+    apply_named_template_credentials(provider, fields);
     if let Some(auth_header) = &fields.auth_header {
         provider.auth_header = auth_header.clone();
     }
@@ -1288,6 +1270,40 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     }
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
+    }
+}
+
+/// Named templates keep bundled endpoint/auth paths. Credentials and extra
+/// headers are operator-owned on the managed overlay created from the template.
+fn apply_named_template_credentials(provider: &mut ProviderConfig, fields: &ProviderPersist) {
+    match &fields.api_key_env {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.api_key_env = None,
+        OptionalPatch::Set(api_key_env) => {
+            let trimmed = api_key_env.trim();
+            provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
+            if provider.api_key_env.is_some() {
+                provider.api_key = None;
+            }
+        }
+    }
+    match &fields.api_key {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.api_key = None,
+        OptionalPatch::Set(api_key) => {
+            let trimmed = api_key.trim();
+            if trimmed.is_empty() {
+                provider.api_key = None;
+            } else {
+                provider.api_key = Some(trimmed.to_string());
+                provider.api_key_env = None;
+            }
+        }
+    }
+    match &fields.headers {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.headers.clear(),
+        OptionalPatch::Set(headers) => provider.headers = headers.clone(),
     }
 }
 
@@ -1445,25 +1461,7 @@ async fn create_provider(
             }
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
-            if let Some(api_key) = fields
-                .api_key
-                .as_ref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                provider.api_key = Some(api_key.clone());
-                provider.api_key_env = None;
-            }
-            match &fields.api_key_env {
-                OptionalPatch::Absent => {}
-                OptionalPatch::Clear => provider.api_key_env = None,
-                OptionalPatch::Set(api_key_env) => {
-                    let trimmed = api_key_env.trim();
-                    provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
-                    if provider.api_key_env.is_some() {
-                        provider.api_key = None;
-                    }
-                }
-            }
+            apply_named_template_credentials(&mut provider, &fields);
             (id, provider)
         }
     } else {
@@ -1549,7 +1547,7 @@ async fn update_provider(
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);
     if !managed {
-        fields.headers = None;
+        fields.headers = OptionalPatch::Absent;
     }
 
     let (snapshot, previous_enabled, refresh_discovery) = {

@@ -76,8 +76,8 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Absent,
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -103,8 +103,8 @@ fn provider_persist_null_clears_optional_name_and_api_key_env() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Clear,
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -131,6 +131,8 @@ fn provider_persist_deserializes_omitted_as_absent() {
         serde_json::from_str(r#"{"base_url":"https://x"}"#).expect("deserialize");
     assert_eq!(fields.name, OptionalPatch::Absent);
     assert_eq!(fields.api_key_env, OptionalPatch::Absent);
+    assert_eq!(fields.api_key, OptionalPatch::Absent);
+    assert_eq!(fields.headers, OptionalPatch::Absent);
     assert_eq!(fields.base_url.as_deref(), Some("https://x"));
 }
 
@@ -242,8 +244,8 @@ fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set("OPENAI_API_KEY".into()),
-        api_key: Some("secret".into()),
-        headers: None,
+        api_key: OptionalPatch::Set("secret".into()),
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -263,8 +265,8 @@ fn validate_provider_persist_rejects_empty_base_url() {
         base_url: Some("   ".into()),
         enabled: None,
         api_key_env: OptionalPatch::Absent,
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -288,8 +290,8 @@ fn normalize_provider_api_key_fields_keeps_unset_env_name() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set(NAME.to_string()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -300,7 +302,7 @@ fn normalize_provider_api_key_fields_keeps_unset_env_name() {
 
     normalize_provider_api_key_fields(&mut fields);
 
-    assert!(fields.api_key.is_none());
+    assert!(matches!(fields.api_key, OptionalPatch::Absent));
     assert_eq!(fields.api_key_env, OptionalPatch::Set(NAME.to_string()));
 }
 
@@ -311,8 +313,8 @@ fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -323,7 +325,10 @@ fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
 
     normalize_provider_api_key_fields(&mut fields);
 
-    assert_eq!(fields.api_key.as_deref(), Some("sk-live-not-an-env"));
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk-live-not-an-env".into())
+    );
     assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
@@ -334,8 +339,8 @@ fn normalize_provider_api_key_fields_treats_underscore_secret_as_api_key() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set("sk_live_not_an_env".into()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -346,7 +351,10 @@ fn normalize_provider_api_key_fields_treats_underscore_secret_as_api_key() {
 
     normalize_provider_api_key_fields(&mut fields);
 
-    assert_eq!(fields.api_key.as_deref(), Some("sk_live_not_an_env"));
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk_live_not_an_env".into())
+    );
     assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
@@ -357,8 +365,8 @@ fn normalize_provider_api_key_fields_treats_uppercase_token_without_underscore_a
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -369,7 +377,10 @@ fn normalize_provider_api_key_fields_treats_uppercase_token_without_underscore_a
 
     normalize_provider_api_key_fields(&mut fields);
 
-    assert_eq!(fields.api_key.as_deref(), Some("AKIAIOSFODNN7EXAMPLE"));
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into())
+    );
     assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
@@ -421,8 +432,8 @@ fn apply_provider_persist_clears_opposite_credential() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Set("NEW_KEY".into()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -439,8 +450,8 @@ fn apply_provider_persist_clears_opposite_credential() {
         base_url: None,
         enabled: None,
         api_key_env: OptionalPatch::Absent,
-        api_key: Some("sk-live-not-an-env".into()),
-        headers: None,
+        api_key: OptionalPatch::Set("sk-live-not-an-env".into()),
+        headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -451,6 +462,77 @@ fn apply_provider_persist_clears_opposite_credential() {
     inline_fields.apply_to(&mut provider);
     assert_eq!(provider.api_key.as_deref(), Some("sk-live-not-an-env"));
     assert!(provider.api_key_env.is_none());
+}
+
+#[test]
+fn apply_provider_persist_null_clears_inline_api_key_and_headers() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        ..ProviderConfig::default()
+    };
+    provider
+        .headers
+        .insert("X-Test".into(), "secret-header".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Clear,
+        headers: OptionalPatch::Clear,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    fields.apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert!(provider.headers.is_empty());
+}
+
+#[test]
+fn provider_persist_deserializes_null_api_key_and_headers_as_clear() {
+    let fields: ProviderPersist =
+        serde_json::from_str(r#"{"api_key":null,"headers":null}"#).expect("deserialize");
+    assert_eq!(fields.api_key, OptionalPatch::Clear);
+    assert_eq!(fields.headers, OptionalPatch::Clear);
+}
+
+#[test]
+fn named_template_credentials_apply_headers_without_replacing_catalog() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    assert!(
+        !template.provider.model_catalog.is_empty(),
+        "bundled named templates ship a catalog"
+    );
+    let mut provider = template.provider;
+    let catalog_len = provider.model_catalog.len();
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Test".into(), "1".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: Some("https://should-not-apply.example/v1".into()),
+        enabled: None,
+        api_key_env: OptionalPatch::Set("OPENCODE_GO_API_KEY".into()),
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers.clone()),
+        auth_header: Some("x-should-not-apply".into()),
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    apply_named_template_credentials(&mut provider, &fields);
+    assert_eq!(provider.model_catalog.len(), catalog_len);
+    assert_eq!(
+        provider.headers.get("X-Test").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(provider.api_key_env.as_deref(), Some("OPENCODE_GO_API_KEY"));
+    assert_ne!(provider.auth_header, "x-should-not-apply");
 }
 
 #[test]
@@ -1325,8 +1407,8 @@ fn discovery_settings_changed_detects_credential_request_edits() {
         base_url: Some("https://example.test/v1".into()),
         enabled: Some(true),
         api_key_env: OptionalPatch::Set("NEW_KEY".into()),
-        api_key: None,
-        headers: None,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
         auth_header: Some("authorization".into()),
         auth_scheme: Some("Bearer".into()),
         responses_path: Some("/responses".into()),

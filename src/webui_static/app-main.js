@@ -499,11 +499,16 @@
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
     const apiKeyInputValue = String(apiKeyInput.value || "").trim();
+    const clearInlineApiKey = !!providerForm.querySelector("[name=clear_inline_api_key]")?.checked;
     const keepInlineApiKey =
-      mode === "edit" && providerForm.dataset.hasInlineApiKey === "true" && !apiKeyInputValue;
+      mode === "edit"
+      && providerForm.dataset.hasInlineApiKey === "true"
+      && !apiKeyInputValue
+      && !clearInlineApiKey;
     const body = {
       base_url: String(fd.get("base_url") || "").trim(),
       api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
+      ...(clearInlineApiKey && !apiKeyInputValue ? { api_key: null } : {}),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -513,8 +518,8 @@
       model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
     };
-    const headers = collectProviderHeadersFromForm(mode);
     try {
+      const headers = collectProviderHeadersFromForm(mode);
       if (mode === "create") {
         const isCustom = !template || template.key === "custom";
         const payload = isCustom
@@ -530,6 +535,7 @@
               id: template.id,
               api_key_env: body.api_key_env,
               enabled: body.enabled,
+              ...(headers ? { headers } : {}),
             };
         const created = await api("/providers", {
           method: "POST",
@@ -546,6 +552,7 @@
           body: JSON.stringify({
             base_url: body.base_url,
             api_key_env: body.api_key_env,
+            ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
             auth_header: body.auth_header,
             auth_scheme: body.auth_scheme,
             responses_path: body.responses_path,
@@ -610,6 +617,9 @@
       const key = String(rawName.value || "").trim();
       if (!key) {
         continue;
+      }
+      if (Object.hasOwn(headers, key)) {
+        throw new Error(`Duplicate custom header "${key}"`);
       }
       headers[key] = String(rawValue.value || "");
     }
@@ -699,7 +709,6 @@
       });
     providerForm.querySelector("[name=model_catalog_only]").disabled = isNamed;
     idInput.readOnly = true;
-    setCustomHeadersMode(!isNamed);
   }
 
   function applySelectedTemplate() {
@@ -710,6 +719,7 @@
       templateDescription.textContent = "";
       renderCatalogPreview([]);
       setNamedTemplateMode(false);
+      setCustomHeadersMode(true);
       return;
     }
     const isNamed = template.key !== "custom";
@@ -731,6 +741,7 @@
     providerForm.querySelector("[name=model_catalog_only]").checked = !!template.model_catalog_only;
     providerForm.querySelector("[name=enabled]").checked = true;
     setNamedTemplateMode(isNamed);
+    setCustomHeadersMode(true);
     renderCatalogPreview(selectedTemplateCatalog);
     providerForm.querySelector("[name=api_key_env]").focus();
   }
@@ -755,7 +766,7 @@
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
       const isNamed = matching?.key !== "custom";
-      const allowCustomHeaders = !!p.managed && !isNamed;
+      const allowCustomHeaders = !!p.managed;
       templateSelect.value = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
@@ -796,6 +807,14 @@
       apiKeyInput.placeholder = p.has_api_key && !p.api_key_env
         ? "Configured for this process"
         : "PROVIDER_API_KEY";
+      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
+      const clearInlineRow = $("#provider-clear-inline-key");
+      if (clearInline) {
+        clearInline.checked = false;
+      }
+      if (clearInlineRow) {
+        clearInlineRow.hidden = !(p.has_api_key && !p.api_key_env);
+      }
       providerForm.dataset.hasInlineApiKey =
         p.has_api_key && !p.api_key_env ? "true" : "false";
       if (isNamed) {
@@ -809,6 +828,14 @@
       providerForm.querySelector("[name=api_key_env]").title = "";
       providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
       providerForm.dataset.hasInlineApiKey = "false";
+      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
+      const clearInlineRow = $("#provider-clear-inline-key");
+      if (clearInline) {
+        clearInline.checked = false;
+      }
+      if (clearInlineRow) {
+        clearInlineRow.hidden = true;
+      }
       providerForm.dataset.mode = "create";
       $("#provider-form-title").textContent = "Add from example template";
       templateField.hidden = false;

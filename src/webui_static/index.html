@@ -157,6 +157,17 @@
           <p class="hint muted">
             Enter an environment variable name (for example <code>PROVIDER_API_KEY</code>) to persist credentials across restart. A raw API key is used only until Codex Warp restarts.
           </p>
+          <label id="provider-clear-inline-key" class="checkbox-row" hidden>
+            <input type="checkbox" name="clear_inline_api_key">
+            Remove the in-process API key
+          </label>
+          <div id="provider-headers" class="provider-headers">
+            <div class="provider-headers-head">
+              <span>Custom headers</span>
+              <button type="button" class="btn small" id="provider-headers-add">Add header</button>
+            </div>
+            <div id="provider-headers-rows"></div>
+          </div>
           <details id="provider-advanced">
             <summary>Advanced paths</summary>
             <label>Auth header <input name="auth_header" value="authorization"></label>
@@ -164,13 +175,6 @@
             <label>Responses path <input name="responses_path" value="/responses"></label>
             <label>Chat completions path <input name="chat_completions_path" value="/chat/completions"></label>
             <label>Models path <input name="models_path" value="/models"></label>
-            <div id="provider-headers" class="provider-headers">
-              <div class="provider-headers-head">
-                <span>Custom headers</span>
-                <button type="button" class="btn small" id="provider-headers-add">Add header</button>
-              </div>
-              <div id="provider-headers-rows"></div>
-            </div>
             <label class="checkbox-row">
               <input type="checkbox" name="model_catalog_only">
               Catalog only (skip upstream /models)
