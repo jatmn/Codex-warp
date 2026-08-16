@@ -505,6 +505,31 @@ fn javascript_credential_helpers_stay_in_sync_with_rust() {
 }
 
 #[test]
+fn javascript_credential_state_machine_locks_inline_keys() {
+    let app = include_str!("webui_static/app-main.js");
+    assert!(
+        app.contains("loadedKind: \"none\""),
+        "form open class must be stored separately from the current draft"
+    );
+    assert!(
+        app.contains("if (isInlineKeyLocked()) {\n      return { kind: \"keep\" };"),
+        "masked inline keys must keep until an explicit clear/replace"
+    );
+    assert!(
+        app.contains("loaded.startsWith(current)"),
+        "env-name edits that only drop characters must not become inline secrets"
+    );
+    assert!(
+        app.contains("That value looks like a shortened environment variable name"),
+        "truncated env names must fail closed instead of reclassifying as api_key"
+    );
+    assert!(
+        !app.contains("if (credentialState.preview) {\n      apiKeyInput.value = \"\";"),
+        "focus must not empty a masked inline key into an editable replacement draft"
+    );
+}
+
+#[test]
 fn managed_provider_view_exposes_only_masked_api_key() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1426,9 +1451,16 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("function maskApiKey("));
     assert!(app.contains("function looksLikeEnvVarName("));
     assert!(app.contains("function credentialPatch("));
+    assert!(app.contains("function isInlineKeyLocked("));
+    assert!(app.contains("function isTruncatedEnvNameEdit("));
     assert!(app.contains("kind === \"clear\""));
+    assert!(app.contains("kind === \"invalid\""));
     assert!(app.contains("{ api_key_env: null, api_key: null }"));
+    assert!(!app.contains("hadEnv"));
     assert!(!app.contains("dataset.draft"));
+    assert!(index.contains("cannot be edited in place"));
+    assert!(index.contains("NAME_WITH_UNDERSCORE"));
+    assert!(index.contains("id=\"provider-credential-class\""));
     assert!(app.contains("providerTemplates.find((template) => template.key === \"custom\")"));
     assert!(!app.contains("template.key === \"openrouter\""));
     assert!(app.contains("\"Add provider\""));

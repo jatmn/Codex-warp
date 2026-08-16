@@ -516,47 +516,147 @@
       + chars.slice(n - suffix).join("");
   }
 
+  // loadedKind is the credential class at form open, not a snapshot of the
+  // current string. Inline secrets cannot be edited in place (the operator
+  // never has the raw value); env names stay editable because they are visible.
   const credentialState = {
     draft: "",
     preview: "",
-    hadEnv: false,
+    loadedKind: "none",
+    loadedEnvName: "",
+    cleared: false,
     reveal: false,
   };
+  let credentialFieldTomlLocked = false;
+  const credentialClassHint = $("#provider-credential-class");
+
+  function compactEnvName(value) {
+    return String(value || "").replace(/_/g, "");
+  }
+
+  // Deleting characters from OPENAI_API_KEY into OPENAI is still an env-name
+  // edit, not a new inline secret. Compact so OPENAI_API vs OPENAIAPI match.
+  function isTruncatedEnvNameEdit(loadedEnvName, draft) {
+    const loaded = compactEnvName(loadedEnvName);
+    const current = compactEnvName(draft);
+    return !!(loaded && current && loaded !== current && loaded.startsWith(current));
+  }
+
+  function isInlineKeyLocked() {
+    return credentialState.loadedKind === "inline"
+      && !credentialState.cleared
+      && !!credentialState.preview
+      && !String(credentialState.draft || "").trim();
+  }
+
+  function applyCredentialFieldAccess() {
+    const locked = credentialFieldTomlLocked || isInlineKeyLocked();
+    apiKeyInput.readOnly = locked;
+    if (credentialFieldTomlLocked) {
+      apiKeyInput.title = "TOML-backed providers manage credentials in TOML.";
+    } else if (isInlineKeyLocked()) {
+      apiKeyInput.title = "Saved API key is masked. Use Clear saved credentials to remove or replace it.";
+    } else {
+      apiKeyInput.title = "";
+    }
+  }
+
+  function updateCredentialClassHint() {
+    if (!credentialClassHint) return;
+    const draft = String(credentialState.draft || "").trim();
+    let text = "";
+    if (credentialFieldTomlLocked) {
+      text = "Credentials for this provider are owned by TOML.";
+    } else if (isInlineKeyLocked()) {
+      text = "Saved API key (masked). Leave it unchanged to keep it, or use Clear saved credentials to remove or replace it.";
+    } else if (!draft) {
+      if (credentialState.cleared || credentialState.loadedKind === "env") {
+        text = "Empty field removes stored credentials on save.";
+      } else if (credentialState.loadedKind === "inline") {
+        text = "Leave empty to keep the saved API key.";
+      } else {
+        text = "Uppercase names with an underscore are stored as environment variable names. Other values are stored as API keys.";
+      }
+    } else if (looksLikeEnvVarName(draft)) {
+      text = "Will be stored as an environment variable name and read from the process environment. It is not stored as a secret.";
+    } else if (
+      credentialState.loadedKind === "env"
+      && isTruncatedEnvNameEdit(credentialState.loadedEnvName, draft)
+    ) {
+      text = "This looks like a shortened environment variable name. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….";
+    } else {
+      text = "Will be stored as an API key. After save, only a short prefix and suffix are shown.";
+    }
+    credentialClassHint.textContent = text;
+    credentialClassHint.hidden = !text;
+  }
 
   function credentialPatch() {
     const draft = String(credentialState.draft || "").trim();
+    if (isInlineKeyLocked()) {
+      return { kind: "keep" };
+    }
     if (draft && credentialState.preview && draft === credentialState.preview) {
       return { kind: "keep" };
     }
     if (draft) {
+      if (
+        credentialState.loadedKind === "env"
+        && !looksLikeEnvVarName(draft)
+        && isTruncatedEnvNameEdit(credentialState.loadedEnvName, draft)
+      ) {
+        return {
+          kind: "invalid",
+          message: "That value looks like a shortened environment variable name, not a new API key. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….",
+        };
+      }
       return { kind: "set", value: draft };
     }
-    if (credentialState.hadEnv) {
+    if (credentialState.cleared || credentialState.loadedKind === "env") {
       return { kind: "clear" };
     }
-    if (credentialState.preview) {
+    if (credentialState.loadedKind === "inline" || credentialState.preview) {
       return { kind: "keep" };
     }
     return { kind: "set", value: null };
   }
 
   function renderCredentialInput() {
+    applyCredentialFieldAccess();
     const draft = credentialState.draft || "";
     const preview = credentialState.preview || "";
+    if (isInlineKeyLocked()) {
+      apiKeyInput.value = preview;
+      updateCredentialClassHint();
+      return;
+    }
     if (draft) {
       apiKeyInput.value = (!credentialState.reveal && !looksLikeEnvVarName(draft))
         ? maskApiKey(draft)
         : draft;
+      updateCredentialClassHint();
       return;
     }
-    apiKeyInput.value = preview || "";
+    apiKeyInput.value = "";
+    updateCredentialClassHint();
   }
 
   function setCredentialInput(raw, preview = "") {
-    credentialState.draft = raw || "";
+    const trimmed = String(raw || "").trim();
+    credentialState.draft = trimmed;
     credentialState.preview = preview || "";
-    credentialState.hadEnv = looksLikeEnvVarName(credentialState.draft);
+    credentialState.cleared = false;
     credentialState.reveal = false;
+    if (looksLikeEnvVarName(trimmed)) {
+      credentialState.loadedKind = "env";
+      credentialState.loadedEnvName = trimmed;
+    } else if (preview) {
+      credentialState.loadedKind = "inline";
+      credentialState.loadedEnvName = "";
+    } else {
+      credentialState.loadedKind = "none";
+      credentialState.loadedEnvName = "";
+    }
     renderCredentialInput();
   }
 
@@ -570,7 +670,7 @@
     clearCredentialsBtn.addEventListener("click", () => {
       credentialState.draft = "";
       credentialState.preview = "";
-      credentialState.hadEnv = true;
+      credentialState.cleared = true;
       credentialState.reveal = false;
       renderCredentialInput();
       apiKeyInput.focus();
@@ -582,15 +682,13 @@
     if (draft) {
       credentialState.reveal = true;
       apiKeyInput.value = draft;
-      return;
-    }
-    if (credentialState.preview) {
-      apiKeyInput.value = "";
     }
   });
   apiKeyInput.addEventListener("input", () => {
+    if (apiKeyInput.readOnly) return;
     credentialState.draft = apiKeyInput.value;
     credentialState.reveal = true;
+    updateCredentialClassHint();
   });
   apiKeyInput.addEventListener("blur", () => {
     credentialState.reveal = false;
@@ -614,6 +712,10 @@
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
     const credential = credentialPatch();
+    if (credential.kind === "invalid") {
+      status(credential.message, { isError: true });
+      return;
+    }
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
@@ -907,10 +1009,7 @@
       idInput.readOnly = true;
       providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
-      apiKeyInput.readOnly = !p.managed;
-      apiKeyInput.title = p.managed
-        ? ""
-        : "TOML-backed providers manage credentials in TOML.";
+      credentialFieldTomlLocked = !p.managed;
       setCredentialInput(
         p.api_key_env || "",
         p.managed ? (p.api_key_preview || "") : "",
@@ -941,8 +1040,7 @@
       providerForm.reset();
       providerIdInput.value = "";
       applyProviderHeaders(null);
-      apiKeyInput.readOnly = false;
-      apiKeyInput.title = "";
+      credentialFieldTomlLocked = false;
       apiKeyInput.placeholder = "PROVIDER_API_KEY or sk-…";
       setCredentialInput("");
       setClearCredentialsVisible(false);
