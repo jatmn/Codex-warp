@@ -64,6 +64,11 @@ Every PR must:
 - Include tests or focused validation appropriate to the change.
 - Pass CI before review and after every update.
 
+A change that adds a branch or fixes a bug should include a test that fails
+without that change. Do not add extra tests, snapshots, or coverage-only
+assertions to satisfy a review bot. See `AGENTS.md` for JSON assertion and
+environment-variable rules.
+
 You are responsible for keeping your PR green. If review feedback requires new
 commits, re-run the relevant checks after those commits and make sure CI passes
 again.

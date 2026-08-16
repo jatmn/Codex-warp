@@ -218,6 +218,11 @@ from the production module with `#[cfg(test)]` and `#[path = "..."]`. Keep new
 tests near the module they exercise instead of adding a new root-level test
 bundle.
 
+New behavior needs a test that would fail without the change. Do not add extra
+tests for review theater. Assert JSON fields exist instead of defaulting
+missing keys to zero. Do not set process-wide environment variables in tests.
+See `AGENTS.md` for the full test-quality rules.
+
 ## Running From Source
 
 Use `cargo run` during development:
