@@ -143,6 +143,10 @@ readability more than a separate test file. Avoid adding new large inline
 
 New branches and bug fixes need a test that would fail without the change.
 Do not add extra tests, snapshots, or fixtures just to look thorough.
+CI mutation testing (`cargo mutants --in-diff`) fails when a change can be
+mutated without a test noticing. If mutants fail, strengthen the assertion on
+the behavior you meant to protect. Do not add a second test that only
+duplicates coverage theater.
 
 When asserting JSON or other structured values, check that the field exists.
 Do not hide a missing key with `unwrap_or(0)`, `unwrap_or("")`, or similar

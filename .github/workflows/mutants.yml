@@ -1,0 +1,67 @@
+name: Mutants
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/mutants.yml"
+
+concurrency:
+  group: mutants-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  incremental:
+    name: Incremental (PR diff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
+        with:
+          tool: cargo-mutants
+
+      - name: Diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff "origin/${BASE_REF}...HEAD" -- "*.rs" | tee git.diff
+          if [ ! -s git.diff ]; then
+            echo "No Rust diff; skipping mutants"
+          fi
+
+      - name: Mutate changed code
+        run: |
+          if [ ! -s git.diff ]; then
+            exit 0
+          fi
+          cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked
+
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-incremental.out
+          path: mutants.out
+          if-no-files-found: ignore
