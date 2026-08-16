@@ -600,6 +600,12 @@
     if (draft && credentialState.preview && draft === credentialState.preview) {
       return { kind: "keep" };
     }
+    if (draft.includes("•")) {
+      return {
+        kind: "invalid",
+        message: "That looks like a masked preview, not an API key. Paste the full secret or an environment variable name.",
+      };
+    }
     if (draft) {
       if (isAmbiguousEnvReplacement(draft)) {
         return {

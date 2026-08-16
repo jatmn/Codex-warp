@@ -1078,6 +1078,19 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     if let OptionalPatch::Set(headers) = &fields.headers {
         validate_provider_headers(headers)?;
     }
+    for value in [&fields.api_key, &fields.api_key_env]
+        .into_iter()
+        .filter_map(|field| match field {
+            OptionalPatch::Set(value) => Some(value.as_str()),
+            OptionalPatch::Clear | OptionalPatch::Absent => None,
+        })
+    {
+        if value.contains('•') {
+            return Err(ApiError::bad_request(
+                "credentials cannot contain a masked preview",
+            ));
+        }
+    }
     Ok(())
 }
 

@@ -296,6 +296,27 @@ fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_masked_preview_credentials() {
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set("sk-ab••••cd".into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("masked preview"));
+}
+
+#[test]
 fn validate_provider_persist_rejects_empty_base_url() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,
@@ -522,6 +543,10 @@ fn javascript_credential_state_machine_locks_inline_keys() {
     assert!(
         app.contains("That value looks like a shortened environment variable name"),
         "truncated env names must fail closed instead of reclassifying as api_key"
+    );
+    assert!(
+        app.contains("draft.includes(\"•\")"),
+        "pasting the masked preview must not persist as the secret"
     );
     assert!(
         !app.contains("if (credentialState.preview) {\n      apiKeyInput.value = \"\";"),
