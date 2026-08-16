@@ -1201,9 +1201,12 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    pending:"), not speaker work; speaker pending uses a copula
     //    ("This is still pending:", "verification is pending:").
     //    Remaining is predicative ("Tasks remaining:", "still remaining")
-    //    or a whole-sentence header ("Remaining tasks:", "The remaining
-    //    items:"), not an attributive noun modifier inside a coordinated
-    //    phrase ("Summary and remaining tasks:").
+    //    or a clause header after comma/`but`/`yet` ("Remaining tasks:",
+    //    "The remaining items:", "Summary, remaining tasks:"), not an
+    //    attributive noun modifier inside an `and`-coordinated phrase
+    //    ("Summary and remaining tasks:"). Demonstrative copulas
+    //    ("Here are the remaining items:", "Below are remaining tasks:")
+    //    stay delivery even when remaining appears later in the sentence.
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1592,26 +1595,35 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
 }
 
 fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
-    remaining_opens_unfinished_header(last_sentence)
-        || last_sentence_clauses(last_sentence).any(clause_has_unfinished_speaker_work)
+    // Comma/`but`/`yet` introduce independent clauses, so a later remaining
+    // header still counts ("Summary, remaining tasks:", "Nothing pending,
+    // remaining tasks:"). `and` only coordinates noun phrases, so
+    // "remaining tasks" after `and` stays attributive.
+    independent_clauses(last_sentence).any(|clause| {
+        remaining_opens_unfinished_header(clause)
+            || coordinated_conjuncts(clause).any(clause_has_unfinished_speaker_work)
+    })
 }
 
-fn remaining_opens_unfinished_header(last_sentence: &str) -> bool {
-    // Attributive remaining is unfinished only as the sentence header
-    // ("Remaining tasks:"). After `and`-splitting, "remaining tasks" is a
-    // coordinated noun phrase, not a pause.
-    if clause_clears_remaining_work(last_sentence) {
+fn remaining_opens_unfinished_header(clause: &str) -> bool {
+    if clause_clears_remaining_work(clause) {
         return false;
     }
-    clause_first_alpha_token(strip_leading_determiners(last_sentence)) == "remaining"
+    clause_first_alpha_token(strip_leading_determiners(clause)) == "remaining"
 }
 
-fn last_sentence_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
+fn independent_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
     last_sentence
         .split(',')
         .flat_map(|part| part.split(" but "))
-        .flat_map(|part| part.split(" and "))
         .flat_map(|part| part.split(" yet "))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+}
+
+fn coordinated_conjuncts(clause: &str) -> impl Iterator<Item = &str> {
+    clause
+        .split(" and ")
         .map(str::trim)
         .filter(|part| !part.is_empty())
 }
@@ -1638,7 +1650,7 @@ fn clause_has_unfinished_speaker_work(clause: &str) -> bool {
     // actor or process ("review pending", "approval pending", "ci pending").
     // Remaining is unfinished only as a predicate ("tasks remaining",
     // "work is remaining"), not as a modifier ("remaining tasks") that
-    // `and`-splitting would otherwise promote into a fake header.
+    // `and`-coordination would otherwise promote into a fake header.
     clause.contains("still pending")
         || clause.contains("is pending")
         || clause.contains("are pending")
@@ -1676,12 +1688,17 @@ fn clause_clears_remaining_work(clause: &str) -> bool {
 }
 
 fn last_sentence_is_delivery(last_sentence: &str) -> bool {
-    last_sentence.starts_with("here is ")
-        || last_sentence.starts_with("here's ")
-        || last_sentence.starts_with("here are ")
-        || last_sentence.starts_with("below is ")
+    starts_with_locative_copula(last_sentence, "here")
+        || starts_with_locative_copula(last_sentence, "below")
         || last_sentence.contains("summary of ")
         || last_sentence.contains("final report")
+}
+
+fn starts_with_locative_copula(sentence: &str, locative: &str) -> bool {
+    let Some(rest) = sentence.strip_prefix(locative) else {
+        return false;
+    };
+    rest.starts_with("'s ") || rest.starts_with(" is ") || rest.starts_with(" are ")
 }
 
 /// Wrap-up phrasing that should not force a follow-up unless a prefix is

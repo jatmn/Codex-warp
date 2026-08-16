@@ -2208,6 +2208,46 @@ fn continue_guard_the_remaining_items_colon_triggers_followup() {
 }
 
 #[test]
+fn continue_guard_summary_comma_remaining_tasks_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Summary, remaining tasks:",
+        "continue-guard-test-summary-comma-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_nothing_pending_comma_remaining_tasks_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Nothing pending, remaining tasks:",
+        "continue-guard-test-nothing-pending-comma-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_here_are_the_remaining_items_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Here are the remaining items:",
+        "continue-guard-test-here-are-remaining-items",
+    ));
+}
+
+#[test]
+fn continue_guard_below_are_the_remaining_steps_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Below are the remaining steps:",
+        "continue-guard-test-below-are-remaining-steps",
+    ));
+}
+
+#[test]
+fn continue_guard_below_are_remaining_tasks_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Below are remaining tasks:",
+        "continue-guard-test-below-are-remaining-tasks",
+    ));
+}
+
+#[test]
 fn continue_guard_nothing_pending_and_copular_pending_triggers_followup() {
     assert!(!continue_guard_end_turn(
         "Nothing pending and verification is pending:",
