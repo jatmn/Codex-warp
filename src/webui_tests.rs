@@ -887,6 +887,11 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("Charts.tooltipRenderPlan("));
     assert!(app.contains("Charts.retainPaletteKeys("));
     assert!(app.contains("Charts.effectivePieHoverIdx("));
+    assert!(app.contains("ctx.arc(cx, cy, radius + 4, slice.start, slice.end);"));
+    assert!(
+        !app.contains("ctx.moveTo(cx, cy);\n      ctx.arc(cx, cy, radius + 4"),
+        "pie hover band must start on the outer arc, not the pie center"
+    );
     assert!(app.contains("tip.replaceChildren(content)"));
     assert!(app.contains("canvas.__cssH = metrics.cssH;"));
     assert!(app.contains("g.cssH || canvas.__cssH"));

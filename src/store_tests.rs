@@ -147,7 +147,14 @@ fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
     assert_eq!(summary.sessions, 2);
     assert_eq!(summary.by_provider[0].sessions, 2);
     assert_eq!(summary.by_model[0].sessions, 2);
-    assert_eq!(summary.series.last().unwrap().sessions, 2);
+    // Gap-fill can append an empty current-hour bucket if `now_ms()` crosses
+    // an hour boundary between `record_usage` and `analytics`.
+    let latest_series = summary
+        .series
+        .iter()
+        .rfind(|point| point.sessions > 0)
+        .expect("window has session activity");
+    assert_eq!(latest_series.sessions, 2);
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -200,6 +207,10 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     );
     // Model "beta" appears once in the newest bucket.
     insert(base, "beta-provider", "beta/model", Some("sess-c"));
+    // Same model id on a second provider: by_model_overall must include this
+    // when the provider filter is stripped, while model_series under an
+    // alpha-provider filter must not.
+    insert(base, "gamma-provider", "alpha/model", Some("sess-g"));
 
     let summary = store
         .analytics(AnalyticsRange::Last24Hours, None, None)
@@ -266,13 +277,22 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(beta_newest.prompts, 1);
     assert_eq!(beta_newest.sessions, 1);
 
+    let alpha_at_base = alpha
+        .points
+        .iter()
+        .find(|point| point.ts == base)
+        .expect("alpha bucket at base from gamma-provider");
+    assert_eq!(alpha_at_base.prompts, 1);
+    assert_eq!(alpha_at_base.sessions, 1);
+
     // Window-scoped totals must not double-count distinct sessions that span
-    // buckets: alpha has three prompts across two sessions in the window.
-    assert_eq!(alpha.prompts, 3);
-    assert_eq!(alpha.sessions, 2);
-    assert_eq!(alpha.input_tokens, 30);
-    assert_eq!(alpha.output_tokens, 15);
-    assert_eq!(alpha.total_tokens, 45);
+    // buckets: alpha has four prompts across three sessions in the window
+    // (two sessions on alpha-provider plus one on gamma-provider).
+    assert_eq!(alpha.prompts, 4);
+    assert_eq!(alpha.sessions, 3);
+    assert_eq!(alpha.input_tokens, 40);
+    assert_eq!(alpha.output_tokens, 20);
+    assert_eq!(alpha.total_tokens, 60);
     assert_eq!(beta.prompts, 1);
     assert_eq!(beta.sessions, 1);
 
@@ -298,6 +318,7 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
         .unwrap();
     assert_eq!(provider_scoped.by_model.len(), 1);
     assert_eq!(provider_scoped.by_model[0].key, "alpha/model");
+    assert_eq!(provider_scoped.by_model[0].prompts, 3);
     assert_eq!(provider_scoped.by_model_overall.len(), 2);
     let overall_keys: Vec<&str> = provider_scoped
         .by_model_overall
@@ -306,6 +327,13 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
         .collect();
     assert!(overall_keys.contains(&"alpha/model"));
     assert!(overall_keys.contains(&"beta/model"));
+    let overall_alpha = provider_scoped
+        .by_model_overall
+        .iter()
+        .find(|row| row.key == "alpha/model")
+        .expect("overall alpha/model");
+    assert_eq!(overall_alpha.prompts, 4);
+    assert_eq!(overall_alpha.sessions, 3);
 
     // With a model filter active, by_model_overall must still report the
     // selected model's window total (the "Model usage overall" pie draws a
@@ -315,8 +343,8 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
         .unwrap();
     assert_eq!(model_filtered.by_model_overall.len(), 1);
     assert_eq!(model_filtered.by_model_overall[0].key, "alpha/model");
-    assert_eq!(model_filtered.by_model_overall[0].prompts, 3);
-    assert_eq!(model_filtered.by_model_overall[0].sessions, 2);
+    assert_eq!(model_filtered.by_model_overall[0].prompts, 4);
+    assert_eq!(model_filtered.by_model_overall[0].sessions, 3);
 
     // Combined provider + model filters: series and payload by_model follow
     // both clauses, while by_model_overall still reports the selected model's
@@ -338,8 +366,10 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     );
     assert_eq!(both.by_model_overall.len(), 1);
     assert_eq!(both.by_model_overall[0].key, "alpha/model");
-    assert_eq!(both.by_model_overall[0].prompts, 3);
-    assert_eq!(both.by_model_overall[0].sessions, 2);
+    // Cross-provider `alpha/model` on gamma-provider is included only because
+    // by_model_overall strips the provider clause (3 + 1 prompts, 2 + 1 sessions).
+    assert_eq!(both.by_model_overall[0].prompts, 4);
+    assert_eq!(both.by_model_overall[0].sessions, 3);
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -406,10 +436,20 @@ fn analytics_model_series_groups_sessions_by_model() {
         .iter()
         .find(|series| series.model == "beta/model")
         .expect("beta/model series");
-    assert_eq!(alpha.points.last().unwrap().prompts, 2);
-    assert_eq!(alpha.points.last().unwrap().sessions, 1);
-    assert_eq!(beta.points.last().unwrap().prompts, 1);
-    assert_eq!(beta.points.last().unwrap().sessions, 1);
+    let alpha_latest = alpha
+        .points
+        .iter()
+        .rfind(|point| point.prompts > 0)
+        .expect("alpha/model has activity");
+    let beta_latest = beta
+        .points
+        .iter()
+        .rfind(|point| point.prompts > 0)
+        .expect("beta/model has activity");
+    assert_eq!(alpha_latest.prompts, 2);
+    assert_eq!(alpha_latest.sessions, 1);
+    assert_eq!(beta_latest.prompts, 1);
+    assert_eq!(beta_latest.sessions, 1);
 
     let _ = std::fs::remove_dir_all(dir);
 }

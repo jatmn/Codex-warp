@@ -725,10 +725,11 @@
     const extra = Math.max(0, present - shown.length);
     const parts = shown.map((row) => `${row.key} ${format(row.value)}`);
     if (extra > 0) parts.push(`+${extra} more models`);
+    // `parts` is built from `shown`, so an empty `shown` is the only empty
+    // summary path. Do not also test `parts.length` — that branch is dead.
     if (!shown.length) {
       return `${payload.title}: no ${metric}`;
     }
-    if (!parts.length) return `${payload.title}: no ${metric}`;
     return `${payload.title}: ${parts.join(", ")}`;
   }
 

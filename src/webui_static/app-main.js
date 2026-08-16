@@ -2459,9 +2459,9 @@
     if (hidx >= 0) {
       const slice = slices[hidx];
       ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      // The ring must not overpaint the whole wedge: stroke the outer arc
-      // band (radius to radius + 4) only, without closing through the center.
+      // Start on the outer arc (empty-path `arc` moveTos its first point).
+      // A `moveTo(cx, cy)` would add radials through the center, so fill and
+      // stroke would paint the whole wedge instead of the radius..radius+4 band.
       ctx.arc(cx, cy, radius + 4, slice.start, slice.end);
       ctx.arc(cx, cy, radius, slice.end, slice.start, true);
       ctx.closePath();
