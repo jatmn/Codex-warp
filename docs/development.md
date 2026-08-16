@@ -187,6 +187,11 @@ Pull requests that touch Rust also run
 against the PR base SHA. Surviving mutants on changed lines are a test-quality
 finding, not a request to add extra unrelated tests.
 
+A separate supply-chain workflow runs `cargo-deny` (licenses, crate bans, and
+crate sources) and `cargo-audit`. Advisory failures are non-blocking so a new
+CVE does not freeze unrelated work. Do not add `_typos.toml`-style ignore
+entries in `deny.toml` to hide a real license or git-source policy break.
+
 ## Source Layout
 
 The crate is split by domain so small source changes do not all collide in one
