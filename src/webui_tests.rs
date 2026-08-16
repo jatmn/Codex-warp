@@ -862,9 +862,7 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains("ctx.measureText(\"tokens\").width"));
     // Keyboard help describes navigation shared by every chart, not line/bar
     // field lists that pies and model-over-time charts do not speak.
-    assert!(index.contains(
-        "Each point reports its label and the values for that chart."
-    ));
+    assert!(index.contains("Each point reports its label and the values for that chart."));
 }
 
 #[test]
@@ -911,6 +909,12 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("chart-pie-provider"));
     assert!(app.contains("chart-model-sessions"));
     assert!(app.contains("chart-model-prompts"));
+    let css = include_str!("webui_static/app.css");
+    // Flex items default to min-width:auto (content), which blocks shrinking
+    // so max-width + ellipsis never apply to long model ids.
+    assert!(css.contains(
+        ".legend-label {\n  min-width: 0;\n  max-width: 220px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}"
+    ));
 }
 
 #[test]

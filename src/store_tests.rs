@@ -147,14 +147,18 @@ fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
     assert_eq!(summary.sessions, 2);
     assert_eq!(summary.by_provider[0].sessions, 2);
     assert_eq!(summary.by_model[0].sessions, 2);
-    // Gap-fill can append an empty current-hour bucket if `now_ms()` crosses
-    // an hour boundary between `record_usage` and `analytics`.
-    let latest_series = summary
-        .series
-        .iter()
-        .rfind(|point| point.sessions > 0)
-        .expect("window has session activity");
-    assert_eq!(latest_series.sessions, 2);
+    // `record_usage` stamps each row with `now_ms()`. Two inserts can land in
+    // different hour buckets if the clock crosses a boundary between them, so
+    // do not require a single bucket to hold both sessions. Distinct identities
+    // still appear once each in the series.
+    assert_eq!(
+        summary
+            .series
+            .iter()
+            .map(|point| point.sessions)
+            .sum::<i64>(),
+        2
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -436,20 +440,20 @@ fn analytics_model_series_groups_sessions_by_model() {
         .iter()
         .find(|series| series.model == "beta/model")
         .expect("beta/model series");
-    let alpha_latest = alpha
-        .points
-        .iter()
-        .rfind(|point| point.prompts > 0)
-        .expect("alpha/model has activity");
-    let beta_latest = beta
-        .points
-        .iter()
-        .rfind(|point| point.prompts > 0)
-        .expect("beta/model has activity");
-    assert_eq!(alpha_latest.prompts, 2);
-    assert_eq!(alpha_latest.sessions, 1);
-    assert_eq!(beta_latest.prompts, 1);
-    assert_eq!(beta_latest.sessions, 1);
+    // Window-scoped totals, not a single live-now bucket: two `record_usage`
+    // stamps can split across an hour boundary.
+    assert_eq!(alpha.prompts, 2);
+    assert_eq!(alpha.sessions, 1);
+    assert_eq!(beta.prompts, 1);
+    assert_eq!(beta.sessions, 1);
+    assert_eq!(
+        alpha.points.iter().map(|point| point.prompts).sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        beta.points.iter().map(|point| point.prompts).sum::<i64>(),
+        1
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -401,9 +401,11 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   flex: none;
 }
 .legend-label {
+  min-width: 0;
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .legend-value {
   font-variant-numeric: tabular-nums;
