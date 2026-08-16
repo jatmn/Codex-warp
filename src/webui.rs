@@ -1094,9 +1094,13 @@ fn looks_like_env_var_name(value: &str) -> bool {
     if !(first.is_ascii_uppercase() || first == '_') {
         return false;
     }
-    value
+    if !value
         .chars()
         .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return false;
+    }
+    value.contains('_')
 }
 
 fn sanitize_provider_id_fragment(input: &str) -> String {

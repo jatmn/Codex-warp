@@ -351,6 +351,29 @@ fn normalize_provider_api_key_fields_treats_underscore_secret_as_api_key() {
 }
 
 #[test]
+fn normalize_provider_api_key_fields_treats_uppercase_token_without_underscore_as_api_key() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into()),
+        api_key: None,
+        headers: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(fields.api_key.as_deref(), Some("AKIAIOSFODNN7EXAMPLE"));
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
 fn unique_provider_id_suffixes_use_sanitized_base() {
     let state = test_state();
     {

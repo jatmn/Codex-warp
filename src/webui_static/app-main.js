@@ -767,9 +767,6 @@
         "This provider does not match a bundled example template.";
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
-      setNamedTemplateMode(isNamed);
-      setCustomHeadersMode(allowCustomHeaders);
-      $("#provider-advanced").hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
@@ -792,6 +789,9 @@
       } else {
         applyProviderHeaders(null);
       }
+      setNamedTemplateMode(isNamed);
+      setCustomHeadersMode(allowCustomHeaders);
+      $("#provider-advanced").hidden = false;
       apiKeyInput.value = p.api_key_env || "";
       apiKeyInput.placeholder = p.has_api_key && !p.api_key_env
         ? "Configured for this process"
