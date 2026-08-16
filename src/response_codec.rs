@@ -1202,10 +1202,17 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    ("This is still pending:", "verification is pending:").
     //    Remaining is predicative ("Tasks remaining:", "still remaining")
     //    or a clause header after comma/`but`/`yet` ("Remaining tasks:",
-    //    "The remaining items:", "Summary, remaining tasks:"), not an
+    //    "The remaining items:", "All remaining tasks:",
+    //    "Incomplete remaining tasks:", "Complete remaining tasks:",
+    //    "Summary, remaining tasks:"), not an
     //    attributive noun modifier inside an `and`-coordinated phrase
-    //    ("Summary and remaining tasks:"). Demonstrative copulas
-    //    ("Here are the remaining items:", "Below are remaining tasks:")
+    //    ("Summary and remaining tasks:") and not a remaining subject
+    //    whose copular predicate is completion ("Remaining work is complete:",
+    //    "Remaining tasks are done:"), not an attributive complete
+    //    ("Remaining complete tasks:") or a hedged predicate
+    //    ("Remaining tasks are mostly done:"). Presentational copulas
+    //    ("Here are the remaining items:", "Below are remaining tasks:",
+    //    "Above are the remaining steps:", "Following are remaining tasks:")
     //    stay delivery even when remaining appears later in the sentence.
     if contains_work_intent(&normalized) {
         return true;
@@ -1609,7 +1616,66 @@ fn remaining_opens_unfinished_header(clause: &str) -> bool {
     if clause_clears_remaining_work(clause) {
         return false;
     }
-    clause_first_alpha_token(strip_leading_determiners(clause)) == "remaining"
+    // Remaining headers allow remaining-NP premodifiers: determiners/
+    // quantifiers plus a status adjective ("the remaining items",
+    // "all remaining tasks", "incomplete remaining tasks",
+    // "complete remaining tasks"). Do not skip other nouns: "summary
+    // remaining" is not a header, and `and`-coordination is handled by
+    // scoring remaining only at the independent-clause head
+    // ("Summary and remaining tasks:"). Copular completion still wins
+    // ("Complete remaining tasks are done:").
+    remaining_header_head(clause) == "remaining"
+}
+
+fn remaining_header_head(clause: &str) -> &str {
+    clause_alpha_tokens(clause)
+        .find(|token| !is_remaining_header_premodifier(token))
+        .unwrap_or("")
+}
+
+fn is_remaining_header_premodifier(token: &str) -> bool {
+    is_remaining_np_determiner(token) || is_remaining_np_status_adjective(token)
+}
+
+fn is_remaining_np_determiner(token: &str) -> bool {
+    matches!(
+        token,
+        "a" | "an"
+            | "the"
+            | "another"
+            | "some"
+            | "any"
+            | "more"
+            | "one"
+            | "all"
+            | "both"
+            | "each"
+            | "every"
+            | "few"
+            | "several"
+            | "many"
+            | "most"
+    )
+}
+
+fn is_remaining_np_status_adjective(token: &str) -> bool {
+    matches!(
+        token,
+        "incomplete"
+            | "unfinished"
+            | "outstanding"
+            | "leftover"
+            | "open"
+            | "pending"
+            | "complete"
+            | "completed"
+    )
+}
+
+fn clause_alpha_tokens(clause: &str) -> impl Iterator<Item = &str> {
+    clause
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|token| !token.is_empty())
 }
 
 fn independent_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
@@ -1664,13 +1730,6 @@ fn remaining_is_predicative(clause: &str) -> bool {
         || clause_last_alpha_token(clause) == "remaining"
 }
 
-fn clause_first_alpha_token(clause: &str) -> &str {
-    clause
-        .split(|c: char| !c.is_alphabetic())
-        .find(|token| !token.is_empty())
-        .unwrap_or("")
-}
-
 fn clause_last_alpha_token(clause: &str) -> &str {
     clause
         .rsplit(|c: char| !c.is_alphabetic())
@@ -1680,25 +1739,86 @@ fn clause_last_alpha_token(clause: &str) -> &str {
 
 fn clause_clears_remaining_work(clause: &str) -> bool {
     // Remaining/pending cues mean unfinished speaker work unless this
-    // clause negates those cues ("No issues remaining:", "nothing pending:").
-    // Do not treat generic "not" as clearance: "not yet" is unfinished.
+    // clause negates those cues ("No issues remaining:", "nothing pending:")
+    // or the remaining subject has a copular completion predicate
+    // ("Remaining work is complete:", "work remaining is done:").
+    // Attributive complete ("Remaining complete tasks:") and hedged
+    // completion ("Remaining tasks are mostly done:") stay unfinished.
+    // Do not treat generic "not" as clearance: "not yet" and
+    // "Remaining work is not done:" stay unfinished. Token matching keeps
+    // "incomplete" from counting as "complete".
     ["no ", "none ", "nothing ", "without ", "zero "]
         .iter()
         .any(|negation| clause.contains(negation))
+        || clause_resolves_remaining_work(clause)
+}
+
+fn clause_resolves_remaining_work(clause: &str) -> bool {
+    let tokens = clause_alpha_tokens(clause).collect::<Vec<_>>();
+    let Some(remaining_at) = tokens.iter().position(|token| *token == "remaining") else {
+        return false;
+    };
+    let mut negated = false;
+    let mut seen_copula = false;
+    let mut weakened = false;
+    for token in &tokens[remaining_at + 1..] {
+        if *token == "will" {
+            return false;
+        }
+        if matches!(*token, "not" | "never" | "incomplete") {
+            negated = true;
+            continue;
+        }
+        if matches!(*token, "is" | "are" | "was" | "were" | "been" | "be") {
+            seen_copula = true;
+            continue;
+        }
+        if !seen_copula {
+            continue;
+        }
+        if matches!(
+            *token,
+            "mostly"
+                | "almost"
+                | "nearly"
+                | "partially"
+                | "partly"
+                | "somewhat"
+                | "mainly"
+                | "roughly"
+        ) {
+            weakened = true;
+            continue;
+        }
+        if matches!(
+            *token,
+            "still" | "now" | "already" | "fully" | "currently" | "all" | "quite"
+        ) {
+            continue;
+        }
+        if matches!(*token, "complete" | "completed" | "done" | "finished") {
+            return !negated && !weakened;
+        }
+        return false;
+    }
+    false
 }
 
 fn last_sentence_is_delivery(last_sentence: &str) -> bool {
-    starts_with_locative_copula(last_sentence, "here")
-        || starts_with_locative_copula(last_sentence, "below")
+    starts_with_presentational_copula(last_sentence)
         || last_sentence.contains("summary of ")
         || last_sentence.contains("final report")
 }
 
-fn starts_with_locative_copula(sentence: &str, locative: &str) -> bool {
-    let Some(rest) = sentence.strip_prefix(locative) else {
-        return false;
-    };
-    rest.starts_with("'s ") || rest.starts_with(" is ") || rest.starts_with(" are ")
+fn starts_with_presentational_copula(sentence: &str) -> bool {
+    ["here", "below", "above", "following"]
+        .iter()
+        .any(|locative| {
+            let Some(rest) = sentence.strip_prefix(locative) else {
+                return false;
+            };
+            rest.starts_with("'s ") || rest.starts_with(" is ") || rest.starts_with(" are ")
+        })
 }
 
 /// Wrap-up phrasing that should not force a follow-up unless a prefix is

@@ -254,11 +254,20 @@ or a dangling `:`/`...` whose last sentence still talks about unfinished
 speaker work, not a delivery frame such as `Here is a summary of remaining
 work:`). Status copulas such as `This is still pending:` and bare unfinished
 headers such as `Tasks remaining:` and clause remaining headers
-(`Remaining tasks:`, `The remaining items:`, `Summary, remaining tasks:`) still continue. Attributive remaining
+(`Remaining tasks:`, `The remaining items:`, `All remaining tasks:`,
+`Incomplete remaining tasks:`, `Complete remaining tasks:`,
+`Summary, remaining tasks:`) still continue. Attributive remaining
 inside an `and`-coordinated phrase (`Summary and remaining tasks:`) stays
 `end_turn = true` because remaining is a modifier there, not a header or
 predicate. Locative copulas (`Here are the remaining items:`,
-`Below are remaining tasks:`) stay delivery even when remaining appears later.
+`Below are remaining tasks:`, `Above are the remaining steps:`,
+`Following are remaining tasks:`) stay delivery even when remaining appears later.
+Remaining subjects whose copular predicate is completion
+(`Remaining work is complete:`, `Remaining tasks are done:`) stay
+`end_turn = true`. Attributive complete (`Remaining complete tasks:`) and
+hedged completion (`Remaining tasks are mostly done:`) still continue, as do
+negated or incomplete remaining (`Remaining work is not done:`,
+`Remaining work is incomplete:`).
 Cleared remaining polarity
 (`No issues remaining:`) stays `end_turn = true` unless a later unfinished
 speaker cue is still present (`Nothing pending, but I still need to:`) or a

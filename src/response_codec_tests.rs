@@ -2248,6 +2248,126 @@ fn continue_guard_below_are_remaining_tasks_colon_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_above_are_the_remaining_steps_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Above are the remaining steps:",
+        "continue-guard-test-above-are-remaining-steps",
+    ));
+}
+
+#[test]
+fn continue_guard_following_are_remaining_tasks_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Following are remaining tasks:",
+        "continue-guard-test-following-are-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_work_is_complete_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Remaining work is complete:",
+        "continue-guard-test-remaining-work-is-complete",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_tasks_are_done_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Remaining tasks are done:",
+        "continue-guard-test-remaining-tasks-are-done",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_work_is_not_done_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Remaining work is not done:",
+        "continue-guard-test-remaining-work-is-not-done",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_work_is_incomplete_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Remaining work is incomplete:",
+        "continue-guard-test-remaining-work-is-incomplete",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_complete_tasks_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Remaining complete tasks:",
+        "continue-guard-test-remaining-complete-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_incomplete_remaining_tasks_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Incomplete remaining tasks:",
+        "continue-guard-test-incomplete-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_complete_remaining_tasks_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Complete remaining tasks:",
+        "continue-guard-test-complete-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_complete_remaining_tasks_are_done_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Complete remaining tasks are done:",
+        "continue-guard-test-complete-remaining-tasks-are-done",
+    ));
+}
+
+#[test]
+fn continue_guard_all_remaining_tasks_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "All remaining tasks:",
+        "continue-guard-test-all-remaining-tasks",
+    ));
+}
+
+#[test]
+fn continue_guard_all_remaining_tasks_are_done_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "All remaining tasks are done:",
+        "continue-guard-test-all-remaining-tasks-are-done",
+    ));
+}
+
+#[test]
+fn continue_guard_remaining_tasks_are_mostly_done_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Remaining tasks are mostly done:",
+        "continue-guard-test-remaining-tasks-mostly-done",
+    ));
+}
+
+#[test]
+fn continue_guard_work_remaining_is_done_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Work remaining is done:",
+        "continue-guard-test-work-remaining-is-done",
+    ));
+}
+
+#[test]
+fn continue_guard_following_is_the_next_step_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Following is the next step:",
+        "continue-guard-test-following-is-next-step",
+    ));
+}
+
+#[test]
 fn continue_guard_nothing_pending_and_copular_pending_triggers_followup() {
     assert!(!continue_guard_end_turn(
         "Nothing pending and verification is pending:",
