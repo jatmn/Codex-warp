@@ -623,7 +623,7 @@
       if (!key) {
         continue;
       }
-      const folded = key.toLowerCase();
+      const folded = asciiHeaderNameKey(key);
       if (Object.hasOwn(seen, folded)) {
         throw new Error(`Duplicate custom header "${key}"`);
       }
@@ -639,6 +639,10 @@
       return {};
     }
     return null;
+  }
+
+  function asciiHeaderNameKey(name) {
+    return String(name).replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 32));
   }
 
   function applyProviderHeaders(headers = null) {
@@ -815,7 +819,7 @@
       setCustomHeadersMode(allowCustomHeaders);
       $("#provider-advanced").hidden = false;
       apiKeyInput.value = p.api_key_env || "";
-      apiKeyInput.placeholder = p.has_api_key && !p.api_key_env
+      apiKeyInput.placeholder = p.has_inline_api_key
         ? "Configured for this process"
         : "PROVIDER_API_KEY";
       const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
@@ -824,10 +828,10 @@
         clearInline.checked = false;
       }
       if (clearInlineRow) {
-        clearInlineRow.hidden = !(p.managed && p.has_api_key && !p.api_key_env);
+        clearInlineRow.hidden = !(p.managed && p.has_inline_api_key);
       }
       providerForm.dataset.hasInlineApiKey =
-        p.managed && p.has_api_key && !p.api_key_env ? "true" : "false";
+        p.managed && p.has_inline_api_key ? "true" : "false";
       if (isNamed) {
         providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
       }

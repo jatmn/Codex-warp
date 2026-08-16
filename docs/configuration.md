@@ -455,10 +455,14 @@ replaces a full catalog entry (with `enabled` defaulting to true when omitted).
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`
 (an empty headers object also clears). Header maps are HTTP-case-insensitive:
-two names that differ only by ASCII case are rejected. Provider overlays never
-persist `api_key`. Use `api_key_env` for durable secrets. Managed (Web UI-created)
-providers persist request `headers` in the SQLite overlay because they have no
-TOML snapshot. `GET /api/providers` returns those overlay headers so the editor
+two names that differ only by ASCII case are rejected, and names or values that
+are not valid HTTP headers are rejected so they cannot be stored and then
+silently dropped on the upstream request. Provider overlays never persist
+`api_key`. Use `api_key_env` for durable secrets. `GET /api/providers` reports
+`has_inline_api_key` when a process-scoped `api_key` is present and `has_api_key`
+when a usable key can be resolved (inline or from `api_key_env`). Managed (Web
+UI-created) providers persist request `headers` in the SQLite overlay because
+they have no TOML snapshot. Those overlay headers are returned so the editor
 can round-trip them; TOML-backed views omit header values because TOML remains
 the source of truth. TOML-backed overlays still strip headers and ignore Web UI
 `headers` patches. For a TOML-backed provider, `api_key` and `api_key_env` remain

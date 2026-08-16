@@ -325,6 +325,62 @@ fn validate_provider_persist_accepts_distinct_headers() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_invalid_http_header_names() {
+    let mut headers = BTreeMap::new();
+    headers.insert("Not A Header".into(), "x".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("invalid custom header name"));
+}
+
+#[test]
+fn build_provider_view_separates_inline_secret_from_resolved_auth() {
+    let state = test_state();
+    let dual = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("VIEW_TEST_API_KEY_ENV".into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    let dual_view = build_provider_view(&state, "dual", &dual, &[]);
+    assert!(dual_view.has_inline_api_key);
+    assert!(dual_view.has_api_key);
+    assert_eq!(
+        dual_view.api_key_env.as_deref(),
+        Some("VIEW_TEST_API_KEY_ENV")
+    );
+    assert!(dual_view.headers.is_empty());
+
+    const UNSET_ENV: &str = "CODEXWARP_VIEW_UNSET_API_KEY_ENV_0001";
+    unsafe {
+        std::env::remove_var(UNSET_ENV);
+    }
+    let env_only = ProviderConfig {
+        api_key_env: Some(UNSET_ENV.into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    let env_view = build_provider_view(&state, "env", &env_only, &[]);
+    assert!(!env_view.has_inline_api_key);
+    assert!(!env_view.has_api_key);
+    assert_eq!(env_view.api_key_env.as_deref(), Some(UNSET_ENV));
+}
+
+#[test]
 fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
     unsafe {
@@ -1179,11 +1235,12 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
     assert!(app.contains("nameInput.readOnly = isNamed"));
     assert!(
-        app.contains("p.managed && p.has_api_key && !p.api_key_env"),
-        "inline-key clear is overlay-owned, not TOML-owned"
+        app.contains("p.managed && p.has_inline_api_key"),
+        "inline-key clear uses the inline occupancy flag, not resolved auth"
     );
-    assert!(app.contains("const folded = key.toLowerCase()"));
-    assert!(app.contains("Object.hasOwn(seen, folded)"));
+    assert!(!app.contains("p.has_api_key && !p.api_key_env"));
+    assert!(app.contains("function asciiHeaderNameKey("));
+    assert!(app.contains("const folded = asciiHeaderNameKey(key)"));
 }
 
 #[test]

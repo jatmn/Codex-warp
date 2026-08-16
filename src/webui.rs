@@ -11,6 +11,8 @@ use axum::extract::Path;
 use axum::extract::Query;
 use axum::extract::Request;
 use axum::extract::State;
+use axum::http::HeaderName;
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::http::header;
 use axum::middleware;
@@ -431,6 +433,7 @@ struct ProviderView {
     enabled: bool,
     managed: bool,
     has_api_key: bool,
+    has_inline_api_key: bool,
     api_key_env: Option<String>,
     headers: BTreeMap<String, String>,
     auth_header: String,
@@ -1002,6 +1005,10 @@ fn build_provider_view(
         enabled: provider.enabled,
         managed: provider_is_managed(state, id),
         has_api_key: provider.api_key().is_some(),
+        has_inline_api_key: provider
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.is_empty()),
         api_key_env: provider.api_key_env.clone(),
         headers: if provider_is_managed(state, id) {
             provider.headers.clone()
@@ -1062,11 +1069,12 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Upstream `HeaderMap` is case-insensitive, so persist must not accept two
-/// names that would collapse into one request header.
+/// Persist the same header identity `upstream_headers` uses: HTTP `HeaderName`
+/// / `HeaderValue`, with case-insensitive duplicate detection so two names
+/// cannot collapse into one request header.
 fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), ApiError> {
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
-    for name in headers.keys() {
+    for (name, value) in headers {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(ApiError::bad_request("header names cannot be empty"));
@@ -1074,6 +1082,16 @@ fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), A
         if trimmed != name {
             return Err(ApiError::bad_request(format!(
                 "header name `{name}` must not have surrounding whitespace"
+            )));
+        }
+        if HeaderName::try_from(trimmed).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "invalid custom header name `{trimmed}`"
+            )));
+        }
+        if HeaderValue::from_str(value).is_err() {
+            return Err(ApiError::bad_request(format!(
+                "invalid custom header value for `{trimmed}`"
             )));
         }
         let folded = trimmed.to_ascii_lowercase();
