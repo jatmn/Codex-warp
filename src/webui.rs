@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -379,6 +379,8 @@ struct ProviderPersist {
     #[serde(default)]
     api_key_env: OptionalPatch<String>,
     api_key: Option<String>,
+    #[serde(default)]
+    headers: Option<BTreeMap<String, String>>,
     auth_header: Option<String>,
     auth_scheme: Option<String>,
     responses_path: Option<String>,
@@ -408,7 +410,7 @@ struct ModelPersist {
 
 #[derive(Debug, Deserialize)]
 struct CreateProviderBody {
-    id: String,
+    id: Option<String>,
     /// Bundled example key (`openrouter`, `custom`, …). Named templates apply
     /// the full example provider snapshot server-side.
     #[serde(default)]
@@ -429,6 +431,7 @@ struct ProviderView {
     managed: bool,
     has_api_key: bool,
     api_key_env: Option<String>,
+    headers: BTreeMap<String, String>,
     auth_header: String,
     auth_scheme: String,
     responses_path: String,
@@ -999,6 +1002,7 @@ fn build_provider_view(
         managed: provider_is_managed(state, id),
         has_api_key: provider.api_key().is_some(),
         api_key_env: provider.api_key_env.clone(),
+        headers: provider.headers.clone(),
         auth_header: provider.auth_header.clone(),
         auth_scheme: provider.auth_scheme.clone(),
         responses_path: provider.responses_path.clone(),
@@ -1038,12 +1042,143 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     {
         return Err(ApiError::bad_request("base_url cannot be empty"));
     }
-    if fields.api_key.is_some() {
+    let has_api_key = fields
+        .api_key
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_api_key_env = matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
+    if has_api_key && has_api_key_env {
         return Err(ApiError::bad_request(
-            "api_key cannot be set via API; use api_key_env instead",
+            "set either api_key or api_key_env, not both",
         ));
     }
     Ok(())
+}
+
+fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
+    match &mut fields.api_key_env {
+        OptionalPatch::Set(raw) => {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            fields.api_key_env = OptionalPatch::Absent;
+        } else if looks_like_env_var_name(trimmed) {
+            if std::env::var(trimmed).is_ok() {
+                *raw = trimmed.to_string();
+            } else {
+                fields.api_key = Some(trimmed.to_string());
+                fields.api_key_env = OptionalPatch::Absent;
+            }
+        } else {
+            fields.api_key = Some(trimmed.to_string());
+            fields.api_key_env = OptionalPatch::Absent;
+        }
+        }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
+    }
+    if let Some(api_key) = fields.api_key.as_mut() {
+        *api_key = api_key.trim().to_string();
+        if api_key.trim().is_empty() {
+            fields.api_key = None;
+        }
+    }
+}
+
+fn looks_like_env_var_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let first = match chars.next() {
+        Some(ch) => ch,
+        None => return false,
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return false;
+    }
+    true
+}
+
+fn sanitize_provider_id_fragment(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_dash = false;
+    for c in input.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+            previous_dash = false;
+        } else if !out.is_empty() && !previous_dash {
+            out.push('-');
+            previous_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    if out.is_empty() {
+        "provider".to_string()
+    } else {
+        out
+    }
+}
+
+fn make_provider_id_from_base_url(base_url: &str) -> String {
+    let mut tail = base_url.trim().to_string();
+    if let Some((_, rest)) = tail.split_once("://") {
+        tail = rest.to_string();
+    }
+    tail = tail
+        .split(&['?', '#'][..])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
+    let (host, path) = tail
+        .split_once('/')
+        .map_or((tail.as_str(), ""), |(host, path)| (host, path));
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    let host_parts: Vec<_> = host
+        .split('.')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut seed = if host_parts.is_empty() {
+        "gateway".to_string()
+    } else {
+        host_parts.join("-")
+    };
+    let path_seed = path
+        .split('/')
+        .find(|segment| !segment.trim().is_empty())
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or_default();
+    if !path_seed.is_empty() {
+        if !seed.is_empty() {
+            seed.push('-');
+        }
+        seed.push_str(path_seed);
+    }
+    sanitize_provider_id_fragment(&seed)
+}
+
+fn provider_id_is_taken(state: &AppState, id: &str) -> bool {
+    if id == PRIMARY_PROVIDER_ID {
+        return true;
+    }
+    state.read_config().providers.contains_key(id)
+}
+
+fn unique_provider_id(state: &AppState, base_id: &str) -> String {
+    let mut candidate = sanitize_provider_id_fragment(base_id);
+    let mut suffix = 2;
+    while provider_id_is_taken(state, &candidate) {
+        candidate = format!("{base_id}-{suffix}");
+        suffix += 1;
+    }
+    candidate
 }
 
 /// TOML owns the credential selector for a TOML-backed provider.  Persisting a
@@ -1080,6 +1215,8 @@ fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -
         || before.models_path != after.models_path
         || before.model_catalog_only != after.model_catalog_only
         || before.api_key_env != after.api_key_env
+        || before.api_key != after.api_key
+        || before.headers != after.headers
         || before.auth_header != after.auth_header
         || before.auth_scheme != after.auth_scheme
 }
@@ -1106,6 +1243,12 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
             let trimmed = api_key_env.trim();
             provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
+    }
+    if let Some(api_key) = fields.api_key.as_ref().map(str::trim).filter(|value| !value.is_empty()) {
+        provider.api_key = Some(api_key.to_string());
+    }
+    if let Some(headers) = &fields.headers {
+        provider.headers = headers.clone();
     }
     if let Some(auth_header) = &fields.auth_header {
         provider.auth_header = auth_header.clone();
@@ -1205,7 +1348,22 @@ async fn list_providers(
 }
 
 async fn list_provider_templates() -> Json<Vec<crate::provider_templates::ProviderTemplate>> {
-    Json(bundled_provider_templates())
+    let mut templates = bundled_provider_templates();
+    templates.sort_by(|left, right| {
+        let left_custom = left.key == "custom";
+        let right_custom = right.key == "custom";
+        if left_custom != right_custom {
+            return if left_custom {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            };
+        }
+        left.label
+            .to_ascii_lowercase()
+            .cmp(&right.label.to_ascii_lowercase())
+    });
+    Json(templates)
 }
 
 async fn create_provider(
@@ -1213,7 +1371,9 @@ async fn create_provider(
     Json(body): Json<CreateProviderBody>,
 ) -> Result<(StatusCode, Json<ProviderView>), ApiError> {
     let _mutation = state.mutation_lock.lock().await;
-    validate_provider_persist(&body.fields)?;
+    let mut fields = body.fields;
+    normalize_provider_api_key_fields(&mut fields);
+    validate_provider_persist(&fields)?;
 
     let template_key = body
         .template
@@ -1225,13 +1385,7 @@ async fn create_provider(
             ApiError::bad_request(format!("unknown provider template `{template_key}`"))
         })?;
         if template.key == "custom" {
-            let id = body.id.trim();
-            validate_provider_id(id)?;
-            if id == PRIMARY_PROVIDER_ID {
-                return Err(ApiError::bad_request("cannot create default provider id"));
-            }
-            let base_url = body
-                .fields
+            let base_url = fields
                 .base_url
                 .as_deref()
                 .map(str::trim)
@@ -1239,10 +1393,25 @@ async fn create_provider(
                 .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
             let mut provider = template.provider;
             provider.base_url = base_url.to_string();
-            provider.enabled = body.fields.enabled.unwrap_or(true);
+            provider.enabled = fields.enabled.unwrap_or(true);
             provider.model_catalog = body.model_catalog.clone();
-            apply_provider_persist(&mut provider, &body.fields);
-            (id.to_string(), provider)
+            apply_provider_persist(&mut provider, &fields);
+            let candidate = body
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| make_provider_id_from_base_url(base_url));
+            let id = if provider_id_is_taken(&state, candidate) {
+                unique_provider_id(&state, candidate)
+            } else {
+                candidate.to_string()
+            };
+            validate_provider_id(&id)?;
+            if id == PRIMARY_PROVIDER_ID {
+                return Err(ApiError::bad_request("cannot create default provider id"));
+            }
+            (id, provider)
         } else {
             // Named example profiles always use the bundled provider id + snapshot.
             let id = template.id.clone();
@@ -1251,8 +1420,12 @@ async fn create_provider(
                 return Err(ApiError::bad_request("cannot create default provider id"));
             }
             let mut provider = template.provider;
-            provider.enabled = body.fields.enabled.unwrap_or(true);
-            match &body.fields.api_key_env {
+            provider.enabled = fields.enabled.unwrap_or(true);
+            provider.model_catalog = body.model_catalog.clone();
+            if let Some(api_key) = fields.api_key.as_ref().filter(|value| !value.trim().is_empty()) {
+                provider.api_key = Some(api_key.clone());
+            }
+            match &fields.api_key_env {
                 OptionalPatch::Absent => {}
                 OptionalPatch::Clear => provider.api_key_env = None,
                 OptionalPatch::Set(api_key_env) => {
@@ -1263,13 +1436,17 @@ async fn create_provider(
             (id, provider)
         }
     } else {
-        let id = body.id.trim();
+        let id = body
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ApiError::bad_request("id is required"))?;
         validate_provider_id(id)?;
         if id == PRIMARY_PROVIDER_ID {
             return Err(ApiError::bad_request("cannot create default provider id"));
         }
-        let base_url = body
-            .fields
+        let base_url = fields
             .base_url
             .as_deref()
             .map(str::trim)
@@ -1277,11 +1454,11 @@ async fn create_provider(
             .ok_or_else(|| ApiError::bad_request("base_url is required"))?;
         let mut provider = ProviderConfig {
             base_url: base_url.to_string(),
-            enabled: body.fields.enabled.unwrap_or(true),
+            enabled: fields.enabled.unwrap_or(true),
             model_catalog: body.model_catalog.clone(),
             ..ProviderConfig::default()
         };
-        apply_provider_persist(&mut provider, &body.fields);
+        apply_provider_persist(&mut provider, &fields);
         (id.to_string(), provider)
     };
     validate_model_catalog(&provider.model_catalog)?;
@@ -1329,10 +1506,11 @@ async fn create_provider(
 async fn update_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(fields): Json<ProviderPersist>,
+    Json(mut fields): Json<ProviderPersist>,
 ) -> Result<Json<ProviderView>, ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
+    normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
     let managed = provider_is_managed(&state, &id);

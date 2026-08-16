@@ -77,6 +77,7 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
         enabled: None,
         api_key_env: OptionalPatch::Absent,
         api_key: None,
+        headers: None,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -103,6 +104,7 @@ fn provider_persist_null_clears_optional_name_and_api_key_env() {
         enabled: None,
         api_key_env: OptionalPatch::Clear,
         api_key: None,
+        headers: None,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -234,13 +236,14 @@ fn model_persist_deserializes_omitted_enabled_as_none() {
 }
 
 #[test]
-fn validate_provider_persist_rejects_api_key() {
+fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,
         base_url: None,
         enabled: None,
-        api_key_env: OptionalPatch::Absent,
+        api_key_env: OptionalPatch::Set("OPENAI_API_KEY".into()),
         api_key: Some("secret".into()),
+        headers: None,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -250,10 +253,7 @@ fn validate_provider_persist_rejects_api_key() {
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-    assert!(
-        err.message.contains("api_key_env"),
-        "expected api_key_env hint in error message"
-    );
+    assert!(err.message.contains("set either api_key or api_key_env"));
 }
 
 #[test]
@@ -264,6 +264,7 @@ fn validate_provider_persist_rejects_empty_base_url() {
         enabled: None,
         api_key_env: OptionalPatch::Absent,
         api_key: None,
+        headers: None,
         auth_header: None,
         auth_scheme: None,
         responses_path: None,
@@ -273,6 +274,32 @@ fn validate_provider_persist_rejects_empty_base_url() {
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_unknown_env_name_as_raw_key() {
+    const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
+    std::env::remove_var(NAME);
+
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set(NAME.to_string()),
+        api_key: None,
+        headers: None,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(fields.api_key.as_deref(), Some(NAME));
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
 #[test]
@@ -1105,7 +1132,7 @@ fn create_provider_body_accepts_named_template_payload() {
     )
     .expect("deserialize template create body");
     assert_eq!(body.template.as_deref(), Some("opencode_go"));
-    assert_eq!(body.id, "opencode_go");
+    assert_eq!(body.id.as_deref(), Some("opencode_go"));
     assert_eq!(
         body.fields.api_key_env,
         OptionalPatch::Set("OPENCODE_GO_API_KEY".into())
@@ -1148,6 +1175,7 @@ fn discovery_settings_changed_detects_credential_request_edits() {
         enabled: Some(true),
         api_key_env: OptionalPatch::Set("NEW_KEY".into()),
         api_key: None,
+        headers: None,
         auth_header: Some("authorization".into()),
         auth_scheme: Some("Bearer".into()),
         responses_path: Some("/responses".into()),
@@ -1170,6 +1198,16 @@ fn discovery_settings_changed_detects_credential_request_edits() {
     let mut auth_scheme_only = before.clone();
     auth_scheme_only.auth_scheme.clear();
     assert!(discovery_settings_changed(&before, &auth_scheme_only));
+
+    let mut api_key_changed = before.clone();
+    api_key_changed.api_key = Some("raw-key".into());
+    assert!(discovery_settings_changed(&before, &api_key_changed));
+
+    let mut headers_changed = before.clone();
+    headers_changed
+        .headers
+        .insert("X-Test-Header".into(), "test-value".into());
+    assert!(discovery_settings_changed(&before, &headers_changed));
 }
 
 #[test]

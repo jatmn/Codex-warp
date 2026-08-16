@@ -479,10 +479,16 @@
   const templateDescription = $("#template-description");
   const templateCatalogPreview = $("#template-catalog-preview");
   const templateField = $("#template-field");
+  const providerIdInput = providerForm.querySelector("[name=id]");
+  const apiKeyInput = providerForm.querySelector("[name=api_key_env]");
+  const providerHeadersSection = $("#provider-headers");
+  const providerHeadersRows = $("#provider-headers-rows");
+  const addProviderHeaderBtn = $("#provider-headers-add");
 
   $("#btn-add-provider").addEventListener("click", () => openProviderForm());
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
+  addProviderHeaderBtn.addEventListener("click", () => addProviderHeaderRow());
 
   providerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -492,10 +498,10 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
+    const apiKeyInputValue = String(apiKeyInput.value || "").trim();
     const body = {
-      name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: String(fd.get("api_key_env") || "").trim() || null,
+      api_key_env: apiKeyInputValue || null,
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -505,14 +511,16 @@
       model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
     };
+    const headers = collectProviderHeadersFromForm();
     try {
       if (mode === "create") {
         const isCustom = !template || template.key === "custom";
         const payload = isCustom
           ? {
               template: "custom",
-              id,
+              ...(id ? { id } : {}),
               ...body,
+              ...(headers ? { headers } : {}),
               model_catalog: selectedTemplateCatalog,
             }
           : {
@@ -521,15 +529,19 @@
               api_key_env: body.api_key_env,
               enabled: body.enabled,
             };
-        await api("/providers", {
+        const created = await api("/providers", {
           method: "POST",
           body: JSON.stringify(payload),
         });
+        providerDialog.close();
+        await loadProviders({ refreshRoutes: false });
+        status(`Provider ${created.id} created`);
+        return;
       } else {
-        await api(`/providers/${encodeURIComponent(id)}`, {
+        const targetId = id;
+        await api(`/providers/${encodeURIComponent(targetId)}`, {
           method: "PUT",
           body: JSON.stringify({
-            name: body.name,
             base_url: body.base_url,
             api_key_env: body.api_key_env,
             auth_header: body.auth_header,
@@ -537,16 +549,98 @@
             responses_path: body.responses_path,
             chat_completions_path: body.chat_completions_path,
             models_path: body.models_path,
+            ...(headers ? { headers } : {}),
             model_catalog_only: body.model_catalog_only,
             enabled: body.enabled,
           }),
         });
+        providerDialog.close();
+        await loadProviders({ refreshRoutes: false });
+        status(`Provider ${targetId} updated`);
       }
-      providerDialog.close();
-      await loadProviders({ refreshRoutes: false });
-      status(mode === "create" ? `Provider ${id} created` : `Provider ${id} updated`);
     } catch (e) { status(`Error: ${e.message}`); }
   });
+
+  function addProviderHeaderRow(name = "", value = "") {
+    const row = document.createElement("div");
+    row.className = "provider-header-row";
+    const headerName = document.createElement("label");
+    headerName.textContent = "Header";
+    const nameInput = document.createElement("input");
+    nameInput.name = "provider-header-name";
+    nameInput.placeholder = "X-Header";
+    nameInput.value = name;
+    headerName.append(nameInput);
+
+    const headerValue = document.createElement("label");
+    headerValue.textContent = "Value";
+    const valueInput = document.createElement("input");
+    valueInput.name = "provider-header-value";
+    valueInput.placeholder = "value";
+    valueInput.value = value;
+    headerValue.append(valueInput);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn small danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      row.remove();
+      if (!providerHeadersRows.children.length) {
+        addProviderHeaderRow();
+      }
+    });
+    row.append(headerName, headerValue, remove);
+    providerHeadersRows.append(row);
+  }
+
+  function collectProviderHeadersFromForm() {
+    const rows = Array.from(
+      providerHeadersRows.querySelectorAll(".provider-header-row"),
+    );
+    if (rows.length === 0) {
+      return providerHeadersSection.hidden ? null : {};
+    }
+    const headers = {};
+    for (const row of rows) {
+      const rawName = row.querySelector("[name=provider-header-name]");
+      const rawValue = row.querySelector("[name=provider-header-value]");
+      if (!rawName || !rawValue) {
+        continue;
+      }
+      const key = String(rawName.value || "").trim();
+      if (!key) {
+        continue;
+      }
+      headers[key] = String(rawValue.value || "");
+    }
+    return Object.keys(headers).length ? headers : {};
+  }
+
+  function applyProviderHeaders(headers = null) {
+    providerHeadersRows.innerHTML = "";
+    if (!headers) {
+      return;
+    }
+    const entries = Object.entries(headers);
+    if (!entries.length) {
+      return;
+    }
+    for (const [name, value] of entries) {
+      addProviderHeaderRow(name, value);
+    }
+  }
+
+  function setCustomHeadersMode(isCustom) {
+    providerHeadersSection.hidden = !isCustom;
+    if (!isCustom) {
+      providerHeadersRows.innerHTML = "";
+      return;
+    }
+    if (!providerHeadersRows.children.length) {
+      addProviderHeaderRow();
+    }
+  }
 
   function templateOptionValue(template) {
     return template.key;
@@ -591,21 +685,14 @@
     const baseUrlInput = providerForm.querySelector("[name=base_url]");
     identity.classList.toggle("template-locked", isNamed);
     advanced.hidden = isNamed;
-    idInput.readOnly = isNamed;
     baseUrlInput.readOnly = isNamed;
-    providerForm.querySelector("[name=name]").readOnly = isNamed;
     ["auth_header", "auth_scheme", "responses_path", "chat_completions_path", "models_path"]
       .forEach((name) => {
         providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
       });
     providerForm.querySelector("[name=model_catalog_only]").disabled = isNamed;
-    if (isNamed) {
-      idInput.removeAttribute("required");
-      baseUrlInput.removeAttribute("required");
-    } else {
-      idInput.setAttribute("required", "required");
-      baseUrlInput.setAttribute("required", "required");
-    }
+    idInput.readOnly = true;
+    setCustomHeadersMode(!isNamed);
   }
 
   function applySelectedTemplate() {
@@ -624,7 +711,6 @@
       : [];
     templateDescription.textContent = template.description || "";
     idInput.value = template.id || "";
-    providerForm.querySelector("[name=name]").value = template.name || "";
     providerForm.querySelector("[name=base_url]").value = template.base_url || "";
     providerForm.querySelector("[name=api_key_env]").value = template.api_key_env || "";
     providerForm.querySelector("[name=auth_header]").value =
@@ -639,11 +725,7 @@
     providerForm.querySelector("[name=enabled]").checked = true;
     setNamedTemplateMode(isNamed);
     renderCatalogPreview(selectedTemplateCatalog);
-    if (!isNamed) {
-      idInput.focus();
-    } else {
-      providerForm.querySelector("[name=api_key_env]").focus();
-    }
+    providerForm.querySelector("[name=api_key_env]").focus();
   }
 
   function findTemplateForProvider(provider) {
@@ -665,6 +747,7 @@
       templateField.hidden = false;
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
+      const isNamed = matching?.key !== "custom";
       templateSelect.value = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
@@ -676,11 +759,10 @@
         "This provider does not match a bundled example template.";
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
-      setNamedTemplateMode(false);
+      setNamedTemplateMode(isNamed);
       $("#provider-advanced").hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
-      providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
       providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
       const apiKeyEnvInput = providerForm.querySelector("[name=api_key_env]");
@@ -696,8 +778,19 @@
       providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
+      if (!isNamed) {
+        applyProviderHeaders(p.headers);
+      } else {
+        applyProviderHeaders(null);
+      }
+      apiKeyInput.value = p.api_key_env || "";
+      if (isNamed) {
+        providerForm.querySelector("[name=api_key_env]").readOnly = false;
+      }
     } else {
       providerForm.reset();
+      providerIdInput.value = "";
+      applyProviderHeaders(null);
       providerForm.querySelector("[name=api_key_env]").readOnly = false;
       providerForm.querySelector("[name=api_key_env]").title = "";
       providerForm.dataset.mode = "create";
