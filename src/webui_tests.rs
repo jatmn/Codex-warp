@@ -32,6 +32,43 @@ fn test_state() -> AppState {
     )
 }
 
+fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
+    ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    }
+}
+
+fn persist_credentials(
+    api_key_env: OptionalPatch<String>,
+    api_key: OptionalPatch<String>,
+) -> ProviderPersist {
+    ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env,
+        api_key,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    }
+}
+
 fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
     let selector_at = css
         .find(selector)
@@ -348,6 +385,36 @@ fn validate_provider_persist_rejects_invalid_http_header_names() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_empty_and_whitespace_header_names() {
+    let mut empty = BTreeMap::new();
+    empty.insert("".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(empty)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("header names cannot be empty"));
+
+    let mut whitespace_only = BTreeMap::new();
+    whitespace_only.insert("   ".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(whitespace_only)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("header names cannot be empty"));
+
+    let mut surrounding = BTreeMap::new();
+    surrounding.insert(" X-Header".into(), "x".into());
+    let err = validate_provider_persist(&persist_headers(surrounding)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("must not have surrounding whitespace"));
+}
+
+#[test]
+fn validate_provider_persist_rejects_invalid_http_header_values() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Invalid-Value".into(), "value\nwith-newline".into());
+    let err = validate_provider_persist(&persist_headers(headers)).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("invalid custom header value"));
+}
+
+#[test]
 fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     let state = test_state();
     let dual = ProviderConfig {
@@ -365,10 +432,13 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     );
     assert!(dual_view.headers.is_empty());
 
+    // A unique name that this process does not set. Do not mutate the
+    // environment: other tests may read env vars concurrently.
     const UNSET_ENV: &str = "CODEXWARP_VIEW_UNSET_API_KEY_ENV_0001";
-    unsafe {
-        std::env::remove_var(UNSET_ENV);
-    }
+    assert!(
+        std::env::var(UNSET_ENV).is_err(),
+        "{UNSET_ENV} must stay unset so has_api_key reflects occupancy, not a leaked process secret"
+    );
     let env_only = ProviderConfig {
         api_key_env: Some(UNSET_ENV.into()),
         base_url: "https://example.test/v1".into(),
@@ -383,29 +453,29 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
 #[test]
 fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
-    unsafe {
-        std::env::remove_var(NAME);
-    }
-
-    let mut fields = ProviderPersist {
-        name: OptionalPatch::Absent,
-        base_url: None,
-        enabled: None,
-        api_key_env: OptionalPatch::Set(NAME.to_string()),
-        api_key: OptionalPatch::Absent,
-        headers: OptionalPatch::Absent,
-        auth_header: None,
-        auth_scheme: None,
-        responses_path: None,
-        chat_completions_path: None,
-        models_path: None,
-        model_catalog_only: None,
-    };
+    let mut fields =
+        persist_credentials(OptionalPatch::Set(NAME.to_string()), OptionalPatch::Absent);
 
     normalize_provider_api_key_fields(&mut fields);
 
     assert!(matches!(fields.api_key, OptionalPatch::Absent));
     assert_eq!(fields.api_key_env, OptionalPatch::Set(NAME.to_string()));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_empty_api_key_env_as_absent() {
+    let mut fields = persist_credentials(OptionalPatch::Set("   ".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+    assert!(matches!(fields.api_key, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_treats_empty_api_key_as_clear() {
+    let mut fields = persist_credentials(OptionalPatch::Absent, OptionalPatch::Set("   ".into()));
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key, OptionalPatch::Clear));
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
 }
 
 #[test]
@@ -1556,9 +1626,15 @@ fn discovery_settings_changed_detects_credential_request_edits() {
     fields.apply_to(&mut after);
     assert!(discovery_settings_changed(&before, &after));
 
+    assert!(!discovery_settings_changed(&before, &before));
+
     let mut name_only = before.clone();
     name_only.name = Some("Renamed".into());
     assert!(!discovery_settings_changed(&before, &name_only));
+
+    let mut enabled_only = before.clone();
+    enabled_only.enabled = !before.enabled;
+    assert!(!discovery_settings_changed(&before, &enabled_only));
 
     let mut auth_header_only = before.clone();
     auth_header_only.auth_header = "x-api-key".into();
