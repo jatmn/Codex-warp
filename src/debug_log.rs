@@ -159,38 +159,41 @@ fn rotation_retired_backup_path(path: &Path) -> PathBuf {
 }
 
 fn restore_staged_log(path: &Path, staging: &Path) {
-    if staging.exists() && !path.exists() {
-        if let Err(err) = fs::rename(staging, path) {
-            warn!(
-                "failed to restore debug log {} from staging {}: {err}",
-                path.display(),
-                staging.display()
-            );
-        }
+    if staging.exists()
+        && !path.exists()
+        && let Err(err) = fs::rename(staging, path)
+    {
+        warn!(
+            "failed to restore debug log {} from staging {}: {err}",
+            path.display(),
+            staging.display()
+        );
     }
 }
 
 fn restore_pending_to_staging(staging: &Path, pending: &Path) {
-    if pending.exists() && !staging.exists() {
-        if let Err(err) = fs::rename(pending, staging) {
-            warn!(
-                "failed to restore debug log staging {} from pending {}: {err}",
-                staging.display(),
-                pending.display()
-            );
-        }
+    if pending.exists()
+        && !staging.exists()
+        && let Err(err) = fs::rename(pending, staging)
+    {
+        warn!(
+            "failed to restore debug log staging {} from pending {}: {err}",
+            staging.display(),
+            pending.display()
+        );
     }
 }
 
 fn rollback_failed_backup_promotion(backup: &Path, retired: &Path, staging: &Path, pending: &Path) {
-    if retired.exists() && !backup.exists() {
-        if let Err(err) = fs::rename(retired, backup) {
-            warn!(
-                "failed to restore debug log backup {} from retired {}: {err}",
-                backup.display(),
-                retired.display()
-            );
-        }
+    if retired.exists()
+        && !backup.exists()
+        && let Err(err) = fs::rename(retired, backup)
+    {
+        warn!(
+            "failed to restore debug log backup {} from retired {}: {err}",
+            backup.display(),
+            retired.display()
+        );
     }
     restore_pending_to_staging(staging, pending);
 }
@@ -290,13 +293,10 @@ pub(crate) fn recover_interrupted_rotation(path: &Path) -> std::io::Result<()> {
 fn rotate_log_to_backup(path: &Path, backup: &Path, staging: &Path) -> std::io::Result<()> {
     recover_interrupted_rotation(path)?;
     if staging.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "debug log staging file {} still exists after recovery",
-                staging.display()
-            ),
-        ));
+        return Err(std::io::Error::other(format!(
+            "debug log staging file {} still exists after recovery",
+            staging.display()
+        )));
     }
     fs::rename(path, staging)?;
     match promote_staging_to_backup(staging, backup, path) {
@@ -447,10 +447,7 @@ impl DebugLog {
         // refers to the inode we opened, so parsing does not block writers.
         let (enabled, path, file, file_bytes) = {
             let Ok(_guard) = self.writer_lock.lock() else {
-                return Err(std::io::Error::new(
-                    ErrorKind::Other,
-                    "failed to lock debug log writer",
-                ));
+                return Err(std::io::Error::other("failed to lock debug log writer"));
             };
             let inner = self.read_inner();
             let enabled = inner.snapshot.enabled;
@@ -599,6 +596,7 @@ pub(crate) fn validate_debug_settings(config: &mut DebugConfig) -> Result<(), St
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn validate_debug_log_path(path: &Path) -> Result<PathBuf, String> {
     pin_debug_log_path(path, true)
 }

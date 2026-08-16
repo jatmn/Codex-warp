@@ -44,6 +44,7 @@ impl AppState {
         self.config.write().expect("config lock poisoned")
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         config: Arc<RwLock<AppConfig>>,
         client: Client,

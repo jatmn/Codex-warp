@@ -42,12 +42,10 @@ pub(crate) fn apply_request_morphs(
                 }
             }
             RequestMorphKind::StaticString => {
-                let Some(target) = morph.to.as_deref().or_else(|| {
-                    if morph.from.is_empty() {
-                        None
-                    } else {
-                        Some(morph.from.as_str())
-                    }
+                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
+                    None
+                } else {
+                    Some(morph.from.as_str())
                 }) else {
                     continue;
                 };
@@ -79,10 +77,10 @@ pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &Tr
     if let Some(Value::String(effort)) = body.get_mut("reasoning_effort") {
         remap_disable_reasoning_effort(effort, none_value);
     }
-    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
-        if let Some(Value::String(effort)) = reasoning.get_mut("effort") {
-            remap_disable_reasoning_effort(effort, none_value);
-        }
+    if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut)
+        && let Some(Value::String(effort)) = reasoning.get_mut("effort")
+    {
+        remap_disable_reasoning_effort(effort, none_value);
     }
 }
 
@@ -150,12 +148,10 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 }
             }
             RequestMorphKind::StaticString => {
-                let Some(target) = morph.to.as_deref().or_else(|| {
-                    if morph.from.is_empty() {
-                        None
-                    } else {
-                        Some(morph.from.as_str())
-                    }
+                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
+                    None
+                } else {
+                    Some(morph.from.as_str())
                 }) else {
                     continue;
                 };

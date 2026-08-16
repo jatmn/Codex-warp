@@ -692,7 +692,7 @@ fn expands_multi_agent_namespace_into_spawn_agent_helpers() {
 
     assert!(names.contains(&"spawn_agent"));
     assert!(names.contains(&"wait_agent"));
-    assert!(!names.iter().any(|name| *name == "multi_agent_v1_tool"));
+    assert!(!names.contains(&"multi_agent_v1_tool"));
     assert_eq!(
         transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
         "spawn_agent"

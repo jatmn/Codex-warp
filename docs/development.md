@@ -149,9 +149,9 @@ git diff --check
 
 `scripts/source-checks.sh` runs rustfmt, `typos`, docs whitespace, docs
 contraction capitalization (lowercase first-person contractions outside code
-spans), `node --check` for the Web UI scripts, the chart harness, and Clippy
-on added or edited Rust lines. Those Clippy hits are review findings. Install
-the spell checker with `cargo install typos-cli --locked`.
+spans), `node --check` for the Web UI scripts, the chart harness, and crate-wide
+Clippy (`cargo clippy --all-targets -- -D warnings`). Those Clippy hits are
+review findings. Install the spell checker with `cargo install typos-cli --locked`.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
 ownership, pointer reclaim only on hit, paint only with a measured CSS width,
@@ -175,9 +175,8 @@ The CI job performs:
   `Cargo.toml`
 - `typos` spell check (`_typos.toml`)
 - `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
-  capitalization, Web UI JavaScript syntax and chart harness, Clippy on added
-  or edited Rust lines; existing Clippy warnings on untouched lines stay for a
-  follow-up cleanup)
+  capitalization, Web UI JavaScript syntax and chart harness, crate-wide
+  Clippy with `-D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`

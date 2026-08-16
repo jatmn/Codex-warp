@@ -79,6 +79,7 @@ pub(crate) fn endpoint_url(provider: &ProviderConfig, path: &str) -> String {
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn apply_headers(
     request: reqwest::RequestBuilder,
     provider: &ProviderConfig,

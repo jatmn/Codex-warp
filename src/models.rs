@@ -44,6 +44,7 @@ pub(crate) async fn models(State(state): State<AppState>, headers: HeaderMap) ->
 /// Refresh routes while the caller already holds `AppState::mutation_lock`.
 /// Prefer [`refresh_model_routes_while_mutation_locked`] for Web UI mutations —
 /// this HTTP-shaped helper exists for tests and rare full rediscovery cases.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn models_while_mutation_locked(state: AppState, headers: HeaderMap) -> Response {
     models_with_publish_lock(state, headers, true).await
 }
@@ -57,6 +58,7 @@ pub(crate) async fn models_while_mutation_locked(state: AppState, headers: Heade
 pub(crate) enum MutationRouteRefresh {
     /// Rebuild from catalogs/overlays and retain prior live discovery for every
     /// still-enabled provider. No upstream fetches.
+    #[cfg_attr(not(test), allow(dead_code))]
     SeedsAndRetain,
     /// Fetch upstream models for one provider; retain prior discovery for every
     /// other enabled provider.

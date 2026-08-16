@@ -41,10 +41,9 @@ fn all_providers_get_attribution_headers() {
     provider.base_url = "https://api.example.com/v1".to_string();
 
     let request = Client::new().post("https://api.example.com/v1/chat/completions");
-    let request =
-        apply_headers_with_accept(request, &provider, &HeaderMap::new(), "text/event-stream")
-            .build()
-            .expect("request builds");
+    let request = apply_headers(request, &provider, &HeaderMap::new())
+        .build()
+        .expect("request builds");
     let headers = request.headers();
 
     assert_eq!(

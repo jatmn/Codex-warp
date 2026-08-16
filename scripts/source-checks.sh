@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Mechanical nits that should fail before a human or AI review round.
-# Clippy fails only on added/edited Rust lines so baseline warnings elsewhere
-# are not hidden and are not required drive-by cleanups.
+# Clippy is crate-wide: `cargo clippy --all-targets -- -D warnings`.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -34,7 +33,7 @@ if grep -RInE '[[:blank:]]$' "${docs_files[@]}"; then
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "source-checks: node is required for docs prose, JS syntax, the chart harness, and Clippy filtering" >&2
+  echo "source-checks: node is required for docs prose, JS syntax, and the chart harness" >&2
   fail=1
 elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
@@ -59,41 +58,11 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 if [ "$run_clippy" = "1" ]; then
-  clippy_diff="$(mktemp)"
-  # PR: files changed vs the PR base. Push: the commit just landed (HEAD^),
-  # because origin/main...HEAD is empty after checkout. Local: origin/main,
-  # then HEAD^ when that remote is missing, plus unstaged and staged edits.
-  {
-    if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
-      git diff -U0 "origin/${GITHUB_BASE_REF}...HEAD" -- "*.rs" || true
-    elif [ "${GITHUB_EVENT_NAME:-}" = "push" ] && git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-      git diff -U0 HEAD^ HEAD -- "*.rs" || true
-    elif git rev-parse --verify origin/main >/dev/null 2>&1; then
-      git diff -U0 origin/main...HEAD -- "*.rs" || true
-    elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-      git diff -U0 HEAD^ HEAD -- "*.rs" || true
-    fi
-    git diff -U0 -- "*.rs" || true
-    git diff -U0 --cached -- "*.rs" || true
-  } >"$clippy_diff"
-  if grep -q '^+++ ' "$clippy_diff"; then
-    echo "source-checks: clippy on added or edited Rust lines"
-    clippy_json="$(mktemp)"
-    if cargo clippy --locked --all-targets --message-format=json >"$clippy_json"; then
-      if ! command -v node >/dev/null 2>&1; then
-        echo "source-checks: clippy changed-line filter needs node" >&2
-        fail=1
-      elif ! node scripts/filter_clippy_changed.js "$clippy_diff" <"$clippy_json"; then
-        echo "source-checks: clippy warnings on changed lines are findings" >&2
-        fail=1
-      fi
-    else
-      echo "source-checks: clippy failed to run" >&2
-      fail=1
-    fi
-    rm -f "$clippy_json"
+  echo "source-checks: clippy --all-targets -D warnings"
+  if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
+    echo "source-checks: clippy warnings are findings" >&2
+    fail=1
   fi
-  rm -f "$clippy_diff"
 fi
 
 if [ "$fail" -ne 0 ]; then
