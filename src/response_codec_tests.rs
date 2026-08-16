@@ -1932,6 +1932,80 @@ fn continue_guard_keep_you_posted_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_next_i_need_a_decision_stays_end_turn() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Next I need a decision from you."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-next-need-decision",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_then_run_the_tests_triggers_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Then run the tests."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-then-run",
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
 fn continue_guard_final_report_colon_stays_end_turn() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
@@ -1987,6 +2061,156 @@ fn continue_guard_update_plan_tail_does_not_reset_followup_budget() {
             "name": "update_plan",
             "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}"
         }]
+    });
+
+    let first = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(!completed_end_turn(
+        &build_accum("Now let me inspect the tree.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &first)),
+        )
+    ));
+
+    let second = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(completed_end_turn(
+        &build_accum("Now let me inspect again.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &second)),
+        )
+    ));
+}
+
+#[test]
+fn continue_guard_update_plan_output_does_not_reset_followup_budget() {
+    let build_accum = |text: &str| {
+        let mut accum = ChatAccum::default();
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": text}}]
+        }));
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        }));
+        accum
+    };
+    let request = json!({
+        "prompt_cache_key": "continue-guard-test-plan-output",
+        "input": [
+            {
+                "type": "function_call",
+                "name": "update_plan",
+                "call_id": "call_plan",
+                "arguments": "{\"plan\":[{\"step\":\"Inspect\",\"status\":\"in_progress\"}]}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_plan",
+                "output": "ok"
+            }
+        ]
+    });
+
+    let first = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(!completed_end_turn(
+        &build_accum("Now let me inspect the tree.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &first)),
+        )
+    ));
+
+    let second = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
+    assert!(completed_end_turn(
+        &build_accum("Now let me inspect again.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &second)),
+        )
+    ));
+}
+
+#[test]
+fn continue_guard_budget_resets_after_messages_tool_progress() {
+    let build_accum = |text: &str| {
+        let mut accum = ChatAccum::default();
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": text}}]
+        }));
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        }));
+        accum
+    };
+
+    let first = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-messages-progress",
+            "messages": [
+                {"role": "user", "content": "do the task"}
+            ]
+        }),
+    );
+    assert!(!completed_end_turn(
+        &build_accum("Now let me inspect the tree.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &first)),
+        )
+    ));
+
+    let second = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-messages-progress",
+            "messages": [
+                {"role": "user", "content": "do the task"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "function": {"name": "exec_command"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+            ]
+        }),
+    );
+    assert!(!completed_end_turn(
+        &build_accum("Now let me confirm the diff.").finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            Some((&DebugLog::disabled(), "dbg_test", &second)),
+        )
+    ));
+}
+
+#[test]
+fn continue_guard_messages_update_plan_tool_does_not_reset_followup_budget() {
+    let build_accum = |text: &str| {
+        let mut accum = ChatAccum::default();
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": text}}]
+        }));
+        accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {}, "finish_reason": "stop"}]
+        }));
+        accum
+    };
+    let request = json!({
+        "prompt_cache_key": "continue-guard-test-messages-plan-output",
+        "messages": [
+            {"role": "user", "content": "do the task"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_plan", "function": {"name": "update_plan"}}]},
+            {"role": "tool", "tool_call_id": "call_plan", "content": "ok"}
+        ]
     });
 
     let first = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);

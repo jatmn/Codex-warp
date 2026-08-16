@@ -1028,23 +1028,45 @@ fn parse_plan_summary(arguments: Value) -> Option<ActivePlanSummary> {
 /// and let text-only pause loops run past `max_followups`.
 fn request_shows_tool_progress(request: &Value) -> bool {
     if let Some(input) = request.get("input").and_then(Value::as_array) {
-        return input.last().is_some_and(item_shows_tool_progress);
+        return input
+            .last()
+            .is_some_and(|item| item_shows_tool_progress(item, input));
     }
     // Defensive chat-completions shape (some callers may pass a converted body):
     // tool results or pending assistant tool calls at the end of `messages`.
     request
         .get("messages")
         .and_then(Value::as_array)
-        .and_then(|messages| messages.last())
-        .is_some_and(chat_message_shows_tool_progress)
+        .is_some_and(|messages| chat_messages_show_tool_progress(messages))
 }
 
-fn item_shows_tool_progress(item: &Value) -> bool {
+fn item_shows_tool_progress(item: &Value, items: &[Value]) -> bool {
     match item.get("type").and_then(Value::as_str) {
-        Some("function_call_output" | "custom_tool_call_output") => true,
+        Some("function_call_output" | "custom_tool_call_output") => {
+            !output_belongs_to_update_plan(item, items)
+        }
         Some("function_call" | "tool_call" | "custom_tool_call") => !item_is_update_plan(item),
         _ => false,
     }
+}
+
+fn output_belongs_to_update_plan(output: &Value, items: &[Value]) -> bool {
+    let Some(call_id) = output_call_id(output) else {
+        return false;
+    };
+    items.iter().any(|item| {
+        item_is_update_plan(item)
+            && item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == call_id)
+    })
+}
+
+fn output_call_id(item: &Value) -> Option<&str> {
+    item.get("call_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("tool_call_id").and_then(Value::as_str))
 }
 
 fn item_is_update_plan(item: &Value) -> bool {
@@ -1056,14 +1078,36 @@ fn item_is_update_plan(item: &Value) -> bool {
             == Some("update_plan")
 }
 
-fn chat_message_shows_tool_progress(message: &Value) -> bool {
-    if message.get("role").and_then(Value::as_str) == Some("tool") {
-        return true;
+fn chat_messages_show_tool_progress(messages: &[Value]) -> bool {
+    let Some(last) = messages.last() else {
+        return false;
+    };
+    if last.get("role").and_then(Value::as_str) == Some("tool") {
+        return !tool_message_belongs_to_update_plan(last, messages);
     }
-    message
-        .get("tool_calls")
+    last.get("tool_calls")
         .and_then(Value::as_array)
         .is_some_and(|calls| calls.iter().any(|call| !item_is_update_plan(call)))
+}
+
+fn tool_message_belongs_to_update_plan(message: &Value, messages: &[Value]) -> bool {
+    let Some(call_id) = output_call_id(message) else {
+        return false;
+    };
+    messages.iter().rev().skip(1).any(|message| {
+        message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    item_is_update_plan(call)
+                        && call
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id == call_id)
+                })
+            })
+    })
 }
 
 fn looks_like_mid_task_stop(text: &str) -> bool {
@@ -1106,7 +1150,7 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
 }
 
 fn contains_work_intent(normalized: &str) -> bool {
-    const PREFIXES: [&str; 9] = [
+    const FIRST_PERSON_PREFIXES: [&str; 7] = [
         "let me ",
         "i'll ",
         "i will ",
@@ -1114,14 +1158,31 @@ fn contains_work_intent(normalized: &str) -> bool {
         "i need to ",
         "i'm going to ",
         "i should ",
-        "then ",
-        "next ",
     ];
-    PREFIXES.iter().any(|prefix| {
+    // Sequencing words are common in hand-offs ("Next I need a decision from
+    // you"). They count only when the next action is a known work verb, after
+    // nested first-person fillers. "Then I'll clone the repo" still matches
+    // via the first-person prefix, not via `then`.
+    const SEQUENCING_PREFIXES: [&str; 2] = ["then ", "next "];
+    prefix_has_work_intent(normalized, &FIRST_PERSON_PREFIXES, false)
+        || prefix_has_work_intent(normalized, &SEQUENCING_PREFIXES, true)
+}
+
+fn prefix_has_work_intent(
+    normalized: &str,
+    prefixes: &[&str],
+    require_known_work_verb: bool,
+) -> bool {
+    prefixes.iter().any(|prefix| {
         let mut start = 0;
         while let Some(idx) = normalized[start..].find(prefix) {
-            let after_prefix = &normalized[start + idx + prefix.len()..];
-            if remainder_is_work_action(strip_intent_fillers(after_prefix)) {
+            let after_prefix = strip_intent_fillers(&normalized[start + idx + prefix.len()..]);
+            let matched = if require_known_work_verb {
+                remainder_starts_with_work_verb(after_prefix)
+            } else {
+                remainder_is_work_action(after_prefix)
+            };
+            if matched {
                 return true;
             }
             start += idx + prefix.len();

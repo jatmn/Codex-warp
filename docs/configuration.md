@@ -243,11 +243,12 @@ Modes:
 
 The guard only applies to chat-completions streams that finish with
 `finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
-(`let me` / `I'll` / `I need to` / `I should` / `then` / `next` when the next
-action is a known work verb, or an unlisted verb with a concrete object such
-as `I'll clone the repo` / `I'll add tests`, including hyphenated repeats
-such as `re-audit`, or a dangling `:`/`...` whose last sentence still talks
-about remaining work). Complement particles such as `back` and `up` are
+(`let me` / `I'll` / `I need to` / `I should` when the next action is a known
+work verb or an unlisted verb with a concrete object such as `I'll clone the
+repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
+`then` / `next` only when the next action is a known work verb, so
+`Then run the tests` continues but `Next I need a decision from you` does not;
+or a dangling `:`/`...` whose last sentence still talks about remaining work). Complement particles such as `back` and `up` are
 stripped before the object is classified, so `I'll check back with you` and
 `I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
 complements, leftover adverbs or state words, offer clauses on unlisted verbs
