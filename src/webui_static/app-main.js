@@ -598,9 +598,6 @@
     const rows = Array.from(
       providerHeadersRows.querySelectorAll(".provider-header-row"),
     );
-    if (rows.length === 0) {
-      return providerHeadersSection.hidden ? null : {};
-    }
     const headers = {};
     for (const row of rows) {
       const rawName = row.querySelector("[name=provider-header-name]");
@@ -614,7 +611,7 @@
       }
       headers[key] = String(rawValue.value || "");
     }
-    return Object.keys(headers).length ? headers : {};
+    return Object.keys(headers).length ? headers : null;
   }
 
   function applyProviderHeaders(headers = null) {
@@ -785,7 +782,7 @@
       }
       apiKeyInput.value = p.api_key_env || "";
       if (isNamed) {
-        providerForm.querySelector("[name=api_key_env]").readOnly = false;
+        providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
       }
     } else {
       providerForm.reset();

@@ -1176,10 +1176,11 @@ fn provider_id_is_taken(state: &AppState, id: &str) -> bool {
 }
 
 fn unique_provider_id(state: &AppState, base_id: &str) -> String {
-    let mut candidate = sanitize_provider_id_fragment(base_id);
+    let sanitized = sanitize_provider_id_fragment(base_id);
+    let mut candidate = sanitized.clone();
     let mut suffix = 2;
     while provider_id_is_taken(state, &candidate) {
-        candidate = format!("{base_id}-{suffix}");
+        candidate = format!("{sanitized}-{suffix}");
         suffix += 1;
     }
     candidate

@@ -305,6 +305,34 @@ fn normalize_provider_api_key_fields_treats_unknown_env_name_as_raw_key() {
 }
 
 #[test]
+fn unique_provider_id_suffixes_use_sanitized_base() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "my-gateway".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "my-gateway-2".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v2".into(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    // The base id contains characters that must be sanitized; every suffix
+    // variant must stay sanitized so the generated id remains valid.
+    let id = unique_provider_id(&state, "My Gateway!");
+    assert_eq!(id, "my-gateway-3");
+    validate_provider_id(&id).expect("generated id must be valid");
+}
+
+#[test]
 fn toml_backed_provider_cannot_change_api_key_env() {
     let before = ProviderConfig {
         api_key_env: Some("OLD_KEY".into()),
