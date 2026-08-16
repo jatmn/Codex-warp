@@ -24,6 +24,34 @@ fn completed_end_turn(events: &[String]) -> bool {
         .expect("end_turn is a bool")
 }
 
+fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": text}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": cache_key,
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    completed_end_turn(&accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    ))
+}
+
 fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
     axum::http::Response::builder()
         .status(200)
@@ -600,6 +628,14 @@ fn continue_guard_let_me_know_if_wrap_up_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_let_me_know_what_failed_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Now let me know what failed in the test output:",
+        "continue-guard-test-let-me-know-what-failed",
+    ));
+}
+
+#[test]
 fn continue_guard_let_me_know_hand_off_stays_end_turn() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
@@ -1155,6 +1191,14 @@ fn continue_guard_let_me_see_if_you_need_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_let_me_see_the_test_output_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Let me see the test output.",
+        "continue-guard-test-see-the-output",
+    ));
+}
+
+#[test]
 fn continue_guard_let_me_try_to_explain_stays_end_turn() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
@@ -1189,6 +1233,14 @@ fn continue_guard_let_me_try_to_explain_stays_end_turn() {
     );
 
     assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_ill_help_fix_tests_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "I'll help fix the failing tests.",
+        "continue-guard-test-help-fix",
+    ));
 }
 
 #[test]
@@ -2040,6 +2092,14 @@ fn continue_guard_final_report_colon_stays_end_turn() {
     );
 
     assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_remaining_work_summary_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Here is a summary of remaining work:",
+        "continue-guard-test-remaining-work-summary",
+    ));
 }
 
 #[test]

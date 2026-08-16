@@ -120,8 +120,8 @@ Some chat-completions providers finish with text like `Now let me check...`
 instead of issuing the next tool call. The continue guard detects that case and
 asks Codex to continue the same turn with `end_turn = false`, so long agent
 sessions keep working instead of pausing for a manual `continue`. The guard is
-enabled by default across all providers; use the CLI flags only to tune it for
-a specific session:
+enabled by default across chat-completions providers; use the CLI flags only to
+tune it for a specific session:
 
 ```bash
 target/debug/codex-warp \
@@ -134,9 +134,9 @@ The guard is conservative: it only acts when the provider finishes with
 looks like it intended to keep working. A fully completed `update_plan`
 suppresses the guard unless later tool work shows the plan snapshot is stale;
 sessions that never call `update_plan` are still covered. `max_followups`
-limits consecutive text-only stops per session; real tool work resets the
-counter even on ordinary completions, so mid-task pauses are handled without
-allowing unproductive loops to run away. See the
+limits consecutive text-only stops per session; the counter resets when the
+last request `input` item is completed tool work, so mid-task pauses are
+handled without allowing unproductive loops to run away. See the
 [configuration guide](docs/configuration.md#continue-guard) for observe mode
 and follow-up limits.
 

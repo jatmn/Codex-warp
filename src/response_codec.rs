@@ -1121,25 +1121,25 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
         return false;
     }
     // Ranked classifier:
-    // 1. Closers that contain work-like substrings ("let me know").
-    // 2. First-person / let-me prefixes: after stripping adverbs and nested
+    // 1. First-person / let-me prefixes: after stripping adverbs and nested
     //    prefixes, the next action is work when it is a known work verb, or
     //    an unlisted verb with a concrete object ("I'll clone the repo",
     //    "I'll add tests"). Particles in the complement ("back", "ahead",
     //    "up") are stripped before the object is classified, so "check back
     //    with you" is a hand-off and "follow up soon" is not a work object.
-    //    Wrap-up verbs, person complements, offer clauses on unlisted verbs,
-    //    leftover adverbs/pronouns, and light nouns plus deferral do not count
-    //    ("Now let me summarize", "I'll update you", "I'll do it next",
+    //    Discourse verbs such as "know"/"see"/"help" are not wrap-up vetoes:
+    //    "let me know" and "see if you" stay hand-offs, while "know what
+    //    failed in the test output" / "see the test output" / "help fix"
+    //    still continue. Wrap-up verbs, person complements, offer clauses,
+    //    leftover adverbs/pronouns, and light nouns plus deferral do not
+    //    count ("Now let me summarize", "I'll update you", "I'll do it next",
     //    "I'll sit tight", "I'll take another look later", "look at your PR").
-    // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
-    //    so "Thanks to the rebase. Now let me verify" still continues.
-    // 4. Dangling `:`/`...` only when the last sentence still talks about
-    //    remaining work. Bare delivery colons ("Here is the final report:")
-    //    are not pauses.
-    if contains_overlapping_closing_phrase(&normalized) {
-        return false;
-    }
+    // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
+    //    so "Thanks to the rebase. Now let me verify" still continues, and
+    //    "no actionable issues. Now let me audit file B" still continues.
+    // 3. Dangling `:`/`...` only when the last sentence still talks about
+    //    unfinished speaker work. Delivery frames ("Here is a summary of
+    //    remaining work:") are not pauses.
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1204,6 +1204,7 @@ fn strip_intent_fillers(mut rest: &str) -> &str {
             "please ",
             "then ",
             "try ",
+            "help ",
             "to ",
             "let me ",
             "i'll ",
@@ -1241,9 +1242,14 @@ fn remainder_is_work_action(rest: &str) -> bool {
     // concrete noun object ("I'll clone the repo", "I'll add tests"), not
     // a leftover pronoun, time adverb, state adjective, offer clause, or
     // light noun plus deferral ("I'll do it next", "I'll follow up soon",
-    // "I'll sit tight", "I'll take another look later").
+    // "I'll sit tight", "I'll take another look later"). Discourse verbs
+    // such as "know"/"see" also stay hand-offs when the complement still
+    // addresses the user ("Let me know what you'd like next").
     if remainder_starts_with_work_verb(rest) {
         return true;
+    }
+    if complement_addresses_person(complement) {
+        return false;
     }
     complement_is_concrete_object(complement)
 }
@@ -1281,6 +1287,12 @@ fn complement_is_person_hand_off(complement: &str) -> bool {
         complement_head(complement),
         "you" | "your" | "yourself" | "about" | "here" | "if" | "whether" | "when"
     )
+}
+
+fn complement_addresses_person(complement: &str) -> bool {
+    complement
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .any(|token| matches!(token, "you" | "your" | "yours" | "yourself"))
 }
 
 fn complement_is_concrete_object(complement: &str) -> bool {
@@ -1419,15 +1431,12 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
         "wrap",
         "explain",
         "tell",
-        "know",
         "wait",
         "pause",
         "recap",
         "conclude",
-        "help",
         "stay",
         "remain",
-        "see",
         "think",
         "note",
         "rest",
@@ -1465,12 +1474,17 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         .next()
         .unwrap_or(normalized)
         .trim();
+    if last_sentence_is_delivery(last_sentence) {
+        return false;
+    }
     [
-        "pending",
+        "still pending",
+        "is pending",
+        "are pending",
+        "still remaining",
         "still need",
         "still have",
         "next step",
-        "remaining",
         "after that",
         "not yet",
         "to do",
@@ -1481,10 +1495,15 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
     .any(|cue| last_sentence.contains(cue))
 }
 
-fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
-    ["no actionable issues", "let me know"]
-        .iter()
-        .any(|marker| normalized.contains(marker))
+fn last_sentence_is_delivery(last_sentence: &str) -> bool {
+    last_sentence.starts_with("here is ")
+        || last_sentence.starts_with("here's ")
+        || last_sentence.starts_with("here are ")
+        || last_sentence.starts_with("this is ")
+        || last_sentence.starts_with("this was ")
+        || last_sentence.starts_with("below is ")
+        || last_sentence.contains("summary of ")
+        || last_sentence.contains("final report")
 }
 
 /// Wrap-up phrasing that should not force a follow-up unless a prefix is
@@ -1492,7 +1511,9 @@ fn contains_overlapping_closing_phrase(normalized: &str) -> bool {
 /// are not enough on their own, even with "now"/"first"/"still". Subtask
 /// completion words such as "done" or "complete" are deliberately excluded:
 /// mid-task text routinely says "the rebase is complete" before continuing
-/// ("Now let me push...").
+/// ("Now let me push..."). "let me know" is classified from the action after
+/// the prefix, not as a substring closer, so investigative phrasing can still
+/// continue.
 fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
     [
         "thank you",
@@ -1500,6 +1521,7 @@ fn contains_wrap_up_closing_phrase(normalized: &str) -> bool {
         "feel free",
         "that's all",
         "that is all",
+        "no actionable issues",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
