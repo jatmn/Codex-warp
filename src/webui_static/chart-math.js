@@ -551,12 +551,22 @@
     return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
   }
 
+  function contrastRatio(a, b) {
+    const lighter = Math.max(a, b);
+    const darker = Math.min(a, b);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
   function textColorOn(hex) {
     const lum = wcagLuminance(hex);
     if (!(lum > 0)) return "#ffffff";
-    const white = 1.05 / (lum + 0.05);
-    const dark = (lum + 0.05) / 0.05;
-    return dark > white ? "#1f2937" : "#ffffff";
+    const darkHex = "#1f2937";
+    const white = contrastRatio(1, lum);
+    // Compare against the color that will actually paint, not pure black.
+    // Using 0.05 (black) overstates dark contrast and can pick #1f2937 when
+    // white would be more readable on the fill.
+    const dark = contrastRatio(wcagLuminance(darkHex), lum);
+    return dark > white ? darkHex : "#ffffff";
   }
 
   // Hit-test a point against the pie. A donut has a dead inner circle; a full

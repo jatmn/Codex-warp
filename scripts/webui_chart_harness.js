@@ -587,6 +587,21 @@ check("textColorOn picks dark text on light fills with WCAG luminance", () => {
   assert.equal(charts.textColorOn("nope"), "#ffffff");
 });
 
+check("textColorOn compares against painted #1f2937, not pure black", () => {
+  // Sky-600 is in CHART_PALETTE. Black contrast beats white, so the old
+  // formula painted #1f2937; the actual near-black loses to white on this fill.
+  const fill = "#0284c7";
+  const lum = charts.wcagLuminance(fill);
+  const white = (1 + 0.05) / (lum + 0.05);
+  const black = (lum + 0.05) / 0.05;
+  const painted =
+    (Math.max(lum, charts.wcagLuminance("#1f2937")) + 0.05)
+    / (Math.min(lum, charts.wcagLuminance("#1f2937")) + 0.05);
+  assert.ok(black > white);
+  assert.ok(painted < white);
+  assert.equal(charts.textColorOn(fill), "#ffffff");
+});
+
 check("reconcilePieHover keeps identity and drops removed keys", () => {
   const rows = [
     { key: "a", value: 5 },

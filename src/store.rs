@@ -1121,10 +1121,15 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         let by_model_totals = if model.is_none() {
             by_model.clone()
+        } else if provider_id.is_none() {
+            // Model filter only: by_model_overall already ran the include=true
+            // breakdown on the same WHERE (ts + model). Re-querying would scan
+            // usage_events twice for identical legend totals.
+            by_model_overall.clone()
         } else {
-            // A model-filtered response deliberately omits the by-model
-            // breakdown from the payload, but the per-model series still
-            // needs window-scoped totals for its legend.
+            // Provider + model: by_model_overall strips the provider clause so
+            // the overall pie stays global. Legend totals must stay on the
+            // filtered window (both clauses), so they cannot reuse that field.
             breakdown_query(&db, &where_sql, &bind_values, "model", true)?
         };
         let mut totals_by_model: BTreeMap<String, AnalyticsBreakdown> = BTreeMap::new();

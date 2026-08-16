@@ -318,6 +318,29 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(model_filtered.by_model_overall[0].prompts, 3);
     assert_eq!(model_filtered.by_model_overall[0].sessions, 2);
 
+    // Combined provider + model filters: series and payload by_model follow
+    // both clauses, while by_model_overall still reports the selected model's
+    // window total (provider clause stripped).
+    let both = store
+        .analytics(
+            AnalyticsRange::Last24Hours,
+            Some("alpha-provider"),
+            Some("alpha/model"),
+        )
+        .unwrap();
+    assert_eq!(both.model_series.len(), 1);
+    assert_eq!(both.model_series[0].model, "alpha/model");
+    assert_eq!(both.model_series[0].prompts, 3);
+    assert_eq!(both.model_series[0].sessions, 2);
+    assert!(
+        both.by_model.is_empty(),
+        "payload by_model is omitted while a model filter is active"
+    );
+    assert_eq!(both.by_model_overall.len(), 1);
+    assert_eq!(both.by_model_overall[0].key, "alpha/model");
+    assert_eq!(both.by_model_overall[0].prompts, 3);
+    assert_eq!(both.by_model_overall[0].sessions, 2);
+
     let _ = std::fs::remove_dir_all(dir);
 }
 
