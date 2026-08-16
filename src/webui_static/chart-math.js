@@ -131,9 +131,9 @@
 
   // Pack legend chips into a bounded number of rows in the top padding band.
   // Layout and paint share this chrome: pad + swatch + label gap + right pad.
-  // Never shrink a chip below the swatch box; ellipsize (then drop) labels
-  // instead. Overflow is allowed only when even two rows of swatch-only chips
-  // cannot fit the budget.
+  // Never shrink a chip below the swatch box; ellipsize labels down to a
+  // single character instead of blanking them. Overflow is allowed only when
+  // even two rows of min-width chips cannot fit the budget.
   function legendChipChrome(options) {
     const pad = options && options.pad != null ? Number(options.pad) : 4;
     const swatch = options && options.swatch != null ? Number(options.swatch) : 8;
@@ -156,19 +156,23 @@
     return (chips || []).reduce((sum, chip, i) => sum + chip.width + (i ? g : 0), 0);
   }
 
-  // Extra top padding for a second legend row only when that row is displayable.
-  function legendSecondRowPad(layout, budget, gap) {
+  // Vertical pitch of legend rows in the reserved top band. Paint and padT
+  // extra must share this so a packed second row cannot sit on the clip edge.
+  const LEGEND_ROW_PITCH = 24;
+  const LEGEND_ROW_Y0 = 6;
+
+  function legendChipRowY(rowIndex) {
+    return LEGEND_ROW_Y0 + (Number(rowIndex) || 0) * LEGEND_ROW_PITCH;
+  }
+
+  // Extra top padding follows packed row count, not horizontal overflow.
+  // Overflow still paints every packed row (clip handles width); withholding
+  // padT would clip those rows vertically.
+  function legendSecondRowPad(layout) {
     const rows = layout && layout.rows;
-    if (!rows || rows.length <= 1) return 0;
-    if (layout.overflow) return 0;
-    const finiteBudget = Number.isFinite(Number(budget)) ? Number(budget) : 0;
-    if (finiteBudget <= 0) return 0;
-    for (const row of rows) {
-      if (legendChipRowWidth(row, gap) > finiteBudget) return 0;
-    }
-    const readable = rows.flat().some((chip) => chip.label && String(chip.label).trim());
-    if (!readable) return 0;
-    return 24;
+    const count = rows && rows.length ? rows.length : 0;
+    if (count <= 1) return 0;
+    return (count - 1) * LEGEND_ROW_PITCH;
   }
 
   function layoutLegendChips(items, measureText, rowBudget, options) {
@@ -296,10 +300,24 @@
 
     if (!list.length) return { rows: [], style, overflow: false };
     const capped = Math.min(maxRows, list.length);
+    // Score every non-overflow row count. First-fit prefers a 1-row pack that
+    // "fits" only after shrinking labels to one character, even when two rows
+    // would keep the series names readable. Tie-break toward fewer rows so a
+    // wide canvas stays on one line.
+    let best = null;
+    let bestScore = -1;
+    let bestRowCount = Infinity;
     for (let rowCount = 1; rowCount <= capped; rowCount++) {
       const packed = pack(rowCount, false);
-      if (packed) return { rows: packed, style, overflow: false };
+      if (!packed) continue;
+      const score = scorePacked(packed);
+      if (score > bestScore || (score === bestScore && rowCount < bestRowCount)) {
+        best = packed;
+        bestScore = score;
+        bestRowCount = rowCount;
+      }
     }
+    if (best) return { rows: best, style, overflow: false };
     return { rows: pack(capped, true) || [], style, overflow: true };
   }
 
@@ -348,6 +366,16 @@
   // axis mapping. Subpixel values sit on a 1px bar at the baseline.
   function barAnchorY(val, top, plotH, padT) {
     return (Number(padT) || 0) + barPaintRect(val, top, plotH).y;
+  }
+
+  // Keyboard/non-pointer line-chart tooltips sit on the highest token-axis
+  // marker for the bucket. Cached can exceed total (cache reads reported
+  // outside input tokens), so the anchor must follow the painted rings.
+  function tokenAxisAnchorTokens(total, cached, hasCachedData) {
+    const totalTokens = Number(total) || 0;
+    if (!hasCachedData) return totalTokens;
+    const cachedTokens = Number(cached) || 0;
+    return cachedTokens > 0 ? Math.max(totalTokens, cachedTokens) : totalTokens;
   }
 
   // Pointer tooltips follow the cursor. Keyboard (and pointer-without-coords)
@@ -572,12 +600,14 @@
     layoutChartPlot,
     legendChipChrome,
     legendChipRowWidth,
+    legendChipRowY,
     legendSecondRowPad,
     layoutLegendChips,
     legendPaintClip,
     barSlotLayout,
     barPaintRect,
     barAnchorY,
+    tokenAxisAnchorTokens,
     tooltipFollowsPointer,
     nearestIdxByX,
     barIndexAtX,

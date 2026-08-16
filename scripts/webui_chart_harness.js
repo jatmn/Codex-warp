@@ -158,18 +158,36 @@ check("layoutLegendChips keeps every series within two rows", () => {
   const at240 = charts.layoutLegendChips(four, measure4, 88, { maxRows: 2, gap: 6 });
   assert.equal(at240.overflow, false);
   assertReadable(at240);
-  assert.equal(charts.legendSecondRowPad(at240, 88, 6), at240.rows.length > 1 ? 24 : 0);
+  assert.equal(charts.legendSecondRowPad(at240), at240.rows.length > 1 ? 24 : 0);
   const at352 = charts.layoutLegendChips(four, measure4, 200, { maxRows: 2, gap: 6 });
   assert.equal(at352.overflow, false);
   assertReadable(at352);
-  assert.equal(charts.legendSecondRowPad(at352, 200, 6), at352.rows.length > 1 ? 24 : 0);
+  assert.equal(at352.rows.length, 2);
+  assert.deepEqual(
+    at352.rows.flat().map((chip) => chip.label),
+    ["Total tokens", "Cached tokens", "Prompts", "Sessions"],
+  );
+  assert.equal(charts.legendSecondRowPad(at352), 24);
+  const mid = charts.layoutLegendChips(four, measure4, 162, { maxRows: 2, gap: 6 });
+  assert.equal(mid.overflow, false);
+  assert.equal(mid.rows.length, 2);
+  assertReadable(mid);
+  const midChars = mid.rows.flat().reduce((sum, chip) => sum + String(chip.label).length, 0);
+  const oneRow = charts.layoutLegendChips(four, measure4, 162, { maxRows: 1, gap: 6 });
+  const oneChars = oneRow.rows.flat().reduce((sum, chip) => sum + String(chip.label).length, 0);
+  assert.ok(midChars > oneChars, "two rows must beat a one-row ellipsis pack");
   const noCached = charts.layoutLegendChips(three, measure4, 108, { maxRows: 2, gap: 6 });
   assert.equal(noCached.overflow, false);
   assert.equal(noCached.rows.flat().length, 3);
   assertReadable(noCached);
   const overflow = charts.layoutLegendChips(four, measure4, 20, { maxRows: 2, gap: 6 });
   assert.equal(overflow.overflow, true);
-  assert.equal(charts.legendSecondRowPad(overflow, 20, 6), 0);
+  assert.ok(overflow.rows.length > 1);
+  const overflowPad = charts.legendSecondRowPad(overflow);
+  assert.equal(overflowPad, 24);
+  const overflowClip = charts.legendPaintClip(70, 20, 30 + overflowPad);
+  const lastRowBottom = charts.legendChipRowY(overflow.rows.length - 1) + 16;
+  assert.ok(lastRowBottom <= overflowClip.height, "overflow second row must stay inside padT clip");
 });
 
 check("barSlotLayout keeps a drawable slot when gaps would overflow", () => {
@@ -251,6 +269,13 @@ check("barAnchorY uses the painted bar top, not the linear axis mapping", () => 
   const linear = padT + (1 - 500 / top) * plotH;
   assert.notEqual(charts.barAnchorY(500, top, plotH, padT), linear);
   assert.equal(charts.barAnchorY(0, top, plotH, padT), padT + plotH);
+});
+
+check("tokenAxisAnchorTokens follows the higher painted token marker", () => {
+  assert.equal(charts.tokenAxisAnchorTokens(100, 40, true), 100);
+  assert.equal(charts.tokenAxisAnchorTokens(100, 250, true), 250);
+  assert.equal(charts.tokenAxisAnchorTokens(100, 250, false), 100);
+  assert.equal(charts.tokenAxisAnchorTokens(100, 0, true), 100);
 });
 
 check("tooltipFollowsPointer is pointer-owned only when mouse coords exist", () => {

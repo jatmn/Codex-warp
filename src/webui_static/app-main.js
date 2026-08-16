@@ -1269,18 +1269,19 @@
   // Keyboard/non-pointer tooltips anchor to the highest token-axis marker for the
   // bucket (total vs cached) so the popup stays near the rings being described.
   function lineChartTooltipAnchorY(point, geometry, hasCachedData) {
-    const total = Number(point.total_tokens) || 0;
-    let anchorTokens = total;
-    if (hasCachedData) {
-      const cached = Number(point.cached_tokens) || 0;
-      if (cached > 0) anchorTokens = Math.max(total, cached);
-    }
+    const anchorTokens = Charts.tokenAxisAnchorTokens(
+      point.total_tokens,
+      point.cached_tokens,
+      hasCachedData,
+    );
     return geometry.yTokens(anchorTokens);
   }
 
   function showBarTooltipFor(canvas, state, idx) {
     const row = state.rows[idx];
     const g = state.geometry;
+    // Bars paint total tokens only; the axis does not include cached, so the
+    // keyboard popup stays on the drawn bar even when cached exceeds total.
     const y = Charts.barAnchorY(row.total_tokens || 0, g.top, g.plotH, g.padT);
     const pos = chartToClient(canvas, g.xAt(idx) + (g.barW || 0) / 2, y);
     showChartTooltip(canvas, pos.x, pos.y, barTooltipEl(row, state.labelStyle, chartColors(), state.hasCachedData));
@@ -1454,7 +1455,7 @@
       { gap: legendGap, maxRows: 2 },
     );
     const legendRows = legendLayout.rows;
-    const legendPadExtra = Charts.legendSecondRowPad(legendLayout, legendBudget, legendGap);
+    const legendPadExtra = Charts.legendSecondRowPad(legendLayout);
 
     const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
       padL: wantL,
@@ -1585,7 +1586,7 @@
     ctx.clip();
     legendRows.forEach((chips, rowIndex) => {
       let lx = legendStartX;
-      const ly = 6 + rowIndex * 24;
+      const ly = Charts.legendChipRowY(rowIndex);
       for (const chip of chips) {
         const pad = chip.pad != null ? chip.pad : 4;
         const swatch = chip.swatch != null ? chip.swatch : 8;

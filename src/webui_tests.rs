@@ -837,6 +837,8 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     assert!(app.contains("Charts.layoutLegendChips("));
     assert!(app.contains("Charts.legendPaintClip("));
     assert!(app.contains("Charts.legendSecondRowPad("));
+    assert!(app.contains("Charts.legendChipRowY("));
+    assert!(app.contains("Charts.tokenAxisAnchorTokens("));
     assert!(app.contains("lineChartTooltipAnchorY("));
     assert!(app.contains("chip.labelX"));
     assert!(app.contains("ctx.measureText(\"tokens\").width"));
