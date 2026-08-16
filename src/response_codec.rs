@@ -1200,8 +1200,10 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    `pending` is a status label ("Review pending:", "Approval
     //    pending:"), not speaker work; speaker pending uses a copula
     //    ("This is still pending:", "verification is pending:").
-    //    Remaining is predicative ("Tasks remaining:", "still remaining"),
-    //    not an attributive noun modifier ("Summary and remaining tasks:").
+    //    Remaining is predicative ("Tasks remaining:", "still remaining")
+    //    or a whole-sentence header ("Remaining tasks:", "The remaining
+    //    items:"), not an attributive noun modifier inside a coordinated
+    //    phrase ("Summary and remaining tasks:").
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1590,7 +1592,18 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
 }
 
 fn last_sentence_has_unfinished_speaker_work(last_sentence: &str) -> bool {
-    last_sentence_clauses(last_sentence).any(clause_has_unfinished_speaker_work)
+    remaining_opens_unfinished_header(last_sentence)
+        || last_sentence_clauses(last_sentence).any(clause_has_unfinished_speaker_work)
+}
+
+fn remaining_opens_unfinished_header(last_sentence: &str) -> bool {
+    // Attributive remaining is unfinished only as the sentence header
+    // ("Remaining tasks:"). After `and`-splitting, "remaining tasks" is a
+    // coordinated noun phrase, not a pause.
+    if clause_clears_remaining_work(last_sentence) {
+        return false;
+    }
+    clause_first_alpha_token(strip_leading_determiners(last_sentence)) == "remaining"
 }
 
 fn last_sentence_clauses(last_sentence: &str) -> impl Iterator<Item = &str> {
@@ -1639,9 +1652,16 @@ fn remaining_is_predicative(clause: &str) -> bool {
         || clause_last_alpha_token(clause) == "remaining"
 }
 
+fn clause_first_alpha_token(clause: &str) -> &str {
+    clause
+        .split(|c: char| !c.is_alphabetic())
+        .find(|token| !token.is_empty())
+        .unwrap_or("")
+}
+
 fn clause_last_alpha_token(clause: &str) -> &str {
     clause
-        .rsplit(|c: char| !c.is_ascii_alphabetic())
+        .rsplit(|c: char| !c.is_alphabetic())
         .find(|token| !token.is_empty())
         .unwrap_or("")
 }

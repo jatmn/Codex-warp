@@ -2192,6 +2192,22 @@ fn continue_guard_summary_and_remaining_tasks_colon_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_remaining_tasks_header_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Remaining tasks:",
+        "continue-guard-test-remaining-tasks-header",
+    ));
+}
+
+#[test]
+fn continue_guard_the_remaining_items_colon_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "The remaining items:",
+        "continue-guard-test-the-remaining-items",
+    ));
+}
+
+#[test]
 fn continue_guard_nothing_pending_and_copular_pending_triggers_followup() {
     assert!(!continue_guard_end_turn(
         "Nothing pending and verification is pending:",

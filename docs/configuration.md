@@ -253,9 +253,11 @@ repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
 or a dangling `:`/`...` whose last sentence still talks about unfinished
 speaker work, not a delivery frame such as `Here is a summary of remaining
 work:`). Status copulas such as `This is still pending:` and bare unfinished
-headers such as `Tasks remaining:` still continue. Attributive remaining
-(`Summary and remaining tasks:`) stays `end_turn = true` because remaining
-is a modifier there, not a predicate. Cleared remaining polarity
+headers such as `Tasks remaining:` and whole-sentence remaining headers
+(`Remaining tasks:`, `The remaining items:`) still continue. Attributive remaining
+inside a coordinated phrase (`Summary and remaining tasks:`) stays
+`end_turn = true` because remaining is a modifier there, not a header or
+predicate. Cleared remaining polarity
 (`No issues remaining:`) stays `end_turn = true` unless a later unfinished
 speaker cue is still present (`Nothing pending, but I still need to:`) or a
 later clause still has speaker pending (`Nothing pending, verification is
