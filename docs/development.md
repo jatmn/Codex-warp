@@ -169,7 +169,7 @@ git diff --check
 ## Continuous Integration
 
 GitHub Actions runs the source gate on pushes to `main` and on pull requests.
-The CI job performs:
+The Linux CI job performs:
 
 - `cargo update --workspace --locked` so `Cargo.lock` stays in sync with
   `Cargo.toml`
@@ -191,6 +191,10 @@ A separate supply-chain workflow runs `cargo-deny` (licenses, crate bans, and
 crate sources) and `cargo-audit`. Advisory failures are non-blocking so a new
 CVE does not freeze unrelated work. Do not add `_typos.toml`-style ignore
 entries in `deny.toml` to hide a real license or git-source policy break.
+
+A Windows job runs `cargo test --locked` and the same CLI smoke checks so
+Windows-only build breaks (AWS-LC / linker) show up before a release. Cargo
+caches are written only on `main`.
 
 ## Source Layout
 
