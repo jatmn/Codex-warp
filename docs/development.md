@@ -168,7 +168,7 @@ git diff --check
 
 ## Continuous Integration
 
-GitHub Actions runs the source gate on pushes and pull requests to `main`.
+GitHub Actions runs the source gate on pushes to `main` and on pull requests.
 The CI job performs:
 
 - `cargo update --workspace --locked` so `Cargo.lock` stays in sync with
