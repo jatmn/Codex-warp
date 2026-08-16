@@ -3596,6 +3596,7 @@ fn reasoning_stream_delta_handles_incremental_and_cumulative_fragments() {
     assert_eq!(reasoning_stream_delta("A", "AB"), Some("B"));
     assert_eq!(reasoning_stream_delta("AB", "AB"), None);
     assert_eq!(reasoning_stream_delta("Hell", "Hello"), Some("o"));
+    assert_eq!(reasoning_stream_delta("Wor", "World"), Some("ld"));
 }
 
 #[test]

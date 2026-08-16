@@ -33,33 +33,45 @@ if grep -RInE '[[:blank:]]$' "${docs_files[@]}"; then
   fail=1
 fi
 
-if ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
+if ! command -v node >/dev/null 2>&1; then
+  echo "source-checks: node is required for docs prose, JS syntax, the chart harness, and Clippy filtering" >&2
+  fail=1
+elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
 fi
 
-js_files=(
-  src/webui_static/theme-bootstrap.js
-  src/webui_static/chart-math.js
-  src/webui_static/footer-status.js
-  src/webui_static/app-main.js
-)
-for js in "${js_files[@]}"; do
-  if ! node --check "$js"; then
+if command -v node >/dev/null 2>&1; then
+  js_files=(
+    src/webui_static/theme-bootstrap.js
+    src/webui_static/chart-math.js
+    src/webui_static/footer-status.js
+    src/webui_static/app-main.js
+  )
+  for js in "${js_files[@]}"; do
+    if ! node --check "$js"; then
+      fail=1
+    fi
+  done
+
+  if ! node scripts/webui_chart_harness.js; then
     fail=1
   fi
-done
-
-if ! node scripts/webui_chart_harness.js; then
-  fail=1
 fi
 
 if [ "$run_clippy" = "1" ]; then
   clippy_diff="$(mktemp)"
+  # PR: files changed vs the PR base. Push: the commit just landed (HEAD^),
+  # because origin/main...HEAD is empty after checkout. Local: origin/main,
+  # then HEAD^ when that remote is missing, plus unstaged and staged edits.
   {
     if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
       git diff -U0 "origin/${GITHUB_BASE_REF}...HEAD" -- "*.rs" || true
+    elif [ "${GITHUB_EVENT_NAME:-}" = "push" ] && git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+      git diff -U0 HEAD^ HEAD -- "*.rs" || true
     elif git rev-parse --verify origin/main >/dev/null 2>&1; then
       git diff -U0 origin/main...HEAD -- "*.rs" || true
+    elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+      git diff -U0 HEAD^ HEAD -- "*.rs" || true
     fi
     git diff -U0 -- "*.rs" || true
     git diff -U0 --cached -- "*.rs" || true
@@ -68,7 +80,10 @@ if [ "$run_clippy" = "1" ]; then
     echo "source-checks: clippy on added or edited Rust lines"
     clippy_json="$(mktemp)"
     if cargo clippy --locked --all-targets --message-format=json >"$clippy_json"; then
-      if ! node scripts/filter_clippy_changed.js "$clippy_diff" <"$clippy_json"; then
+      if ! command -v node >/dev/null 2>&1; then
+        echo "source-checks: clippy changed-line filter needs node" >&2
+        fail=1
+      elif ! node scripts/filter_clippy_changed.js "$clippy_diff" <"$clippy_json"; then
         echo "source-checks: clippy warnings on changed lines are findings" >&2
         fail=1
       fi

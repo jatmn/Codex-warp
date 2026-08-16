@@ -52,17 +52,21 @@ for (const line of fs.readFileSync(0, "utf8").split(/\r?\n/)) {
     continue;
   }
   if (!msg || (msg.level !== "warning" && msg.level !== "error")) continue;
-  const span = (msg.spans || [])[0];
-  if (!span || !span.file_name) continue;
-  const lineStart = Number(span.line_start || 0);
-  const lineEnd = Number(span.line_end || lineStart);
-  const hit = ranges.some(
-    (range) =>
-      fileMatches(String(span.file_name), range.file) &&
-      lineEnd >= range.start &&
-      lineStart <= range.end
-  );
+  const spans = (msg.spans || []).filter((span) => span && span.file_name);
+  if (spans.length === 0) continue;
+  const hit = spans.some((span) => {
+    const lineStart = Number(span.line_start || 0);
+    const lineEnd = Number(span.line_end || lineStart);
+    return ranges.some(
+      (range) =>
+        fileMatches(String(span.file_name), range.file) &&
+        lineEnd >= range.start &&
+        lineStart <= range.end
+    );
+  });
   if (!hit) continue;
+  const span = spans.find((item) => item.is_primary) || spans[0];
+  const lineStart = Number(span.line_start || 0);
   const code = msg.code && msg.code.code ? `${msg.code.code}: ` : "";
   console.error(`${span.file_name}:${lineStart}: ${code}${msg.message}`);
   failed = true;

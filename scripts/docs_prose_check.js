@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CONTRACTION = /\b(i'll|i've|i'm|i'd)\b/;
+const CONTRACTION = /\b(i['’]ll|i['’]ve|i['’]m|i['’]d)\b/;
 
 function walk(target, out) {
   const st = fs.statSync(target);
@@ -15,11 +15,13 @@ function walk(target, out) {
     }
     return;
   }
-  if (st.isFile()) out.push(target);
+  if (st.isFile() && target.endsWith(".md")) out.push(target);
 }
 
 function prose(text) {
-  return text.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
+  return text
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/[^\n]/g, ""))
+    .replace(/`[^`]*`/g, "");
 }
 
 const roots = process.argv.slice(2);
