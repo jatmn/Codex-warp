@@ -147,12 +147,23 @@ Do not add extra tests, snapshots, or fixtures just to look thorough.
 When asserting JSON or other structured values, check that the field exists.
 Do not hide a missing key with `unwrap_or(0)`, `unwrap_or("")`, or similar
 defaults in tests. Use `get` plus `assert!`/`unwrap` on the option, or match
-the exact `Value`.
+the exact `Value`:
+
+```rust
+let input = body
+    .get("usage")
+    .and_then(|usage| usage.get("input_tokens"))
+    .and_then(Value::as_u64)
+    .expect("usage.input_tokens");
+assert_eq!(input, 3);
+```
 
 Reuse existing sanitization and fixture helpers instead of copying a new
 redaction path. Do not introduce process-wide `env::set_var` / `env::remove_var`
 in tests; they race and leak across cases. Thread config, temp files, or
-explicit function arguments instead.
+explicit function arguments instead, for example
+`fn apply(config: &DebugConfig)` or a `tempfile` path, never
+`std::env::set_var("RUST_LOG", ...)`.
 
 Do not use `innerHTML` in the Web UI. Keep the existing DOM APIs
 (`textContent`, `createElement`, and the current icon helper).
