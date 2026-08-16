@@ -151,11 +151,6 @@
     };
   }
 
-  function legendChipRowWidth(chips, gap) {
-    const g = gap != null ? Number(gap) : 6;
-    return (chips || []).reduce((sum, chip, i) => sum + chip.width + (i ? g : 0), 0);
-  }
-
   // Vertical pitch of legend rows in the reserved top band. Paint and padT
   // extra must share this so a packed second row cannot sit on the clip edge.
   const LEGEND_ROW_PITCH = 24;
@@ -599,7 +594,6 @@
     fitCanvasMetrics,
     layoutChartPlot,
     legendChipChrome,
-    legendChipRowWidth,
     legendChipRowY,
     legendSecondRowPad,
     layoutLegendChips,
