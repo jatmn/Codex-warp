@@ -549,6 +549,14 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "an unchanged loaded env name must keep instead of re-applying credentials"
     );
     assert!(
+        app.contains("function setCredentialInput(raw, preview = \"\", saved = false)"),
+        "template prefills must not be treated as already-saved credentials"
+    );
+    assert!(
+        app.contains("p.managed ? (p.api_key_preview || \"\") : \"\",\n        true,"),
+        "only edit-form load of an existing provider marks credentials as saved"
+    );
+    assert!(
         app.contains("function syncEditableCredentialFromInput("),
         "submit and blur must copy autofill without replacing a draft with its mask"
     );

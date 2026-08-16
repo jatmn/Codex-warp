@@ -655,18 +655,23 @@
     updateCredentialClassHint();
   }
 
-  function setCredentialInput(raw, preview = "") {
+  function setCredentialInput(raw, preview = "", saved = false) {
     const trimmed = String(raw || "").trim();
     credentialState.draft = trimmed;
     credentialState.preview = preview || "";
-    credentialState.loadedRaw = trimmed;
     credentialState.cleared = false;
     credentialState.reveal = false;
-    if (looksLikeEnvVarName(trimmed)) {
+    if (!saved) {
+      credentialState.loadedRaw = "";
+      credentialState.loadedKind = "none";
+    } else if (looksLikeEnvVarName(trimmed)) {
+      credentialState.loadedRaw = trimmed;
       credentialState.loadedKind = "env";
     } else if (preview) {
+      credentialState.loadedRaw = "";
       credentialState.loadedKind = "inline";
     } else {
+      credentialState.loadedRaw = "";
       credentialState.loadedKind = "none";
     }
     renderCredentialInput();
@@ -1035,6 +1040,7 @@
       setCredentialInput(
         p.api_key_env || "",
         p.managed ? (p.api_key_preview || "") : "",
+        true,
       );
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
       providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
