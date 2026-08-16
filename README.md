@@ -131,7 +131,8 @@ target/debug/codex-warp \
 ```
 
 The guard is conservative: it only acts when the provider finishes with
-`finish_reason = "stop"`, no tool call was emitted, and the assistant text
+`finish_reason = "stop"` (or omits `finish_reason` on a text-only JSON
+completion), no tool call was emitted, and the assistant text
 looks like it intended to keep working. A fully completed `update_plan`
 suppresses the guard unless later tool work shows the plan snapshot is stale;
 sessions that never call `update_plan` are still covered. `max_followups`

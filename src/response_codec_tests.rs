@@ -52,6 +52,47 @@ fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
     ))
 }
 
+fn continue_guard_json(
+    text: &str,
+    cache_key: &str,
+    finish_reason: Option<&str>,
+    tool_calls: Option<Value>,
+) -> Value {
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": cache_key,
+            "input": [{
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }]
+        }),
+    );
+    let mut choice = json!({
+        "message": {
+            "role": "assistant",
+            "content": text
+        }
+    });
+    if let Some(reason) = finish_reason {
+        choice["finish_reason"] = json!(reason);
+    }
+    if let Some(calls) = tool_calls {
+        choice["message"]["tool_calls"] = calls;
+    }
+    chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_test",
+            "choices": [choice]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    )
+}
+
 fn upstream_response_with_body(body: Vec<u8>) -> reqwest::Response {
     axum::http::Response::builder()
         .status(200)
@@ -2151,36 +2192,102 @@ fn continue_guard_ill_continue_later_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_ill_run_soon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll run soon.",
+        "continue-guard-test-run-soon",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_continue_next_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll continue next.",
+        "continue-guard-test-continue-next",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_verify_now_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "I'll verify now.",
+        "continue-guard-test-verify-now",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_continue_bare_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "I'll continue.",
+        "continue-guard-test-continue-bare",
+    ));
+}
+
+#[test]
+fn continue_guard_no_issues_remaining_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "No issues remaining:",
+        "continue-guard-test-no-issues-remaining",
+    ));
+}
+
+#[test]
+fn continue_guard_approval_pending_colon_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Approval pending:",
+        "continue-guard-test-approval-pending",
+    ));
+}
+
+#[test]
 fn continue_guard_json_completion_forces_followup_for_mid_task_stop() {
-    let guard = ContinueGuardState::from_request(
-        ContinueGuardConfig::default(),
-        &json!({
-            "prompt_cache_key": "continue-guard-test-json-mid-task",
-            "input": [{
-                "type": "function_call",
+    let value = continue_guard_json(
+        "Now let me inspect the tree.",
+        "continue-guard-test-json-mid-task",
+        Some("stop"),
+        None,
+    );
+    assert_eq!(value["end_turn"], false);
+}
+
+#[test]
+fn continue_guard_json_omitted_finish_reason_still_forces_followup() {
+    let value = continue_guard_json(
+        "Now let me inspect the tree.",
+        "continue-guard-test-json-omitted-finish",
+        None,
+        None,
+    );
+    assert_eq!(value["end_turn"], false);
+}
+
+#[test]
+fn continue_guard_json_hand_off_stays_end_turn() {
+    let value = continue_guard_json(
+        "Let me know if you want anything else.",
+        "continue-guard-test-json-hand-off",
+        Some("stop"),
+        None,
+    );
+    assert_eq!(value["end_turn"], true);
+}
+
+#[test]
+fn continue_guard_json_tool_call_stays_end_turn() {
+    let value = continue_guard_json(
+        "Now let me inspect the tree.",
+        "continue-guard-test-json-tool-call",
+        Some("tool_calls"),
+        Some(json!([{
+            "id": "call_1",
+            "type": "function",
+            "function": {
                 "name": "exec_command",
                 "arguments": "{\"cmd\":\"git status\"}"
-            }]
-        }),
+            }
+        }])),
     );
-    let value = chat_json_to_responses_with_policy(
-        json!({
-            "id": "gen_test",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "Now let me inspect the tree."
-                },
-                "finish_reason": "stop"
-            }]
-        }),
-        &BTreeSet::new(),
-        &NamespaceHelpers::default(),
-        &crate::config::ToolPolicyConfig::default(),
-        Some((&DebugLog::disabled(), "dbg_test", &guard)),
-    );
-
-    assert_eq!(value["end_turn"], false);
+    assert_eq!(value["end_turn"], true);
 }
 
 #[test]

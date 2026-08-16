@@ -568,9 +568,6 @@ impl ChatAccum {
         else {
             return accum;
         };
-        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            accum.finish_reason = Some(finish_reason.to_string());
-        }
         let message = choice.get("message").unwrap_or(&Value::Null);
         if let Some(content) = message.get("content").and_then(Value::as_str) {
             accum.text.push_str(content);
@@ -597,6 +594,15 @@ impl ChatAccum {
                 }
                 accum.tool_calls.push(acc);
             }
+        }
+        if let Some(finish_reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            accum.finish_reason = Some(finish_reason.to_string());
+        } else if accum.tool_calls.iter().all(|call| call.name.is_empty()) {
+            // Non-stream providers often omit finish_reason on a completed
+            // text-only choice. That is the same premature-stop shape as
+            // `stop`, unlike truncated streams that never emit a terminal
+            // reason.
+            accum.finish_reason = Some("stop".to_string());
         }
         accum
     }
@@ -1179,17 +1185,21 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    person hand-offs only when the clause addresses the user, not when
     //    they introduce speaker work. Wrap-up verbs, person complements,
     //    offer clauses, leftover adverbs/pronouns, light nouns plus
-    //    deferral, and work verbs whose only complement is deferral do not
-    //    count ("Now let me summarize", "I'll update you", "I'll do it next",
-    //    "I'll sit tight", "I'll take another look later", "look at your PR",
-    //    "I'll continue later").
+    //    deferral, and work verbs whose only complement is postponement do
+    //    not count ("Now let me summarize", "I'll update you",
+    //    "I'll do it next", "I'll sit tight", "I'll take another look later",
+    //    "look at your PR", "I'll continue later", "I'll run soon").
+    //    Immediacy ("I'll verify now", "I'll continue") is still work.
     // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues, and
     //    "no actionable issues. Now let me audit file B" still continues.
     // 3. Dangling `:`/`...` only when the last sentence still talks about
     //    unfinished speaker work. Delivery frames ("Here is a summary of
-    //    remaining work:") are not pauses; status copulas ("This is still
-    //    pending:") still are.
+    //    remaining work:"), cleared remaining/pending polarity
+    //    ("No issues remaining:"), and waits on someone else
+    //    ("Approval pending:") are not pauses; speaker status copulas
+    //    ("This is still pending:") and unfinished headers
+    //    ("Tasks remaining:") still are.
     if contains_work_intent(&normalized) {
         return true;
     }
@@ -1295,8 +1305,10 @@ fn remainder_is_work_action(rest: &str) -> bool {
     }
     // Known work verbs may stand alone ("Let me check.") and may take a
     // pronoun object ("I'll inspect it next"). A work verb whose only
-    // complement is deferral is postponement, not the next action
-    // ("I'll continue later"). Unlisted verbs need a concrete noun object
+    // complement is postponement is not the next action
+    // ("I'll continue later", "I'll run soon", "I'll continue next").
+    // Immediacy is still work ("I'll verify now", "I'll continue").
+    // Unlisted verbs need a concrete noun object
     // ("I'll clone the repo", "I'll add tests"), not a leftover pronoun,
     // time adverb, state adjective, offer clause, or light noun plus
     // deferral ("I'll do it next", "I'll follow up soon", "I'll sit tight",
@@ -1362,7 +1374,16 @@ fn remainder_is_inform_conditional(rest: &str) -> bool {
 }
 
 fn complement_is_deferral_only(complement: &str) -> bool {
-    !complement.is_empty() && peel_trailing_deferral(complement).is_empty()
+    // Postponement of this turn ("later", "soon", "next") is not work.
+    // Immediacy tokens ("now", "still") stay in `is_deferral_token` so
+    // unlisted verbs can peel them off an object ("do it now"), but a
+    // catalogued work verb plus only "now" is the next action.
+    // Trailing punctuation is not postponement: "I'll continue." is a
+    // bare work verb.
+    let stripped = complement
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
+        .trim();
+    !stripped.is_empty() && peel_trailing_postponement(stripped).is_empty()
 }
 
 fn complement_addresses_person(complement: &str) -> bool {
@@ -1410,6 +1431,14 @@ fn strip_leading_determiners(mut complement: &str) -> &str {
 }
 
 fn peel_trailing_deferral(complement: &str) -> &str {
+    peel_trailing_matching_tokens(complement, is_deferral_token)
+}
+
+fn peel_trailing_postponement(complement: &str) -> &str {
+    peel_trailing_matching_tokens(complement, is_postponement_token)
+}
+
+fn peel_trailing_matching_tokens(complement: &str, is_token: fn(&str) -> bool) -> &str {
     let mut complement = complement
         .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace());
     loop {
@@ -1417,7 +1446,7 @@ fn peel_trailing_deferral(complement: &str) -> &str {
             .rsplit(|c: char| c.is_ascii_whitespace() || !c.is_ascii_alphabetic())
             .find(|token| !token.is_empty())
             .unwrap_or("");
-        if last.is_empty() || !is_deferral_token(last) {
+        if last.is_empty() || !is_token(last) {
             return complement.trim_end();
         }
         let Some(end) = complement.rfind(last) else {
@@ -1427,12 +1456,11 @@ fn peel_trailing_deferral(complement: &str) -> &str {
     }
 }
 
-fn is_deferral_token(token: &str) -> bool {
+fn is_postponement_token(token: &str) -> bool {
     matches!(
         token,
         "soon"
             | "later"
-            | "now"
             | "today"
             | "tomorrow"
             | "tonight"
@@ -1442,8 +1470,11 @@ fn is_deferral_token(token: &str) -> bool {
             | "already"
             | "currently"
             | "next"
-            | "still"
     )
+}
+
+fn is_deferral_token(token: &str) -> bool {
+    is_postponement_token(token) || matches!(token, "now" | "still")
 }
 
 fn complement_is_light_noun_without_object(complement: &str) -> bool {
@@ -1550,7 +1581,10 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         .next()
         .unwrap_or(normalized)
         .trim();
-    if last_sentence_is_delivery(last_sentence) {
+    if last_sentence_is_delivery(last_sentence)
+        || last_sentence_clears_remaining_work(last_sentence)
+        || last_sentence_waits_on_other(last_sentence)
+    {
         return false;
     }
     [
@@ -1568,6 +1602,34 @@ fn dangling_punctuation_with_remaining_work(normalized: &str) -> bool {
         "follow-up",
         "remaining",
         "pending",
+    ]
+    .iter()
+    .any(|cue| last_sentence.contains(cue))
+}
+
+fn last_sentence_clears_remaining_work(last_sentence: &str) -> bool {
+    // Bare remaining/pending cues mean unfinished speaker work unless the
+    // sentence negates them ("No issues remaining:", "nothing pending:").
+    // Do not treat generic "not" as clearance: "not yet" is unfinished.
+    ["no ", "none ", "nothing ", "without ", "zero "]
+        .iter()
+        .any(|negation| last_sentence.contains(negation))
+        && ["remaining", "pending"]
+            .iter()
+            .any(|cue| last_sentence.contains(cue))
+}
+
+fn last_sentence_waits_on_other(last_sentence: &str) -> bool {
+    [
+        "approval pending",
+        "sign-off pending",
+        "signoff pending",
+        "sign off pending",
+        "go-ahead pending",
+        "permission pending",
+        "awaiting approval",
+        "awaiting sign-off",
+        "awaiting sign off",
     ]
     .iter()
     .any(|cue| last_sentence.contains(cue))

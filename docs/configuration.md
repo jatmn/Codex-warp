@@ -243,7 +243,8 @@ Modes:
 
 The guard applies to chat-completions responses, both SSE streams and
 non-stream JSON, that finish with
-`finish_reason = "stop"`, emit no tool call, and end with continuation phrasing
+`finish_reason = "stop"` (text-only JSON completions that omit
+`finish_reason` are treated the same), emit no tool call, and end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` when the next action is a known
 work verb or an unlisted verb with a concrete object such as `I'll clone the
 repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
@@ -252,13 +253,17 @@ repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
 or a dangling `:`/`...` whose last sentence still talks about unfinished
 speaker work, not a delivery frame such as `Here is a summary of remaining
 work:`). Status copulas such as `This is still pending:` and bare unfinished
-headers such as `Tasks remaining:` still continue. Complement particles such as `back` and `up` are
+headers such as `Tasks remaining:` still continue. Cleared remaining/pending
+polarity (`No issues remaining:`) and waits on someone else
+(`Approval pending:`) stay `end_turn = true`. Complement particles such as `back` and `up` are
 stripped before the object is classified, so `I'll check back with you` and
 `I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
 complements, leftover adverbs or state words, offer clauses on unlisted verbs
 (`I'll take a look later if you want`, `I'll take another look later`),
 generic pronouns (`I'll do it next`), and work verbs whose only complement is
-deferral (`I'll continue later`) also do not force a follow-up. Closings
+postponement (`I'll continue later`, `I'll run soon`) also do not force a
+follow-up. Bare work verbs and immediacy still continue (`I'll continue`,
+`I'll verify now`). Closings
 such as `let me know`, `I'll leave the rest`, and delivery colons such as
 `Here is the final report:` stay `end_turn = true`, but investigative
 complements still continue (`Now let me know what failed in the test output`,
