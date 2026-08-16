@@ -434,6 +434,9 @@ struct ProviderView {
     managed: bool,
     has_api_key: bool,
     has_inline_api_key: bool,
+    /// Partial mask of a stored inline key. Never the raw secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key_preview: Option<String>,
     api_key_env: Option<String>,
     headers: BTreeMap<String, String>,
     auth_header: String,
@@ -1009,6 +1012,11 @@ fn build_provider_view(
             .api_key
             .as_deref()
             .is_some_and(|value| !value.is_empty()),
+        api_key_preview: provider
+            .api_key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(mask_api_key),
         api_key_env: provider.api_key_env.clone(),
         headers: if provider_is_managed(state, id) {
             provider.headers.clone()
@@ -1112,8 +1120,8 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
             if trimmed.is_empty() {
                 fields.api_key_env = OptionalPatch::Absent;
             } else if looks_like_env_var_name(trimmed) {
-                // Env-shaped names are durable overlay fields. Do not rewrite an
-                // unset name into inline `api_key`; overlays never persist that.
+                // Env-shaped names stay as `api_key_env`. Raw secrets are stored
+                // as `api_key` and persist for managed Web UI providers.
                 *raw = trimmed.to_string();
             } else {
                 fields.api_key = OptionalPatch::Set(trimmed.to_string());
@@ -1133,6 +1141,32 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
         }
         OptionalPatch::Clear | OptionalPatch::Absent => {}
     }
+}
+
+/// Show a short prefix and suffix so a stored key can be identified without
+/// returning the secret. Matches the common harness pattern (first/last few
+/// characters visible, middle hidden).
+fn mask_api_key(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return String::new();
+    }
+    let (prefix, suffix) = if n <= 8 {
+        (1usize, 1usize)
+    } else if n <= 12 {
+        (2, 2)
+    } else {
+        (4, 4)
+    };
+    if prefix + suffix >= n {
+        return "•".repeat(n);
+    }
+    let mut masked = String::new();
+    masked.extend(chars.iter().take(prefix));
+    masked.extend(std::iter::repeat_n('•', n - prefix - suffix));
+    masked.extend(chars.iter().skip(n - suffix));
+    masked
 }
 
 fn looks_like_env_var_name(value: &str) -> bool {
@@ -1243,10 +1277,11 @@ fn unique_provider_id(state: &AppState, base_id: &str) -> String {
     candidate
 }
 
-/// TOML owns credentials for a TOML-backed provider. Overlays never persist
-/// `api_key`, and `api_key_env` is restored from TOML on restart, so a Web UI
-/// mutation cannot be distinguished from a stale snapshot after the operator
-/// rotates TOML. Reject both rather than accepting an edit that disappears.
+/// TOML owns credentials for a TOML-backed provider. Those overlays never
+/// persist `api_key`, and `api_key_env` is restored from TOML on restart, so a
+/// Web UI mutation cannot be distinguished from a stale snapshot after the
+/// operator rotates TOML. Reject both rather than accepting an edit that
+/// disappears. Managed providers persist credentials in SQLite.
 fn validate_toml_owned_credential_selector(
     managed: bool,
     before: &ProviderConfig,

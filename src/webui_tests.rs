@@ -427,6 +427,15 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     assert!(dual_view.has_inline_api_key);
     assert!(dual_view.has_api_key);
     assert_eq!(
+        dual_view.api_key_preview.as_deref(),
+        Some(mask_api_key("inline-secret").as_str())
+    );
+    let dual_json = serde_json::to_string(&dual_view).expect("serialize provider view");
+    assert!(
+        !dual_json.contains("inline-secret"),
+        "provider views must not leak the raw inline key"
+    );
+    assert_eq!(
         dual_view.api_key_env.as_deref(),
         Some("VIEW_TEST_API_KEY_ENV")
     );
@@ -447,7 +456,17 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     let env_view = build_provider_view(&state, "env", &env_only, &[]);
     assert!(!env_view.has_inline_api_key);
     assert!(!env_view.has_api_key);
+    assert!(env_view.api_key_preview.is_none());
     assert_eq!(env_view.api_key_env.as_deref(), Some(UNSET_ENV));
+}
+
+#[test]
+fn mask_api_key_shows_prefix_and_suffix() {
+    assert_eq!(mask_api_key(""), "");
+    assert_eq!(mask_api_key("ab"), "••");
+    assert_eq!(mask_api_key("shortkey"), "s••••••y");
+    assert_eq!(mask_api_key("sk-abcdefgh"), "sk•••••••gh");
+    assert_eq!(mask_api_key("sk-live-not-an-env"), "sk-l••••••••••-env");
 }
 
 #[test]
@@ -1302,12 +1321,21 @@ fn provider_form_matches_credential_and_header_ownership() {
     let app = include_str!("webui_static/app-main.js");
     let index = include_str!("webui_static/index.html");
     assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
+    assert!(index.contains("API key or environment variable"));
+    assert!(!index.contains("Remove the in-process API key"));
+    assert!(!index.contains("used only until Codex Warp restarts"));
+    assert!(index.contains("name=\"api_key_env\" type=\"text\""));
+    assert!(!index.contains("type=\"password\""));
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
     assert!(app.contains("nameInput.readOnly = isNamed"));
-    assert!(
-        app.contains("p.managed && p.has_inline_api_key"),
-        "inline-key clear uses the inline occupancy flag, not resolved auth"
-    );
+    assert!(app.contains("function maskApiKey("));
+    assert!(app.contains("function looksLikeEnvVarName("));
+    assert!(app.contains("providerTemplates.find((template) => template.key === \"custom\")"));
+    assert!(!app.contains("template.key === \"openrouter\""));
+    assert!(app.contains("\"Add provider\""));
+    assert!(!app.contains("Add from example template"));
+    assert!(!app.contains("clear_inline_api_key"));
+    assert!(!app.contains("p.managed && p.has_inline_api_key"));
     assert!(!app.contains("p.has_api_key && !p.api_key_env"));
     assert!(app.contains("function asciiHeaderNameKey("));
     assert!(app.contains("const folded = asciiHeaderNameKey(key)"));

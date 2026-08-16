@@ -328,8 +328,9 @@ impl Store {
                     Ok(mut provider) => {
                         if !overlay.managed {
                             strip_sensitive_provider_headers(&mut provider);
+                            // TOML remains the source of truth for credentials.
+                            provider.api_key = None;
                         }
-                        provider.api_key = None;
                         provider
                     }
                     Err(err) => {
@@ -1345,14 +1346,14 @@ fn route_seeds_from_overlay_rows(
 
 fn provider_overlay_config_json(
     provider: &ProviderConfig,
-    persist_headers: bool,
+    persist_secrets: bool,
 ) -> anyhow::Result<String> {
-    let mut stripped = provider.clone();
-    stripped.api_key = None;
-    if !persist_headers {
-        strip_sensitive_provider_headers(&mut stripped);
+    let mut snapshot = provider.clone();
+    if !persist_secrets {
+        snapshot.api_key = None;
+        strip_sensitive_provider_headers(&mut snapshot);
     }
-    serde_json::to_string(&stripped).context("serialize provider overlay")
+    serde_json::to_string(&snapshot).context("serialize provider overlay")
 }
 
 fn upsert_managed_provider_overlay_row(

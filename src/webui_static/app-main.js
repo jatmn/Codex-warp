@@ -485,6 +485,84 @@
   const providerHeadersRows = $("#provider-headers-rows");
   const addProviderHeaderBtn = $("#provider-headers-add");
 
+  function looksLikeEnvVarName(value) {
+    if (!value) return false;
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(value)) return false;
+    return value.includes("_");
+  }
+
+  function maskApiKey(value) {
+    const chars = Array.from(value);
+    const n = chars.length;
+    if (!n) return "";
+    let prefix = 4;
+    let suffix = 4;
+    if (n <= 8) {
+      prefix = 1;
+      suffix = 1;
+    } else if (n <= 12) {
+      prefix = 2;
+      suffix = 2;
+    }
+    if (prefix + suffix >= n) {
+      return "•".repeat(n);
+    }
+    return chars.slice(0, prefix).join("")
+      + "•".repeat(n - prefix - suffix)
+      + chars.slice(n - suffix).join("");
+  }
+
+  function credentialInputValue() {
+    const draft = String(apiKeyInput.dataset.draft || "").trim();
+    if (draft) return draft;
+    if (apiKeyInput.dataset.preview) return "";
+    return String(apiKeyInput.value || "").trim();
+  }
+
+  function renderCredentialInput() {
+    const draft = apiKeyInput.dataset.draft || "";
+    const preview = apiKeyInput.dataset.preview || "";
+    const reveal = apiKeyInput.dataset.reveal === "1";
+    if (draft) {
+      apiKeyInput.value = (!reveal && !looksLikeEnvVarName(draft))
+        ? maskApiKey(draft)
+        : draft;
+      return;
+    }
+    apiKeyInput.value = preview || "";
+  }
+
+  function setCredentialInput(raw, preview = "") {
+    apiKeyInput.dataset.draft = raw || "";
+    apiKeyInput.dataset.preview = preview || "";
+    apiKeyInput.dataset.reveal = "0";
+    renderCredentialInput();
+  }
+
+  apiKeyInput.addEventListener("focus", () => {
+    if (apiKeyInput.readOnly) return;
+    const draft = apiKeyInput.dataset.draft || "";
+    if (draft) {
+      apiKeyInput.dataset.reveal = "1";
+      apiKeyInput.value = draft;
+      return;
+    }
+    if (apiKeyInput.dataset.preview) {
+      apiKeyInput.value = "";
+    }
+  });
+  apiKeyInput.addEventListener("input", () => {
+    apiKeyInput.dataset.draft = apiKeyInput.value;
+    apiKeyInput.dataset.reveal = "1";
+  });
+  apiKeyInput.addEventListener("blur", () => {
+    apiKeyInput.dataset.reveal = "0";
+    if (apiKeyInput.dataset.draft) {
+      apiKeyInput.dataset.draft = String(apiKeyInput.dataset.draft).trim();
+    }
+    renderCredentialInput();
+  });
+
   $("#btn-add-provider").addEventListener("click", () => openProviderForm());
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
@@ -498,20 +576,14 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
-    const apiKeyInputValue = String(apiKeyInput.value || "").trim();
-    const clearInlineApiKey = !!providerForm.querySelector("[name=clear_inline_api_key]")?.checked;
-    const keepInlineApiKey =
+    const apiKeyInputValue = credentialInputValue();
+    const keepExistingCredential =
       mode === "edit"
-      && providerForm.dataset.hasInlineApiKey === "true"
-      && !apiKeyInputValue
-      && !clearInlineApiKey;
+      && !apiKeyInputValue;
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
-      ...(clearInlineApiKey && !apiKeyInputValue && providerForm.dataset.hasInlineApiKey === "true"
-        ? { api_key: null }
-        : {}),
+      api_key_env: keepExistingCredential ? undefined : (apiKeyInputValue || null),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -556,7 +628,6 @@
             name: body.name,
             base_url: body.base_url,
             api_key_env: body.api_key_env,
-            ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
             auth_header: body.auth_header,
             auth_scheme: body.auth_scheme,
             responses_path: body.responses_path,
@@ -743,7 +814,7 @@
     idInput.value = template.id || "";
     providerForm.querySelector("[name=name]").value = template.name || "";
     providerForm.querySelector("[name=base_url]").value = template.base_url || "";
-    providerForm.querySelector("[name=api_key_env]").value = template.api_key_env || "";
+    setCredentialInput(template.api_key_env || "");
     providerForm.querySelector("[name=auth_header]").value =
       template.auth_header || "authorization";
     providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme || "Bearer";
@@ -796,12 +867,14 @@
       idInput.readOnly = true;
       providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
-      providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
-      const apiKeyEnvInput = providerForm.querySelector("[name=api_key_env]");
-      apiKeyEnvInput.readOnly = !p.managed;
-      apiKeyEnvInput.title = p.managed
+      apiKeyInput.readOnly = !p.managed;
+      apiKeyInput.title = p.managed
         ? ""
-        : "TOML-backed providers manage api_key_env in TOML.";
+        : "TOML-backed providers manage credentials in TOML.";
+      setCredentialInput(
+        p.api_key_env || "",
+        p.managed ? (p.api_key_preview || "") : "",
+      );
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
       providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
       providerForm.querySelector("[name=responses_path]").value = p.responses_path || "/responses";
@@ -818,47 +891,25 @@
       setNamedTemplateMode(isNamed);
       setCustomHeadersMode(allowCustomHeaders);
       $("#provider-advanced").hidden = false;
-      apiKeyInput.value = p.api_key_env || "";
-      apiKeyInput.placeholder = p.has_inline_api_key
-        ? "Configured for this process"
-        : "PROVIDER_API_KEY";
-      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
-      const clearInlineRow = $("#provider-clear-inline-key");
-      if (clearInline) {
-        clearInline.checked = false;
-      }
-      if (clearInlineRow) {
-        clearInlineRow.hidden = !(p.managed && p.has_inline_api_key);
-      }
-      providerForm.dataset.hasInlineApiKey =
-        p.managed && p.has_inline_api_key ? "true" : "false";
-      if (isNamed) {
-        providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
-      }
+      apiKeyInput.placeholder = p.api_key_env
+        ? "PROVIDER_API_KEY"
+        : (p.has_inline_api_key ? "Saved API key" : "PROVIDER_API_KEY or sk-…");
     } else {
       providerForm.reset();
       providerIdInput.value = "";
       applyProviderHeaders(null);
-      providerForm.querySelector("[name=api_key_env]").readOnly = false;
-      providerForm.querySelector("[name=api_key_env]").title = "";
-      providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
-      providerForm.dataset.hasInlineApiKey = "false";
-      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
-      const clearInlineRow = $("#provider-clear-inline-key");
-      if (clearInline) {
-        clearInline.checked = false;
-      }
-      if (clearInlineRow) {
-        clearInlineRow.hidden = true;
-      }
+      apiKeyInput.readOnly = false;
+      apiKeyInput.title = "";
+      apiKeyInput.placeholder = "PROVIDER_API_KEY or sk-…";
+      setCredentialInput("");
       providerForm.dataset.mode = "create";
-      $("#provider-form-title").textContent = "Add from example template";
+      $("#provider-form-title").textContent = "Add provider";
       templateField.hidden = false;
       templateSelect.disabled = false;
       enabledField.hidden = false;
       populateTemplateSelect();
       const preferred =
-        providerTemplates.find((template) => template.key === "openrouter") ||
+        providerTemplates.find((template) => template.key === "custom") ||
         providerTemplates[0];
       if (preferred) {
         templateSelect.value = templateOptionValue(preferred);

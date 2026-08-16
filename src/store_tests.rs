@@ -506,7 +506,7 @@ fn store_applies_provider_and_model_overlays() {
 }
 
 #[test]
-fn upsert_provider_overlay_strips_api_key() {
+fn upsert_toml_backed_provider_overlay_strips_api_key() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-api-key-strip-{}",
         SystemTime::now()
@@ -522,7 +522,7 @@ fn upsert_provider_overlay_strips_api_key() {
         ..ProviderConfig::default()
     };
     store
-        .upsert_provider_overlay("secret", Some(true), false, true, Some(&provider))
+        .upsert_provider_overlay("secret", Some(true), false, false, Some(&provider))
         .unwrap();
 
     let db = store.db.lock().expect("lock");
@@ -536,6 +536,41 @@ fn upsert_provider_overlay_strips_api_key() {
     assert!(!json.contains("secret-key"));
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed.get("api_key").is_none() || parsed["api_key"].is_null());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upsert_managed_provider_overlay_persists_api_key() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-api-key-keep-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("keep.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'managed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(json.contains("secret-key"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["api_key"], "secret-key");
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1385,6 +1420,43 @@ fn apply_overlays_strips_inline_api_key_from_overlay_json() {
     assert_eq!(
         config.providers["manual"].api_key.as_deref(),
         Some("toml-secret")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_keeps_inline_api_key_for_managed_provider() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-overlay-api-key-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("managed-key.db")).unwrap();
+    let mut config = AppConfig::default();
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+             VALUES (?1, 1, 0, 1, ?2)",
+            params![
+                "custom-gw",
+                r#"{"base_url":"https://overlay.test/v1","api_key":"stored-secret"}"#
+            ],
+        )
+        .unwrap();
+    }
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert_eq!(
+        config.providers["custom-gw"].api_key.as_deref(),
+        Some("stored-secret")
     );
 
     let _ = std::fs::remove_dir_all(dir);
