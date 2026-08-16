@@ -1056,6 +1056,34 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
             "set either api_key or api_key_env, not both",
         ));
     }
+    if let OptionalPatch::Set(headers) = &fields.headers {
+        validate_provider_headers(headers)?;
+    }
+    Ok(())
+}
+
+/// Upstream `HeaderMap` is case-insensitive, so persist must not accept two
+/// names that would collapse into one request header.
+fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), ApiError> {
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for name in headers.keys() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::bad_request("header names cannot be empty"));
+        }
+        if trimmed != name {
+            return Err(ApiError::bad_request(format!(
+                "header name `{name}` must not have surrounding whitespace"
+            )));
+        }
+        let folded = trimmed.to_ascii_lowercase();
+        if let Some(previous) = seen.get(&folded) {
+            return Err(ApiError::bad_request(format!(
+                "duplicate custom header `{trimmed}` (conflicts with `{previous}`)"
+            )));
+        }
+        seen.insert(folded, trimmed.to_string());
+    }
     Ok(())
 }
 
@@ -1197,19 +1225,18 @@ fn unique_provider_id(state: &AppState, base_id: &str) -> String {
     candidate
 }
 
-/// TOML owns the credential selector for a TOML-backed provider.  Persisting a
-/// whole provider snapshot as an overlay cannot distinguish a deliberate UI
-/// credential change from an old snapshot after the operator rotates TOML, so
-/// reject that change instead of accepting an edit which will disappear on
-/// restart.
+/// TOML owns credentials for a TOML-backed provider. Overlays never persist
+/// `api_key`, and `api_key_env` is restored from TOML on restart, so a Web UI
+/// mutation cannot be distinguished from a stale snapshot after the operator
+/// rotates TOML. Reject both rather than accepting an edit that disappears.
 fn validate_toml_owned_credential_selector(
     managed: bool,
     before: &ProviderConfig,
     after: &ProviderConfig,
 ) -> Result<(), ApiError> {
-    if !managed && before.api_key_env != after.api_key_env {
+    if !managed && (before.api_key_env != after.api_key_env || before.api_key != after.api_key) {
         return Err(ApiError::bad_request(
-            "api_key_env for TOML-backed providers is managed in TOML; create a managed provider to configure it in the Web UI",
+            "credentials for TOML-backed providers are managed in TOML; create a managed provider to configure them in the Web UI",
         ));
     }
     Ok(())

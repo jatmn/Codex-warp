@@ -279,6 +279,52 @@ fn validate_provider_persist_rejects_empty_base_url() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_case_insensitive_duplicate_headers() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Api-Key".into(), "one".into());
+    headers.insert("x-api-key".into(), "two".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("duplicate custom header"));
+}
+
+#[test]
+fn validate_provider_persist_accepts_distinct_headers() {
+    let mut headers = BTreeMap::new();
+    headers.insert("X-Title".into(), "Codex Warp".into());
+    headers.insert("HTTP-Referer".into(), "https://example.local".into());
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Set(headers),
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    validate_provider_persist(&fields).expect("distinct header names");
+}
+
+#[test]
 fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
     unsafe {
@@ -548,6 +594,24 @@ fn toml_backed_provider_cannot_change_api_key_env() {
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(err.message.contains("TOML-backed"));
     assert!(validate_toml_owned_credential_selector(true, &before, &after).is_ok());
+}
+
+#[test]
+fn toml_backed_provider_cannot_change_inline_api_key() {
+    let before = ProviderConfig {
+        api_key: Some("toml-secret".into()),
+        ..ProviderConfig::default()
+    };
+    let mut cleared = before.clone();
+    cleared.api_key = None;
+    let err = validate_toml_owned_credential_selector(false, &before, &cleared).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("TOML-backed"));
+
+    let mut replaced = before.clone();
+    replaced.api_key = Some("ui-secret".into());
+    assert!(validate_toml_owned_credential_selector(false, &before, &replaced).is_err());
+    assert!(validate_toml_owned_credential_selector(true, &before, &cleared).is_ok());
 }
 
 #[test]
@@ -1105,6 +1169,21 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
     assert!(!app.contains("function analyticsDisplayStatus("));
     assert!(app.contains("Footer.analyticsDisplayStatus"));
     assert!(app.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+}
+
+#[test]
+fn provider_form_matches_credential_and_header_ownership() {
+    let app = include_str!("webui_static/app-main.js");
+    let index = include_str!("webui_static/index.html");
+    assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
+    assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
+    assert!(app.contains("nameInput.readOnly = isNamed"));
+    assert!(
+        app.contains("p.managed && p.has_api_key && !p.api_key_env"),
+        "inline-key clear is overlay-owned, not TOML-owned"
+    );
+    assert!(app.contains("const folded = key.toLowerCase()"));
+    assert!(app.contains("Object.hasOwn(seen, folded)"));
 }
 
 #[test]

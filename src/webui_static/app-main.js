@@ -506,9 +506,12 @@
       && !apiKeyInputValue
       && !clearInlineApiKey;
     const body = {
+      name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
       api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
-      ...(clearInlineApiKey && !apiKeyInputValue ? { api_key: null } : {}),
+      ...(clearInlineApiKey && !apiKeyInputValue && providerForm.dataset.hasInlineApiKey === "true"
+        ? { api_key: null }
+        : {}),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -550,6 +553,7 @@
         await api(`/providers/${encodeURIComponent(targetId)}`, {
           method: "PUT",
           body: JSON.stringify({
+            name: body.name,
             base_url: body.base_url,
             api_key_env: body.api_key_env,
             ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
@@ -608,6 +612,7 @@
       providerHeadersRows.querySelectorAll(".provider-header-row"),
     );
     const headers = {};
+    const seen = Object.create(null);
     for (const row of rows) {
       const rawName = row.querySelector("[name=provider-header-name]");
       const rawValue = row.querySelector("[name=provider-header-value]");
@@ -618,9 +623,11 @@
       if (!key) {
         continue;
       }
-      if (Object.hasOwn(headers, key)) {
+      const folded = key.toLowerCase();
+      if (Object.hasOwn(seen, folded)) {
         throw new Error(`Duplicate custom header "${key}"`);
       }
+      seen[folded] = key;
       headers[key] = String(rawValue.value || "");
     }
     if (Object.keys(headers).length) {
@@ -699,10 +706,12 @@
     const identity = $("#provider-identity-fields");
     const advanced = $("#provider-advanced");
     const idInput = providerForm.querySelector("[name=id]");
+    const nameInput = providerForm.querySelector("[name=name]");
     const baseUrlInput = providerForm.querySelector("[name=base_url]");
     identity.classList.toggle("template-locked", isNamed);
     advanced.hidden = isNamed;
     baseUrlInput.readOnly = isNamed;
+    nameInput.readOnly = isNamed;
     ["auth_header", "auth_scheme", "responses_path", "chat_completions_path", "models_path"]
       .forEach((name) => {
         providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
@@ -728,6 +737,7 @@
       : [];
     templateDescription.textContent = template.description || "";
     idInput.value = template.id || "";
+    providerForm.querySelector("[name=name]").value = template.name || "";
     providerForm.querySelector("[name=base_url]").value = template.base_url || "";
     providerForm.querySelector("[name=api_key_env]").value = template.api_key_env || "";
     providerForm.querySelector("[name=auth_header]").value =
@@ -780,6 +790,7 @@
       enabledField.hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
+      providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
       providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
       const apiKeyEnvInput = providerForm.querySelector("[name=api_key_env]");
@@ -813,10 +824,10 @@
         clearInline.checked = false;
       }
       if (clearInlineRow) {
-        clearInlineRow.hidden = !(p.has_api_key && !p.api_key_env);
+        clearInlineRow.hidden = !(p.managed && p.has_api_key && !p.api_key_env);
       }
       providerForm.dataset.hasInlineApiKey =
-        p.has_api_key && !p.api_key_env ? "true" : "false";
+        p.managed && p.has_api_key && !p.api_key_env ? "true" : "false";
       if (isNamed) {
         providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
       }
