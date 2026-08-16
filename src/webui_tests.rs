@@ -545,6 +545,16 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "truncated env names must fail closed instead of reclassifying as api_key"
     );
     assert!(
+        app.contains("function isUnchangedLoadedEnvName("),
+        "an unchanged loaded env name must keep instead of re-applying credentials"
+    );
+    assert!(
+        app.contains(
+            "if (!apiKeyInput.readOnly) {\n      credentialState.draft = apiKeyInput.value;"
+        ),
+        "submit must read an editable field so autofill is not dropped"
+    );
+    assert!(
         app.contains("draft.includes(\"•\")"),
         "pasting the masked preview must not persist as the secret"
     );
@@ -649,6 +659,32 @@ fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
         enabled: None,
         api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
         api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk-live-not-an-env".into())
+    );
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_reclassified_secret_wins_over_api_key_clear() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
+        api_key: OptionalPatch::Clear,
         headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,

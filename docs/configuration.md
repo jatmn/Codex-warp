@@ -477,6 +477,7 @@ inline keys do not. Clearing an environment variable name or using Clear saved
 credentials sends JSON `null` for both credential fields. A masked saved key is
 not editable in place: leaving it unchanged omits the fields and keeps the stored
 secret; replacing it requires Clear saved credentials, then a new value.
+Leaving a loaded environment variable name unchanged omits the credential fields.
 Pasting a masked preview (any value containing `•`) is rejected by the editor and
 by `PUT`/`POST` `/api/providers`.
 

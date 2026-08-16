@@ -522,6 +522,7 @@
   const credentialState = {
     draft: "",
     preview: "",
+    loadedRaw: "",
     loadedKind: "none",
     cleared: false,
     reveal: false,
@@ -592,9 +593,19 @@
     credentialClassHint.hidden = !text;
   }
 
+  function isUnchangedLoadedEnvName(draft) {
+    return credentialState.loadedKind === "env"
+      && !credentialState.cleared
+      && !!draft
+      && draft === String(credentialState.loadedRaw || "").trim();
+  }
+
   function credentialPatch() {
     const draft = String(credentialState.draft || "").trim();
     if (isInlineKeyLocked()) {
+      return { kind: "keep" };
+    }
+    if (isUnchangedLoadedEnvName(draft)) {
       return { kind: "keep" };
     }
     if (draft && credentialState.preview && draft === credentialState.preview) {
@@ -648,6 +659,7 @@
     const trimmed = String(raw || "").trim();
     credentialState.draft = trimmed;
     credentialState.preview = preview || "";
+    credentialState.loadedRaw = trimmed;
     credentialState.cleared = false;
     credentialState.reveal = false;
     if (looksLikeEnvVarName(trimmed)) {
@@ -670,6 +682,7 @@
     clearCredentialsBtn.addEventListener("click", () => {
       credentialState.draft = "";
       credentialState.preview = "";
+      credentialState.loadedRaw = "";
       credentialState.cleared = true;
       credentialState.reveal = false;
       renderCredentialInput();
@@ -711,6 +724,9 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
+    if (!apiKeyInput.readOnly) {
+      credentialState.draft = apiKeyInput.value;
+    }
     const credential = credentialPatch();
     if (credential.kind === "invalid") {
       status(credential.message, { isError: true });

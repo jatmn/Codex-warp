@@ -1131,6 +1131,19 @@ fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), A
 }
 
 fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
+    // Apply `api_key` first so a simultaneous `api_key: null` (Clear) cannot
+    // wipe a secret that `api_key_env` is about to reclassify into `api_key`.
+    match &mut fields.api_key {
+        OptionalPatch::Set(api_key) => {
+            let trimmed = api_key.trim();
+            if trimmed.is_empty() {
+                fields.api_key = OptionalPatch::Clear;
+            } else {
+                *api_key = trimmed.to_string();
+            }
+        }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
+    }
     match &mut fields.api_key_env {
         OptionalPatch::Set(raw) => {
             let trimmed = raw.trim();
@@ -1143,17 +1156,6 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
             } else {
                 fields.api_key = OptionalPatch::Set(trimmed.to_string());
                 fields.api_key_env = OptionalPatch::Absent;
-            }
-        }
-        OptionalPatch::Clear | OptionalPatch::Absent => {}
-    }
-    match &mut fields.api_key {
-        OptionalPatch::Set(api_key) => {
-            let trimmed = api_key.trim();
-            if trimmed.is_empty() {
-                fields.api_key = OptionalPatch::Clear;
-            } else {
-                *api_key = trimmed.to_string();
             }
         }
         OptionalPatch::Clear | OptionalPatch::Absent => {}
