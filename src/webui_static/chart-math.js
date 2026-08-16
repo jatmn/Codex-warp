@@ -664,7 +664,9 @@
   function modelMetricValue(point, metric) {
     if (!point) return 0;
     const n = Number(point[metric]);
-    return Number.isFinite(n) ? n : 0;
+    // Same floor as pieRows: negatives and non-finite values are not usage.
+    // Painting them would invert the Y scale or draw markers below the axis.
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
   }
 
   function modelPointActive(point, metric) {

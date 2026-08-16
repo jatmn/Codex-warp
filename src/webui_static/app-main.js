@@ -851,6 +851,12 @@
     const range = $("#analytics-range").value;
     const provider = $("#analytics-provider").value;
     const model = $("#analytics-model").value;
+    // One comparison for success and catch: a stale in-flight response must
+    // neither paint nor replace a newer request's error with this one's.
+    const analyticsFiltersChanged = () =>
+      $("#analytics-range").value !== range ||
+      $("#analytics-provider").value !== provider ||
+      $("#analytics-model").value !== model;
     const qs = new URLSearchParams({ range });
     if (provider) qs.set("provider", provider);
     if (model) qs.set("model", model);
@@ -859,11 +865,7 @@
       // Filters can change while this request is in flight (queued follow-up
       // runs in `finally`). Applying this payload would paint the old window
       // against the new dropdowns until that follow-up returns.
-      if (
-        $("#analytics-range").value !== range ||
-        $("#analytics-provider").value !== provider ||
-        $("#analytics-model").value !== model
-      ) {
+      if (analyticsFiltersChanged()) {
         return;
       }
       // Preserve provider identities from retained usage even after their live
@@ -901,11 +903,7 @@
         else status(message);
       }
     } catch (e) {
-      if (
-        $("#analytics-range").value !== range ||
-        $("#analytics-provider").value !== provider ||
-        $("#analytics-model").value !== model
-      ) {
+      if (analyticsFiltersChanged()) {
         return;
       }
       if (activeTab === "analytics") {

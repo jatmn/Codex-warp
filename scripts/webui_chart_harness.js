@@ -809,6 +809,7 @@ check("modelPointActive is the shared zero-skip policy for dots, rings, and tool
   assert.equal(charts.modelPointActive(null, "prompts"), false);
   assert.equal(charts.modelMetricValue({ prompts: 3 }, "prompts"), 3);
   assert.equal(charts.modelMetricValue({ prompts: 0 }, "prompts"), 0);
+  assert.equal(charts.modelMetricValue({ prompts: -1 }, "prompts"), 0);
   const mixed = [
     { model: "alpha", points: [{ prompts: 0 }, { prompts: 4 }] },
     { model: "beta", points: [{ prompts: 2 }, { prompts: 0 }] },

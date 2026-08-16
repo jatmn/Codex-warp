@@ -32,6 +32,21 @@ fn test_state() -> AppState {
     )
 }
 
+fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
+    let selector_at = css
+        .find(selector)
+        .unwrap_or_else(|| panic!("{selector} rule must exist"));
+    let after_selector = &css[selector_at + selector.len()..];
+    let open = after_selector
+        .find('{')
+        .unwrap_or_else(|| panic!("{selector} must have a block"));
+    let body = &after_selector[open + 1..];
+    let close = body
+        .find('}')
+        .unwrap_or_else(|| panic!("{selector} must close its block"));
+    &body[..close]
+}
+
 #[test]
 fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
     let state = test_state();
@@ -890,12 +905,18 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("Charts.chartNavigableCount"));
     assert!(app.contains("modelTotal(series, metric) > 0"));
     assert!(
-        app.contains("$(\"#analytics-range\").value !== range"),
-        "stale analytics responses must not paint after filters change"
+        app.contains("const analyticsFiltersChanged = () =>"),
+        "stale-filter comparison must live in one helper"
+    );
+    assert_eq!(
+        app.matches("if (analyticsFiltersChanged())").count(),
+        2,
+        "success and error paths must share the same stale-filter helper"
     );
     assert!(app.contains("ctx.arc(cx, cy, radius + 4, slice.start, slice.end);"));
+    let app_compact: String = app.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
-        !app.contains("ctx.moveTo(cx, cy);\n      ctx.arc(cx, cy, radius + 4"),
+        !app_compact.contains("ctx.moveTo(cx,cy);ctx.arc(cx,cy,radius+4"),
         "pie hover band must start on the outer arc, not the pie center"
     );
     assert!(app.contains("tip.replaceChildren(content)"));
@@ -912,9 +933,23 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     let css = include_str!("webui_static/app.css");
     // Flex items default to min-width:auto (content), which blocks shrinking
     // so max-width + ellipsis never apply to long model ids.
-    assert!(css.contains(
-        ".legend-label {\n  min-width: 0;\n  max-width: 220px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}"
-    ));
+    let legend_label = css_rule_body(css, ".legend-label");
+    let legend_compact: String = legend_label
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for decl in [
+        "min-width:0",
+        "max-width:220px",
+        "overflow:hidden",
+        "text-overflow:ellipsis",
+        "white-space:nowrap",
+    ] {
+        assert!(
+            legend_compact.contains(decl),
+            ".legend-label must include {decl} so long model ids can ellipsize"
+        );
+    }
 }
 
 #[test]
