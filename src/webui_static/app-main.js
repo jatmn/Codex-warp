@@ -114,13 +114,19 @@
   });
 
   function svgIcon(paths) {
-    return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    for (const d of paths) {
+      const pathEl = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      pathEl.setAttribute("d", d);
+      svg.append(pathEl);
+    }
+    return svg;
   }
   const ICONS = {
-    chevron: svgIcon('<path d="M6 9l6 6 6-6"></path>'),
-    trash: svgIcon(
-      '<path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6M14 11v6"></path>',
-    ),
+    chevron: ["M6 9l6 6 6-6"],
+    trash: ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14H6L5 6", "M10 11v6M14 11v6"],
   };
 
   function promptForManagementToken() {
@@ -343,7 +349,7 @@
       const expandBtn = document.createElement("button");
       expandBtn.type = "button";
       expandBtn.className = "btn icon provider-chevron";
-      expandBtn.innerHTML = ICONS.chevron;
+      expandBtn.append(svgIcon(ICONS.chevron));
       expandBtn.title = isExpanded ? "Hide models" : "Show models";
       expandBtn.setAttribute("aria-label", `Toggle models for ${p.display_name || p.id}`);
       expandBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
@@ -439,7 +445,7 @@
       const del = document.createElement("button");
       del.type = "button";
       del.className = "btn icon danger";
-      del.innerHTML = ICONS.trash;
+      del.append(svgIcon(ICONS.trash));
       del.title = `Remove ${m.id}`;
       del.setAttribute("aria-label", `Remove model ${m.id}`);
       del.addEventListener("click", async () => {
