@@ -549,10 +549,12 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "an unchanged loaded env name must keep instead of re-applying credentials"
     );
     assert!(
-        app.contains(
-            "if (!apiKeyInput.readOnly) {\n      credentialState.draft = apiKeyInput.value;"
-        ),
-        "submit must read an editable field so autofill is not dropped"
+        app.contains("function syncEditableCredentialFromInput("),
+        "submit and blur must copy autofill without replacing a draft with its mask"
+    );
+    assert!(
+        app.contains("if (!visible || visible.includes(\"•\")) return;"),
+        "masked display text must not overwrite the stored secret draft"
     );
     assert!(
         app.contains("draft.includes(\"•\")"),

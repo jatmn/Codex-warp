@@ -703,7 +703,15 @@
     credentialState.reveal = true;
     updateCredentialClassHint();
   });
+  function syncEditableCredentialFromInput() {
+    if (apiKeyInput.readOnly) return;
+    const visible = String(apiKeyInput.value || "");
+    if (!visible || visible.includes("•")) return;
+    credentialState.draft = visible;
+  }
+
   apiKeyInput.addEventListener("blur", () => {
+    syncEditableCredentialFromInput();
     credentialState.reveal = false;
     if (credentialState.draft) {
       credentialState.draft = String(credentialState.draft).trim();
@@ -724,9 +732,7 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
-    if (!apiKeyInput.readOnly) {
-      credentialState.draft = apiKeyInput.value;
-    }
+    syncEditableCredentialFromInput();
     const credential = credentialPatch();
     if (credential.kind === "invalid") {
       status(credential.message, { isError: true });
