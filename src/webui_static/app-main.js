@@ -1197,14 +1197,9 @@
 
   function tooltipSummary(point, labelStyle, hasCached) {
     const label = formatBucketLabel(point.ts, labelStyle);
-    let text = `${label}: Total tokens ${fmtInt(point.total_tokens || 0)}, ` +
-      `Input tokens ${fmtInt(point.input_tokens || 0)}, `;
-    if (hasCached) {
-      text += `Cached tokens ${fmtInt(point.cached_tokens || 0)}, `;
-    }
-    text += `Output tokens ${fmtInt(point.output_tokens || 0)}, ` +
-      `Prompts ${fmtInt(point.prompts || 0)}, Sessions ${fmtInt(point.sessions || 0)}`;
-    return text;
+    return `${label}: ` + tooltipRowsFor(point, {}, hasCached)
+      .map(([name, value]) => `${name} ${fmtInt(value)}`)
+      .join(", ");
   }
 
   function announceChartData(canvas, text) {
@@ -1414,9 +1409,10 @@
     const tsSpan = Math.max(1, tsMax - tsMin);
 
     // Legend chips live in the top padding band above the plot so they never
-    // cover the drawn series or the right-hand axis labels. Measure them
-    // first and reserve extra top padding when they need a second row.
-    const legend = [
+    // cover the drawn series or the right-hand axis labels. Pack them against
+    // the actual (possibly shrunk) plot padding and cap at two rows so wrapping
+    // cannot collapse the plot or drop a drawn series.
+    const legendItems = [
       ["Total tokens", colors.tokens],
       ...(hasCachedData ? [["Cached tokens", colors.cached]] : []),
       ["Prompts", colors.prompts],
@@ -1425,42 +1421,27 @@
     ctx.font = "10px system-ui";
     ctx.textBaseline = "middle";
     const legendGap = 6;
-    const legendStartX = 46 + 24; // padL plus a nudge clear of the axis title
-    const legendLimit = w - 88; // requested padR column
-    // Chips start at legendStartX, so the wrap budget is the remaining width.
-    const legendBudget = legendLimit - legendStartX;
-    const legendRows = [];
-    let legendRow = [];
-    let legendRowWidth = 0;
-    for (const [label, color] of legend) {
-      // A chip wider than the whole budget would overrun the axis column on
-      // any row; shrink the label (with an ellipsis) so every series keeps a
-      // legend entry on narrow canvases instead of silently dropping it. Only
-      // when even a minimal label cannot fit is the chip skipped.
-      let chipLabel = label;
-      const fits = (text) => ctx.measureText(text).width + 22 <= legendBudget;
-      if (!fits(chipLabel)) {
-        while (chipLabel.length > 1 && !fits(chipLabel + "…")) {
-          chipLabel = chipLabel.slice(0, -1);
-        }
-        if (chipLabel.length > 1) chipLabel += "…";
-      }
-      const chipW = ctx.measureText(chipLabel).width + 22;
-      if (chipW > legendBudget) continue;
-      if (legendRow.length && legendRowWidth + chipW > legendBudget) {
-        legendRows.push(legendRow);
-        legendRow = [];
-        legendRowWidth = 0;
-      }
-      legendRow.push([chipLabel, color, chipW]);
-      legendRowWidth += chipW + legendGap;
-    }
-    legendRows.push(legendRow);
+    const wantL = 46;
+    const wantR = 88;
+    const baseLayout = Charts.layoutChartPlot(w, h, {
+      padL: wantL,
+      padR: wantR,
+      padT: 30,
+      padB: 26,
+    });
+    const legendStartX = baseLayout.padL + 24;
+    const legendBudget = w - baseLayout.padR - legendStartX;
+    const legendRows = Charts.layoutLegendChips(
+      legendItems,
+      (text) => ctx.measureText(text).width,
+      legendBudget,
+      { gap: legendGap, maxRows: 2 },
+    ).rows;
 
     const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
-      padL: 46,
-      padR: 88,
-      padT: 30 + (legendRows.length - 1) * 24,
+      padL: wantL,
+      padR: wantR,
+      padT: 30 + Math.max(0, legendRows.length - 1) * 24,
       padB: 26,
     });
     const axisX = {
@@ -1581,17 +1562,17 @@
     legendRows.forEach((chips, rowIndex) => {
       let lx = legendStartX;
       const ly = 6 + rowIndex * 24;
-      for (const [label, color, chipW] of chips) {
+      for (const chip of chips) {
         ctx.fillStyle = colors.surface;
         ctx.strokeStyle = colors.grid;
-        ctx.fillRect(lx, ly, chipW, 16);
-        ctx.strokeRect(lx, ly, chipW, 16);
-        ctx.fillStyle = color;
+        ctx.fillRect(lx, ly, chip.width, 16);
+        ctx.strokeRect(lx, ly, chip.width, 16);
+        ctx.fillStyle = chip.color;
         ctx.fillRect(lx + 4, ly + 4, 8, 8);
         ctx.fillStyle = colors.text;
         ctx.textAlign = "left";
-        ctx.fillText(label, lx + 16, ly + 8);
-        lx += chipW + legendGap;
+        if (chip.label) ctx.fillText(chip.label, lx + 16, ly + 8);
+        lx += chip.width + legendGap;
       }
     });
 

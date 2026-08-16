@@ -76,6 +76,28 @@ check("layoutChartPlot never inverts the plot on a narrow canvas", () => {
   assert.ok(layout.plotH >= 1);
 });
 
+check("layoutLegendChips keeps every series within two rows", () => {
+  const measure = (text) => String(text).length * 6;
+  const items = [
+    ["Total tokens", "t"],
+    ["Cached tokens", "c"],
+    ["Prompts", "p"],
+    ["Sessions", "s"],
+  ];
+  const wide = charts.layoutLegendChips(items, measure, 800, { maxRows: 2 });
+  assert.equal(wide.rows.length, 1);
+  assert.equal(wide.rows[0].length, 4);
+  assert.equal(wide.rows[0][1].label, "Cached tokens");
+  const narrow = charts.layoutLegendChips(items, measure, 80, { maxRows: 2 });
+  assert.ok(narrow.rows.length >= 1);
+  assert.ok(narrow.rows.length <= 2);
+  assert.equal(narrow.rows.flat().length, 4);
+  assert.equal(narrow.rows.flat().map((chip) => chip.color).join(""), "tcps");
+  const tiny = charts.layoutLegendChips(items, measure, 20, { maxRows: 2 });
+  assert.ok(tiny.rows.length <= 2);
+  assert.equal(tiny.rows.flat().length, 4);
+});
+
 check("barSlotLayout keeps a drawable slot when gaps would overflow", () => {
   const dense = charts.barSlotLayout(138, 60);
   assert.ok(dense.slot > 0);

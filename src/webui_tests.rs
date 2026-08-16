@@ -822,20 +822,23 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     // the line chart must paint a cached series, and the keyboard/live summary
     // must announce it as well.
     assert!(app.contains("[\"Cached tokens\", point.cached_tokens || 0, colors.cached]"));
-    assert!(app.contains("Cached tokens ${fmtInt(point.cached_tokens || 0)}, "));
+    assert!(app.contains("tooltipRowsFor(point, {}, hasCached)"));
+    assert!(app.contains(".map(([name, value]) => `${name} ${fmtInt(value)}`)"));
     assert!(app.contains("strokeSeries(cachedVals, yTokens, colors.cached, true, true)"));
     assert!(app.contains("drawDots(cachedVals, yTokens, colors.cached, 2, true)"));
     assert!(app.contains("ring(yTokens(point.cached_tokens || 0), colors.cached, 3)"));
     assert!(app.contains("[\"Cached tokens\", colors.cached]"));
     // The legend only advertises the cached series when the range has data.
     assert!(app.contains("...(hasCachedData ? [[\"Cached tokens\", colors.cached]] : [])"));
-    // Tooltip rows and the live summary gate the cached row the same way.
+    // Tooltip rows and the live summary share tooltipRowsFor so field order cannot drift.
     assert!(app.contains(
         "...(hasCached ? [[\"Cached tokens\", point.cached_tokens || 0, colors.cached]] : [])"
     ));
-    // Keyboard help copy lists the fields each bucket reports, including the
-    // cached-token field that tooltips gate on actual range data.
-    assert!(index.contains("cached tokens when the range has cached usage"));
+    assert!(app.contains("Charts.layoutLegendChips("));
+    // Keyboard help copy lists the fields each bucket reports in tooltip order.
+    assert!(index.contains(
+        "total tokens, input tokens, cached tokens when the range has cached usage, output tokens, prompts, and sessions"
+    ));
 }
 
 #[test]

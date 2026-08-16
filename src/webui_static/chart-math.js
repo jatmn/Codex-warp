@@ -129,6 +129,89 @@
     };
   }
 
+  // Pack legend chips into a bounded number of rows in the top padding band.
+  // Wrap-first packing either ate the plot (one chip per row) or dropped a
+  // drawn series when the row budget was smaller than a chip. Fit labels into
+  // at most maxRows, shrinking text (then chrome) so every series keeps an
+  // entry. Only a budget too small for a single swatch is allowed to overflow.
+  function layoutLegendChips(items, measureText, rowBudget, options) {
+    const gap = options && options.gap != null ? Number(options.gap) : 6;
+    const chrome = options && options.chrome != null ? Number(options.chrome) : 22;
+    const minChip = options && options.minChip != null ? Number(options.minChip) : 16;
+    const maxRows = Math.max(1, options && options.maxRows != null ? Number(options.maxRows) : 2);
+    const budget = Number(rowBudget);
+    const list = (items || []).map((item) => {
+      if (Array.isArray(item)) return { label: String(item[0] || ""), color: item[1] };
+      return { label: String(item && item.label ? item.label : ""), color: item && item.color };
+    });
+    const measure = (text) => {
+      if (typeof measureText !== "function") return String(text || "").length;
+      const width = Number(measureText(text == null ? "" : String(text)));
+      return Number.isFinite(width) && width > 0 ? width : 0;
+    };
+    const chipWidth = (label) => Math.max(minChip, chrome + measure(label || ""));
+    const rowPixelWidth = (labels) =>
+      labels.reduce((sum, label, i) => sum + chipWidth(label) + (i ? gap : 0), 0);
+
+    function splitRows(source, rowCount) {
+      const rows = [];
+      let start = 0;
+      for (let r = 0; r < rowCount && start < source.length; r++) {
+        const take = Math.ceil((source.length - start) / (rowCount - r));
+        rows.push(source.slice(start, start + take));
+        start += take;
+      }
+      return rows;
+    }
+
+    function fitLabels(labels, allowOverflow) {
+      const out = labels.map((label) => String(label || ""));
+      let guard = 0;
+      while (rowPixelWidth(out) > budget && guard++ < 400) {
+        let idx = 0;
+        for (let i = 1; i < out.length; i++) {
+          const a = out[i].replace(/…$/u, "");
+          const b = out[idx].replace(/…$/u, "");
+          if (a.length > b.length) idx = i;
+        }
+        const current = out[idx];
+        const base = current.endsWith("…") ? current.slice(0, -1) : current;
+        if (!base) break;
+        out[idx] = base.length === 1 ? "" : `${base.slice(0, -1)}…`;
+      }
+      if (!allowOverflow && rowPixelWidth(out) > budget) return null;
+      return out.map((label) => ({ label, width: chipWidth(label) }));
+    }
+
+    function pack(rowCount, allowOverflow) {
+      const groups = splitRows(list, rowCount);
+      const packed = [];
+      for (const group of groups) {
+        const fitted = fitLabels(
+          group.map((item) => item.label),
+          allowOverflow,
+        );
+        if (!fitted) return null;
+        packed.push(
+          fitted.map((chip, i) => ({
+            label: chip.label,
+            color: group[i].color,
+            width: chip.width,
+          })),
+        );
+      }
+      return packed;
+    }
+
+    if (!list.length) return { rows: [] };
+    const capped = Math.min(maxRows, list.length);
+    for (let rowCount = 1; rowCount <= capped; rowCount++) {
+      const packed = pack(rowCount, false);
+      if (packed) return { rows: packed };
+    }
+    return { rows: pack(capped, true) || [] };
+  }
+
   // Gap is a remainder of each slot, never an independent cost that can consume
   // the whole plot and leave barW at 0. Hit-testing should use `slot`, not barW.
   function barSlotLayout(plotW, n) {
@@ -384,6 +467,7 @@
     canvasCssWidth,
     fitCanvasMetrics,
     layoutChartPlot,
+    layoutLegendChips,
     barSlotLayout,
     barPaintRect,
     barAnchorY,
