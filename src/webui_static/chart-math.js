@@ -151,6 +151,26 @@
     };
   }
 
+  function legendChipRowWidth(chips, gap) {
+    const g = gap != null ? Number(gap) : 6;
+    return (chips || []).reduce((sum, chip, i) => sum + chip.width + (i ? g : 0), 0);
+  }
+
+  // Extra top padding for a second legend row only when that row is displayable.
+  function legendSecondRowPad(layout, budget, gap) {
+    const rows = layout && layout.rows;
+    if (!rows || rows.length <= 1) return 0;
+    if (layout.overflow) return 0;
+    const finiteBudget = Number.isFinite(Number(budget)) ? Number(budget) : 0;
+    if (finiteBudget <= 0) return 0;
+    for (const row of rows) {
+      if (legendChipRowWidth(row, gap) > finiteBudget) return 0;
+    }
+    const readable = rows.flat().some((chip) => chip.label && String(chip.label).trim());
+    if (!readable) return 0;
+    return 24;
+  }
+
   function layoutLegendChips(items, measureText, rowBudget, options) {
     const gap = options && options.gap != null ? Number(options.gap) : 6;
     const style = legendChipChrome(options);
@@ -174,15 +194,27 @@
     const rowPixelWidth = (labels) =>
       labels.reduce((sum, label, i) => sum + chipWidth(label) + (i ? gap : 0), 0);
 
-    function splitRows(source, rowCount) {
-      const rows = [];
-      let start = 0;
-      for (let r = 0; r < rowCount && start < source.length; r++) {
-        const take = Math.ceil((source.length - start) / (rowCount - r));
-        rows.push(source.slice(start, start + take));
-        start += take;
+    function partitionSizes(n, rowCount) {
+      if (rowCount <= 0 || n <= 0) return [];
+      if (rowCount === 1) return [[n]];
+      if (rowCount > n) return [];
+      const out = [];
+      for (let first = 1; first <= n - rowCount + 1; first++) {
+        for (const rest of partitionSizes(n - first, rowCount - 1)) {
+          out.push([first, ...rest]);
+        }
       }
-      return rows;
+      return out;
+    }
+
+    function groupsBySizes(source, sizes) {
+      const groups = [];
+      let start = 0;
+      for (const size of sizes) {
+        groups.push(source.slice(start, start + size));
+        start += size;
+      }
+      return groups;
     }
 
     function ellipsize(labels) {
@@ -193,7 +225,7 @@
         let widest = -1;
         for (let i = 0; i < out.length; i++) {
           const base = out[i].endsWith("…") ? out[i].slice(0, -1) : out[i];
-          if (!base) continue;
+          if (!base || base.length <= 1) continue;
           const width = chipWidth(out[i]);
           if (width > widest) {
             widest = width;
@@ -203,7 +235,7 @@
         if (idx < 0) break;
         const current = out[idx];
         const base = current.endsWith("…") ? current.slice(0, -1) : current;
-        out[idx] = base.length === 1 ? "" : `${base.slice(0, -1)}…`;
+        out[idx] = `${base.slice(0, -1)}…`;
       }
       return out;
     }
@@ -226,18 +258,40 @@
       }));
     }
 
+    function scorePacked(packed) {
+      const labels = packed.flat().map((chip) => chip.label || "");
+      const readable = labels.filter((label) => String(label).trim()).length;
+      const chars = labels.reduce((sum, label) => sum + String(label).length, 0);
+      return readable * 1000 + chars;
+    }
+
     function pack(rowCount, allowOverflow) {
-      const groups = splitRows(list, rowCount);
-      const packed = [];
-      for (const group of groups) {
-        const fitted = fitLabels(
-          group.map((item) => item.label),
-          allowOverflow,
-        );
-        if (!fitted) return null;
-        packed.push(toChips(group, fitted));
+      const sizeOptions =
+        rowCount === 1 ? [[list.length]] : partitionSizes(list.length, rowCount);
+      let best = null;
+      let bestScore = -1;
+      for (const sizes of sizeOptions) {
+        const groups = groupsBySizes(list, sizes);
+        const packed = [];
+        for (const group of groups) {
+          const fitted = fitLabels(
+            group.map((item) => item.label),
+            allowOverflow,
+          );
+          if (!fitted) {
+            packed.length = 0;
+            break;
+          }
+          packed.push(toChips(group, fitted));
+        }
+        if (!packed.length) continue;
+        const score = scorePacked(packed);
+        if (score > bestScore) {
+          bestScore = score;
+          best = packed;
+        }
       }
-      return packed;
+      return best;
     }
 
     if (!list.length) return { rows: [], style, overflow: false };
@@ -517,6 +571,8 @@
     fitCanvasMetrics,
     layoutChartPlot,
     legendChipChrome,
+    legendChipRowWidth,
+    legendSecondRowPad,
     layoutLegendChips,
     legendPaintClip,
     barSlotLayout,

@@ -138,6 +138,38 @@ check("layoutLegendChips keeps every series within two rows", () => {
     { maxRows: 1 },
   );
   assert.ok(mixed.rows[0][0].label.length < 2 || mixed.rows[0][0].label.includes("…"));
+  const measure4 = (text) => String(text).length * 6;
+  const four = [
+    ["Total tokens", "t"],
+    ["Cached tokens", "c"],
+    ["Prompts", "p"],
+    ["Sessions", "s"],
+  ];
+  const three = [
+    ["Total tokens", "t"],
+    ["Prompts", "p"],
+    ["Sessions", "s"],
+  ];
+  const assertReadable = (layout) => {
+    for (const chip of layout.rows.flat()) {
+      assert.ok(chip.label && String(chip.label).trim(), "legend chip label must stay readable");
+    }
+  };
+  const at240 = charts.layoutLegendChips(four, measure4, 88, { maxRows: 2, gap: 6 });
+  assert.equal(at240.overflow, false);
+  assertReadable(at240);
+  assert.equal(charts.legendSecondRowPad(at240, 88, 6), at240.rows.length > 1 ? 24 : 0);
+  const at352 = charts.layoutLegendChips(four, measure4, 200, { maxRows: 2, gap: 6 });
+  assert.equal(at352.overflow, false);
+  assertReadable(at352);
+  assert.equal(charts.legendSecondRowPad(at352, 200, 6), at352.rows.length > 1 ? 24 : 0);
+  const noCached = charts.layoutLegendChips(three, measure4, 108, { maxRows: 2, gap: 6 });
+  assert.equal(noCached.overflow, false);
+  assert.equal(noCached.rows.flat().length, 3);
+  assertReadable(noCached);
+  const overflow = charts.layoutLegendChips(four, measure4, 20, { maxRows: 2, gap: 6 });
+  assert.equal(overflow.overflow, true);
+  assert.equal(charts.legendSecondRowPad(overflow, 20, 6), 0);
 });
 
 check("barSlotLayout keeps a drawable slot when gaps would overflow", () => {

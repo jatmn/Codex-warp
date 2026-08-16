@@ -836,6 +836,8 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     ));
     assert!(app.contains("Charts.layoutLegendChips("));
     assert!(app.contains("Charts.legendPaintClip("));
+    assert!(app.contains("Charts.legendSecondRowPad("));
+    assert!(app.contains("lineChartTooltipAnchorY("));
     assert!(app.contains("chip.labelX"));
     assert!(app.contains("ctx.measureText(\"tokens\").width"));
     // Keyboard help copy lists the fields each bucket reports in tooltip order.

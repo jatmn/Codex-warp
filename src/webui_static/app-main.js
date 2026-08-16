@@ -1260,9 +1260,22 @@
   function showLineTooltipFor(canvas, state, idx) {
     const point = state.series[idx];
     const g = state.geometry;
-    const pos = chartToClient(canvas, g.xAt(point.ts), g.yTokens(point.total_tokens || 0));
+    const anchorY = lineChartTooltipAnchorY(point, g, state.hasCachedData);
+    const pos = chartToClient(canvas, g.xAt(point.ts), anchorY);
     showChartTooltip(canvas, pos.x, pos.y, lineTooltipEl(point, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle, state.hasCachedData)));
+  }
+
+  // Keyboard/non-pointer tooltips anchor to the highest token-axis marker for the
+  // bucket (total vs cached) so the popup stays near the rings being described.
+  function lineChartTooltipAnchorY(point, geometry, hasCachedData) {
+    const total = Number(point.total_tokens) || 0;
+    let anchorTokens = total;
+    if (hasCachedData) {
+      const cached = Number(point.cached_tokens) || 0;
+      if (cached > 0) anchorTokens = Math.max(total, cached);
+    }
+    return geometry.yTokens(anchorTokens);
   }
 
   function showBarTooltipFor(canvas, state, idx) {
@@ -1441,11 +1454,12 @@
       { gap: legendGap, maxRows: 2 },
     );
     const legendRows = legendLayout.rows;
+    const legendPadExtra = Charts.legendSecondRowPad(legendLayout, legendBudget, legendGap);
 
     const { padT, padL, padR, plotW, plotH } = Charts.layoutChartPlot(w, h, {
       padL: wantL,
       padR: wantR,
-      padT: 30 + Math.max(0, legendRows.length - 1) * 24,
+      padT: 30 + legendPadExtra,
       padB: 26,
     });
     const axisX = {
