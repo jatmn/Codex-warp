@@ -174,12 +174,6 @@
     return data;
   }
 
-  function esc(s) {
-    const d = document.createElement("div");
-    d.textContent = s ?? "";
-    return d.innerHTML;
-  }
-
   function tabHash(name) {
     return name === "analytics" ? "" : `#${name}`;
   }
@@ -317,7 +311,11 @@
 
       const title = document.createElement("div");
       title.className = "provider-title";
-      title.innerHTML = `<strong>${esc(p.display_name)}</strong><span>${esc(p.id)} · ${esc(p.base_url)}</span>`;
+      const name = document.createElement("strong");
+      name.textContent = p.display_name ?? "";
+      const sub = document.createElement("span");
+      sub.textContent = `${p.id ?? ""} · ${p.base_url ?? ""}`;
+      title.append(name, sub);
 
       const sw = toggleSwitch(async (enabled) => {
         try {
@@ -416,7 +414,11 @@
       row.className = "model-row";
       const meta = document.createElement("div");
       meta.className = "model-meta";
-      meta.innerHTML = `<strong>${esc(m.display_name || m.id)}</strong><small>${esc(m.id)}</small>`;
+      const name = document.createElement("strong");
+      name.textContent = m.display_name || m.id || "";
+      const idEl = document.createElement("small");
+      idEl.textContent = m.id ?? "";
+      meta.append(name, idEl);
       const sw = toggleSwitch(async (enabled) => {
         try {
           const view = await api(
@@ -566,13 +568,14 @@
     }
     const names = catalog
       .map((entry) => entry.display_name || entry.id)
-      .slice(0, 8)
-      .map((name) => esc(name));
-    const more = catalog.length > 8 ? ` +${catalog.length - 8} more` : "";
+      .slice(0, 8);
     templateCatalogPreview.hidden = false;
-    templateCatalogPreview.innerHTML =
-      `<strong>${catalog.length} catalog model${catalog.length === 1 ? "" : "s"}</strong>` +
-      `<div>${names.join(" · ")}${more}</div>`;
+    const summary = document.createElement("strong");
+    summary.textContent = `${catalog.length} catalog model${catalog.length === 1 ? "" : "s"}`;
+    const namesDiv = document.createElement("div");
+    namesDiv.textContent =
+      names.join(" · ") + (catalog.length > 8 ? ` +${catalog.length - 8} more` : "");
+    templateCatalogPreview.replaceChildren(summary, namesDiv);
   }
 
   function setNamedTemplateMode(isNamed) {
@@ -1016,9 +1019,18 @@
       ["Cached tokens", d.cached_tokens],
       ["Reasoning", d.reasoning_tokens],
     ];
-    cards.innerHTML = items.map(([label, val]) =>
-      `<div class="card"><label>${esc(label)}</label><strong>${Number(val || 0).toLocaleString()}</strong></div>`
-    ).join("");
+    const fragment = document.createDocumentFragment();
+    for (const [label, val] of items) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const caption = document.createElement("label");
+      caption.textContent = label;
+      const value = document.createElement("strong");
+      value.textContent = Number(val || 0).toLocaleString();
+      card.append(caption, value);
+      fragment.append(card);
+    }
+    cards.replaceChildren(fragment);
   }
 
   const colorProbe = document.createElement("span");
@@ -1105,10 +1117,10 @@
     return wrap ? wrap.querySelector(".chart-tooltip") : null;
   }
 
-  function showChartTooltip(canvas, clientX, clientY, html) {
+  function showChartTooltip(canvas, clientX, clientY, content) {
     const tip = tooltipBox(canvas);
     if (!tip) return;
-    tip.innerHTML = html;
+    tip.replaceChildren(content);
     tip.hidden = false;
     const wrap = canvas.closest(".chart-wrap");
     const rect = wrap.getBoundingClientRect();
@@ -1133,40 +1145,54 @@
     announceChartData(canvas, Charts ? Charts.liveRegionText(-1, "") : "");
   }
 
-  function tooltipRowsHtml(rows) {
-    return rows.map(([label, value, color]) =>
-      `<div class="tt-row"><span class="tt-key">${
-        color ? `<span class="tt-swatch" style="background:${color}"></span>` : ""
-      }${esc(label)}</span><span class="tt-val">${fmtInt(value)}</span></div>`
-    ).join("");
+  function tooltipRowsEl(rows) {
+    return rows.map(([label, value, color]) => {
+      const row = document.createElement("div");
+      row.className = "tt-row";
+      const key = document.createElement("span");
+      key.className = "tt-key";
+      if (color) {
+        const swatch = document.createElement("span");
+        swatch.className = "tt-swatch";
+        swatch.style.background = color;
+        key.append(swatch);
+      }
+      key.append(document.createTextNode(label));
+      const val = document.createElement("span");
+      val.className = "tt-val";
+      val.textContent = fmtInt(value);
+      row.append(key, val);
+      return row;
+    });
   }
 
-  function lineTooltipHtml(point, labelStyle, colors, hasCached) {
-    return (
-      `<div class="tt-title">${esc(formatBucketLabel(point.ts, labelStyle))}</div>` +
-      tooltipRowsHtml([
-        ["Total tokens", point.total_tokens || 0, colors.tokens],
-        ["Input tokens", point.input_tokens || 0, colors.input],
-        ...(hasCached ? [["Cached tokens", point.cached_tokens || 0, colors.cached]] : []),
-        ["Output tokens", point.output_tokens || 0, colors.output],
-        ["Prompts", point.prompts || 0, colors.prompts],
-        ["Sessions", point.sessions || 0, colors.sessions],
-      ])
-    );
+  function tooltipRowsFor(point, colors, hasCached) {
+    return [
+      ["Total tokens", point.total_tokens || 0, colors.tokens],
+      ["Input tokens", point.input_tokens || 0, colors.input],
+      ...(hasCached ? [["Cached tokens", point.cached_tokens || 0, colors.cached]] : []),
+      ["Output tokens", point.output_tokens || 0, colors.output],
+      ["Prompts", point.prompts || 0, colors.prompts],
+      ["Sessions", point.sessions || 0, colors.sessions],
+    ];
   }
 
-  function barTooltipHtml(row, labelStyle, colors, hasCached) {
-    return (
-      `<div class="tt-title">${esc(row.key || formatBucketLabel(row.ts, labelStyle))}</div>` +
-      tooltipRowsHtml([
-        ["Total tokens", row.total_tokens || 0, colors.tokens],
-        ["Input tokens", row.input_tokens || 0, colors.input],
-        ...(hasCached ? [["Cached tokens", row.cached_tokens || 0, colors.cached]] : []),
-        ["Output tokens", row.output_tokens || 0, colors.output],
-        ["Prompts", row.prompts || 0, colors.prompts],
-        ["Sessions", row.sessions || 0, colors.sessions],
-      ])
-    );
+  function tooltipEl(titleText, rows) {
+    const frag = document.createDocumentFragment();
+    const title = document.createElement("div");
+    title.className = "tt-title";
+    title.textContent = titleText;
+    frag.append(title);
+    frag.append(...tooltipRowsEl(rows));
+    return frag;
+  }
+
+  function lineTooltipEl(point, labelStyle, colors, hasCached) {
+    return tooltipEl(formatBucketLabel(point.ts, labelStyle), tooltipRowsFor(point, colors, hasCached));
+  }
+
+  function barTooltipEl(row, labelStyle, colors, hasCached) {
+    return tooltipEl(row.key || formatBucketLabel(row.ts, labelStyle), tooltipRowsFor(row, colors, hasCached));
   }
 
   function tooltipSummary(point, labelStyle, hasCached) {
@@ -1240,7 +1266,7 @@
     const point = state.series[idx];
     const g = state.geometry;
     const pos = chartToClient(canvas, g.xAt(point.ts), g.yTokens(point.total_tokens || 0));
-    showChartTooltip(canvas, pos.x, pos.y, lineTooltipHtml(point, state.labelStyle, chartColors(), state.hasCachedData));
+    showChartTooltip(canvas, pos.x, pos.y, lineTooltipEl(point, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle, state.hasCachedData)));
   }
 
@@ -1249,7 +1275,7 @@
     const g = state.geometry;
     const y = Charts.barAnchorY(row.total_tokens || 0, g.top, g.plotH, g.padT);
     const pos = chartToClient(canvas, g.xAt(idx) + (g.barW || 0) / 2, y);
-    showChartTooltip(canvas, pos.x, pos.y, barTooltipHtml(row, state.labelStyle, chartColors(), state.hasCachedData));
+    showChartTooltip(canvas, pos.x, pos.y, barTooltipEl(row, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
@@ -1576,7 +1602,7 @@
     if (idx >= 0) {
       renderLineHover(canvas, state, idx);
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, lineTooltipHtml(series[idx], state.labelStyle, colors, hasCachedData));
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, lineTooltipEl(series[idx], state.labelStyle, colors, hasCachedData));
         announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(series[idx], state.labelStyle, hasCachedData)));
       } else {
         showLineTooltipFor(canvas, state, idx);
@@ -1612,7 +1638,7 @@
     const idx = resolveLineIdx(state);
     if (idx < 0) return;
     const point = state.series[idx];
-    showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipHtml(point, state.labelStyle, chartColors(), state.hasCachedData));
+    showChartTooltip(canvas, event.clientX, event.clientY, lineTooltipEl(point, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(point, state.labelStyle, state.hasCachedData)));
   }
 
@@ -1761,7 +1787,7 @@
       }
       const state = canvas.__chart;
       if (Charts.tooltipFollowsPointer(state.inputMode, canvas.__mouse)) {
-        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, barTooltipHtml(rows[hidx], state.labelStyle, colors, hasCachedData));
+        showChartTooltip(canvas, canvas.__mouse.x, canvas.__mouse.y, barTooltipEl(rows[hidx], state.labelStyle, colors, hasCachedData));
         announceChartData(canvas, Charts.liveRegionText(hidx, tooltipSummary(rows[hidx], state.labelStyle, hasCachedData)));
       } else {
         showBarTooltipFor(canvas, state, hidx);
@@ -1776,7 +1802,7 @@
     const idx = resolveBarIdx(state);
     if (idx < 0) return;
     const row = state.rows[idx];
-    showChartTooltip(canvas, event.clientX, event.clientY, barTooltipHtml(row, state.labelStyle, chartColors(), state.hasCachedData));
+    showChartTooltip(canvas, event.clientX, event.clientY, barTooltipEl(row, state.labelStyle, chartColors(), state.hasCachedData));
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
@@ -1833,13 +1859,15 @@
     const source = payload.source || $("#log-source").value;
     const events = payload.events || [];
     if (!events.length) {
-      viewer.innerHTML = `<div class="log-empty">${
+      const empty = document.createElement("div");
+      empty.className = "log-empty";
+      empty.textContent =
         source === "debug" && payload.enabled === false
           ? "Debug JSONL is disabled. Enable it in logging settings to capture request events."
           : payload.missing
             ? "No debug log file yet. Events appear after the next proxied request."
-            : "No log events match the current filters."
-      }</div>`;
+            : "No log events match the current filters.";
+      viewer.replaceChildren(empty);
       return;
     }
     const follow = $("#log-follow")?.checked;
@@ -1850,7 +1878,17 @@
       const row = document.createElement("div");
       const kind = logKind(event, source);
       row.className = `log-row${logsExpanded.has(key) ? " open" : ""}`;
-      row.innerHTML = `<span class="log-ts">${esc(formatLogTime(event.ts))}</span><span class="log-kind ${esc(kind)}">${esc(kind)}</span><span class="log-msg">${esc(logMessage(event, source))}</span>`;
+      const ts = document.createElement("span");
+      ts.className = "log-ts";
+      ts.textContent = formatLogTime(event.ts);
+      const kindEl = document.createElement("span");
+      const kindClass = String(kind).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+      kindEl.classList.add("log-kind", kindClass || "unknown");
+      kindEl.textContent = kind;
+      const msg = document.createElement("span");
+      msg.className = "log-msg";
+      msg.textContent = logMessage(event, source);
+      row.append(ts, kindEl, msg);
       if (logsExpanded.has(key)) {
         const pre = document.createElement("pre");
         pre.className = "log-json";

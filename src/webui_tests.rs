@@ -822,7 +822,6 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     // the line chart must paint a cached series, and the keyboard/live summary
     // must announce it as well.
     assert!(app.contains("[\"Cached tokens\", point.cached_tokens || 0, colors.cached]"));
-    assert!(app.contains("[\"Cached tokens\", row.cached_tokens || 0, colors.cached]"));
     assert!(app.contains("Cached tokens ${fmtInt(point.cached_tokens || 0)}, "));
     assert!(app.contains("strokeSeries(cachedVals, yTokens, colors.cached, true, true)"));
     assert!(app.contains("drawDots(cachedVals, yTokens, colors.cached, 2, true)"));
