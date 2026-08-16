@@ -1081,11 +1081,13 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     // 2. First-person / let-me prefixes: after stripping adverbs and nested
     //    prefixes, the next action is work when it is a known work verb, or
     //    an unlisted verb with a concrete object ("I'll clone the repo",
-    //    "I'll add tests"). Particles in the complement ("back", "ahead")
-    //    are stripped before the object is classified, so "check back with
-    //    you" is a hand-off. Wrap-up verbs, person complements, and generic
-    //    pronouns on unlisted verbs do not count ("Now let me summarize",
-    //    "I'll update you", "I'll do it next", "look at your PR").
+    //    "I'll add tests"). Particles in the complement ("back", "ahead",
+    //    "up") are stripped before the object is classified, so "check back
+    //    with you" is a hand-off and "follow up soon" is not a work object.
+    //    Wrap-up verbs, person complements, offer clauses on unlisted verbs,
+    //    and leftover adverbs/pronouns do not count ("Now let me summarize",
+    //    "I'll update you", "I'll do it next", "I'll sit tight",
+    //    "look at your PR").
     // 3. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues.
     // 4. Dangling `:`/`...` only when the last sentence still talks about
@@ -1175,13 +1177,14 @@ fn remainder_is_work_action(rest: &str) -> bool {
     }
     // Known work verbs may stand alone ("Let me check.") and may take a
     // pronoun object ("I'll inspect it next"). Unlisted verbs need a
-    // concrete object ("I'll clone the repo", "I'll add tests"), not a
-    // leftover pronoun ("I'll do it next") or an adverbial particle that
-    // was only hiding "you" ("I'll get back to you").
+    // concrete noun object ("I'll clone the repo", "I'll add tests"), not
+    // a leftover pronoun, time adverb, state adjective, or offer clause
+    // ("I'll do it next", "I'll follow up soon", "I'll sit tight",
+    // "I'll take a look later if you want").
     if remainder_starts_with_work_verb(rest) {
         return true;
     }
-    !complement.is_empty() && !complement_is_generic_pronoun(complement)
+    complement_is_concrete_object(complement)
 }
 
 fn action_complement(rest: &str) -> &str {
@@ -1194,8 +1197,8 @@ fn action_complement(rest: &str) -> &str {
 fn strip_complement_fillers(mut complement: &str) -> &str {
     loop {
         let Some(next) = [
-            "back ", "ahead ", "along ", "again ", "around ", "at ", "in ", "on ", "into ",
-            "from ", "with ", "for ", "of ", "to ",
+            "back ", "ahead ", "along ", "again ", "around ", "up ", "out ", "off ", "down ",
+            "at ", "in ", "on ", "into ", "from ", "with ", "for ", "of ", "to ",
         ]
         .iter()
         .find_map(|filler| complement.strip_prefix(filler)) else {
@@ -1219,11 +1222,53 @@ fn complement_is_person_hand_off(complement: &str) -> bool {
     )
 }
 
+fn complement_is_concrete_object(complement: &str) -> bool {
+    if complement.is_empty()
+        || complement_is_generic_pronoun(complement)
+        || complement_is_non_object_head(complement)
+        || complement_has_offer_clause(complement)
+    {
+        return false;
+    }
+    true
+}
+
 fn complement_is_generic_pronoun(complement: &str) -> bool {
     matches!(
         complement_head(complement),
         "it" | "this" | "that" | "them" | "these" | "those" | "something" | "anything"
     )
+}
+
+fn complement_is_non_object_head(complement: &str) -> bool {
+    matches!(
+        complement_head(complement),
+        "soon"
+            | "later"
+            | "now"
+            | "today"
+            | "tomorrow"
+            | "tonight"
+            | "afterwards"
+            | "instead"
+            | "anyway"
+            | "already"
+            | "currently"
+            | "tight"
+            | "quiet"
+            | "there"
+            | "once"
+            | "still"
+    )
+}
+
+fn complement_has_offer_clause(complement: &str) -> bool {
+    complement.starts_with("if you")
+        || complement.starts_with("when you")
+        || complement.starts_with("whenever you")
+        || complement.contains(" if you")
+        || complement.contains(" when you")
+        || complement.contains(" whenever you")
 }
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {

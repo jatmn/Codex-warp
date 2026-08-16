@@ -247,14 +247,16 @@ The guard only applies to chat-completions streams that finish with
 action is a known work verb, or an unlisted verb with a concrete object such
 as `I'll clone the repo` / `I'll add tests`, including hyphenated repeats
 such as `re-audit`, or a dangling `:`/`...` whose last sentence still talks
-about remaining work). Complement particles such as `back` are stripped before
-the object is classified, so `I'll check back with you` and `I'll get back to
-you` stay `end_turn = true`. Wrap-up verbs, person complements, and generic
-pronouns on unlisted verbs (`summarize`, `I'll update you`, `I'll do it next`,
-`look at your PR`) also do not force a follow-up. Closings such as
-`let me know`, `I'll leave the rest`, and delivery colons such as
-`Here is the final report:` stay `end_turn = true`. Known work verbs may still
-take a pronoun object (`I'll inspect it next`). A fully completed
+about remaining work). Complement particles such as `back` and `up` are
+stripped before the object is classified, so `I'll check back with you` and
+`I'll follow up soon` stay `end_turn = true`. Wrap-up verbs, person
+complements, leftover adverbs or state words, offer clauses on unlisted verbs
+(`I'll take a look later if you want`), and generic pronouns (`I'll do it
+next`) also do not force a follow-up. Closings such as `let me know`,
+`I'll leave the rest`, and delivery colons such as `Here is the final report:`
+stay `end_turn = true`. Known work verbs may still take a pronoun object
+(`I'll inspect it next`) and may keep a trailing `if you want` after a real
+object (`I'll inspect the tree if you want`). A fully completed
 `update_plan` suppresses the guard when it is still the latest intent (no
 later tool work), but sessions that never call `update_plan` are still
 covered, and a completed plan followed by real tool work does not hide a later
