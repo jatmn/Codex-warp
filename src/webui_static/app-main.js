@@ -83,6 +83,10 @@
     commitStatus(msg, opts);
   }
 
+  function formatErrorMessage(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+
   // Empty → JSON null (clear to defaults). Invalid input must not become
   // `Number(...)` NaN: JSON.stringify(NaN) is `null`, which the API treats as
   // Clear and silently resets rotation limits.
@@ -334,7 +338,7 @@
           status(`${p.id} ${enabled ? "enabled" : "disabled"}`);
         } catch (e) {
           sw.input.checked = !enabled;
-          status(`Error: ${e.message}`);
+          status(`Error: ${formatErrorMessage(e)}`);
         }
       });
       sw.input.checked = p.enabled;
@@ -383,7 +387,7 @@
           await api(`/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
           expandedProviderIds.delete(p.id);
           await loadProviders({ refreshRoutes: false });
-        } catch (e) { status(`Error: ${e.message}`); }
+        } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
       });
 
       const addModelBtn = document.createElement("button");
@@ -440,7 +444,7 @@
           await loadProviders({ refreshRoutes: false });
         } catch (e) {
           sw.input.checked = !enabled;
-          status(`Error: ${e.message}`);
+          status(`Error: ${formatErrorMessage(e)}`);
         }
       });
       sw.input.checked = m.enabled;
@@ -458,7 +462,7 @@
             { method: "DELETE" },
           );
           await loadProviders({ refreshRoutes: false });
-        } catch (e) { status(`Error: ${e.message}`); }
+        } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
       });
       const actions = [sw.wrap];
       if (m.catalog) {
@@ -820,7 +824,7 @@
         await loadProviders({ refreshRoutes: false });
         status(`Provider ${targetId} updated`);
       }
-    } catch (e) { status(`Error: ${e.message}`); }
+    } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
   });
 
   function addProviderHeaderRow(name = "", value = "") {
@@ -1033,7 +1037,7 @@
     try {
       await ensureProviderTemplates();
     } catch (e) {
-      status(`Error: ${e.message}`);
+      status(`Error: ${formatErrorMessage(e)}`);
       // Create needs a template catalog. Edit can still open: a missing
       // match must be treated as custom, not as a named template.
       if (!p) return;
@@ -1159,7 +1163,7 @@
       }
       modelDialog.close();
       await loadProviders({ refreshRoutes: false });
-    } catch (e) { status(`Error: ${e.message}`); }
+    } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
   });
 
   function openModelForm(providerId, m = null) {
@@ -1314,7 +1318,7 @@
         return;
       }
       if (activeTab === "analytics") {
-        const message = `Analytics error: ${e.message}`;
+        const message = `Analytics error: ${formatErrorMessage(e)}`;
         if (reportFromPoll) pollStatus(message, { isError: true });
         else status(message, { isError: true });
       }
@@ -3154,7 +3158,7 @@
       renderLogEvents(payload);
     } catch (e) {
       // Keep the footer for logging-settings state (including tracing lag).
-      $("#log-meta").textContent = `Error: ${e.message}`;
+      $("#log-meta").textContent = `Error: ${formatErrorMessage(e)}`;
     } finally {
       logsInFlight = false;
       if (logsPending && activeTab === "logs") {
@@ -3193,7 +3197,7 @@
       return settings;
     } catch (e) {
       if (epoch === tabEpoch && activeTab === "logs") {
-        pollStatus(`Error: ${e.message}`);
+        pollStatus(`Error: ${formatErrorMessage(e)}`);
       }
       throw e;
     }
@@ -3265,7 +3269,7 @@
       } catch {
         /* still report the save error */
       }
-      status(`Error: ${e.message}`);
+      status(`Error: ${formatErrorMessage(e)}`);
     }
   });
 
@@ -3282,7 +3286,7 @@
     } catch (e) {
       bootComplete = true;
       bootFooterHold = true;
-      commitStatus(`Error: ${e.message}`, { remap: false });
+      commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false });
       try {
         await activateTabPolls(activeTab);
       } catch {

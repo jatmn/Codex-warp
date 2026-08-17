@@ -592,6 +592,15 @@ fn javascript_credential_helpers_stay_in_sync_with_rust() {
 }
 
 #[test]
+fn javascript_normalizes_caught_errors_for_status() {
+    let app = webui_js_source();
+    assert!(app.contains("function formatErrorMessage(err)"));
+    assert!(app.contains("err instanceof Error ? err.message : String(err)"));
+    assert!(app.contains("status(`Error: ${formatErrorMessage(e)}`)"));
+    assert!(app.contains("openProviderForm(p = null)"));
+}
+
+#[test]
 fn javascript_credential_state_machine_locks_inline_keys() {
     let app = webui_js_source();
     assert!(
@@ -1576,7 +1585,7 @@ async fn management_ui_app_javascript_prefixes_footer_status() {
     assert!(body.contains("analyticsDisplayStatus"));
     assert!(body.contains("Analytics charts failed to load (/ui/chart-math.js)"));
     assert!(body.contains("if (remap === false)"));
-    assert!(body.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(body.contains("commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false })"));
     assert!(body.contains("//# sourceMappingURL=app.js.map"));
 }
 
@@ -1622,7 +1631,7 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
     assert!(!math.contains("CodexWarpFooter"));
     assert!(!app.contains("function analyticsDisplayStatus("));
     assert!(app.contains("Footer.analyticsDisplayStatus"));
-    assert!(app.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(app.contains("commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false })"));
 }
 
 #[test]
