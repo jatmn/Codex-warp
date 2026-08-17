@@ -182,9 +182,10 @@ The CI job performs:
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
 - `git diff --check`
 
-Pull requests that touch Rust also run `cargo mutants --in-diff` against the
-base branch. Surviving mutants on changed lines are a test-quality finding, not
-a request to add extra unrelated tests.
+Pull requests that touch Rust also run
+`cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked`
+against the PR base SHA. Surviving mutants on changed lines are a test-quality
+finding, not a request to add extra unrelated tests.
 
 ## Source Layout
 

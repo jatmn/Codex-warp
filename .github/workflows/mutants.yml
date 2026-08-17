@@ -44,9 +44,10 @@ jobs:
 
       - name: Diff against base
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git diff "origin/${BASE_REF}...HEAD" -- "*.rs" | tee git.diff
+          git fetch --no-tags origin "$BASE_SHA"
+          git diff "$BASE_SHA...HEAD" -- "*.rs" | tee git.diff
           if [ ! -s git.diff ]; then
             echo "No Rust diff; skipping mutants"
           fi
