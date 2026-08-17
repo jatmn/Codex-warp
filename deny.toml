@@ -1,12 +1,9 @@
-# Supply-chain policy for cargo-deny.
-# Advisories are checked in CI with continue-on-error so a new CVE does not
-# freeze merges. License, ban, and source checks are blocking.
+# Supply-chain policy for cargo-deny (licenses, bans, sources).
+# Advisories are not part of this file: CI runs cargo-audit with
+# continue-on-error so a new CVE does not freeze merges.
 
 [graph]
 all-features = true
-
-[advisories]
-yanked = "warn"
 
 [licenses]
 allow = [
