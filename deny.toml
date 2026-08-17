@@ -19,7 +19,7 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
-unused = "allow"
+unused-allowed-license = "allow"
 confidence-threshold = 0.8
 
 [bans]
