@@ -580,6 +580,7 @@ fn apply_config_enables_and_disables_logging_without_a_new_handle() {
     ));
     let _guard = TempDirGuard::new(dir.clone());
     let path = dir.join("debug.jsonl");
+    let pinned = validate_debug_log_path(&path).expect("pin log path");
     let log = DebugLog::disabled();
     assert!(log.current_path().is_none());
 
@@ -590,7 +591,7 @@ fn apply_config_enables_and_disables_logging_without_a_new_handle() {
         ..DebugConfig::default()
     })
     .expect("enable debug log");
-    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+    assert_eq!(log.current_path().as_deref(), Some(pinned.as_path()));
     assert!(log.include_bodies());
     log.log(json!({"event": "upstream_request", "id": "dbg_1"}));
     let contents = fs::read_to_string(&path).expect("read enabled log");
@@ -734,6 +735,7 @@ fn read_tail_reports_enabled_from_the_writer_snapshot() {
     ));
     let _guard = TempDirGuard::new(dir.clone());
     let path = dir.join("debug.jsonl");
+    let pinned = validate_debug_log_path(&path).expect("pin log path");
     let log = DebugLog::disabled();
     let disabled = log.read_tail(10, None, None).expect("disabled tail");
     assert!(!disabled.enabled);
@@ -749,14 +751,14 @@ fn read_tail_reports_enabled_from_the_writer_snapshot() {
     let created = log.read_tail(10, None, None).expect("enabled created file");
     assert!(created.enabled);
     assert!(!created.missing);
-    assert_eq!(created.path, path);
+    assert_eq!(created.path, pinned);
     assert!(path.is_file());
 
     log.log(json!({"event": "upstream_request", "id": "dbg_tail"}));
     let present = log.read_tail(10, None, None).expect("enabled present file");
     assert!(present.enabled);
     assert!(!present.missing);
-    assert_eq!(present.path, path);
+    assert_eq!(present.path, pinned);
     assert_eq!(present.events[0]["id"], "dbg_tail");
 }
 
@@ -797,7 +799,7 @@ fn read_jsonl_tail_filters_and_limits_events() {
 #[test]
 fn validate_debug_log_path_rejects_escape_and_system_paths() {
     assert!(validate_debug_log_path(Path::new("codex-warp-debug.jsonl")).is_ok());
-    assert!(validate_debug_log_path(Path::new("/tmp/codex-warp-debug.jsonl")).is_ok());
+    assert!(validate_debug_log_path(&std::env::temp_dir().join("codex-warp-debug.jsonl")).is_ok());
     assert!(validate_debug_log_path(Path::new("../secret.jsonl")).is_err());
     assert!(validate_debug_log_path(Path::new("/etc/passwd.jsonl")).is_err());
     assert!(validate_debug_log_path(Path::new("//etc/passwd.jsonl")).is_err());
@@ -831,6 +833,7 @@ fn validate_debug_log_path_rejects_missing_parent_directory() {
     assert!(err.contains("parent directory must exist"), "{err}");
 }
 
+#[cfg(unix)]
 #[test]
 fn validate_debug_log_path_rejects_parent_symlink_into_restricted_root() {
     let dir = std::env::temp_dir().join(format!(
@@ -948,6 +951,7 @@ fn apply_config_pins_relative_log_path_while_disabled() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn apply_config_pins_disabled_path_through_parent_symlink() {
     let dir = std::env::temp_dir().join(format!(
@@ -1016,6 +1020,7 @@ fn apply_config_rejects_restricted_path_without_enabling_writer() {
     assert!(log.current_path().is_none());
 }
 
+#[cfg(unix)]
 #[test]
 fn read_jsonl_tail_rejects_symlink() {
     let dir = std::env::temp_dir().join(format!(
