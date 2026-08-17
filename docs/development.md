@@ -192,9 +192,9 @@ crate sources) and `cargo-audit`. Advisory failures are non-blocking so a new
 CVE does not freeze unrelated work. Do not add `_typos.toml`-style ignore
 entries in `deny.toml` to hide a real license or git-source policy break.
 
-A Windows job runs `cargo test --locked` and the same CLI smoke checks so
-Windows-only build breaks (AWS-LC / linker) show up before a release. Cargo
-caches are written only on `main`.
+A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
+CLI smoke checks so Windows-only build breaks (AWS-LC / linker) show up before
+a release. Cargo caches are written only on `main`.
 
 ## Source Layout
 
