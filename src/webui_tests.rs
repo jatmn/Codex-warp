@@ -17,6 +17,10 @@ use crate::state::AppState;
 use crate::store::AnalyticsRange;
 use crate::store::ensure_provider_exists;
 
+fn webui_js_source() -> String {
+    include_str!("webui_static/app-main.js").replace("\r\n", "\n")
+}
+
 fn test_state() -> AppState {
     let process_log = crate::process_log::ProcessLog::disabled();
     AppState::from_parts(
@@ -562,7 +566,7 @@ fn named_template_create_rejects_truncated_env_replacement() {
 
 #[test]
 fn javascript_credential_helpers_stay_in_sync_with_rust() {
-    let app = include_str!("webui_static/app-main.js");
+    let app = webui_js_source();
     assert!(
         app.contains("Keep in lockstep with looks_like_env_var_name"),
         "JS env classifier must document the Rust twin"
@@ -589,7 +593,7 @@ fn javascript_credential_helpers_stay_in_sync_with_rust() {
 
 #[test]
 fn javascript_credential_state_machine_locks_inline_keys() {
-    let app = include_str!("webui_static/app-main.js");
+    let app = webui_js_source();
     assert!(
         app.contains("loadedKind: \"none\""),
         "form open class must be stored separately from the current draft"
@@ -1623,7 +1627,7 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
 
 #[test]
 fn provider_form_matches_credential_and_header_ownership() {
-    let app = include_str!("webui_static/app-main.js");
+    let app = webui_js_source();
     let index = include_str!("webui_static/index.html");
     assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
     assert!(index.contains("API key or environment variable"));
@@ -1858,22 +1862,24 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         );
     }
 
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "friendly".to_string())),
+    )
+    .await
+    .expect("soft-delete catalog model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let Json(reenabled) = set_model_enabled(
+        State(state.clone()),
+        Path(("manual".to_string(), "friendly".to_string())),
+        Json(EnabledBody { enabled: true }),
+    )
+    .await
+    .expect("re-enable catalog model");
     assert!(
-        delete_model(
-            State(state.clone()),
-            Path(("manual".to_string(), "friendly".to_string())),
-        )
-        .await
-        .is_ok()
-    );
-    assert!(
-        set_model_enabled(
-            State(state.clone()),
-            Path(("manual".to_string(), "friendly".to_string())),
-            Json(EnabledBody { enabled: true }),
-        )
-        .await
-        .is_ok()
+        !reenabled.managed,
+        "TOML-backed catalog models must not be reported as managed overlays"
     );
 
     let config = state.config.read().expect("config lock");
@@ -1884,6 +1890,177 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         .expect("catalog entry is restored immediately");
     assert!(restored.enabled);
     assert_eq!(restored.upstream_id.as_deref(), Some("upstream-friendly"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn state_with_store(store: crate::store::Store) -> AppState {
+    AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        Some(store),
+    )
+}
+
+#[tokio::test]
+async fn delete_provider_returns_no_content_and_drops_managed_overlay() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-provider-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let status = delete_provider(State(state.clone()), Path("managed".to_string()))
+        .await
+        .expect("delete managed provider");
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let store = state.store.as_ref().expect("store");
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    assert!(!store.provider_is_managed("managed").unwrap());
+    assert!(!state.read_config().providers.contains_key("managed"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn set_provider_enabled_keeps_existing_managed_overlay_json() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-enable-keep-json-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("memory-secret".into()),
+        enabled: true,
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store
+        .debug_set_provider_overlay_json(
+            "managed",
+            r#"{"base_url":"https://example.test/v1","api_key":"sqlite-secret"}"#,
+        )
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let Json(disabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("managed".to_string()),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("disable managed provider");
+    assert!(!disabled.enabled);
+    assert!(disabled.has_inline_api_key);
+
+    let store = state.store.as_ref().expect("store");
+    let json = store
+        .debug_provider_overlay_json("managed")
+        .unwrap()
+        .expect("overlay row remains");
+    assert!(
+        json.contains("sqlite-secret"),
+        "enable toggle must not rewrite overlay JSON when the row still exists"
+    );
+    assert!(!json.contains("memory-secret"));
+    assert!(!state.read_config().providers["managed"].enabled);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn set_provider_enabled_recreates_vanished_managed_overlay() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-enable-recreate-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        enabled: true,
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store
+        .debug_delete_overlay_row_keep_memory("managed")
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let Json(disabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("managed".to_string()),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("recreate vanished managed overlay");
+    assert!(!disabled.enabled);
+    assert!(disabled.has_inline_api_key);
+
+    let store = state.store.as_ref().expect("store");
+    assert!(store.provider_overlay_exists("managed").unwrap());
+    let json = store
+        .debug_provider_overlay_json("managed")
+        .unwrap()
+        .expect("recreated overlay json");
+    assert!(json.contains("secret-key"));
+    assert!(!state.read_config().providers["managed"].enabled);
 
     let _ = std::fs::remove_dir_all(dir);
 }

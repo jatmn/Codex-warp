@@ -901,6 +901,10 @@ fn missing_overlay_row_stays_managed_for_this_process() {
     store
         .create_provider_with_catalog("managed", &provider, &[])
         .unwrap();
+    assert!(
+        store.provider_overlay_exists("managed").unwrap(),
+        "create must leave a managed overlay row"
+    );
     store
         .debug_delete_overlay_row_keep_memory("managed")
         .unwrap();
@@ -921,6 +925,78 @@ fn missing_overlay_row_stays_managed_for_this_process() {
         )
         .unwrap();
     assert!(json.contains("secret-key"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delete_provider_overlay_drops_row_and_managed_memory() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("delete.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store.delete_provider_overlay("managed").unwrap();
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    assert!(
+        !store.provider_is_managed("managed").unwrap(),
+        "delete must forget managed identity so a later create is not stuck as managed"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_mode_exposes_group_or_other_uses_permission_mask() {
+    assert!(!sqlite_mode_exposes_group_or_other(0o600));
+    assert!(sqlite_mode_exposes_group_or_other(0o640));
+    assert!(sqlite_mode_exposes_group_or_other(0o604));
+    assert!(sqlite_mode_exposes_group_or_other(0o644));
+}
+
+#[cfg(unix)]
+#[test]
+fn restrict_sqlite_sidecar_mode_tightens_wal_and_shm() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-sidecar-mode-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("mode.db");
+    let wal = dir.join("mode.db-wal");
+    let shm = dir.join("mode.db-shm");
+    std::fs::write(&wal, b"wal").unwrap();
+    std::fs::write(&shm, b"shm").unwrap();
+    for path in [&wal, &shm] {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+    restrict_sqlite_sidecar_mode(&db_path).unwrap();
+    assert_eq!(
+        std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&shm).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 

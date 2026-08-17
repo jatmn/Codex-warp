@@ -1292,6 +1292,37 @@ impl Store {
         )?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) fn debug_provider_overlay_json(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let json = db
+            .query_row(
+                "SELECT config_json FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(json)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_set_provider_overlay_json(
+        &self,
+        provider_id: &str,
+        config_json: &str,
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "UPDATE provider_overlays SET config_json = ?1 WHERE provider_id = ?2",
+            params![config_json, provider_id],
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1414,6 +1445,11 @@ fn route_seeds_from_overlay_rows(
         .collect()
 }
 
+#[cfg(unix)]
+fn sqlite_mode_exposes_group_or_other(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
 fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -1421,7 +1457,7 @@ fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
         let metadata = std::fs::metadata(path)
             .with_context(|| format!("stat sqlite database {}", path.display()))?;
         let mut permissions = metadata.permissions();
-        if permissions.mode() & 0o077 != 0 {
+        if sqlite_mode_exposes_group_or_other(permissions.mode()) {
             permissions.set_mode(0o600);
             std::fs::set_permissions(path, permissions)
                 .with_context(|| format!("restrict sqlite database mode {}", path.display()))?;
