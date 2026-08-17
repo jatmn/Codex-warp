@@ -197,6 +197,7 @@ fn initialize_state_keeps_live_debug_on_the_writer_not_app_config() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let log_path = dir.join("debug.jsonl");
+    let pinned = crate::debug_log::validate_debug_log_path(&log_path).expect("pin log path");
     let mut config = AppConfig::default();
     config.debug.enabled = true;
     config.debug.log_path = Some(log_path.clone());
@@ -205,7 +206,7 @@ fn initialize_state_keeps_live_debug_on_the_writer_not_app_config() {
     assert!(state.debug_log.live_snapshot().enabled);
     assert_eq!(
         state.debug_log.current_path().as_deref(),
-        Some(log_path.as_path())
+        Some(pinned.as_path())
     );
     assert_eq!(
         state.debug_log.live_snapshot().tracing_filter.as_deref(),

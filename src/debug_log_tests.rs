@@ -580,6 +580,7 @@ fn apply_config_enables_and_disables_logging_without_a_new_handle() {
     ));
     let _guard = TempDirGuard::new(dir.clone());
     let path = dir.join("debug.jsonl");
+    let pinned = validate_debug_log_path(&path).expect("pin log path");
     let log = DebugLog::disabled();
     assert!(log.current_path().is_none());
 
@@ -590,7 +591,7 @@ fn apply_config_enables_and_disables_logging_without_a_new_handle() {
         ..DebugConfig::default()
     })
     .expect("enable debug log");
-    assert_eq!(log.current_path().as_deref(), Some(path.as_path()));
+    assert_eq!(log.current_path().as_deref(), Some(pinned.as_path()));
     assert!(log.include_bodies());
     log.log(json!({"event": "upstream_request", "id": "dbg_1"}));
     let contents = fs::read_to_string(&path).expect("read enabled log");
@@ -734,6 +735,7 @@ fn read_tail_reports_enabled_from_the_writer_snapshot() {
     ));
     let _guard = TempDirGuard::new(dir.clone());
     let path = dir.join("debug.jsonl");
+    let pinned = validate_debug_log_path(&path).expect("pin log path");
     let log = DebugLog::disabled();
     let disabled = log.read_tail(10, None, None).expect("disabled tail");
     assert!(!disabled.enabled);
@@ -749,14 +751,14 @@ fn read_tail_reports_enabled_from_the_writer_snapshot() {
     let created = log.read_tail(10, None, None).expect("enabled created file");
     assert!(created.enabled);
     assert!(!created.missing);
-    assert_eq!(created.path, path);
+    assert_eq!(created.path, pinned);
     assert!(path.is_file());
 
     log.log(json!({"event": "upstream_request", "id": "dbg_tail"}));
     let present = log.read_tail(10, None, None).expect("enabled present file");
     assert!(present.enabled);
     assert!(!present.missing);
-    assert_eq!(present.path, path);
+    assert_eq!(present.path, pinned);
     assert_eq!(present.events[0]["id"], "dbg_tail");
 }
 

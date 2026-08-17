@@ -1810,6 +1810,7 @@ async fn logging_update_applies_without_store() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let log_path = dir.join("debug.jsonl");
+    let pinned = crate::debug_log::validate_debug_log_path(&log_path).expect("pin log path");
     let state = test_state();
     let Json(before) = get_logging(State(state.clone())).await;
     assert!(!before.persist_available);
@@ -1835,7 +1836,7 @@ async fn logging_update_applies_without_store() {
     assert!(updated.tracing_applied);
     assert_eq!(
         state.debug_log.current_path().as_deref(),
-        Some(log_path.as_path())
+        Some(pinned.as_path())
     );
     assert!(state.debug_log.live_snapshot().enabled);
     state
@@ -1919,6 +1920,7 @@ async fn logging_settings_apply_live_and_persist() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let log_path = dir.join("debug.jsonl");
+    let pinned = crate::debug_log::validate_debug_log_path(&log_path).expect("pin log path");
     let store = Store::open(&dir.join("overlay.db")).unwrap();
     let process_log = ProcessLog::new(8);
     process_log.push(ProcessLogEvent {
@@ -1980,7 +1982,7 @@ async fn logging_settings_apply_live_and_persist() {
     assert!(updated.tracing_applied);
     assert_eq!(
         state.debug_log.current_path().as_deref(),
-        Some(log_path.as_path())
+        Some(pinned.as_path())
     );
     assert!(state.debug_log.include_bodies());
     let mut replayed = AppConfig::default();
@@ -2086,6 +2088,7 @@ async fn logging_update_keeps_applied_live_settings_when_overlay_persist_fails()
     std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("overlay.db");
     let log_path = dir.join("debug.jsonl");
+    let pinned = crate::debug_log::validate_debug_log_path(&log_path).expect("pin log path");
     let store = Store::open(&db_path).unwrap();
     let process_log = crate::process_log::ProcessLog::disabled();
     let state = AppState::from_parts(
@@ -2149,7 +2152,7 @@ async fn logging_update_keeps_applied_live_settings_when_overlay_persist_fails()
     assert!(state.debug_log.include_bodies());
     assert_eq!(
         state.debug_log.current_path().as_deref(),
-        Some(log_path.as_path())
+        Some(pinned.as_path())
     );
     assert!(state.debug_log.live_snapshot().include_bodies);
     let mut replayed = AppConfig::default();
@@ -2191,8 +2194,10 @@ fn set_live_logging_commits_the_live_snapshot() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let previous_path = dir.join("previous.jsonl");
-    let next_path = dir.join("next.jsonl");
+    let previous_path = crate::debug_log::validate_debug_log_path(&dir.join("previous.jsonl"))
+        .expect("pin previous");
+    let next_path =
+        crate::debug_log::validate_debug_log_path(&dir.join("next.jsonl")).expect("pin next");
     let previous = crate::config::DebugConfig {
         enabled: true,
         log_path: Some(previous_path.clone()),
@@ -2257,7 +2262,8 @@ fn set_live_logging_skips_tracing_reload_when_filter_unchanged() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("debug.jsonl");
+    let path =
+        crate::debug_log::validate_debug_log_path(&dir.join("debug.jsonl")).expect("pin path");
     let previous = crate::config::DebugConfig {
         enabled: true,
         log_path: Some(path.clone()),
@@ -2294,8 +2300,10 @@ fn set_live_logging_keeps_snapshot_when_tracing_reload_fails() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let previous_path = dir.join("previous.jsonl");
-    let next_path = dir.join("next.jsonl");
+    let previous_path = crate::debug_log::validate_debug_log_path(&dir.join("previous.jsonl"))
+        .expect("pin previous");
+    let next_path =
+        crate::debug_log::validate_debug_log_path(&dir.join("next.jsonl")).expect("pin next");
     let previous = crate::config::DebugConfig {
         enabled: true,
         log_path: Some(previous_path.clone()),
@@ -2429,8 +2437,10 @@ fn set_live_logging_does_not_publish_when_writer_apply_fails() {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let previous_path = dir.join("previous.jsonl");
-    let next_path = dir.join("next.jsonl");
+    let previous_path = crate::debug_log::validate_debug_log_path(&dir.join("previous.jsonl"))
+        .expect("pin previous");
+    let next_path =
+        crate::debug_log::validate_debug_log_path(&dir.join("next.jsonl")).expect("pin next");
     let previous = crate::config::DebugConfig {
         enabled: true,
         log_path: Some(previous_path.clone()),
