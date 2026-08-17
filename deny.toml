@@ -1,0 +1,30 @@
+# Supply-chain policy for cargo-deny (licenses, bans, sources).
+# Advisories are not part of this file: CI runs cargo-audit with
+# continue-on-error so a new CVE does not freeze merges.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Zlib",
+]
+unused-allowed-license = "allow"
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
