@@ -22,8 +22,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "registry", "std"] }
 
 [lints.clippy]
-# Tracing-reload test types and Default-then-assign fixtures are inherent here.
-type_complexity = "allow"
-field_reassign_with_default = "allow"
 dbg_macro = "warn"
 todo = "warn"

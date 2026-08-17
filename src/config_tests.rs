@@ -312,20 +312,22 @@ fn disabling_catalog_entry_blocks_prefixed_model_id() {
 
 #[test]
 fn exact_disabled_catalog_entry_wins_over_earlier_enabled_alias() {
-    let mut provider = ProviderConfig::default();
-    provider.model_catalog = vec![
-        ModelCatalogEntry {
-            id: "friendly".into(),
-            upstream_id: Some("gpt-4".into()),
-            enabled: true,
-            ..ModelCatalogEntry::default()
-        },
-        ModelCatalogEntry {
-            id: "gpt-4".into(),
-            enabled: false,
-            ..ModelCatalogEntry::default()
-        },
-    ];
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "friendly".into(),
+                upstream_id: Some("gpt-4".into()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "gpt-4".into(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
 
     assert!(!provider.model_is_enabled("gpt-4"));
     assert!(!provider.model_is_enabled("provider/gpt-4"));

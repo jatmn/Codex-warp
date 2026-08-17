@@ -99,8 +99,10 @@ fn translates_responses_fields_to_chat_fields() {
 
 #[test]
 fn can_request_stream_usage_when_provider_supports_it() {
-    let mut transform = TransformConfig::default();
-    transform.request_stream_options_include_usage = true;
+    let transform = TransformConfig {
+        request_stream_options_include_usage: true,
+        ..TransformConfig::default()
+    };
     let request = json!({
         "model": "test-model",
         "input": "hello",
@@ -174,8 +176,10 @@ fn assistant_reasoning_parts_become_reasoning_content_history_when_enabled() {
             ]
         }]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -203,8 +207,10 @@ fn separate_reasoning_item_becomes_next_assistant_reasoning_content() {
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -233,8 +239,10 @@ fn separate_reasoning_item_becomes_next_assistant_tool_call_reasoning_content() 
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -270,8 +278,10 @@ fn codec_split_assistant_reasoning_moves_to_following_tool_call() {
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -313,8 +323,10 @@ fn reasoning_only_assistant_shard_collapses_to_tool_call_message() {
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -352,8 +364,10 @@ fn pending_reasoning_is_retained_across_tool_outputs() {
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
@@ -386,8 +400,10 @@ fn orphan_reasoning_before_user_message_is_not_attached_to_later_assistant() {
             }
         ]
     });
-    let mut transform = TransformConfig::default();
-    transform.preserve_reasoning_content_history = true;
+    let transform = TransformConfig {
+        preserve_reasoning_content_history: true,
+        ..TransformConfig::default()
+    };
 
     let transformed = responses_to_chat(request, &transform);
 
