@@ -4,8 +4,10 @@ use crate::config::TransformConfig;
 
 #[test]
 fn reasoning_effort_none_value_remaps_none_in_top_level_and_reasoning_object() {
-    let mut transform = TransformConfig::default();
-    transform.reasoning_effort_none_value = Some("no_think".to_string());
+    let transform = TransformConfig {
+        reasoning_effort_none_value: Some("no_think".to_string()),
+        ..TransformConfig::default()
+    };
 
     let mut body = json!({"reasoning_effort": "none", "model": "hy3"});
     apply_reasoning_effort_none_value(&mut body, &transform);
@@ -18,8 +20,10 @@ fn reasoning_effort_none_value_remaps_none_in_top_level_and_reasoning_object() {
 
 #[test]
 fn reasoning_effort_none_value_keeps_other_levels() {
-    let mut transform = TransformConfig::default();
-    transform.reasoning_effort_none_value = Some("no_think".to_string());
+    let transform = TransformConfig {
+        reasoning_effort_none_value: Some("no_think".to_string()),
+        ..TransformConfig::default()
+    };
 
     let mut body = json!({"reasoning_effort": "high"});
     apply_reasoning_effort_none_value(&mut body, &transform);
@@ -64,8 +68,10 @@ fn reasoning_effort_to_thinking_type_maps_supported_values() {
 
 #[test]
 fn apply_reasoning_effort_none_value_remaps_disable_synonyms() {
-    let mut transform = TransformConfig::default();
-    transform.reasoning_effort_none_value = Some("low".to_string());
+    let transform = TransformConfig {
+        reasoning_effort_none_value: Some("low".to_string()),
+        ..TransformConfig::default()
+    };
     let mut body = json!({"reasoning_effort": "off"});
     apply_reasoning_effort_none_value(&mut body, &transform);
     assert_eq!(body["reasoning_effort"], "low");
@@ -90,8 +96,10 @@ fn strip_disabled_reasoning_effort_removes_disable_values_for_thinking_type_fami
 
 #[test]
 fn strip_disabled_reasoning_effort_removes_none_value_for_thinking_type_families() {
-    let mut transform = TransformConfig::default();
-    transform.reasoning_effort_none_value = Some("no_think".to_string());
+    let mut transform = TransformConfig {
+        reasoning_effort_none_value: Some("no_think".to_string()),
+        ..TransformConfig::default()
+    };
     transform
         .chat_request_morphs
         .push(crate::config::RequestMorph {

@@ -37,8 +37,10 @@ fn upstream_requests_report_codex_warp_user_agent() {
 
 #[test]
 fn all_providers_get_attribution_headers() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://api.example.com/v1".to_string();
+    let provider = ProviderConfig {
+        base_url: "https://api.example.com/v1".to_string(),
+        ..ProviderConfig::default()
+    };
 
     let request = Client::new().post("https://api.example.com/v1/chat/completions");
     let request = apply_headers(request, &provider, &HeaderMap::new())
@@ -73,8 +75,10 @@ fn all_providers_get_attribution_headers() {
 
 #[test]
 fn openrouter_provider_gets_attribution_headers() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
 
     let request = Client::new().post("https://openrouter.ai/api/v1/chat/completions");
     let request =
@@ -110,8 +114,10 @@ fn openrouter_provider_gets_attribution_headers() {
 
 #[test]
 fn user_headers_override_openrouter_attribution() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let mut provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
     provider.headers.insert(
         "HTTP-Referer".to_string(),
         "https://my-custom-app.example".to_string(),
@@ -144,8 +150,10 @@ fn user_headers_override_openrouter_attribution() {
 
 #[test]
 fn referer_alias_suppresses_http_referer() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let mut provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
     provider.headers.insert(
         "Referer".to_string(),
         "https://my-custom-app.example".to_string(),
@@ -169,8 +177,10 @@ fn referer_alias_suppresses_http_referer() {
 
 #[test]
 fn x_title_alias_suppresses_openrouter_title() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let mut provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
     provider
         .headers
         .insert("X-Title".to_string(), "My App".to_string());
@@ -197,8 +207,10 @@ fn x_title_alias_suppresses_openrouter_title() {
 
 #[test]
 fn user_categories_override_openrouter_attribution() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let mut provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
     provider.headers.insert(
         "X-OpenRouter-Categories".to_string(),
         "my-category".to_string(),
@@ -232,8 +244,10 @@ fn user_categories_override_openrouter_attribution() {
 
 #[test]
 fn responses_and_models_paths_get_attribution_headers() {
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://openrouter.ai/api/v1".to_string();
+    let provider = ProviderConfig {
+        base_url: "https://openrouter.ai/api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
 
     for path in ["/responses", "/models"] {
         let url = format!("https://openrouter.ai/api/v1{path}");
@@ -276,10 +290,12 @@ fn responses_and_models_paths_get_attribution_headers() {
 
 #[test]
 fn upstream_headers_supports_custom_api_key_header() {
-    let mut provider = ProviderConfig::default();
-    provider.auth_header = "api-key".to_string();
-    provider.auth_scheme = String::new();
-    provider.api_key = Some("test-hicap-key".to_string());
+    let mut provider = ProviderConfig {
+        auth_header: "api-key".to_string(),
+        auth_scheme: String::new(),
+        api_key: Some("test-hicap-key".to_string()),
+        ..ProviderConfig::default()
+    };
     provider
         .headers
         .insert("x-hicap-tag".to_string(), "codex-warp-jatmn".to_string());
@@ -300,10 +316,12 @@ fn upstream_headers_supports_custom_api_key_header() {
 
 #[test]
 fn build_upstream_json_request_sets_single_content_type() {
-    let mut provider = ProviderConfig::default();
-    provider.auth_header = "authorization".to_string();
-    provider.auth_scheme = "Bearer".to_string();
-    provider.api_key = Some("test-key".to_string());
+    let mut provider = ProviderConfig {
+        auth_header: "authorization".to_string(),
+        auth_scheme: "Bearer".to_string(),
+        api_key: Some("test-key".to_string()),
+        ..ProviderConfig::default()
+    };
     provider
         .headers
         .insert("content-type".to_string(), "application/json".to_string());
@@ -358,10 +376,12 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
             .expect("serve test listener");
     });
 
-    let mut provider = ProviderConfig::default();
-    provider.auth_header = "authorization".to_string();
-    provider.auth_scheme = "Bearer".to_string();
-    provider.api_key = Some("test-key".to_string());
+    let mut provider = ProviderConfig {
+        auth_header: "authorization".to_string(),
+        auth_scheme: "Bearer".to_string(),
+        api_key: Some("test-key".to_string()),
+        ..ProviderConfig::default()
+    };
     provider
         .headers
         .insert("content-type".to_string(), "application/json".to_string());

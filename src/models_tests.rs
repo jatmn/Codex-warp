@@ -594,8 +594,10 @@ fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
     register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
 
     let mut merged_models = Vec::new();
-    let mut default_provider = ProviderConfig::default();
-    default_provider.base_url = "https://default.example/v1".to_string();
+    let default_provider = ProviderConfig {
+        base_url: "https://default.example/v1".to_string(),
+        ..ProviderConfig::default()
+    };
     let live_models = vec![json!({
         "slug": "gpt-5.4",
         "display_name": "GPT-5.4",
@@ -728,9 +730,11 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
     use crate::state::AppState;
 
     let mut config = AppConfig::default();
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://example.test/v1".to_string();
-    provider.model_catalog_only = true;
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
     // A successful empty catalog response must remove stale discovered routes.
     provider.model_catalog.push(ModelCatalogEntry {
         id: "disabled-model".to_string(),
@@ -781,17 +785,21 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
     use crate::state::AppState;
 
     let mut config = AppConfig::default();
-    let mut alpha = ProviderConfig::default();
-    alpha.base_url = "https://alpha.example/v1".to_string();
-    alpha.model_catalog_only = true;
+    let mut alpha = ProviderConfig {
+        base_url: "https://alpha.example/v1".to_string(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
     alpha.model_catalog.push(ModelCatalogEntry {
         id: "shared".to_string(),
         enabled: true,
         ..ModelCatalogEntry::default()
     });
-    let mut beta = ProviderConfig::default();
-    beta.base_url = "https://beta.example/v1".to_string();
-    beta.model_catalog_only = true;
+    let mut beta = ProviderConfig {
+        base_url: "https://beta.example/v1".to_string(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
     beta.model_catalog.push(ModelCatalogEntry {
         id: "shared".to_string(),
         enabled: true,
@@ -940,9 +948,11 @@ async fn models_returns_empty_list_when_all_models_disabled() {
     use crate::state::AppState;
 
     let mut config = AppConfig::default();
-    let mut provider = ProviderConfig::default();
-    provider.base_url = "https://example.test/v1".to_string();
-    provider.model_catalog_only = true;
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
     provider.model_catalog.push(ModelCatalogEntry {
         id: "disabled-model".to_string(),
         enabled: false,
@@ -1176,12 +1186,16 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
         .unwrap();
 
     let mut config = AppConfig::default();
-    let mut alpha = ProviderConfig::default();
-    alpha.base_url = "https://alpha.example/v1".into();
-    alpha.model_catalog_only = true;
-    let mut beta = ProviderConfig::default();
-    beta.base_url = "https://beta.example/v1".into();
-    beta.model_catalog_only = true;
+    let alpha = ProviderConfig {
+        base_url: "https://alpha.example/v1".into(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    let beta = ProviderConfig {
+        base_url: "https://beta.example/v1".into(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
     config.providers.insert("alpha".into(), alpha);
     config.providers.insert("beta".into(), beta);
 

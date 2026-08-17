@@ -4608,8 +4608,10 @@ fn native_completed_requires_response_object() {
 #[tokio::test]
 async fn native_stream_errors_when_sse_frame_buffer_exceeds_limit() {
     let upstream = upstream_response_with_body(vec![b'a'; SSE_FRAME_BUFFER_MAX_BYTES + 1]);
-    let mut tool_policy = crate::config::ToolPolicyConfig::default();
-    tool_policy.enabled = true;
+    let tool_policy = crate::config::ToolPolicyConfig {
+        enabled: true,
+        ..crate::config::ToolPolicyConfig::default()
+    };
     let events = native_stream_to_responses(
         upstream,
         BTreeSet::new(),
