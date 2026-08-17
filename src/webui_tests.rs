@@ -1857,7 +1857,7 @@ async fn logging_update_applies_without_store() {
     assert_eq!(debug_events["enabled"], true);
     assert_eq!(
         debug_events["path"],
-        serde_json::Value::String(log_path.display().to_string())
+        serde_json::Value::String(pinned.display().to_string())
     );
     assert_eq!(debug_events["events"][0]["id"], "dbg_nostore");
     let _ = std::fs::remove_dir_all(dir);
