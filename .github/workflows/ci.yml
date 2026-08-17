@@ -93,6 +93,5 @@ jobs:
         run: cargo build --locked
 
       - name: CLI Smoke
-        run: |
-          target\debug\codex-warp.exe --version
-          target\debug\codex-warp.exe --help
+        shell: cmd
+        run: target\debug\codex-warp.exe --version && target\debug\codex-warp.exe --help
