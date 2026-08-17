@@ -470,7 +470,7 @@ credential patches. For a TOML-backed provider, `api_key` and `api_key_env`
 remain TOML-owned: the Web UI cannot set or clear them, so a later TOML
 credential rotation cannot be overwritten by an old SQLite snapshot. In the Web
 UI editor, a value is classified as `api_key_env` when it matches ASCII uppercase,
-digits, and underscores, starts with `A–Z` or `_`, and contains at least one
+digits, and underscores, starts with `A-Z` or `_`, and contains at least one
 underscore (for example `OPENROUTER_API_KEY`). Every other value is stored as an
 inline `api_key`. Environment variable names stay visible in `GET /api/providers`;
 inline keys do not. Clearing an environment variable name or using Clear saved
@@ -485,7 +485,8 @@ Editing a stored environment variable name into a truncation of that name
 `PUT /api/providers/{id}`. Creating a provider from a named example template
 rejects the same truncation against the template's bundled env name on
 `POST /api/providers`. Unrelated values such as `AKIA…` are treated as a new
-inline key. Pasting a masked preview (any value containing `•`) is rejected by
+inline key. Pasting a masked preview (a value shaped like `mask_api_key`, with
+a run of `•` characters) is rejected by
 the editor and by `PUT`/`POST` `/api/providers`. Managed overlay databases are
 opened with owner-only permissions (`0600` on Unix) because they may contain
 inline `api_key` values. If a managed overlay row disappears while Codex Warp is

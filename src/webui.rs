@@ -1099,7 +1099,7 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
             OptionalPatch::Clear | OptionalPatch::Absent => None,
         })
     {
-        if value.contains('•') {
+        if looks_like_masked_api_key_preview(value) {
             return Err(ApiError::bad_request(
                 "credentials cannot contain a masked preview",
             ));
@@ -1221,6 +1221,18 @@ fn looks_like_env_var_name(value: &str) -> bool {
         return false;
     }
     value.contains('_')
+}
+
+/// Keep this in lockstep with `looksLikeMaskedApiKeyPreview` in
+/// `src/webui_static/app-main.js`.
+fn looks_like_masked_api_key_preview(value: &str) -> bool {
+    if !value.contains('•') {
+        return false;
+    }
+    if value.chars().all(|ch| ch == '•') {
+        return true;
+    }
+    value.contains("••")
 }
 
 /// Keep this in lockstep with `isTruncatedEnvName` in

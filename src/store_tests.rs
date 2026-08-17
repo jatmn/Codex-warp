@@ -1020,6 +1020,35 @@ fn store_open_restricts_database_file_mode() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn restrict_sqlite_sidecar_mode_handles_non_utf8_filename() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-sidecar-nonutf8-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join(OsStr::from_bytes(b"mode\xff.db"));
+    let wal = dir.join(OsStr::from_bytes(b"mode\xff.db-wal"));
+    std::fs::write(&wal, b"wal").unwrap();
+    let mut permissions = std::fs::metadata(&wal).unwrap().permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&wal, permissions).unwrap();
+    restrict_sqlite_sidecar_mode(&db_path).unwrap();
+    assert_eq!(
+        std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn apply_overlays_replays_overlapping_model_toggles_in_mutation_order() {
     let dir = std::env::temp_dir().join(format!(

@@ -563,9 +563,39 @@
       && !String(credentialState.draft || "").trim();
   }
 
+  function looksLikeEnvVarDraft(draft) {
+    const trimmed = String(draft || "").trim();
+    if (!trimmed) {
+      return credentialState.loadedKind === "env" && !credentialState.cleared;
+    }
+    if (looksLikeEnvVarName(trimmed)) {
+      return true;
+    }
+    return /^[A-Z_][A-Z0-9_]*$/.test(trimmed);
+  }
+
+  // Keep in lockstep with looks_like_masked_api_key_preview in src/webui.rs.
+  function looksLikeMaskedApiKeyPreview(value) {
+    if (!value || !value.includes("•")) {
+      return false;
+    }
+    if ([...value].every((ch) => ch === "•")) {
+      return true;
+    }
+    return value.includes("••");
+  }
+
+  function credentialInputType() {
+    if (isInlineKeyLocked()) {
+      return "text";
+    }
+    return looksLikeEnvVarDraft(credentialState.draft) ? "text" : "password";
+  }
+
   function applyCredentialFieldAccess() {
     const locked = credentialFieldTomlLocked || isInlineKeyLocked();
     apiKeyInput.readOnly = locked;
+    apiKeyInput.type = credentialInputType();
     if (credentialFieldTomlLocked) {
       apiKeyInput.title = "TOML-backed providers manage credentials in TOML.";
     } else if (isInlineKeyLocked()) {
@@ -623,7 +653,7 @@
     if (draft && credentialState.preview && draft === credentialState.preview) {
       return { kind: "keep" };
     }
-    if (draft.includes("•")) {
+    if (looksLikeMaskedApiKeyPreview(draft)) {
       return {
         kind: "invalid",
         message: "That looks like a masked preview, not an API key. Paste the full secret or an environment variable name.",
@@ -710,6 +740,7 @@
     const draft = credentialState.draft || "";
     if (draft) {
       credentialState.reveal = true;
+      apiKeyInput.type = credentialInputType();
       apiKeyInput.value = draft;
     }
   });
@@ -717,12 +748,13 @@
     if (apiKeyInput.readOnly) return;
     credentialState.draft = apiKeyInput.value;
     credentialState.reveal = true;
+    applyCredentialFieldAccess();
     updateCredentialClassHint();
   });
   function syncEditableCredentialFromInput() {
     if (apiKeyInput.readOnly) return;
     const visible = String(apiKeyInput.value || "");
-    if (!visible || visible.includes("•")) return;
+    if (!visible || looksLikeMaskedApiKeyPreview(visible)) return;
     credentialState.draft = visible;
   }
 

@@ -1467,15 +1467,17 @@ fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
 }
 
 fn restrict_sqlite_sidecar_mode(path: &Path) -> anyhow::Result<()> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+    let Some(name) = path.file_name() else {
         return Ok(());
     };
     let Some(parent) = path.parent() else {
         return Ok(());
     };
     for suffix in ["-wal", "-shm"] {
-        let sidecar = parent.join(format!("{name}{suffix}"));
-        if sidecar.exists() {
+        let mut sidecar_name = name.to_os_string();
+        sidecar_name.push(suffix);
+        let sidecar = parent.join(sidecar_name);
+        if sidecar.try_exists()? {
             restrict_sqlite_file_mode(&sidecar)?;
         }
     }

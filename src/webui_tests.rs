@@ -321,6 +321,33 @@ fn validate_provider_persist_rejects_masked_preview_credentials() {
 }
 
 #[test]
+fn validate_provider_persist_allows_single_bullet_in_secret() {
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set("a•b".into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    validate_provider_persist(&fields).expect("single bullet secrets are allowed");
+}
+
+#[test]
+fn looks_like_masked_api_key_preview_matches_mask_shape() {
+    assert!(!looks_like_masked_api_key_preview("a•b"));
+    assert!(looks_like_masked_api_key_preview("sk-ab••••cd"));
+    assert!(looks_like_masked_api_key_preview("••"));
+    assert!(!looks_like_masked_api_key_preview("sk-live-not-an-env"));
+}
+
+#[test]
 fn validate_provider_persist_rejects_empty_base_url() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,
@@ -640,11 +667,11 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "submit and blur must copy autofill without replacing a draft with its mask"
     );
     assert!(
-        app.contains("if (!visible || visible.includes(\"•\")) return;"),
+        app.contains("if (!visible || looksLikeMaskedApiKeyPreview(visible)) return;"),
         "masked display text must not overwrite the stored secret draft"
     );
     assert!(
-        app.contains("draft.includes(\"•\")"),
+        app.contains("looksLikeMaskedApiKeyPreview(draft)"),
         "pasting the masked preview must not persist as the secret"
     );
     assert!(
@@ -1643,8 +1670,11 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(index.contains("Clear saved credentials"));
     assert!(!index.contains("Remove the in-process API key"));
     assert!(!index.contains("used only until Codex Warp restarts"));
-    assert!(index.contains("name=\"api_key_env\" type=\"text\""));
-    assert!(!index.contains("type=\"password\""));
+    assert!(index.contains("name=\"api_key_env\" type=\"password\""));
+    assert!(app.contains("function credentialInputType("));
+    assert!(app.contains("apiKeyInput.type = credentialInputType()"));
+    assert!(app.contains("function looksLikeEnvVarDraft("));
+    assert!(app.contains("function looksLikeMaskedApiKeyPreview("));
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
     assert!(app.contains("nameInput.readOnly = isNamed"));
     assert!(app.contains("function maskApiKey("));
