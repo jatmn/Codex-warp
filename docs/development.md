@@ -179,7 +179,7 @@ The Linux CI job performs:
   Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
-- `RUSTDOCFLAGS=-D warnings cargo doc --locked --no-deps`
+- `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
 - `git diff --check`
 
