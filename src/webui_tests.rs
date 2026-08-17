@@ -342,6 +342,7 @@ fn validate_provider_persist_allows_single_bullet_in_secret() {
 #[test]
 fn looks_like_masked_api_key_preview_matches_mask_shape() {
     assert!(!looks_like_masked_api_key_preview("a•b"));
+    assert!(looks_like_masked_api_key_preview("•"));
     assert!(looks_like_masked_api_key_preview("sk-ab••••cd"));
     assert!(looks_like_masked_api_key_preview("••"));
     assert!(!looks_like_masked_api_key_preview("sk-live-not-an-env"));
