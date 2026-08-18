@@ -14,6 +14,18 @@ fn bundled_templates_include_example_profiles() {
     assert!(keys.contains(&"cline_pass"));
     assert!(keys.contains(&"xiaomi_token_plan"));
     assert!(keys.contains(&"custom"));
+    assert_eq!(
+        keys[0], "custom",
+        "custom template is the default picker entry"
+    );
+    let named_labels: Vec<String> = templates
+        .iter()
+        .skip(1)
+        .map(|template| template.label.to_ascii_lowercase())
+        .collect();
+    let mut sorted_labels = named_labels.clone();
+    sorted_labels.sort();
+    assert_eq!(named_labels, sorted_labels);
     assert!(templates.iter().any(|template| template.id.is_empty()));
 
     let kimi = find_provider_template("moonshot_kimicode").expect("kimi template");

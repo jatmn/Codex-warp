@@ -83,6 +83,10 @@
     commitStatus(msg, opts);
   }
 
+  function formatErrorMessage(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+
   // Empty → JSON null (clear to defaults). Invalid input must not become
   // `Number(...)` NaN: JSON.stringify(NaN) is `null`, which the API treats as
   // Clear and silently resets rotation limits.
@@ -334,7 +338,7 @@
           status(`${p.id} ${enabled ? "enabled" : "disabled"}`);
         } catch (e) {
           sw.input.checked = !enabled;
-          status(`Error: ${e.message}`);
+          status(`Error: ${formatErrorMessage(e)}`);
         }
       });
       sw.input.checked = p.enabled;
@@ -369,7 +373,9 @@
       editBtn.type = "button";
       editBtn.className = "btn small";
       editBtn.textContent = "Edit";
-      editBtn.addEventListener("click", () => openProviderForm(p));
+      editBtn.addEventListener("click", () => {
+        void openProviderForm(p);
+      });
 
       const delBtn = document.createElement("button");
       delBtn.type = "button";
@@ -381,7 +387,7 @@
           await api(`/providers/${encodeURIComponent(p.id)}`, { method: "DELETE" });
           expandedProviderIds.delete(p.id);
           await loadProviders({ refreshRoutes: false });
-        } catch (e) { status(`Error: ${e.message}`); }
+        } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
       });
 
       const addModelBtn = document.createElement("button");
@@ -438,7 +444,7 @@
           await loadProviders({ refreshRoutes: false });
         } catch (e) {
           sw.input.checked = !enabled;
-          status(`Error: ${e.message}`);
+          status(`Error: ${formatErrorMessage(e)}`);
         }
       });
       sw.input.checked = m.enabled;
@@ -456,7 +462,7 @@
             { method: "DELETE" },
           );
           await loadProviders({ refreshRoutes: false });
-        } catch (e) { status(`Error: ${e.message}`); }
+        } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
       });
       const actions = [sw.wrap];
       if (m.catalog) {
@@ -485,7 +491,285 @@
   const providerHeadersRows = $("#provider-headers-rows");
   const addProviderHeaderBtn = $("#provider-headers-add");
 
-  $("#btn-add-provider").addEventListener("click", () => openProviderForm());
+  const clearCredentialsBtn = $("#provider-clear-credentials");
+
+  // Keep in lockstep with looks_like_env_var_name in src/webui.rs.
+  function looksLikeEnvVarName(value) {
+    if (!value) return false;
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(value)) return false;
+    return value.includes("_");
+  }
+
+  // Keep in lockstep with mask_api_key in src/webui.rs.
+  function maskApiKey(value) {
+    const chars = Array.from(value);
+    const n = chars.length;
+    if (!n) return "";
+    let prefix = 4;
+    let suffix = 4;
+    if (n <= 8) {
+      prefix = 1;
+      suffix = 1;
+    } else if (n <= 12) {
+      prefix = 2;
+      suffix = 2;
+    }
+    if (prefix + suffix >= n) {
+      return "•".repeat(n);
+    }
+    return chars.slice(0, prefix).join("")
+      + "•".repeat(n - prefix - suffix)
+      + chars.slice(n - suffix).join("");
+  }
+
+  // loadedKind is the credential class at form open, not a snapshot of the
+  // current string. Inline secrets cannot be edited in place (the operator
+  // never has the raw value); env names stay editable because they are visible.
+  const credentialState = {
+    draft: "",
+    preview: "",
+    loadedRaw: "",
+    loadedKind: "none",
+    cleared: false,
+    reveal: false,
+  };
+  let credentialFieldTomlLocked = false;
+  const credentialClassHint = $("#provider-credential-class");
+
+  // Editing a loaded env name into a truncation of that name
+  // (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY) must not become an inline
+  // secret. Unrelated tokens such as AKIA… are replacements, not truncations.
+  // Keep in lockstep with is_truncated_env_name in src/webui.rs.
+  function compactEnvName(value) {
+    return String(value || "").replaceAll("_", "");
+  }
+
+  function isTruncatedEnvName(loaded, draft) {
+    if (!draft || looksLikeEnvVarName(draft)) return false;
+    const loadedCompact = compactEnvName(loaded);
+    const draftCompact = compactEnvName(draft);
+    return !!draftCompact && loadedCompact.startsWith(draftCompact);
+  }
+
+  function isAmbiguousEnvReplacement(draft) {
+    return credentialState.loadedKind === "env"
+      && isTruncatedEnvName(credentialState.loadedRaw, draft);
+  }
+
+  function isInlineKeyLocked() {
+    return credentialState.loadedKind === "inline"
+      && !credentialState.cleared
+      && !!credentialState.preview
+      && !String(credentialState.draft || "").trim();
+  }
+
+  function looksLikeEnvVarDraft(draft) {
+    const trimmed = String(draft || "").trim();
+    if (!trimmed) {
+      return credentialState.loadedKind === "env" && !credentialState.cleared;
+    }
+    if (looksLikeEnvVarName(trimmed)) {
+      return true;
+    }
+    return /^[A-Z_][A-Z0-9_]*$/.test(trimmed);
+  }
+
+  // Keep in lockstep with looks_like_masked_api_key_preview in src/webui.rs.
+  function looksLikeMaskedApiKeyPreview(value) {
+    if (!value || !value.includes("•")) {
+      return false;
+    }
+    if ([...value].every((ch) => ch === "•")) {
+      return true;
+    }
+    return value.includes("••");
+  }
+
+  function credentialInputType() {
+    if (isInlineKeyLocked()) {
+      return "text";
+    }
+    return looksLikeEnvVarDraft(credentialState.draft) ? "text" : "password";
+  }
+
+  function applyCredentialFieldAccess() {
+    const locked = credentialFieldTomlLocked || isInlineKeyLocked();
+    apiKeyInput.readOnly = locked;
+    apiKeyInput.type = credentialInputType();
+    if (credentialFieldTomlLocked) {
+      apiKeyInput.title = "TOML-backed providers manage credentials in TOML.";
+    } else if (isInlineKeyLocked()) {
+      apiKeyInput.title = "Saved API key is masked. Use Clear saved credentials to remove or replace it.";
+    } else {
+      apiKeyInput.title = "";
+    }
+  }
+
+  function updateCredentialClassHint() {
+    if (!credentialClassHint) return;
+    const draft = String(credentialState.draft || "").trim();
+    let text = "";
+    if (credentialFieldTomlLocked) {
+      text = "Credentials for this provider are owned by TOML.";
+    } else if (isInlineKeyLocked()) {
+      text = "Saved API key (masked). Leave it unchanged to keep it, or use Clear saved credentials to remove or replace it.";
+    } else if (!draft) {
+      if (credentialState.cleared || credentialState.loadedKind === "env") {
+        text = "Empty field removes stored credentials on save.";
+      } else if (credentialState.loadedKind === "inline") {
+        text = "Leave empty to keep the saved API key.";
+      } else {
+        text = "Uppercase names with an underscore are stored as environment variable names. Other values are stored as API keys.";
+      }
+    } else if (looksLikeEnvVarName(draft)) {
+      text = "Will be stored as an environment variable name and read from the process environment. It is not stored as a secret.";
+    } else if (isAmbiguousEnvReplacement(draft)) {
+      text = "This looks like a shortened environment variable name. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….";
+    } else {
+      text = "Will be stored as an API key. After save, only a short prefix and suffix are shown.";
+    }
+    credentialClassHint.textContent = text;
+    credentialClassHint.hidden = !text;
+  }
+
+  function isUnchangedLoadedEnvName(draft) {
+    return credentialState.loadedKind === "env"
+      && !credentialState.cleared
+      && !!draft
+      && draft === String(credentialState.loadedRaw || "").trim();
+  }
+
+  function credentialPatch() {
+    const draft = String(credentialState.draft || "").trim();
+    if (credentialFieldTomlLocked) {
+      return { kind: "keep" };
+    }
+    if (isInlineKeyLocked()) {
+      return { kind: "keep" };
+    }
+    if (isUnchangedLoadedEnvName(draft)) {
+      return { kind: "keep" };
+    }
+    if (draft && credentialState.preview && draft === credentialState.preview) {
+      return { kind: "keep" };
+    }
+    if (looksLikeMaskedApiKeyPreview(draft)) {
+      return {
+        kind: "invalid",
+        message: "That looks like a masked preview, not an API key. Paste the full secret or an environment variable name.",
+      };
+    }
+    if (draft) {
+      if (isAmbiguousEnvReplacement(draft)) {
+        return {
+          kind: "invalid",
+          message: "That value looks like a shortened environment variable name, not a new API key. Enter a full NAME_WITH_UNDERSCORE or paste an API key such as sk-….",
+        };
+      }
+      return { kind: "set", value: draft };
+    }
+    if (credentialState.cleared || credentialState.loadedKind === "env") {
+      return { kind: "clear" };
+    }
+    if (credentialState.loadedKind === "inline" || credentialState.preview) {
+      return { kind: "keep" };
+    }
+    return { kind: "set", value: null };
+  }
+
+  function renderCredentialInput() {
+    applyCredentialFieldAccess();
+    const draft = credentialState.draft || "";
+    const preview = credentialState.preview || "";
+    if (isInlineKeyLocked()) {
+      apiKeyInput.value = preview;
+      updateCredentialClassHint();
+      return;
+    }
+    if (draft) {
+      apiKeyInput.value = (!credentialState.reveal && !looksLikeEnvVarName(draft))
+        ? maskApiKey(draft)
+        : draft;
+      updateCredentialClassHint();
+      return;
+    }
+    apiKeyInput.value = "";
+    updateCredentialClassHint();
+  }
+
+  function setCredentialInput(raw, preview = "", saved = false, inlineSaved = false) {
+    const trimmed = String(raw || "").trim();
+    credentialState.draft = trimmed;
+    credentialState.preview = preview || "";
+    credentialState.cleared = false;
+    credentialState.reveal = false;
+    if (!saved) {
+      credentialState.loadedRaw = "";
+      credentialState.loadedKind = "none";
+    } else if (looksLikeEnvVarName(trimmed)) {
+      credentialState.loadedRaw = trimmed;
+      credentialState.loadedKind = "env";
+    } else if (preview || inlineSaved) {
+      credentialState.loadedRaw = "";
+      credentialState.loadedKind = "inline";
+    } else {
+      credentialState.loadedRaw = "";
+      credentialState.loadedKind = "none";
+    }
+    renderCredentialInput();
+  }
+
+  function setClearCredentialsVisible(visible) {
+    if (clearCredentialsBtn) {
+      clearCredentialsBtn.hidden = !visible;
+    }
+  }
+
+  if (clearCredentialsBtn) {
+    clearCredentialsBtn.addEventListener("click", () => {
+      credentialState.draft = "";
+      credentialState.preview = "";
+      credentialState.cleared = true;
+      credentialState.reveal = false;
+      renderCredentialInput();
+      apiKeyInput.focus();
+    });
+  }
+  apiKeyInput.addEventListener("focus", () => {
+    if (apiKeyInput.readOnly) return;
+    const draft = credentialState.draft || "";
+    if (draft) {
+      credentialState.reveal = true;
+      apiKeyInput.type = credentialInputType();
+      apiKeyInput.value = draft;
+    }
+  });
+  apiKeyInput.addEventListener("input", () => {
+    if (apiKeyInput.readOnly) return;
+    credentialState.draft = apiKeyInput.value;
+    credentialState.reveal = true;
+    applyCredentialFieldAccess();
+    updateCredentialClassHint();
+  });
+  function syncEditableCredentialFromInput() {
+    if (apiKeyInput.readOnly) return;
+    const visible = String(apiKeyInput.value || "");
+    if (!visible || looksLikeMaskedApiKeyPreview(visible)) return;
+    credentialState.draft = visible;
+  }
+
+  apiKeyInput.addEventListener("blur", () => {
+    syncEditableCredentialFromInput();
+    credentialState.reveal = false;
+    if (credentialState.draft) {
+      credentialState.draft = String(credentialState.draft).trim();
+    }
+    renderCredentialInput();
+  });
+
+  $("#btn-add-provider").addEventListener("click", () => {
+    void openProviderForm();
+  });
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
   addProviderHeaderBtn.addEventListener("click", () => addProviderHeaderRow());
@@ -498,20 +782,20 @@
     const template = mode === "create"
       ? findTemplateByOptionValue(templateSelect.value)
       : null;
-    const apiKeyInputValue = String(apiKeyInput.value || "").trim();
-    const clearInlineApiKey = !!providerForm.querySelector("[name=clear_inline_api_key]")?.checked;
-    const keepInlineApiKey =
-      mode === "edit"
-      && providerForm.dataset.hasInlineApiKey === "true"
-      && !apiKeyInputValue
-      && !clearInlineApiKey;
+    syncEditableCredentialFromInput();
+    const credential = credentialPatch();
+    if (credential.kind === "invalid") {
+      status(credential.message, { isError: true });
+      return;
+    }
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
-      api_key_env: keepInlineApiKey ? undefined : (apiKeyInputValue || null),
-      ...(clearInlineApiKey && !apiKeyInputValue && providerForm.dataset.hasInlineApiKey === "true"
-        ? { api_key: null }
-        : {}),
+      ...(credential.kind === "keep"
+        ? {}
+        : credential.kind === "clear"
+          ? { api_key_env: null, api_key: null }
+          : { api_key_env: credential.value }),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
       auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
@@ -536,7 +820,8 @@
           : {
               template: template.key,
               id: template.id,
-              api_key_env: body.api_key_env,
+              ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
+              ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
               enabled: body.enabled,
               ...(headers ? { headers } : {}),
             };
@@ -555,7 +840,7 @@
           body: JSON.stringify({
             name: body.name,
             base_url: body.base_url,
-            api_key_env: body.api_key_env,
+            ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
             ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
             auth_header: body.auth_header,
             auth_scheme: body.auth_scheme,
@@ -571,7 +856,7 @@
         await loadProviders({ refreshRoutes: false });
         status(`Provider ${targetId} updated`);
       }
-    } catch (e) { status(`Error: ${e.message}`); }
+    } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
   });
 
   function addProviderHeaderRow(name = "", value = "") {
@@ -671,7 +956,7 @@
   }
 
   function templateOptionValue(template) {
-    return template.key;
+    return template && template.key ? template.key : "";
   }
 
   function findTemplateByOptionValue(value) {
@@ -743,7 +1028,11 @@
     idInput.value = template.id || "";
     providerForm.querySelector("[name=name]").value = template.name || "";
     providerForm.querySelector("[name=base_url]").value = template.base_url || "";
-    providerForm.querySelector("[name=api_key_env]").value = template.api_key_env || "";
+    setCredentialInput(
+      template.api_key_env || "",
+      "",
+      looksLikeEnvVarName(template.api_key_env || ""),
+    );
     providerForm.querySelector("[name=auth_header]").value =
       template.auth_header || "authorization";
     providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme || "Bearer";
@@ -768,7 +1057,23 @@
     );
   }
 
-  function openProviderForm(p = null) {
+  async function ensureProviderTemplates() {
+    if (providerTemplates.length) return;
+    await loadProviderTemplates();
+    if (!providerTemplates.length) {
+      throw new Error("Provider templates are not available yet.");
+    }
+  }
+
+  async function openProviderForm(p = null) {
+    try {
+      await ensureProviderTemplates();
+    } catch (e) {
+      status(`Error: ${formatErrorMessage(e)}`);
+      // Create needs a template catalog. Edit can still open: a missing
+      // match must be treated as custom, not as a named template.
+      if (!p) return;
+    }
     selectedTemplateCatalog = [];
     const idInput = providerForm.querySelector("[name=id]");
     const enabledField = $("#provider-enabled-field");
@@ -779,29 +1084,35 @@
       templateField.hidden = false;
       templateSelect.disabled = true;
       const matching = findTemplateForProvider(p);
-      const isNamed = matching?.key !== "custom";
+      const isNamed = !!p.named_template;
       const allowCustomHeaders = !!p.managed;
-      templateSelect.value = matching
+      const selectedOption = matching
         ? templateOptionValue(matching)
         : templateOptionValue(
             providerTemplates.find((template) => template.key === "custom") ||
               providerTemplates[0],
           );
+      if (selectedOption) {
+        templateSelect.value = selectedOption;
+      }
       templateDescription.textContent =
         matching?.description ||
-        "This provider does not match a bundled example template.";
+        (p.named_template
+          ? "This provider was created from a bundled example template."
+          : "This provider does not match a bundled example template.");
       templateCatalogPreview.hidden = true;
       enabledField.hidden = false;
       idInput.value = p.id;
       idInput.readOnly = true;
       providerForm.querySelector("[name=name]").value = p.name || "";
       providerForm.querySelector("[name=base_url]").value = p.base_url || "";
-      providerForm.querySelector("[name=api_key_env]").value = p.api_key_env || "";
-      const apiKeyEnvInput = providerForm.querySelector("[name=api_key_env]");
-      apiKeyEnvInput.readOnly = !p.managed;
-      apiKeyEnvInput.title = p.managed
-        ? ""
-        : "TOML-backed providers manage api_key_env in TOML.";
+      credentialFieldTomlLocked = !p.managed;
+      setCredentialInput(
+        p.api_key_env || "",
+        p.managed ? (p.api_key_preview || "") : "",
+        true,
+        !!(p.managed && p.has_inline_api_key && !p.api_key_env),
+      );
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
       providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
       providerForm.querySelector("[name=responses_path]").value = p.responses_path || "/responses";
@@ -818,47 +1129,28 @@
       setNamedTemplateMode(isNamed);
       setCustomHeadersMode(allowCustomHeaders);
       $("#provider-advanced").hidden = false;
-      apiKeyInput.value = p.api_key_env || "";
-      apiKeyInput.placeholder = p.has_inline_api_key
-        ? "Configured for this process"
-        : "PROVIDER_API_KEY";
-      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
-      const clearInlineRow = $("#provider-clear-inline-key");
-      if (clearInline) {
-        clearInline.checked = false;
-      }
-      if (clearInlineRow) {
-        clearInlineRow.hidden = !(p.managed && p.has_inline_api_key);
-      }
-      providerForm.dataset.hasInlineApiKey =
-        p.managed && p.has_inline_api_key ? "true" : "false";
-      if (isNamed) {
-        providerForm.querySelector("[name=api_key_env]").readOnly = !p.managed;
-      }
+      apiKeyInput.placeholder = p.api_key_env
+        ? "PROVIDER_API_KEY"
+        : (p.has_inline_api_key ? "Saved API key" : "PROVIDER_API_KEY or sk-…");
+      setClearCredentialsVisible(
+        p.managed && !!(p.api_key_env || p.has_inline_api_key),
+      );
     } else {
       providerForm.reset();
       providerIdInput.value = "";
       applyProviderHeaders(null);
-      providerForm.querySelector("[name=api_key_env]").readOnly = false;
-      providerForm.querySelector("[name=api_key_env]").title = "";
-      providerForm.querySelector("[name=api_key_env]").placeholder = "PROVIDER_API_KEY";
-      providerForm.dataset.hasInlineApiKey = "false";
-      const clearInline = providerForm.querySelector("[name=clear_inline_api_key]");
-      const clearInlineRow = $("#provider-clear-inline-key");
-      if (clearInline) {
-        clearInline.checked = false;
-      }
-      if (clearInlineRow) {
-        clearInlineRow.hidden = true;
-      }
+      credentialFieldTomlLocked = false;
+      apiKeyInput.placeholder = "PROVIDER_API_KEY or sk-…";
+      setCredentialInput("");
+      setClearCredentialsVisible(false);
       providerForm.dataset.mode = "create";
-      $("#provider-form-title").textContent = "Add from example template";
+      $("#provider-form-title").textContent = "Add provider";
       templateField.hidden = false;
       templateSelect.disabled = false;
       enabledField.hidden = false;
       populateTemplateSelect();
       const preferred =
-        providerTemplates.find((template) => template.key === "openrouter") ||
+        providerTemplates.find((template) => template.key === "custom") ||
         providerTemplates[0];
       if (preferred) {
         templateSelect.value = templateOptionValue(preferred);
@@ -903,7 +1195,7 @@
       }
       modelDialog.close();
       await loadProviders({ refreshRoutes: false });
-    } catch (e) { status(`Error: ${e.message}`); }
+    } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
   });
 
   function openModelForm(providerId, m = null) {
@@ -1058,7 +1350,7 @@
         return;
       }
       if (activeTab === "analytics") {
-        const message = `Analytics error: ${e.message}`;
+        const message = `Analytics error: ${formatErrorMessage(e)}`;
         if (reportFromPoll) pollStatus(message, { isError: true });
         else status(message, { isError: true });
       }
@@ -2898,7 +3190,7 @@
       renderLogEvents(payload);
     } catch (e) {
       // Keep the footer for logging-settings state (including tracing lag).
-      $("#log-meta").textContent = `Error: ${e.message}`;
+      $("#log-meta").textContent = `Error: ${formatErrorMessage(e)}`;
     } finally {
       logsInFlight = false;
       if (logsPending && activeTab === "logs") {
@@ -2937,7 +3229,7 @@
       return settings;
     } catch (e) {
       if (epoch === tabEpoch && activeTab === "logs") {
-        pollStatus(`Error: ${e.message}`);
+        pollStatus(`Error: ${formatErrorMessage(e)}`);
       }
       throw e;
     }
@@ -3009,7 +3301,7 @@
       } catch {
         /* still report the save error */
       }
-      status(`Error: ${e.message}`);
+      status(`Error: ${formatErrorMessage(e)}`);
     }
   });
 
@@ -3026,7 +3318,7 @@
     } catch (e) {
       bootComplete = true;
       bootFooterHold = true;
-      commitStatus(`Error: ${e.message}`, { remap: false });
+      commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false });
       try {
         await activateTabPolls(activeTab);
       } catch {

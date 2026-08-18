@@ -486,7 +486,7 @@ fn store_applies_provider_and_model_overlays() {
         },
     );
 
-    store.set_provider_enabled("manual", false).unwrap();
+    store.set_provider_enabled("manual", false, false).unwrap();
     store
         .set_model_enabled("manual", "upstream-only", false)
         .unwrap();
@@ -506,7 +506,7 @@ fn store_applies_provider_and_model_overlays() {
 }
 
 #[test]
-fn upsert_provider_overlay_strips_api_key() {
+fn upsert_toml_backed_provider_overlay_strips_api_key() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-api-key-strip-{}",
         SystemTime::now()
@@ -522,7 +522,7 @@ fn upsert_provider_overlay_strips_api_key() {
         ..ProviderConfig::default()
     };
     store
-        .upsert_provider_overlay("secret", Some(true), false, true, Some(&provider))
+        .upsert_provider_overlay("secret", Some(true), false, false, Some(&provider))
         .unwrap();
 
     let db = store.db.lock().expect("lock");
@@ -536,6 +536,41 @@ fn upsert_provider_overlay_strips_api_key() {
     assert!(!json.contains("secret-key"));
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(parsed.get("api_key").is_none() || parsed["api_key"].is_null());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn upsert_managed_provider_overlay_persists_api_key() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-api-key-keep-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("keep.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'managed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(json.contains("secret-key"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["api_key"], "secret-key");
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -826,6 +861,191 @@ fn apply_overlays_does_not_resurrect_removed_primary_toml_provider() {
         .unwrap();
 
     assert!(config.provider.base_url.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn set_provider_enabled_refuses_to_insert_non_managed_row_for_managed_provider() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-enable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("enable.db")).unwrap();
+    let err = store
+        .set_provider_enabled("managed", false, true)
+        .expect_err("missing managed overlay must not become managed=0");
+    assert!(err.to_string().contains("missing"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn missing_overlay_row_stays_managed_for_this_process() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-memory-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("memory.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    assert!(
+        store.provider_overlay_exists("managed").unwrap(),
+        "create must leave a managed overlay row"
+    );
+    store
+        .debug_delete_overlay_row_keep_memory("managed")
+        .unwrap();
+    assert!(
+        store.provider_is_managed("managed").unwrap(),
+        "a vanished overlay row must not look TOML-backed in this process"
+    );
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+    let db = store.db.lock().expect("lock");
+    let json: String = db
+        .query_row(
+            "SELECT config_json FROM provider_overlays WHERE provider_id = 'managed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(json.contains("secret-key"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delete_provider_overlay_drops_row_and_managed_memory() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-overlay-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("delete.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store.delete_provider_overlay("managed").unwrap();
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    assert!(
+        !store.provider_is_managed("managed").unwrap(),
+        "delete must forget managed identity so a later create is not stuck as managed"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn sqlite_mode_exposes_group_or_other_uses_permission_mask() {
+    assert!(!sqlite_mode_exposes_group_or_other(0o600));
+    assert!(sqlite_mode_exposes_group_or_other(0o640));
+    assert!(sqlite_mode_exposes_group_or_other(0o604));
+    assert!(sqlite_mode_exposes_group_or_other(0o644));
+}
+
+#[cfg(unix)]
+#[test]
+fn restrict_sqlite_sidecar_mode_tightens_wal_and_shm() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-sidecar-mode-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("mode.db");
+    let wal = dir.join("mode.db-wal");
+    let shm = dir.join("mode.db-shm");
+    std::fs::write(&wal, b"wal").unwrap();
+    std::fs::write(&shm, b"shm").unwrap();
+    for path in [&wal, &shm] {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+    restrict_sqlite_sidecar_mode(&db_path).unwrap();
+    assert_eq!(
+        std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&shm).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn store_open_restricts_database_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-mode-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("mode.db");
+    let _store = Store::open(&db_path).unwrap();
+    let mode = std::fs::metadata(&db_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn restrict_sqlite_sidecar_mode_handles_non_utf8_filename() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-db-sidecar-nonutf8-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join(OsStr::from_bytes(b"mode\xff.db"));
+    let wal = dir.join(OsStr::from_bytes(b"mode\xff.db-wal"));
+    std::fs::write(&wal, b"wal").unwrap();
+    let mut permissions = std::fs::metadata(&wal).unwrap().permissions();
+    permissions.set_mode(0o644);
+    std::fs::set_permissions(&wal, permissions).unwrap();
+    restrict_sqlite_sidecar_mode(&db_path).unwrap();
+    assert_eq!(
+        std::fs::metadata(&wal).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -1385,6 +1605,43 @@ fn apply_overlays_strips_inline_api_key_from_overlay_json() {
     assert_eq!(
         config.providers["manual"].api_key.as_deref(),
         Some("toml-secret")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn apply_overlays_keeps_inline_api_key_for_managed_provider() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-overlay-api-key-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("managed-key.db")).unwrap();
+    let mut config = AppConfig::default();
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
+             VALUES (?1, 1, 0, 1, ?2)",
+            params![
+                "custom-gw",
+                r#"{"base_url":"https://overlay.test/v1","api_key":"stored-secret"}"#
+            ],
+        )
+        .unwrap();
+    }
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    assert_eq!(
+        config.providers["custom-gw"].api_key.as_deref(),
+        Some("stored-secret")
     );
 
     let _ = std::fs::remove_dir_all(dir);

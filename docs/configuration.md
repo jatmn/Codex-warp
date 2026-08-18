@@ -457,17 +457,41 @@ values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`
 (an empty headers object also clears). Header maps are HTTP-case-insensitive:
 two names that differ only by ASCII case are rejected, and names or values that
 are not valid HTTP headers are rejected so they cannot be stored and then
-silently dropped on the upstream request. Provider overlays never persist
-`api_key`. Use `api_key_env` for durable secrets. `GET /api/providers` reports
-`has_inline_api_key` when a process-scoped `api_key` is present and `has_api_key`
-when a usable key can be resolved (inline or from `api_key_env`). Managed (Web
-UI-created) providers persist request `headers` in the SQLite overlay because
-they have no TOML snapshot. Those overlay headers are returned so the editor
-can round-trip them; TOML-backed views omit header values because TOML remains
-the source of truth. TOML-backed overlays still strip headers and ignore Web UI
-`headers` patches. For a TOML-backed provider, `api_key` and `api_key_env` remain
-TOML-owned: the Web UI cannot set or clear them, so a later TOML credential
-rotation cannot be overwritten by an old SQLite snapshot or a process-only edit.
+silently dropped on the upstream request. Managed (Web UI-created) providers
+persist `api_key`, `api_key_env`, and request `headers` in the SQLite overlay
+because they have no TOML snapshot. `GET /api/providers` never returns a raw
+inline key. Managed views report `has_inline_api_key`, an `api_key_preview` that
+shows only a short prefix and suffix, and `has_api_key` when a usable key can be
+resolved (inline or from `api_key_env`). TOML-backed views omit `api_key_preview`
+and header values because TOML remains the source of truth. Overlay headers are
+returned for managed providers so the editor can round-trip them. TOML-backed
+overlays still strip `api_key` and headers, and ignore Web UI `headers` and
+credential patches. For a TOML-backed provider, `api_key` and `api_key_env`
+remain TOML-owned: the Web UI cannot set or clear them, so a later TOML
+credential rotation cannot be overwritten by an old SQLite snapshot. In the Web
+UI editor, a value is classified as `api_key_env` when it matches ASCII uppercase,
+digits, and underscores, starts with `A-Z` or `_`, and contains at least one
+underscore (for example `OPENROUTER_API_KEY`). Every other value is stored as an
+inline `api_key`. Environment variable names stay visible in `GET /api/providers`;
+inline keys do not. Clearing an environment variable name or using Clear saved
+credentials sends JSON `null` for both credential fields. A `PUT` that sends
+`null` for only one credential field also clears the other, because a provider
+has a single credential slot. A masked saved key is
+not editable in place: leaving it unchanged omits the fields and keeps the stored
+secret; replacing it requires Clear saved credentials, then a new value.
+Leaving a loaded environment variable name unchanged omits the credential fields.
+Editing a stored environment variable name into a truncation of that name
+(for example `OPENAI_API_KEY` → `OPENAI`) is rejected by the editor and by
+`PUT /api/providers/{id}`. Creating a provider from a named example template
+rejects the same truncation against the template's bundled env name on
+`POST /api/providers`. Unrelated values such as `AKIA…` are treated as a new
+inline key. Pasting a masked preview (a value shaped like `mask_api_key`, with
+a run of `•` characters) is rejected by
+the editor and by `PUT`/`POST` `/api/providers`. Managed overlay databases are
+opened with owner-only permissions (`0600` on Unix) because they may contain
+inline `api_key` values. If a managed overlay row disappears while Codex Warp is
+still running, this process still treats that provider as managed so a later
+save or enable toggle cannot rewrite it as TOML-backed and drop the inline key.
 
 CLI overrides:
 

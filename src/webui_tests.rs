@@ -17,6 +17,10 @@ use crate::state::AppState;
 use crate::store::AnalyticsRange;
 use crate::store::ensure_provider_exists;
 
+fn webui_js_source() -> String {
+    include_str!("webui_static/app-main.js").replace("\r\n", "\n")
+}
+
 fn test_state() -> AppState {
     let process_log = crate::process_log::ProcessLog::disabled();
     AppState::from_parts(
@@ -296,6 +300,55 @@ fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
 }
 
 #[test]
+fn validate_provider_persist_rejects_masked_preview_credentials() {
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set("sk-ab••••cd".into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    let err = validate_provider_persist(&fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("masked preview"));
+}
+
+#[test]
+fn validate_provider_persist_allows_single_bullet_in_secret() {
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set("a•b".into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+    validate_provider_persist(&fields).expect("single bullet secrets are allowed");
+}
+
+#[test]
+fn looks_like_masked_api_key_preview_matches_mask_shape() {
+    assert!(!looks_like_masked_api_key_preview("a•b"));
+    assert!(looks_like_masked_api_key_preview("•"));
+    assert!(looks_like_masked_api_key_preview("sk-ab••••cd"));
+    assert!(looks_like_masked_api_key_preview("••"));
+    assert!(!looks_like_masked_api_key_preview("sk-live-not-an-env"));
+}
+
+#[test]
 fn validate_provider_persist_rejects_empty_base_url() {
     let fields = ProviderPersist {
         name: OptionalPatch::Absent,
@@ -426,6 +479,15 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     let dual_view = build_provider_view(&state, "dual", &dual, &[]);
     assert!(dual_view.has_inline_api_key);
     assert!(dual_view.has_api_key);
+    assert!(
+        dual_view.api_key_preview.is_none(),
+        "TOML-backed views must not expose inline-key preview material"
+    );
+    let dual_json = serde_json::to_string(&dual_view).expect("serialize provider view");
+    assert!(
+        !dual_json.contains("inline-secret"),
+        "provider views must not leak the raw inline key"
+    );
     assert_eq!(
         dual_view.api_key_env.as_deref(),
         Some("VIEW_TEST_API_KEY_ENV")
@@ -447,7 +509,272 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
     let env_view = build_provider_view(&state, "env", &env_only, &[]);
     assert!(!env_view.has_inline_api_key);
     assert!(!env_view.has_api_key);
+    assert!(env_view.api_key_preview.is_none());
     assert_eq!(env_view.api_key_env.as_deref(), Some(UNSET_ENV));
+}
+
+#[test]
+fn mask_api_key_shows_prefix_and_suffix() {
+    assert_eq!(mask_api_key(""), "");
+    assert_eq!(mask_api_key("ab"), "••");
+    assert_eq!(mask_api_key("shortkey"), "s••••••y");
+    assert_eq!(mask_api_key("sk-abcdefgh"), "sk•••••••gh");
+    assert_eq!(mask_api_key("sk-live-not-an-env"), "sk-l••••••••••-env");
+}
+
+#[test]
+fn looks_like_env_var_name_matches_webui_classifier() {
+    assert!(looks_like_env_var_name("OPENAI_API_KEY"));
+    assert!(looks_like_env_var_name("_LEADING_UNDERSCORE"));
+    assert!(looks_like_env_var_name("A_1"));
+    assert!(!looks_like_env_var_name(""));
+    assert!(!looks_like_env_var_name("OPENAI"));
+    assert!(!looks_like_env_var_name("openai_api_key"));
+    assert!(!looks_like_env_var_name("1_LEADING_DIGIT"));
+    assert!(!looks_like_env_var_name("SK-LIVE"));
+}
+
+#[test]
+fn is_truncated_env_name_matches_loaded_name_not_secret_shape() {
+    assert!(is_truncated_env_name("OPENAI_API_KEY", "OPENAI"));
+    assert!(is_truncated_env_name("OPENAI_API_KEY", "OPENAIAPIKEY"));
+    assert!(!is_truncated_env_name(
+        "OPENAI_API_KEY",
+        "AKIAIOSFODNN7EXAMPLE"
+    ));
+    assert!(!is_truncated_env_name(
+        "OPENAI_API_KEY",
+        "sk-live-not-an-env"
+    ));
+    assert!(!is_truncated_env_name("OPENAI_API_KEY", "OPENAI_API_KEY"));
+    assert!(!is_truncated_env_name("OPENAI_API_KEY", "OPENAI_LIVE"));
+}
+
+#[test]
+fn reject_truncated_env_replacement_blocks_reclassified_prefix() {
+    let mut fields =
+        persist_credentials(OptionalPatch::Set("OPENAI".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    let err = reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &fields).unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("shortened environment variable name"));
+
+    let mut replacement = persist_credentials(
+        OptionalPatch::Set("AKIAIOSFODNN7EXAMPLE".into()),
+        OptionalPatch::Absent,
+    );
+    normalize_provider_api_key_fields(&mut replacement);
+    reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &replacement)
+        .expect("unrelated all-caps tokens are not truncations");
+
+    let mut cleared_then_truncated =
+        persist_credentials(OptionalPatch::Set("OPENAI".into()), OptionalPatch::Clear);
+    normalize_provider_api_key_fields(&mut cleared_then_truncated);
+    let err = reject_truncated_env_replacement(Some("OPENAI_API_KEY"), &cleared_then_truncated)
+        .unwrap_err();
+    assert!(err.message.contains("shortened environment variable name"));
+}
+
+#[test]
+fn named_template_create_rejects_truncated_env_replacement() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    assert_eq!(
+        template.provider.api_key_env.as_deref(),
+        Some("OPENCODE_GO_API_KEY")
+    );
+    let mut fields =
+        persist_credentials(OptionalPatch::Set("OPENCODE".into()), OptionalPatch::Absent);
+    normalize_provider_api_key_fields(&mut fields);
+    assert!(matches!(fields.api_key, OptionalPatch::Set(_)));
+    let err = reject_truncated_env_replacement(template.provider.api_key_env.as_deref(), &fields)
+        .unwrap_err();
+    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("shortened environment variable name"));
+}
+
+#[test]
+fn javascript_credential_helpers_stay_in_sync_with_rust() {
+    let app = webui_js_source();
+    assert!(
+        app.contains("Keep in lockstep with looks_like_env_var_name"),
+        "JS env classifier must document the Rust twin"
+    );
+    assert!(
+        app.contains("Keep in lockstep with mask_api_key"),
+        "JS mask helper must document the Rust twin"
+    );
+    assert!(
+        app.contains("Keep in lockstep with is_truncated_env_name"),
+        "JS truncation helper must document the Rust twin"
+    );
+    assert!(app.contains("/^[A-Z_][A-Z0-9_]*$/"));
+    assert!(app.contains("return value.includes(\"_\")"));
+    assert!(app.contains("if (n <= 8)"));
+    assert!(app.contains("prefix = 1"));
+    assert!(app.contains("suffix = 1"));
+    assert!(app.contains("if (n <= 12)"));
+    assert!(app.contains("prefix = 2"));
+    assert!(app.contains("suffix = 2"));
+    assert!(app.contains("prefix = 4"));
+    assert!(app.contains("suffix = 4"));
+}
+
+#[test]
+fn javascript_normalizes_caught_errors_for_status() {
+    let app = webui_js_source();
+    assert!(app.contains("function formatErrorMessage(err)"));
+    assert!(app.contains("err instanceof Error ? err.message : String(err)"));
+    assert!(app.contains("status(`Error: ${formatErrorMessage(e)}`)"));
+    assert!(app.contains("openProviderForm(p = null)"));
+}
+
+#[test]
+fn javascript_credential_state_machine_locks_inline_keys() {
+    let app = webui_js_source();
+    assert!(
+        app.contains("loadedKind: \"none\""),
+        "form open class must be stored separately from the current draft"
+    );
+    assert!(
+        app.contains("if (isInlineKeyLocked()) {\n      return { kind: \"keep\" };"),
+        "masked inline keys must keep until an explicit clear/replace"
+    );
+    assert!(
+        app.contains("function isTruncatedEnvName("),
+        "truncated env names are compared to the loaded name, not a secret-shape heuristic"
+    );
+    assert!(
+        app.contains("function isAmbiguousEnvReplacement("),
+        "env-name edits that are not secret-shaped must not become inline secrets"
+    );
+    assert!(
+        app.contains("That value looks like a shortened environment variable name"),
+        "truncated env names must fail closed instead of reclassifying as api_key"
+    );
+    assert!(
+        app.contains("function isUnchangedLoadedEnvName("),
+        "an unchanged loaded env name must keep instead of re-applying credentials"
+    );
+    assert!(
+        app.contains("looksLikeEnvVarName(template.api_key_env || \"\")"),
+        "named-template env prefills must count as loaded names for truncation checks"
+    );
+    assert!(
+        app.contains("p.managed ? (p.api_key_preview || \"\") : \"\",\n        true,"),
+        "only edit-form load of an existing provider marks credentials as saved"
+    );
+    assert!(
+        app.contains("function syncEditableCredentialFromInput("),
+        "submit and blur must copy autofill without replacing a draft with its mask"
+    );
+    assert!(
+        app.contains("if (!visible || looksLikeMaskedApiKeyPreview(visible)) return;"),
+        "masked display text must not overwrite the stored secret draft"
+    );
+    assert!(
+        app.contains("looksLikeMaskedApiKeyPreview(draft)"),
+        "pasting the masked preview must not persist as the secret"
+    );
+    assert!(
+        app.contains("async function openProviderForm(p = null) {\n    try {\n      await ensureProviderTemplates();"),
+        "create and edit forms must wait for templates before matching named vs custom"
+    );
+    assert!(
+        app.contains("const isNamed = !!p.named_template;"),
+        "named vs custom edit lock must come from the provider view, not the template catalog"
+    );
+    assert!(
+        app.contains(
+            "function setCredentialInput(raw, preview = \"\", saved = false, inlineSaved = false)"
+        ),
+        "a managed inline key without a preview must still count as a loaded inline secret"
+    );
+    assert!(
+        app.contains("return template && template.key ? template.key : \"\";"),
+        "edit must not throw when the template catalog is empty"
+    );
+    assert!(
+        app.contains("if (!p) return;"),
+        "template-load failure must not block editing an existing provider"
+    );
+    assert!(
+        app.contains("if (credentialFieldTomlLocked) {\n      return { kind: \"keep\" };"),
+        "TOML-backed credential fields must omit patches so inline TOML keys are not cleared"
+    );
+    assert!(
+        !app.contains("if (credentialState.preview) {\n      apiKeyInput.value = \"\";"),
+        "focus must not empty a masked inline key into an editable replacement draft"
+    );
+}
+
+#[test]
+fn managed_provider_view_exposes_only_masked_api_key() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let raw_key = "sk-test-managed-provider-api-key-1234567890";
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-managed-view-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        name: Some("managed".into()),
+        api_key: Some(raw_key.into()),
+        base_url: "https://example.test/v1".into(),
+        ..ProviderConfig::default()
+    };
+    store
+        .upsert_provider_overlay("managed", Some(true), false, true, Some(&provider))
+        .unwrap();
+    let state = AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        Some(store),
+    );
+
+    let view = build_provider_view(&state, "managed", &provider, &[]);
+    assert!(view.managed);
+    assert!(!view.named_template);
+    assert!(view.has_inline_api_key);
+    assert!(view.has_api_key);
+    let preview = view
+        .api_key_preview
+        .as_deref()
+        .expect("managed providers should expose masked api_key_preview");
+    assert_eq!(preview, mask_api_key(raw_key));
+    let json = serde_json::to_string(&view).expect("serialize provider view");
+    assert!(
+        !json.contains(raw_key),
+        "raw api key must never appear in JSON"
+    );
+    assert!(
+        json.contains(preview),
+        "masked api key preview should be present in JSON"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn bundled_named_provider_view_sets_named_template() {
+    let state = test_state();
+    let provider = ProviderConfig::default();
+    let named = build_provider_view(&state, "opencode_go", &provider, &[]);
+    assert!(named.named_template);
+    let custom = build_provider_view(&state, "my-custom", &provider, &[]);
+    assert!(!custom.named_template);
 }
 
 #[test]
@@ -486,6 +813,32 @@ fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
         enabled: None,
         api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
         api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    normalize_provider_api_key_fields(&mut fields);
+
+    assert_eq!(
+        fields.api_key,
+        OptionalPatch::Set("sk-live-not-an-env".into())
+    );
+    assert!(matches!(fields.api_key_env, OptionalPatch::Absent));
+}
+
+#[test]
+fn normalize_provider_api_key_fields_reclassified_secret_wins_over_api_key_clear() {
+    let mut fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Set("sk-live-not-an-env".into()),
+        api_key: OptionalPatch::Clear,
         headers: OptionalPatch::Absent,
         auth_header: None,
         auth_scheme: None,
@@ -662,6 +1015,18 @@ fn apply_provider_persist_null_clears_inline_api_key_and_headers() {
     fields.apply_to(&mut provider);
     assert!(provider.api_key.is_none());
     assert!(provider.headers.is_empty());
+}
+
+#[test]
+fn apply_provider_persist_clearing_env_also_clears_inline_secret() {
+    let mut provider = ProviderConfig {
+        api_key: Some("inline-secret".into()),
+        api_key_env: Some("OPENAI_API_KEY".into()),
+        ..ProviderConfig::default()
+    };
+    persist_credentials(OptionalPatch::Clear, OptionalPatch::Absent).apply_to(&mut provider);
+    assert!(provider.api_key.is_none());
+    assert!(provider.api_key_env.is_none());
 }
 
 #[test]
@@ -1248,7 +1613,7 @@ async fn management_ui_app_javascript_prefixes_footer_status() {
     assert!(body.contains("analyticsDisplayStatus"));
     assert!(body.contains("Analytics charts failed to load (/ui/chart-math.js)"));
     assert!(body.contains("if (remap === false)"));
-    assert!(body.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(body.contains("commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false })"));
     assert!(body.contains("//# sourceMappingURL=app.js.map"));
 }
 
@@ -1294,20 +1659,45 @@ fn analytics_footer_overlay_is_not_duplicated_into_chart_math_or_app() {
     assert!(!math.contains("CodexWarpFooter"));
     assert!(!app.contains("function analyticsDisplayStatus("));
     assert!(app.contains("Footer.analyticsDisplayStatus"));
-    assert!(app.contains("commitStatus(`Error: ${e.message}`, { remap: false })"));
+    assert!(app.contains("commitStatus(`Error: ${formatErrorMessage(e)}`, { remap: false })"));
 }
 
 #[test]
 fn provider_form_matches_credential_and_header_ownership() {
-    let app = include_str!("webui_static/app-main.js");
+    let app = webui_js_source();
     let index = include_str!("webui_static/index.html");
     assert!(index.contains("<input name=\"name\" placeholder=\"Friendly gateway label\">"));
+    assert!(index.contains("API key or environment variable"));
+    assert!(index.contains("Clear saved credentials"));
+    assert!(!index.contains("Remove the in-process API key"));
+    assert!(!index.contains("used only until Codex Warp restarts"));
+    assert!(index.contains("name=\"api_key_env\" type=\"password\""));
+    assert!(app.contains("function credentialInputType("));
+    assert!(app.contains("apiKeyInput.type = credentialInputType()"));
+    assert!(app.contains("function looksLikeEnvVarDraft("));
+    assert!(app.contains("function looksLikeMaskedApiKeyPreview("));
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
     assert!(app.contains("nameInput.readOnly = isNamed"));
-    assert!(
-        app.contains("p.managed && p.has_inline_api_key"),
-        "inline-key clear uses the inline occupancy flag, not resolved auth"
-    );
+    assert!(app.contains("function maskApiKey("));
+    assert!(app.contains("function looksLikeEnvVarName("));
+    assert!(app.contains("function credentialPatch("));
+    assert!(app.contains("function isInlineKeyLocked("));
+    assert!(app.contains("function isAmbiguousEnvReplacement("));
+    assert!(app.contains("function isTruncatedEnvName("));
+    assert!(app.contains("kind === \"clear\""));
+    assert!(app.contains("kind === \"invalid\""));
+    assert!(app.contains("{ api_key_env: null, api_key: null }"));
+    assert!(!app.contains("hadEnv"));
+    assert!(!app.contains("dataset.draft"));
+    assert!(index.contains("cannot be edited in place"));
+    assert!(index.contains("NAME_WITH_UNDERSCORE"));
+    assert!(index.contains("id=\"provider-credential-class\""));
+    assert!(app.contains("providerTemplates.find((template) => template.key === \"custom\")"));
+    assert!(!app.contains("template.key === \"openrouter\""));
+    assert!(app.contains("\"Add provider\""));
+    assert!(!app.contains("Add from example template"));
+    assert!(!app.contains("clear_inline_api_key"));
+    assert!(app.contains("p.managed && p.has_inline_api_key && !p.api_key_env"));
     assert!(!app.contains("p.has_api_key && !p.api_key_env"));
     assert!(app.contains("function asciiHeaderNameKey("));
     assert!(app.contains("const folded = asciiHeaderNameKey(key)"));
@@ -1512,22 +1902,24 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         );
     }
 
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "friendly".to_string())),
+    )
+    .await
+    .expect("soft-delete catalog model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let Json(reenabled) = set_model_enabled(
+        State(state.clone()),
+        Path(("manual".to_string(), "friendly".to_string())),
+        Json(EnabledBody { enabled: true }),
+    )
+    .await
+    .expect("re-enable catalog model");
     assert!(
-        delete_model(
-            State(state.clone()),
-            Path(("manual".to_string(), "friendly".to_string())),
-        )
-        .await
-        .is_ok()
-    );
-    assert!(
-        set_model_enabled(
-            State(state.clone()),
-            Path(("manual".to_string(), "friendly".to_string())),
-            Json(EnabledBody { enabled: true }),
-        )
-        .await
-        .is_ok()
+        !reenabled.managed,
+        "TOML-backed catalog models must not be reported as managed overlays"
     );
 
     let config = state.config.read().expect("config lock");
@@ -1538,6 +1930,177 @@ async fn reenable_soft_deleted_catalog_model_restores_live_catalog_entry() {
         .expect("catalog entry is restored immediately");
     assert!(restored.enabled);
     assert_eq!(restored.upstream_id.as_deref(), Some("upstream-friendly"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn state_with_store(store: crate::store::Store) -> AppState {
+    AppState::from_parts(
+        Arc::new(RwLock::new(AppConfig::default())),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        Some(store),
+    )
+}
+
+#[tokio::test]
+async fn delete_provider_returns_no_content_and_drops_managed_overlay() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-provider-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let status = delete_provider(State(state.clone()), Path("managed".to_string()))
+        .await
+        .expect("delete managed provider");
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let store = state.store.as_ref().expect("store");
+    assert!(!store.provider_overlay_exists("managed").unwrap());
+    assert!(!store.provider_is_managed("managed").unwrap());
+    assert!(!state.read_config().providers.contains_key("managed"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn set_provider_enabled_keeps_existing_managed_overlay_json() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-enable-keep-json-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("memory-secret".into()),
+        enabled: true,
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store
+        .debug_set_provider_overlay_json(
+            "managed",
+            r#"{"base_url":"https://example.test/v1","api_key":"sqlite-secret"}"#,
+        )
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let Json(disabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("managed".to_string()),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("disable managed provider");
+    assert!(!disabled.enabled);
+    assert!(disabled.has_inline_api_key);
+
+    let store = state.store.as_ref().expect("store");
+    let json = store
+        .debug_provider_overlay_json("managed")
+        .unwrap()
+        .expect("overlay row remains");
+    assert!(
+        json.contains("sqlite-secret"),
+        "enable toggle must not rewrite overlay JSON when the row still exists"
+    );
+    assert!(!json.contains("memory-secret"));
+    assert!(!state.read_config().providers["managed"].enabled);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn set_provider_enabled_recreates_vanished_managed_overlay() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::store::Store;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-enable-recreate-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        api_key: Some("secret-key".into()),
+        enabled: true,
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    store
+        .debug_delete_overlay_row_keep_memory("managed")
+        .unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("managed".into(), provider);
+    }
+
+    let Json(disabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("managed".to_string()),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("recreate vanished managed overlay");
+    assert!(!disabled.enabled);
+    assert!(disabled.has_inline_api_key);
+
+    let store = state.store.as_ref().expect("store");
+    assert!(store.provider_overlay_exists("managed").unwrap());
+    let json = store
+        .debug_provider_overlay_json("managed")
+        .unwrap()
+        .expect("recreated overlay json");
+    assert!(json.contains("secret-key"));
+    assert!(!state.read_config().providers["managed"].enabled);
 
     let _ = std::fs::remove_dir_all(dir);
 }

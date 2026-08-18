@@ -101,7 +101,25 @@ fn primary_provider_template(
 }
 
 pub(crate) fn bundled_provider_templates() -> Vec<ProviderTemplate> {
-    let mut templates = vec![
+    let mut custom = named_provider_template(
+        include_str!("../configs/openai-compatible.toml"),
+        "manual",
+        "Custom OpenAI-compatible",
+        "Blank OpenAI-compatible profile. Set id, base URL, and credentials yourself.",
+    );
+    custom.key = "custom".to_string();
+    custom.id = String::new();
+    custom.requires_base_url = true;
+    custom.base_url.clear();
+    custom.api_key_env = None;
+    custom.name = None;
+    custom.provider.base_url.clear();
+    custom.provider.api_key_env = None;
+    custom.provider.name = None;
+    custom.provider.model_catalog.clear();
+    custom.model_catalog.clear();
+
+    let mut named = vec![
         named_provider_template(
             include_str!("../configs/openrouter.toml"),
             "openrouter",
@@ -133,25 +151,14 @@ pub(crate) fn bundled_provider_templates() -> Vec<ProviderTemplate> {
             "Xiaomi MiMo token-plan gateway with local MiMo catalog.",
         ),
     ];
+    named.sort_by(|left, right| {
+        left.label
+            .to_ascii_lowercase()
+            .cmp(&right.label.to_ascii_lowercase())
+    });
 
-    let mut custom = named_provider_template(
-        include_str!("../configs/openai-compatible.toml"),
-        "manual",
-        "Custom OpenAI-compatible",
-        "Blank OpenAI-compatible profile. Set id, base URL, and api_key_env yourself.",
-    );
-    custom.key = "custom".to_string();
-    custom.id = String::new();
-    custom.requires_base_url = true;
-    custom.base_url.clear();
-    custom.api_key_env = None;
-    custom.name = None;
-    custom.provider.base_url.clear();
-    custom.provider.api_key_env = None;
-    custom.provider.name = None;
-    custom.provider.model_catalog.clear();
-    custom.model_catalog.clear();
-    templates.push(custom);
+    let mut templates = vec![custom];
+    templates.append(&mut named);
     templates
 }
 

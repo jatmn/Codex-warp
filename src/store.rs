@@ -39,6 +39,10 @@ const MAX_USAGE_TOKENS_PER_EVENT: i64 = 9_007_199_254_740_991 / MAX_USAGE_EVENTS
 #[derive(Clone)]
 pub(crate) struct Store {
     db: Arc<Mutex<Connection>>,
+    /// Provider ids created or loaded as managed in this process. A missing
+    /// overlay row must not be treated as TOML-backed while this set still
+    /// knows the provider was managed.
+    remembered_managed: Arc<Mutex<BTreeSet<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +210,7 @@ impl Store {
         }
         let connection = Connection::open(path)
             .with_context(|| format!("open sqlite database {}", path.display()))?;
+        restrict_sqlite_file_mode(path)?;
         connection.execute_batch(
             "
             PRAGMA journal_mode = WAL;
@@ -268,8 +273,11 @@ impl Store {
         );
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
         connection.execute("DELETE FROM usage_events WHERE ts < ?1", params![cutoff])?;
+        restrict_sqlite_file_mode(path)?;
+        restrict_sqlite_sidecar_mode(path)?;
         Ok(Self {
             db: Arc::new(Mutex::new(connection)),
+            remembered_managed: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -299,6 +307,7 @@ impl Store {
         // its retained model overlays cannot be replayed into that empty slot
         // (or into a later command-line destination override).
         let mut removed_provider_ids = BTreeSet::new();
+        let mut remembered_managed = BTreeSet::new();
         for overlay in overlays {
             if overlay.removed {
                 removed_provider_ids.insert(overlay.provider_id.clone());
@@ -328,8 +337,9 @@ impl Store {
                     Ok(mut provider) => {
                         if !overlay.managed {
                             strip_sensitive_provider_headers(&mut provider);
+                            // TOML remains the source of truth for credentials.
+                            provider.api_key = None;
                         }
-                        provider.api_key = None;
                         provider
                     }
                     Err(err) => {
@@ -353,6 +363,7 @@ impl Store {
                         provider.enabled = enabled;
                     }
                     set_provider_config(config, &overlay.provider_id, provider);
+                    remembered_managed.insert(overlay.provider_id.clone());
                 } else if let Some(existing) = provider_config_mut(config, &overlay.provider_id) {
                     merge_provider_overlay(existing, &overlay_provider);
                     if let Some(enabled) = overlay.enabled {
@@ -517,6 +528,10 @@ impl Store {
                 }
             }
         }
+        *self
+            .remembered_managed
+            .lock()
+            .expect("sqlite lock poisoned") = remembered_managed;
         Ok(())
     }
 
@@ -568,6 +583,8 @@ impl Store {
                 config_json,
             ],
         )?;
+        drop(db);
+        self.remember_managed(provider_id, managed);
         Ok(())
     }
 
@@ -575,6 +592,7 @@ impl Store {
         &self,
         provider_id: &str,
         enabled: bool,
+        managed: bool,
     ) -> anyhow::Result<()> {
         let db = self.db.lock().expect("sqlite lock poisoned");
         let updated = db.execute(
@@ -582,6 +600,11 @@ impl Store {
             params![i64::from(enabled), provider_id],
         )?;
         if updated == 0 {
+            if managed {
+                anyhow::bail!(
+                    "managed provider overlay `{provider_id}` is missing; refusing to insert a non-managed row"
+                );
+            }
             db.execute(
                 "INSERT INTO provider_overlays(provider_id, enabled, removed, managed, config_json)
                  VALUES (?1, ?2, 0, 0, NULL)",
@@ -608,6 +631,8 @@ impl Store {
         match result {
             Ok(()) => {
                 db.execute("COMMIT", [])?;
+                drop(db);
+                self.remember_managed(provider_id, false);
                 Ok(())
             }
             Err(err) => {
@@ -748,6 +773,8 @@ impl Store {
         match result {
             Ok(()) => {
                 db.execute("COMMIT", [])?;
+                drop(db);
+                self.remember_managed(provider_id, true);
                 Ok(())
             }
             Err(err) => {
@@ -1217,9 +1244,84 @@ impl Store {
                 params![provider_id],
                 |row| row.get::<_, i64>(0),
             )
+            .optional()?;
+        drop(db);
+        match managed {
+            Some(value) => Ok(value != 0),
+            None => Ok(self
+                .remembered_managed
+                .lock()
+                .expect("sqlite lock poisoned")
+                .contains(provider_id)),
+        }
+    }
+
+    pub(crate) fn provider_overlay_exists(&self, provider_id: &str) -> anyhow::Result<bool> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let found: Option<i64> = db
+            .query_row(
+                "SELECT 1 FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    fn remember_managed(&self, provider_id: &str, managed: bool) {
+        let mut ids = self
+            .remembered_managed
+            .lock()
+            .expect("sqlite lock poisoned");
+        if managed {
+            ids.insert(provider_id.to_string());
+        } else {
+            ids.remove(provider_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_delete_overlay_row_keep_memory(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "DELETE FROM provider_overlays WHERE provider_id = ?1",
+            params![provider_id],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_provider_overlay_json(
+        &self,
+        provider_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let json = db
+            .query_row(
+                "SELECT config_json FROM provider_overlays WHERE provider_id = ?1",
+                params![provider_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
             .optional()?
-            .unwrap_or(0);
-        Ok(managed != 0)
+            .flatten();
+        Ok(json)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn debug_set_provider_overlay_json(
+        &self,
+        provider_id: &str,
+        config_json: &str,
+    ) -> anyhow::Result<()> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "UPDATE provider_overlays SET config_json = ?1 WHERE provider_id = ?2",
+            params![config_json, provider_id],
+        )?;
+        Ok(())
     }
 }
 
@@ -1343,16 +1445,55 @@ fn route_seeds_from_overlay_rows(
         .collect()
 }
 
+#[cfg(unix)]
+fn sqlite_mode_exposes_group_or_other(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
+fn restrict_sqlite_file_mode(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(path)
+            .with_context(|| format!("stat sqlite database {}", path.display()))?;
+        let mut permissions = metadata.permissions();
+        if sqlite_mode_exposes_group_or_other(permissions.mode()) {
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(path, permissions)
+                .with_context(|| format!("restrict sqlite database mode {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn restrict_sqlite_sidecar_mode(path: &Path) -> anyhow::Result<()> {
+    let Some(name) = path.file_name() else {
+        return Ok(());
+    };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar_name = name.to_os_string();
+        sidecar_name.push(suffix);
+        let sidecar = parent.join(sidecar_name);
+        if sidecar.try_exists()? {
+            restrict_sqlite_file_mode(&sidecar)?;
+        }
+    }
+    Ok(())
+}
+
 fn provider_overlay_config_json(
     provider: &ProviderConfig,
-    persist_headers: bool,
+    persist_secrets: bool,
 ) -> anyhow::Result<String> {
-    let mut stripped = provider.clone();
-    stripped.api_key = None;
-    if !persist_headers {
-        strip_sensitive_provider_headers(&mut stripped);
+    let mut snapshot = provider.clone();
+    if !persist_secrets {
+        snapshot.api_key = None;
+        strip_sensitive_provider_headers(&mut snapshot);
     }
-    serde_json::to_string(&stripped).context("serialize provider overlay")
+    serde_json::to_string(&snapshot).context("serialize provider overlay")
 }
 
 fn upsert_managed_provider_overlay_row(

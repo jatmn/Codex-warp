@@ -434,6 +434,9 @@ struct ProviderView {
     managed: bool,
     has_api_key: bool,
     has_inline_api_key: bool,
+    /// Partial mask of a stored inline key. Never the raw secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key_preview: Option<String>,
     api_key_env: Option<String>,
     headers: BTreeMap<String, String>,
     auth_header: String,
@@ -442,6 +445,8 @@ struct ProviderView {
     chat_completions_path: String,
     models_path: String,
     model_catalog_only: bool,
+    /// True when `id` matches a bundled named example template.
+    named_template: bool,
     models: Vec<ModelView>,
 }
 
@@ -915,12 +920,20 @@ fn routed_models_for_provider(
         .collect()
 }
 
+fn lookup_provider_managed(state: &AppState, provider_id: &str) -> Result<bool, ApiError> {
+    let Some(store) = state.store.as_ref() else {
+        return Ok(false);
+    };
+    store
+        .provider_is_managed(provider_id)
+        .map_err(|err| ApiError::internal(err.to_string()))
+}
+
+/// Best-effort flag for read views. Mutations must use
+/// `lookup_provider_managed` so a store error cannot be treated as
+/// "TOML-backed" and strip persisted secrets.
 fn provider_is_managed(state: &AppState, provider_id: &str) -> bool {
-    state
-        .store
-        .as_ref()
-        .and_then(|store| store.provider_is_managed(provider_id).ok())
-        .unwrap_or(false)
+    lookup_provider_managed(state, provider_id).unwrap_or(false)
 }
 
 fn build_model_views(
@@ -997,20 +1010,30 @@ fn build_provider_view(
     provider: &ProviderConfig,
     routed_models: &[String],
 ) -> ProviderView {
+    let managed = provider_is_managed(state, id);
     ProviderView {
         id: id.to_string(),
         display_name: provider_display_name(id, provider),
         name: provider.name.clone(),
         base_url: provider.base_url.clone(),
         enabled: provider.enabled,
-        managed: provider_is_managed(state, id),
+        managed,
         has_api_key: provider.api_key().is_some(),
         has_inline_api_key: provider
             .api_key
             .as_deref()
             .is_some_and(|value| !value.is_empty()),
+        api_key_preview: if managed {
+            provider
+                .api_key
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(mask_api_key)
+        } else {
+            None
+        },
         api_key_env: provider.api_key_env.clone(),
-        headers: if provider_is_managed(state, id) {
+        headers: if managed {
             provider.headers.clone()
         } else {
             BTreeMap::new()
@@ -1021,6 +1044,9 @@ fn build_provider_view(
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),
         model_catalog_only: provider.model_catalog_only,
+        named_template: bundled_provider_templates().iter().any(|template| {
+            template.key != "custom" && !template.id.is_empty() && template.id == id
+        }),
         models: build_model_views(state, id, provider, routed_models),
     }
 }
@@ -1066,6 +1092,19 @@ fn validate_provider_persist(fields: &ProviderPersist) -> Result<(), ApiError> {
     if let OptionalPatch::Set(headers) = &fields.headers {
         validate_provider_headers(headers)?;
     }
+    for value in [&fields.api_key, &fields.api_key_env]
+        .into_iter()
+        .filter_map(|field| match field {
+            OptionalPatch::Set(value) => Some(value.as_str()),
+            OptionalPatch::Clear | OptionalPatch::Absent => None,
+        })
+    {
+        if looks_like_masked_api_key_preview(value) {
+            return Err(ApiError::bad_request(
+                "credentials cannot contain a masked preview",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1106,22 +1145,8 @@ fn validate_provider_headers(headers: &BTreeMap<String, String>) -> Result<(), A
 }
 
 fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
-    match &mut fields.api_key_env {
-        OptionalPatch::Set(raw) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                fields.api_key_env = OptionalPatch::Absent;
-            } else if looks_like_env_var_name(trimmed) {
-                // Env-shaped names are durable overlay fields. Do not rewrite an
-                // unset name into inline `api_key`; overlays never persist that.
-                *raw = trimmed.to_string();
-            } else {
-                fields.api_key = OptionalPatch::Set(trimmed.to_string());
-                fields.api_key_env = OptionalPatch::Absent;
-            }
-        }
-        OptionalPatch::Clear | OptionalPatch::Absent => {}
-    }
+    // Apply `api_key` first so a simultaneous `api_key: null` (Clear) cannot
+    // wipe a secret that `api_key_env` is about to reclassify into `api_key`.
     match &mut fields.api_key {
         OptionalPatch::Set(api_key) => {
             let trimmed = api_key.trim();
@@ -1133,8 +1158,53 @@ fn normalize_provider_api_key_fields(fields: &mut ProviderPersist) {
         }
         OptionalPatch::Clear | OptionalPatch::Absent => {}
     }
+    match &mut fields.api_key_env {
+        OptionalPatch::Set(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                fields.api_key_env = OptionalPatch::Absent;
+            } else if looks_like_env_var_name(trimmed) {
+                // Env-shaped names stay as `api_key_env`. Raw secrets are stored
+                // as `api_key` and persist for managed Web UI providers.
+                *raw = trimmed.to_string();
+            } else {
+                fields.api_key = OptionalPatch::Set(trimmed.to_string());
+                fields.api_key_env = OptionalPatch::Absent;
+            }
+        }
+        OptionalPatch::Clear | OptionalPatch::Absent => {}
+    }
 }
 
+/// Show a short prefix and suffix so a stored key can be identified without
+/// returning the secret. Keep this in lockstep with `maskApiKey` in
+/// `src/webui_static/app-main.js`.
+fn mask_api_key(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return String::new();
+    }
+    let (prefix, suffix) = if n <= 8 {
+        (1usize, 1usize)
+    } else if n <= 12 {
+        (2, 2)
+    } else {
+        (4, 4)
+    };
+    if prefix + suffix >= n {
+        return "•".repeat(n);
+    }
+    let mut masked = String::new();
+    masked.extend(chars.iter().take(prefix));
+    masked.extend(std::iter::repeat_n('•', n - prefix - suffix));
+    masked.extend(chars.iter().skip(n - suffix));
+    masked
+}
+
+/// Keep this in lockstep with `looksLikeEnvVarName` in
+/// `src/webui_static/app-main.js`: ASCII uppercase/underscore/digit, first
+/// character not a digit, and at least one underscore.
 fn looks_like_env_var_name(value: &str) -> bool {
     let mut chars = value.chars();
     let first = match chars.next() {
@@ -1151,6 +1221,50 @@ fn looks_like_env_var_name(value: &str) -> bool {
         return false;
     }
     value.contains('_')
+}
+
+/// Keep this in lockstep with `looksLikeMaskedApiKeyPreview` in
+/// `src/webui_static/app-main.js`.
+fn looks_like_masked_api_key_preview(value: &str) -> bool {
+    if !value.contains('•') {
+        return false;
+    }
+    if value.chars().all(|ch| ch == '•') {
+        return true;
+    }
+    value.contains("••")
+}
+
+/// Keep this in lockstep with `isTruncatedEnvName` in
+/// `src/webui_static/app-main.js`.
+/// A draft is a truncated env name when removing underscores makes it a prefix
+/// of the loaded name (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY). Unrelated
+/// all-caps tokens such as AKIA… are not truncations.
+fn is_truncated_env_name(loaded: &str, draft: &str) -> bool {
+    if draft.is_empty() || looks_like_env_var_name(draft) {
+        return false;
+    }
+    let loaded_compact: String = loaded.chars().filter(|ch| *ch != '_').collect();
+    let draft_compact: String = draft.chars().filter(|ch| *ch != '_').collect();
+    !draft_compact.is_empty() && loaded_compact.starts_with(&draft_compact)
+}
+
+fn reject_truncated_env_replacement(
+    existing_env: Option<&str>,
+    fields: &ProviderPersist,
+) -> Result<(), ApiError> {
+    let Some(loaded) = existing_env.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let OptionalPatch::Set(draft) = &fields.api_key else {
+        return Ok(());
+    };
+    if is_truncated_env_name(loaded, draft) {
+        return Err(ApiError::bad_request(
+            "that value looks like a shortened environment variable name, not a new API key",
+        ));
+    }
+    Ok(())
 }
 
 fn sanitize_provider_id_fragment(input: &str) -> String {
@@ -1243,10 +1357,11 @@ fn unique_provider_id(state: &AppState, base_id: &str) -> String {
     candidate
 }
 
-/// TOML owns credentials for a TOML-backed provider. Overlays never persist
-/// `api_key`, and `api_key_env` is restored from TOML on restart, so a Web UI
-/// mutation cannot be distinguished from a stale snapshot after the operator
-/// rotates TOML. Reject both rather than accepting an edit that disappears.
+/// TOML owns credentials for a TOML-backed provider. Those overlays never
+/// persist `api_key`, and `api_key_env` is restored from TOML on restart, so a
+/// Web UI mutation cannot be distinguished from a stale snapshot after the
+/// operator rotates TOML. Reject both rather than accepting an edit that
+/// disappears. Managed providers persist credentials in SQLite.
 fn validate_toml_owned_credential_selector(
     managed: bool,
     before: &ProviderConfig,
@@ -1321,9 +1436,21 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
 /// Named templates keep bundled endpoint/auth paths. Credentials and extra
 /// headers are operator-owned on the managed overlay created from the template.
 fn apply_named_template_credentials(provider: &mut ProviderConfig, fields: &ProviderPersist) {
+    // Credentials are one exclusive slot. Clearing either field without
+    // setting the other removes both so a partial `{ api_key_env: null }`
+    // cannot leave a leftover inline secret.
+    let clearing_env = matches!(fields.api_key_env, OptionalPatch::Clear);
+    let clearing_key = matches!(fields.api_key, OptionalPatch::Clear);
+    let setting_env =
+        matches!(&fields.api_key_env, OptionalPatch::Set(value) if !value.trim().is_empty());
+    let setting_key =
+        matches!(&fields.api_key, OptionalPatch::Set(value) if !value.trim().is_empty());
+    if (clearing_env && !setting_key) || (clearing_key && !setting_env) {
+        provider.api_key_env = None;
+        provider.api_key = None;
+    }
     match &fields.api_key_env {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => provider.api_key_env = None,
+        OptionalPatch::Absent | OptionalPatch::Clear => {}
         OptionalPatch::Set(api_key_env) => {
             let trimmed = api_key_env.trim();
             provider.api_key_env = (!trimmed.is_empty()).then(|| trimmed.to_string());
@@ -1333,8 +1460,7 @@ fn apply_named_template_credentials(provider: &mut ProviderConfig, fields: &Prov
         }
     }
     match &fields.api_key {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => provider.api_key = None,
+        OptionalPatch::Absent | OptionalPatch::Clear => {}
         OptionalPatch::Set(api_key) => {
             let trimmed = api_key.trim();
             if trimmed.is_empty() {
@@ -1506,6 +1632,7 @@ async fn create_provider(
             }
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
+            reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_credentials(&mut provider, &fields);
             (id, provider)
         }
@@ -1590,7 +1717,7 @@ async fn update_provider(
     normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
     let store = require_store(&state)?;
-    let managed = provider_is_managed(&state, &id);
+    let managed = lookup_provider_managed(&state, &id)?;
     if !managed {
         fields.headers = OptionalPatch::Absent;
     }
@@ -1604,6 +1731,7 @@ async fn update_provider(
             .find(|(provider_id, _)| *provider_id == id)
             .map(|(_, provider)| provider)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
+        reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
         let previous_enabled = provider.enabled;
         let mut snapshot = provider.clone();
         fields.apply_to(&mut snapshot);
@@ -1677,7 +1805,7 @@ async fn delete_provider(
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
     }
 
-    let managed = provider_is_managed(&state, &id);
+    let managed = lookup_provider_managed(&state, &id)?;
     if managed {
         store
             .delete_provider_overlay(&id)
@@ -1712,9 +1840,29 @@ async fn set_provider_enabled(
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
     }
 
-    store
-        .set_provider_enabled(&id, body.enabled)
-        .map_err(|err| ApiError::internal(err.to_string()))?;
+    let managed = lookup_provider_managed(&state, &id)?;
+    if managed
+        && !store
+            .provider_overlay_exists(&id)
+            .map_err(|err| ApiError::internal(err.to_string()))?
+    {
+        let mut provider = {
+            let config = state.read_config();
+            configured_provider_entries(&config)
+                .into_iter()
+                .find(|(provider_id, _)| *provider_id == id)
+                .map(|(_, provider)| provider.clone())
+                .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
+        };
+        provider.enabled = body.enabled;
+        store
+            .upsert_provider_overlay(&id, Some(body.enabled), false, true, Some(&provider))
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    } else {
+        store
+            .set_provider_enabled(&id, body.enabled, managed)
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+    }
 
     {
         let mut config = state.write_config();
@@ -1756,7 +1904,7 @@ async fn add_model(
     }
 
     let store = require_store(&state)?;
-    let managed = provider_is_managed(&state, &id);
+    let managed = lookup_provider_managed(&state, &id)?;
 
     let (already_in_catalog, previous_upstream_id) = {
         let config = state.read_config();
@@ -1823,7 +1971,7 @@ async fn update_model(
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
-    let managed = provider_is_managed(&state, &id);
+    let managed = lookup_provider_managed(&state, &id)?;
 
     let (updated, previous_upstream_id) = {
         let config = state.read_config();
@@ -1889,7 +2037,7 @@ async fn delete_model(
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
-    let managed = provider_is_managed(&state, &id);
+    let managed = lookup_provider_managed(&state, &id)?;
 
     let (catalog_entry, upstream_id, managed_snapshot) = {
         let config = state.read_config();
@@ -2050,7 +2198,7 @@ async fn set_model_enabled(
         upstream_id: catalog_entry.and_then(|entry| entry.upstream_id.clone()),
         description: catalog_entry.and_then(|entry| entry.description.clone()),
         enabled,
-        managed: catalog_entry.is_some() && provider_is_managed(&state, &id),
+        managed: catalog_entry.is_some() && lookup_provider_managed(&state, &id)?,
         catalog: catalog_entry.is_some(),
     };
     Ok(Json(view))
