@@ -1052,31 +1052,9 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
     );
 
-    // GLM-5.2: exact family forwards reasoning_effort alongside thinking.type.
-    let glm52 = config
-        .model_families
-        .get("z_ai_glm_5_2")
-        .expect("glm-5.2 exact family exists");
-    assert!(
-        glm52
-            .transform
-            .append_chat_request_morphs
-            .iter()
-            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
-    );
-
-    // GLM-5.3: exact family forwards reasoning_effort alongside thinking.type.
-    let glm53 = config
-        .model_families
-        .get("z_ai_glm_5_3")
-        .expect("glm-5.3 exact family exists");
-    assert!(
-        glm53
-            .transform
-            .append_chat_request_morphs
-            .iter()
-            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
-    );
+    // GLM-5.2 and GLM-5.3: exact families forward reasoning_effort alongside thinking.type.
+    assert_has_append_morph(&config, "z_ai_glm_5_2", "glm-5.2");
+    assert_has_append_morph(&config, "z_ai_glm_5_3", "glm-5.3");
     let glm5 = config
         .model_families
         .get("z_ai_glm_5")
@@ -1087,6 +1065,22 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .append_chat_request_morphs
             .iter()
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+
+
+}
+fn assert_has_append_morph(config: &AppConfig, family_id: &str, label: &str) {
+    let family = config
+        .model_families
+        .get(family_id)
+        .unwrap_or_else(|| panic!("{label} family exists"));
+    assert!(
+        family
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort")),
+        "{label} should have a reasoning.effort -> reasoning_effort append morph"
     );
 }
 
