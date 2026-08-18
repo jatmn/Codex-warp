@@ -5393,3 +5393,109 @@ async fn chat_stream_transport_error_still_fails() {
             .any(|event| event.contains("response.completed"))
     );
 }
+
+/// Regression for the deepseek-v4-pro `<parameter>` spam: the model emits native
+/// `tool_calls` AND leaks tool-markup fragments ("<parameter ...", "<tool ...") as
+/// `delta.content`. Those fragments must NOT be forwarded as assistant text.
+#[test]
+fn deepseek_v4_pro_tool_markup_in_content_is_suppressed() {
+    let mut accum = ChatAccum::default();
+    // A leaked markup fragment can arrive BEFORE any native tool_calls chunk.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<parameter name=\"cmd\">rg -n spam</parameter>"}
+        }]
+    }));
+    // Then the native function call stream starts.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{\"cmd\":"}
+            }]}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<tool>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Working on it."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "the `<parameter>` tag is not markup"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<hello>this is not a tool tag</hello>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<function>fn x() {}</function>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<think>some reasoning</think>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "function": {"arguments": ":\"rg -n spam\"}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    let leaked = events
+        .iter()
+        .filter(|e| e.contains("output_text"))
+        .any(|e| {
+            e.contains("rg -n spam</parameter>")
+                || e.contains("<tool>")
+                || e.contains("<function>fn x()")
+                || e.contains("<think>some reasoning")
+        });
+    assert!(
+        !leaked,
+        "leaked tool markup was forwarded as assistant text: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| e.contains("exec_command")),
+        "native tool call was dropped"
+    );
+    assert!(
+        events.iter().any(|e| e.contains("Working on it.")),
+        "legitimate content was suppressed"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.contains("the `<parameter>` tag is not markup")),
+        "prose mentioning a tool tag was suppressed"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.contains("<hello>this is not a tool tag</hello>")),
+        "non-tool XML-looking content was suppressed"
+    );
+}

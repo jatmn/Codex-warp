@@ -878,6 +878,21 @@ impl ChatAccum {
             }
 
             let content = chat_content_text(delta.get("content"));
+            // Some providers (e.g. deepseek-v4-pro) emit native `tool_calls` AND also
+            // leak tool-invocation markup as `content` fragments (e.g. "<parameter",
+            // "<tool", "<invoke"). Suppress that markup so it is not forwarded
+            // as assistant text. Fixes excess `<parameter>` spam.
+            let content = if content
+                .chars()
+                .take_while(|c| c.is_whitespace() || *c == '<')
+                .last()
+                .is_some_and(|c| c == '<')
+                && Self::looks_like_tool_markup(&content)
+            {
+                String::new()
+            } else {
+                content
+            };
             if !content.is_empty() {
                 if let Some(event) = self.take_reasoning_delta() {
                     events.push(event);
@@ -1067,6 +1082,19 @@ impl ChatAccum {
                 "delta": delta
             }),
         )
+    }
+
+    /// Returns true when `text` begins like an XML tool-invocation tag that a
+    /// model may leak inside `content` while also emitting native `tool_calls`.
+    fn looks_like_tool_markup(text: &str) -> bool {
+        let trimmed = text.trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        lower.starts_with("<parameter")
+            || lower.starts_with("<tool")
+            || lower.starts_with("<invoke")
+            || lower.starts_with("<function")
+            || lower.starts_with("<function_call")
+            || lower.starts_with("<think")
     }
 
     fn end_turn(&self, continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>) -> bool {
