@@ -408,9 +408,9 @@ impl ProviderConfig {
     pub fn remove_model_catalog_entry(&mut self, model_id: &str, upstream_id: Option<&str>) {
         self.model_catalog.retain(|entry| entry.id != model_id);
         self.clear_disabled_overlapping(model_id);
-        if let Some(upstream_id) = upstream_id
-            && !upstream_id.is_empty()
-        {
+        // Clearing an empty upstream id is a no-op because disabled model
+        // entries are always non-empty, so we can skip the explicit check.
+        if let Some(upstream_id) = upstream_id {
             self.clear_disabled_overlapping(upstream_id);
         }
     }

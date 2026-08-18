@@ -88,6 +88,18 @@ fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
     &body[..close]
 }
 
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    std::env::temp_dir().join(format!(
+        "{}-{}",
+        prefix,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
 #[test]
 fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
     let state = test_state();
@@ -3202,15 +3214,7 @@ fn logging_settings_use_pinned_fallback_when_snapshot_filter_is_unset() {
 
 #[tokio::test]
 async fn delete_model_removes_managed_overlay_model() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let dir = std::env::temp_dir().join(format!(
-        "codex-warp-delete-managed-model-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = unique_temp_dir("codex-warp-delete-managed-model");
     std::fs::create_dir_all(&dir).unwrap();
     let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
     let state = state_with_store(store);
@@ -3270,15 +3274,7 @@ async fn delete_model_removes_managed_overlay_model() {
 
 #[tokio::test]
 async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let dir = std::env::temp_dir().join(format!(
-        "codex-warp-delete-overlay-model-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = unique_temp_dir("codex-warp-delete-overlay-model");
     std::fs::create_dir_all(&dir).unwrap();
     let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
     let state = state_with_store(store);
