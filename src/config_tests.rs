@@ -1066,8 +1066,6 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .iter()
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
     );
-
-
 }
 fn assert_has_append_morph(config: &AppConfig, family_id: &str, label: &str) {
     let family = config
