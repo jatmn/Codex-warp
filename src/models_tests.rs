@@ -12,6 +12,28 @@ use crate::config::ProviderConfig;
 use crate::config::load_config_layers;
 use crate::config::provider_by_id;
 
+fn test_state(config: AppConfig) -> crate::state::AppState {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    crate::state::AppState::from_parts(
+        Arc::new(RwLock::new(config)),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        crate::debug_log::DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        None,
+    )
+}
+
 #[test]
 fn openai_models_list_is_normalized_for_codex() {
     let body =
@@ -902,34 +924,10 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
 
 #[tokio::test]
 async fn models_returns_empty_list_when_no_providers_configured() {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::RwLock;
-
+    use crate::models::models;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use reqwest::Client;
-    use tokio::sync::Mutex as AsyncMutex;
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    use crate::debug_log::DebugLog;
-    use crate::models::models;
-    use crate::state::AppState;
-
-    let state = AppState {
-        config: Arc::new(RwLock::new(AppConfig::default())),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        process_log: crate::process_log::ProcessLog::disabled(),
-        tracing_reload: None,
-        store: None,
-        structured_output: std::sync::Arc::new(
-            crate::structured_output::StructuredOutputCache::default(),
-        ),
-    };
+    let state = test_state(AppConfig::default());
 
     let response = models(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -942,20 +940,10 @@ async fn models_returns_empty_list_when_no_providers_configured() {
 
 #[tokio::test]
 async fn models_returns_empty_list_when_all_models_disabled() {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::RwLock;
-
+    use crate::config::ModelCatalogEntry;
+    use crate::models::models;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use reqwest::Client;
-    use tokio::sync::Mutex as AsyncMutex;
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    use crate::config::ModelCatalogEntry;
-    use crate::debug_log::DebugLog;
-    use crate::models::models;
-    use crate::state::AppState;
 
     let mut config = AppConfig::default();
     let mut provider = ProviderConfig {
@@ -970,20 +958,7 @@ async fn models_returns_empty_list_when_all_models_disabled() {
     });
     config.providers.insert("test".to_string(), provider);
 
-    let state = AppState {
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        process_log: crate::process_log::ProcessLog::disabled(),
-        tracing_reload: None,
-        store: None,
-        structured_output: std::sync::Arc::new(
-            crate::structured_output::StructuredOutputCache::default(),
-        ),
-    };
+    let state = test_state(config);
 
     let response = models(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -996,20 +971,10 @@ async fn models_returns_empty_list_when_all_models_disabled() {
 
 #[tokio::test]
 async fn models_lists_only_catalog_entry_when_upstream_id_differs() {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::RwLock;
-
+    use crate::config::ModelCatalogEntry;
+    use crate::models::models;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use reqwest::Client;
-    use tokio::sync::Mutex as AsyncMutex;
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    use crate::config::ModelCatalogEntry;
-    use crate::debug_log::DebugLog;
-    use crate::models::models;
-    use crate::state::AppState;
 
     let mut config = AppConfig::default();
     let mut provider = ProviderConfig {
@@ -1026,20 +991,7 @@ async fn models_lists_only_catalog_entry_when_upstream_id_differs() {
     });
     config.providers.insert("hicap".to_string(), provider);
 
-    let state = AppState {
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        process_log: crate::process_log::ProcessLog::disabled(),
-        tracing_reload: None,
-        store: None,
-        structured_output: std::sync::Arc::new(
-            crate::structured_output::StructuredOutputCache::default(),
-        ),
-    };
+    let state = test_state(config);
 
     let response = models(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
