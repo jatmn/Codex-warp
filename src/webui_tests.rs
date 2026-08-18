@@ -3199,3 +3199,151 @@ fn logging_settings_use_pinned_fallback_when_snapshot_filter_is_unset() {
     assert_eq!(after.tracing_filter_effective, "codex_warp=warn");
     assert!(after.tracing_applied);
 }
+
+#[tokio::test]
+async fn delete_model_removes_managed_overlay_model() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-managed-model-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "example/gpt-test".into(),
+            upstream_id: Some("gpt-test".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .create_provider_with_catalog("example", &provider, &provider.model_catalog)
+        .unwrap();
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("example".into(), provider);
+    }
+
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("example".to_string(), "example/gpt-test".to_string())),
+    )
+    .await
+    .expect("delete managed catalog model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let config = state.config.read().expect("config lock");
+    let provider = config.providers.get("example").expect("provider exists");
+    assert!(
+        provider
+            .model_catalog
+            .iter()
+            .find(|entry| entry.id == "example/gpt-test")
+            .is_none(),
+        "deleted model must be removed from the managed provider catalog"
+    );
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .all(|disabled| disabled != "example/gpt-test" && disabled != "gpt-test"),
+        "deleted model must not become a disabled entry"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-delete-overlay-model-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "manual".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let (_, Json(_)) = add_model(
+        State(state.clone()),
+        Path("manual".to_string()),
+        Json(ModelCatalogEntry {
+            id: "manual/gpt-4o".into(),
+            upstream_id: Some("gpt-4o".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect("add model");
+
+    {
+        let config = state.config.read().expect("config lock");
+        let provider = config.providers.get("manual").expect("provider exists");
+        assert!(
+            provider
+                .model_catalog
+                .iter()
+                .any(|entry| entry.id == "manual/gpt-4o"),
+            "added model must be present in the catalog"
+        );
+    }
+
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/gpt-4o".to_string())),
+    )
+    .await
+    .expect("delete UI-added model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let config = state.config.read().expect("config lock");
+    let provider = config.providers.get("manual").expect("provider exists");
+    assert!(
+        provider
+            .model_catalog
+            .iter()
+            .find(|entry| entry.id == "manual/gpt-4o")
+            .is_none(),
+        "deleted UI-added model must be removed from the catalog"
+    );
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .all(|disabled| disabled != "manual/gpt-4o" && disabled != "gpt-4o"),
+        "deleted UI-added model must not become a disabled entry"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}

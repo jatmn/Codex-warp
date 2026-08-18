@@ -896,6 +896,21 @@ impl Store {
         Ok(())
     }
 
+    /// Delete a model overlay row entirely. Returns `true` when a row was
+    /// removed, which indicates the model was owned by the Web UI overlay.
+    pub(crate) fn delete_model_overlay(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> anyhow::Result<bool> {
+        let db = self.db.lock().expect("sqlite lock poisoned");
+        let rows = db.execute(
+            "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+            params![provider_id, model_id],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Enabled overlay models that should own routes after restart.
     ///
     /// Returns `(provider_id, model_id, upstream_id)` for non-removed enabled

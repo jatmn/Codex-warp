@@ -2058,12 +2058,31 @@ async fn delete_model(
             .and_then(|entry| entry.upstream_id.clone());
         let mut snapshot = provider.clone();
         if catalog_entry.is_some() {
-            snapshot.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            // Managed providers are fully overlay-owned, so a deleted catalog
+            // entry can be removed entirely. Non-managed providers may have
+            // Web UI-added overlay entries that can also be removed, but TOML
+            // base entries must remain suppressed to survive a restart.
+            if managed {
+                snapshot.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
+            } else {
+                snapshot.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            }
         } else {
             snapshot.disable_model(&model_id);
         }
         let managed_snapshot = if managed { Some(snapshot) } else { None };
         (catalog_entry, upstream_id, managed_snapshot)
+    };
+
+    // For non-managed providers, a model overlay row means the entry was added
+    // by the Web UI and can be hard-deleted. If no overlay row exists, the
+    // model is owned by the TOML config and must be suppressed instead.
+    let overlay_deleted = if !managed && catalog_entry.is_some() {
+        store
+            .delete_model_overlay(&id, &model_id)
+            .map_err(|err| ApiError::internal(err.to_string()))?
+    } else {
+        false
     };
 
     if let Some(entry) = &catalog_entry {
@@ -2074,7 +2093,7 @@ async fn delete_model(
             store
                 .delete_managed_model_catalog_entry(&id, &model_id, snapshot)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
-        } else {
+        } else if !overlay_deleted {
             store
                 .soft_remove_model(&id, &model_id, Some(entry))
                 .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -2094,7 +2113,11 @@ async fn delete_model(
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if catalog_entry.is_some() {
-            provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            if managed || overlay_deleted {
+                provider.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
+            } else {
+                provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            }
         } else {
             provider.disable_model(&model_id);
         }
