@@ -12,6 +12,28 @@ use crate::config::ProviderConfig;
 use crate::config::load_config_layers;
 use crate::config::provider_by_id;
 
+fn test_state(config: AppConfig) -> crate::state::AppState {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    crate::state::AppState::from_parts(
+        Arc::new(RwLock::new(config)),
+        Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        crate::debug_log::DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        None,
+    )
+}
+
 #[test]
 fn openai_models_list_is_normalized_for_codex() {
     let body =
@@ -619,7 +641,7 @@ fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
 }
 
 #[test]
-fn manual_catalog_models_include_upstream_id_aliases() {
+fn manual_catalog_models_skip_upstream_id_aliases() {
     let mut provider = ProviderConfig::default();
     provider
         .model_catalog
@@ -632,13 +654,18 @@ fn manual_catalog_models_include_upstream_id_aliases() {
     let config = load_config_layers(&[]).expect("default config loads");
     let models = manual_catalog_models(&provider, &config);
 
-    assert_eq!(models.len(), 2);
+    assert_eq!(models.len(), 1);
     assert_eq!(models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
-    assert_eq!(models[1]["slug"].as_str(), Some("gpt-5.4"));
+    assert!(
+        models
+            .iter()
+            .all(|model| model["slug"].as_str() != Some("gpt-5.4")),
+        "upstream_id alias should not be listed as a separate model"
+    );
 }
 
 #[test]
-fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
+fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
     let mut routes = BTreeMap::new();
     let mut hicap = ProviderConfig::default();
     hicap.model_catalog.push(crate::config::ModelCatalogEntry {
@@ -648,6 +675,9 @@ fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
         ..crate::config::ModelCatalogEntry::default()
     });
     register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+
+    // The upstream id is still routeable even though it is not advertised.
+    assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
 
     let mut merged_models = Vec::new();
     let config = load_config_layers(&[]).expect("default config loads");
@@ -662,13 +692,15 @@ fn catalog_upstream_id_alias_lists_in_merged_models_for_owner() {
         catalog_models,
     );
 
-    assert_eq!(added, 2);
-    assert_eq!(merged_models.len(), 2);
+    assert_eq!(added, 1);
+    assert_eq!(merged_models.len(), 1);
     assert!(
         merged_models
             .iter()
-            .any(|model| model["slug"].as_str() == Some("gpt-5.4"))
+            .all(|model| model["slug"].as_str() != Some("gpt-5.4")),
+        "upstream_id alias should not appear in the merged /v1/models list"
     );
+    assert_eq!(merged_models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
 }
 
 #[test]
@@ -892,34 +924,10 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
 
 #[tokio::test]
 async fn models_returns_empty_list_when_no_providers_configured() {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::RwLock;
-
+    use crate::models::models;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use reqwest::Client;
-    use tokio::sync::Mutex as AsyncMutex;
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    use crate::debug_log::DebugLog;
-    use crate::models::models;
-    use crate::state::AppState;
-
-    let state = AppState {
-        config: Arc::new(RwLock::new(AppConfig::default())),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        process_log: crate::process_log::ProcessLog::disabled(),
-        tracing_reload: None,
-        store: None,
-        structured_output: std::sync::Arc::new(
-            crate::structured_output::StructuredOutputCache::default(),
-        ),
-    };
+    let state = test_state(AppConfig::default());
 
     let response = models(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -932,20 +940,10 @@ async fn models_returns_empty_list_when_no_providers_configured() {
 
 #[tokio::test]
 async fn models_returns_empty_list_when_all_models_disabled() {
-    use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use std::sync::RwLock;
-
+    use crate::config::ModelCatalogEntry;
+    use crate::models::models;
     use axum::extract::State;
     use axum::http::HeaderMap;
-    use reqwest::Client;
-    use tokio::sync::Mutex as AsyncMutex;
-    use tokio::sync::RwLock as AsyncRwLock;
-
-    use crate::config::ModelCatalogEntry;
-    use crate::debug_log::DebugLog;
-    use crate::models::models;
-    use crate::state::AppState;
 
     let mut config = AppConfig::default();
     let mut provider = ProviderConfig {
@@ -960,20 +958,7 @@ async fn models_returns_empty_list_when_all_models_disabled() {
     });
     config.providers.insert("test".to_string(), provider);
 
-    let state = AppState {
-        config: Arc::new(RwLock::new(config)),
-        client: Client::new(),
-        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        mutation_lock: Arc::new(AsyncMutex::new(())),
-        debug_log: DebugLog::disabled(),
-        process_log: crate::process_log::ProcessLog::disabled(),
-        tracing_reload: None,
-        store: None,
-        structured_output: std::sync::Arc::new(
-            crate::structured_output::StructuredOutputCache::default(),
-        ),
-    };
+    let state = test_state(config);
 
     let response = models(State(state), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -982,6 +967,54 @@ async fn models_returns_empty_list_when_all_models_disabled() {
         .expect("body reads");
     let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
     assert_eq!(value["models"], json!([]));
+}
+
+#[tokio::test]
+async fn models_lists_only_catalog_entry_when_upstream_id_differs() {
+    use crate::config::ModelCatalogEntry;
+    use crate::models::models;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+
+    let mut config = AppConfig::default();
+    let mut provider = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    provider.name = Some("Example".to_string());
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "hicap/gpt-5.4".to_string(),
+        upstream_id: Some("gpt-5.4".to_string()),
+        display_name: Some("GPT-5.4".to_string()),
+        ..ModelCatalogEntry::default()
+    });
+    config.providers.insert("hicap".to_string(), provider);
+
+    let state = test_state(config);
+
+    let response = models(State(state), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    let returned_models = value["models"].as_array().expect("models array");
+    let visible_models: Vec<_> = returned_models
+        .iter()
+        .filter(|model| model["visibility"].as_str() != Some("hide"))
+        .collect();
+    assert_eq!(
+        visible_models.len(),
+        1,
+        "only the catalog entry should be listed; upstream_id alias is hidden"
+    );
+    assert_eq!(visible_models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
+    let display_name = visible_models[0]["display_name"].as_str();
+    assert!(
+        display_name.is_some_and(|name| !name.contains("gpt-5.4")),
+        "display_name must not contain the upstream id: {display_name:?}"
+    );
 }
 
 #[tokio::test]
