@@ -2056,21 +2056,19 @@ async fn delete_model(
         let upstream_id = catalog_entry
             .as_ref()
             .and_then(|entry| entry.upstream_id.clone());
-        let mut snapshot = provider.clone();
-        if catalog_entry.is_some() {
-            // Managed providers are fully overlay-owned, so a deleted catalog
-            // entry can be removed entirely. Non-managed providers may have
-            // Web UI-added overlay entries that can also be removed, but TOML
-            // base entries must remain suppressed to survive a restart.
-            if managed {
+        let managed_snapshot = if managed {
+            let mut snapshot = provider.clone();
+            if catalog_entry.is_some() {
+                // Managed providers are fully overlay-owned, so a deleted
+                // catalog entry can be removed entirely from the snapshot.
                 snapshot.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
             } else {
-                snapshot.suppress_catalog_model(&model_id, upstream_id.as_deref());
+                snapshot.disable_model(&model_id);
             }
+            Some(snapshot)
         } else {
-            snapshot.disable_model(&model_id);
-        }
-        let managed_snapshot = if managed { Some(snapshot) } else { None };
+            None
+        };
         (catalog_entry, upstream_id, managed_snapshot)
     };
 
