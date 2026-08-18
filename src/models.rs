@@ -636,28 +636,6 @@ pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfi
         if let Some(info) = codex_model_info(&model, provider, config) {
             models.push(info);
         }
-
-        if let Some(upstream_id) = entry.upstream_id.as_deref()
-            && !upstream_id.is_empty()
-            && upstream_id != entry.id
-            && provider.model_is_enabled(upstream_id)
-        {
-            let mut alias = json!({
-                "id": upstream_id,
-                "object": "model"
-            });
-            if let Some(display_name) = &entry.display_name {
-                alias["display_name"] = json!(format!("{display_name} ({upstream_id})"));
-            } else {
-                alias["display_name"] = json!(upstream_id);
-            }
-            if let Some(description) = &entry.description {
-                alias["description"] = json!(description);
-            }
-            if let Some(info) = codex_model_info(&alias, provider, config) {
-                models.push(info);
-            }
-        }
     }
     models
 }
