@@ -195,6 +195,84 @@ async fn native_incomplete_stream_is_forwarded_once_without_transport_failure() 
 }
 
 #[tokio::test]
+async fn native_stream_reasoning_summary_deltas_are_coalesced() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"First \"}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"second \"}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"third.\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_reasoning_coalesce".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let deltas = events
+        .iter()
+        .filter_map(|event| {
+            let text = String::from_utf8_lossy(event.as_ref().ok()?);
+            let data = sse_data(&text)?;
+            let value = serde_json::from_str::<Value>(&data).ok()?;
+            (value["type"] == "response.reasoning_summary_text.delta").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deltas.len(),
+        1,
+        "small native reasoning deltas should be coalesced"
+    );
+    assert_eq!(deltas[0]["delta"], "First second third.");
+}
+
+#[tokio::test]
+async fn native_stream_reasoning_summary_deltas_flush_at_paragraphs() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"Paragraph one.\\n\\n\"}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"Paragraph two.\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_reasoning_paragraph".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let deltas = events
+        .iter()
+        .filter_map(|event| {
+            let text = String::from_utf8_lossy(event.as_ref().ok()?);
+            let data = sse_data(&text)?;
+            let value = serde_json::from_str::<Value>(&data).ok()?;
+            (value["type"] == "response.reasoning_summary_text.delta").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deltas.len(),
+        2,
+        "paragraph boundary should flush the first reasoning block"
+    );
+    assert_eq!(deltas[0]["delta"], "Paragraph one.\n\n");
+    assert_eq!(deltas[1]["delta"], "Paragraph two.");
+}
+
+#[tokio::test]
 async fn native_stream_semantic_error_becomes_response_failed() {
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
@@ -3491,7 +3569,7 @@ fn chat_stream_reasoning_content_emits_reasoning_deltas() {
             }
         }]
     }));
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 3);
 
     let added_data = sse_data(&events[0]).expect("added event has data");
     let added: Value = serde_json::from_str(&added_data).expect("added event is JSON");
@@ -3511,12 +3589,6 @@ fn chat_stream_reasoning_content_emits_reasoning_deltas() {
     assert_eq!(header["type"], "response.reasoning_summary_text.delta");
     assert_eq!(header["summary_index"], 0);
     assert_eq!(header["delta"], "**Reasoning**\n\n");
-
-    let delta_data = sse_data(&events[3]).expect("delta event has data");
-    let delta: Value = serde_json::from_str(&delta_data).expect("delta event is JSON");
-    assert_eq!(delta["type"], "response.reasoning_summary_text.delta");
-    assert_eq!(delta["summary_index"], 0);
-    assert_eq!(delta["delta"], "Plan first. ");
 
     let events = events
         .into_iter()
@@ -3583,10 +3655,128 @@ fn chat_stream_reasoning_field_emits_reasoning_deltas() {
         }]
     }));
 
-    assert!(events.iter().any(
+    assert!(events.iter().any(|event| {
+        event.contains("response.reasoning_summary_text.delta") && event.contains("**Reasoning**")
+    }));
+    let finished = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    assert!(finished.iter().any(
         |event| event.contains("response.reasoning_summary_text.delta")
             && event.contains("Cline reasoning. ")
     ));
+}
+
+#[test]
+fn chat_stream_reasoning_coalesces_line_sized_deltas_until_a_small_block() {
+    let mut accum = ChatAccum::default();
+    let first = "First line of reasoning.\n";
+    let second = "Second line of reasoning.\n";
+    let third = "Third line of reasoning.\n";
+
+    let mut events = Vec::new();
+    events.extend(accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": first}}]
+    })));
+    events.extend(accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": second}}]
+    })));
+    events.extend(accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": third}}]
+    })));
+
+    let reasoning_deltas = events
+        .iter()
+        .filter_map(|event| sse_data(event))
+        .map(|data| serde_json::from_str::<Value>(&data).expect("event is JSON"))
+        .filter(|event| {
+            event["type"] == "response.reasoning_summary_text.delta"
+                && !event["delta"]
+                    .as_str()
+                    .expect("delta is a string")
+                    .starts_with("**Reasoning**")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        reasoning_deltas.is_empty(),
+        "line-sized fragments below the block threshold should not emit reasoning deltas"
+    );
+
+    let finished = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let buffered_delta = finished
+        .iter()
+        .filter_map(|event| sse_data(event))
+        .map(|data| serde_json::from_str::<Value>(&data).expect("event is JSON"))
+        .find(|event| event["type"] == "response.reasoning_summary_text.delta")
+        .expect("completion flushes pending reasoning");
+    let expected_delta =
+        "First line of reasoning.\nSecond line of reasoning.\nThird line of reasoning.\n";
+    assert_eq!(buffered_delta["delta"], expected_delta);
+}
+
+#[test]
+fn chat_stream_reasoning_flushes_a_small_block_without_waiting_for_completion() {
+    let mut accum = ChatAccum::default();
+    let first = "a".repeat(REASONING_DELTA_FLUSH_CHARS - 1);
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": first}}]
+    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.contains("response.reasoning_summary_text.delta"))
+            .count(),
+        1,
+        "only the display header is emitted below the block threshold"
+    );
+
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": "b"}}]
+    }));
+    let delta = events
+        .iter()
+        .filter_map(|event| sse_data(event))
+        .map(|data| serde_json::from_str::<Value>(&data).expect("event is JSON"))
+        .find(|event| event["type"] == "response.reasoning_summary_text.delta")
+        .expect("reaching the block threshold emits reasoning");
+    assert_eq!(
+        delta["delta"].as_str().expect("reasoning delta").len(),
+        REASONING_DELTA_FLUSH_CHARS
+    );
+}
+
+#[test]
+fn chat_stream_reasoning_flushes_at_paragraph_boundaries() {
+    let mut accum = ChatAccum::default();
+    let text = "Some reasoning text.";
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"reasoning_content": format!("{text}\n\n")}}]
+    }));
+
+    let delta = events
+        .iter()
+        .filter_map(|event| sse_data(event))
+        .map(|data| serde_json::from_str::<Value>(&data).expect("event is JSON"))
+        .find(|event| {
+            event["type"] == "response.reasoning_summary_text.delta"
+                && !event["delta"]
+                    .as_str()
+                    .expect("delta is a string")
+                    .starts_with("**Reasoning**")
+        })
+        .expect("paragraph boundary flushes reasoning");
+    let delta_text = delta["delta"].as_str().expect("delta is a string");
+    assert_eq!(delta_text, "Some reasoning text.\n\n");
 }
 
 #[test]
@@ -3738,7 +3928,7 @@ fn chat_stream_debug_summary_counts_reasoning_without_text() {
 
     assert_eq!(summary["reasoning_content_chars"], 11);
     assert_eq!(summary["content_chars"], 7);
-    assert_eq!(summary["emitted_reasoning_delta_events"], 2);
+    assert_eq!(summary["emitted_reasoning_delta_events"], 1);
     assert_eq!(summary["emitted_output_text_delta_events"], 1);
     assert_eq!(summary["upstream_fields"][0], "content");
     assert_eq!(summary["upstream_fields"][1], "reasoning_content");

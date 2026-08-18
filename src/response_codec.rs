@@ -24,6 +24,97 @@ use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
 
+/// Coalesce provider-specific token or line-sized reasoning deltas into the
+/// small display blocks used by Codex clients for native reasoning summaries.
+/// A paragraph boundary still flushes immediately so structured reasoning is
+/// not held behind an arbitrary character count.
+const REASONING_DELTA_FLUSH_CHARS: usize = 160;
+const REASONING_DELTA_FLUSH_PARAGRAPH: &str = "\n\n";
+
+/// Buffers native `response.reasoning_summary_text.delta` events so tiny
+/// provider fragments are coalesced into the same small display blocks used
+/// for chat-completions reasoning.
+#[derive(Default)]
+struct NativeReasoningBuffer {
+    pending: String,
+    template: Option<Value>,
+    item_id: Option<String>,
+    summary_index: Option<u64>,
+}
+
+impl NativeReasoningBuffer {
+    fn append(&mut self, delta: &NativeReasoningSummaryDelta) {
+        if self.template.is_none()
+            || self.item_id.as_deref() != Some(delta.item_id.as_str())
+            || self.summary_index != Some(delta.summary_index)
+        {
+            self.pending.clear();
+            self.template = Some(delta.template.clone());
+            self.item_id = Some(delta.item_id.clone());
+            self.summary_index = Some(delta.summary_index);
+        }
+        self.pending.push_str(&delta.text);
+    }
+
+    fn take_flush(&mut self) -> Option<String> {
+        let text_only = self
+            .pending
+            .strip_prefix(REASONING_DISPLAY_HEADER)
+            .unwrap_or(&self.pending);
+        let should_flush = !text_only.is_empty()
+            && (text_only.len() >= REASONING_DELTA_FLUSH_CHARS
+                || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH));
+        if should_flush { self.take_all() } else { None }
+    }
+
+    fn take_all(&mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let mut value = self.template.clone()?;
+        if let Some(delta) = value.get_mut("delta") {
+            *delta = Value::String(self.pending.clone());
+        }
+        self.pending.clear();
+        Some(sse("response.reasoning_summary_text.delta", value))
+    }
+}
+
+struct NativeReasoningSummaryDelta {
+    item_id: String,
+    summary_index: u64,
+    text: String,
+    template: Value,
+}
+
+fn native_reasoning_summary_delta(frame: &str) -> Option<NativeReasoningSummaryDelta> {
+    let data = sse_data(frame)?;
+    let mut value = serde_json::from_str::<Value>(&data).ok()?;
+    if value.get("type").and_then(Value::as_str)? != "response.reasoning_summary_text.delta" {
+        return None;
+    }
+    let item_id = value
+        .get("item_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let summary_index = value
+        .get("summary_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let text = value.get("delta").and_then(Value::as_str)?.to_string();
+    value
+        .as_object_mut()
+        .expect("reasoning event is an object")
+        .insert("delta".to_string(), Value::String(String::new()));
+    Some(NativeReasoningSummaryDelta {
+        item_id,
+        summary_index,
+        text,
+        template: value,
+    })
+}
+
 /// Maximum number of entries allowed in the continue-guard budget map to prevent
 /// unbounded memory growth during long-running proxy sessions.
 const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
@@ -240,6 +331,7 @@ pub(crate) fn native_stream_to_responses(
         let mut terminal_received = false;
         let mut usage_recorder = usage_recorder;
         let mut response_id = None;
+        let mut native_reasoning_buffer = NativeReasoningBuffer::default();
 
         'upstream: while let Some(chunk) = bytes.next().await {
             let chunk = chunk.map_err(std::io::Error::other)?;
@@ -291,8 +383,20 @@ pub(crate) fn native_stream_to_responses(
                     &namespace_helpers,
                     &tool_policy,
                 );
-                log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
-                yield Ok(Bytes::from(morphed));
+                if let Some(reasoning) = native_reasoning_summary_delta(&morphed) {
+                    native_reasoning_buffer.append(&reasoning);
+                    if let Some(flushed) = native_reasoning_buffer.take_flush() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                        yield Ok(Bytes::from(flushed));
+                    }
+                } else {
+                    if let Some(flushed) = native_reasoning_buffer.take_all() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                        yield Ok(Bytes::from(flushed));
+                    }
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
+                    yield Ok(Bytes::from(morphed));
+                }
                 if terminal.is_some() {
                     break 'upstream;
                 }
@@ -300,6 +404,10 @@ pub(crate) fn native_stream_to_responses(
         }
 
         if !terminal_received {
+            if let Some(flushed) = native_reasoning_buffer.take_all() {
+                log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                yield Ok(Bytes::from(flushed));
+            }
             let message = if pending.is_empty() {
                 "upstream Responses stream ended before a terminal response event"
             } else {
@@ -544,6 +652,7 @@ pub(crate) struct ChatAccum {
     reasoning_display_header_emitted: bool,
     text: String,
     reasoning_text: String,
+    reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
     usage: Option<Value>,
     finish_reason: Option<String>,
@@ -649,9 +758,10 @@ impl ChatAccum {
                         }),
                     ));
                 }
+                self.reasoning_text.push_str(&reasoning);
                 if !self.reasoning_display_header_emitted {
                     self.reasoning_display_header_emitted = true;
-                    if !incoming.trim_start().starts_with("**") {
+                    if !self.reasoning_text.trim_start().starts_with("**") {
                         events.push(sse(
                             "response.reasoning_summary_text.delta",
                             json!({
@@ -663,16 +773,8 @@ impl ChatAccum {
                         ));
                     }
                 }
-                self.reasoning_text.push_str(&reasoning);
-                events.push(sse(
-                    "response.reasoning_summary_text.delta",
-                    json!({
-                        "type": "response.reasoning_summary_text.delta",
-                        "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
-                        "summary_index": 0,
-                        "delta": reasoning.as_str()
-                    }),
-                ));
+                self.reasoning_pending.push_str(&reasoning);
+                events.extend(self.take_reasoning_flush());
             }
 
             let content = chat_content_text(delta.get("content"));
@@ -749,6 +851,9 @@ impl ChatAccum {
         continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     ) -> Vec<String> {
         let mut events = Vec::new();
+        if !self.reasoning_pending.is_empty() {
+            events.push(self.reasoning_delta_event(&self.reasoning_pending));
+        }
         if !self.reasoning_text.is_empty() {
             events.push(sse(
                 "response.output_item.done",
@@ -830,6 +935,39 @@ impl ChatAccum {
         ));
         events.push("data: [DONE]\n\n".to_string());
         events
+    }
+
+    fn flush_reasoning_delta(&mut self) -> String {
+        let event = self.reasoning_delta_event(&self.reasoning_pending);
+        self.reasoning_pending.clear();
+        event
+    }
+
+    fn take_reasoning_flush(&mut self) -> Option<String> {
+        let text_only = self
+            .reasoning_pending
+            .strip_prefix(REASONING_DISPLAY_HEADER)
+            .unwrap_or(&self.reasoning_pending);
+        let should_flush = !text_only.is_empty()
+            && (text_only.len() >= REASONING_DELTA_FLUSH_CHARS
+                || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH));
+        if should_flush {
+            Some(self.flush_reasoning_delta())
+        } else {
+            None
+        }
+    }
+
+    fn reasoning_delta_event(&self, delta: &str) -> String {
+        sse(
+            "response.reasoning_summary_text.delta",
+            json!({
+                "type": "response.reasoning_summary_text.delta",
+                "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
+                "summary_index": 0,
+                "delta": delta
+            }),
+        )
     }
 
     fn end_turn(&self, continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>) -> bool {
