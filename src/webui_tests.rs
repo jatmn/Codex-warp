@@ -3224,6 +3224,7 @@ async fn delete_model_removes_managed_overlay_model() {
             enabled: true,
             ..ModelCatalogEntry::default()
         }],
+        disabled_models: vec!["gpt-test".into()],
         ..ProviderConfig::default()
     };
     state

@@ -2074,17 +2074,10 @@ async fn delete_model(
         (catalog_entry, upstream_id, managed_snapshot)
     };
 
-    // For non-managed providers, a model overlay row means the entry was added
-    // by the Web UI and can be hard-deleted. If no overlay row exists, the
-    // model is owned by the TOML config and must be suppressed instead.
-    let overlay_deleted = if !managed && catalog_entry.is_some() {
-        store
-            .delete_model_overlay(&id, &model_id)
-            .map_err(|err| ApiError::internal(err.to_string()))?
-    } else {
-        false
-    };
-
+    // `hard_delete` is true for managed providers (fully overlay-owned) and
+    // for non-managed providers where the model overlay row exists (i.e. the
+    // entry was added by the Web UI). TOML-owned entries remain suppressed.
+    let mut hard_delete = managed;
     if let Some(entry) = &catalog_entry {
         if managed {
             let snapshot = managed_snapshot
@@ -2093,7 +2086,12 @@ async fn delete_model(
             store
                 .delete_managed_model_catalog_entry(&id, &model_id, snapshot)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
-        } else if !overlay_deleted {
+        } else if store
+            .delete_model_overlay(&id, &model_id)
+            .map_err(|err| ApiError::internal(err.to_string()))?
+        {
+            hard_delete = true;
+        } else {
             store
                 .soft_remove_model(&id, &model_id, Some(entry))
                 .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -2113,7 +2111,7 @@ async fn delete_model(
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if catalog_entry.is_some() {
-            if managed || overlay_deleted {
+            if hard_delete {
                 provider.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
             } else {
                 provider.suppress_catalog_model(&model_id, upstream_id.as_deref());

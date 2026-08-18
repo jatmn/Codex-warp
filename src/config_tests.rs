@@ -1169,3 +1169,24 @@ fn hy3_exact_ids_inherit_broad_family_transform() {
         );
     }
 }
+
+#[test]
+fn remove_model_catalog_entry_clears_disabled_upstream_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "custom-model".into(),
+        upstream_id: Some("upstream-alias".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("upstream-alias".into());
+    provider.remove_model_catalog_entry("custom-model", Some("upstream-alias"));
+    assert!(provider.model_catalog.is_empty());
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .all(|d| d != "upstream-alias"),
+        "the upstream alias must be cleared from disabled_models"
+    );
+}
