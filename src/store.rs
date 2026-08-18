@@ -233,6 +233,7 @@ impl Store {
                 managed INTEGER NOT NULL DEFAULT 0,
                 catalog_json TEXT,
                 removed INTEGER NOT NULL DEFAULT 0,
+                ui_created INTEGER NOT NULL DEFAULT 0,
                 route_order INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (provider_id, model_id)
             );
@@ -269,6 +270,13 @@ impl Store {
         );
         let _ = connection.execute(
             "ALTER TABLE model_overlays ADD COLUMN route_order INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        // Existing overlay rows predate catalog-origin tracking. Treat them as
+        // TOML-backed conservatively: soft-removing an old UI-created row is
+        // safe, whereas hard-removing an old TOML edit resurrects it on restart.
+        let _ = connection.execute(
+            "ALTER TABLE model_overlays ADD COLUMN ui_created INTEGER NOT NULL DEFAULT 0",
             [],
         );
         let cutoff = now_ms() - USAGE_RETENTION_DAYS * 24 * 3_600_000;
@@ -789,13 +797,14 @@ impl Store {
         provider_id: &str,
         entry: &ModelCatalogEntry,
         managed: bool,
+        ui_created: bool,
     ) -> anyhow::Result<()> {
         let catalog_json = serde_json::to_string(entry)?;
         let db = self.db.lock().expect("sqlite lock poisoned");
         let route_order = next_route_order(&db)?;
         db.execute(
-            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, ui_created, route_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)
              ON CONFLICT(provider_id, model_id) DO UPDATE SET
                 enabled = excluded.enabled,
                 managed = excluded.managed OR model_overlays.managed,
@@ -808,6 +817,7 @@ impl Store {
                 i64::from(entry.enabled),
                 i64::from(managed),
                 catalog_json,
+                i64::from(ui_created),
                 route_order
             ],
         )?;
@@ -896,16 +906,18 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a model overlay row entirely. Returns `true` when a row was
-    /// removed, which indicates the model was owned by the Web UI overlay.
-    pub(crate) fn delete_model_overlay(
+    /// Delete only a catalog entry created by the Web UI. Overlay existence
+    /// alone is not provenance: TOML-backed models also acquire overlay rows
+    /// after edits and enablement changes.
+    pub(crate) fn delete_ui_created_model_overlay(
         &self,
         provider_id: &str,
         model_id: &str,
     ) -> anyhow::Result<bool> {
         let db = self.db.lock().expect("sqlite lock poisoned");
         let rows = db.execute(
-            "DELETE FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+            "DELETE FROM model_overlays
+             WHERE provider_id = ?1 AND model_id = ?2 AND ui_created = 1",
             params![provider_id, model_id],
         )?;
         Ok(rows > 0)

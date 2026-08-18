@@ -1925,7 +1925,7 @@ async fn add_model(
     };
 
     store
-        .upsert_model_catalog(&id, &entry, managed)
+        .upsert_model_catalog(&id, &entry, managed, !already_in_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
@@ -1997,7 +1997,7 @@ async fn update_model(
     };
 
     store
-        .upsert_model_catalog(&id, &updated, managed)
+        .upsert_model_catalog(&id, &updated, managed, false)
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
@@ -2072,9 +2072,9 @@ async fn delete_model(
         (catalog_entry, upstream_id, managed_snapshot)
     };
 
-    // `hard_delete` is true for managed providers (fully overlay-owned) and
-    // for non-managed providers where the model overlay row exists (i.e. the
-    // entry was added by the Web UI). TOML-owned entries remain suppressed.
+    // Managed providers are fully overlay-owned. For TOML-backed providers,
+    // only a row explicitly marked as UI-created may be hard-deleted; ordinary
+    // overlay rows can be edits or enablement changes to a TOML catalog entry.
     let mut hard_delete = managed;
     if let Some(entry) = &catalog_entry {
         if managed {
@@ -2085,7 +2085,7 @@ async fn delete_model(
                 .delete_managed_model_catalog_entry(&id, &model_id, snapshot)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
         } else if store
-            .delete_model_overlay(&id, &model_id)
+            .delete_ui_created_model_overlay(&id, &model_id)
             .map_err(|err| ApiError::internal(err.to_string()))?
         {
             hard_delete = true;

@@ -595,6 +595,7 @@ fn soft_remove_provider_preserves_model_overlays() {
                 ..ModelCatalogEntry::default()
             },
             false,
+            false,
         )
         .unwrap();
     store.soft_remove_provider("legacy").unwrap();
@@ -646,6 +647,7 @@ fn soft_removed_primary_provider_does_not_replay_retained_model_overlays() {
                 id: "stale-model".into(),
                 ..ModelCatalogEntry::default()
             },
+            false,
             false,
         )
         .unwrap();
@@ -1221,7 +1223,9 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
         },
     );
 
-    store.upsert_model_catalog("manual", &entry, false).unwrap();
+    store
+        .upsert_model_catalog("manual", &entry, false, false)
+        .unwrap();
     store
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
@@ -1391,6 +1395,7 @@ fn enabled_model_route_seeds_survive_store_reopen() {
                     ..ModelCatalogEntry::default()
                 },
                 false,
+                false,
             )
             .unwrap();
     }
@@ -1461,6 +1466,7 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
                 enabled: false,
                 ..ModelCatalogEntry::default()
             },
+            false,
             false,
         )
         .unwrap();

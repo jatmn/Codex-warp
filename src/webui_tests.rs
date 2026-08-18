@@ -282,6 +282,17 @@ fn model_persist_clear_optional_fields() {
 }
 
 #[test]
+fn model_form_requires_an_upstream_id_only_when_creating() {
+    let index = include_str!("webui_static/index.html");
+    let app = webui_js_source();
+
+    assert!(index.contains("<label>Model ID <input name=\"upstream_id\"></label>"));
+    assert!(!index.contains("<input name=\"upstream_id\" required>"));
+    assert!(app.contains("if (mode === \"create\") {\n      if (!upstreamId)"));
+    assert!(app.contains("upstream_id: upstreamId || null"));
+}
+
+#[test]
 fn model_persist_deserializes_omitted_enabled_as_none() {
     let fields: ModelPersist =
         serde_json::from_str(r#"{"display_name":"Renamed"}"#).expect("deserialize");
@@ -3340,6 +3351,72 @@ async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
             .iter()
             .all(|disabled| disabled != "manual/gpt-4o" && disabled != "gpt-4o"),
         "deleted UI-added model must not become a disabled entry"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn delete_model_soft_removes_toml_catalog_after_an_edit() {
+    let dir = unique_temp_dir("codex-warp-delete-edited-toml-model");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "manual/friendly".into(),
+            upstream_id: Some("upstream-friendly".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("manual".into(), provider.clone());
+    }
+
+    let _ = update_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/friendly".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Set("Friendly".into()),
+            description: OptionalPatch::Absent,
+            enabled: None,
+        }),
+    )
+    .await
+    .expect("edit TOML catalog model");
+
+    delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/friendly".to_string())),
+    )
+    .await
+    .expect("delete TOML catalog model");
+
+    let mut replayed = AppConfig::default();
+    replayed.providers.insert("manual".into(), provider);
+    state
+        .store
+        .as_ref()
+        .expect("store")
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .expect("replay model overlays");
+
+    let replayed_provider = &replayed.providers["manual"];
+    assert!(
+        replayed_provider.model_catalog.is_empty(),
+        "the TOML catalog model must remain deleted after restart"
+    );
+    assert!(
+        !replayed_provider.model_is_enabled("manual/friendly")
+            && !replayed_provider.model_is_enabled("upstream-friendly"),
+        "the deletion tombstone must suppress both catalog and upstream aliases"
     );
 
     let _ = std::fs::remove_dir_all(dir);
