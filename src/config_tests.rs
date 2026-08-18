@@ -67,6 +67,7 @@ fn example_configs_parse_request_morphs() {
     );
     assert!(default_config.model_families.contains_key("z_ai_glm_5"));
     assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
+    assert!(default_config.model_families.contains_key("z_ai_glm_5_3"));
     assert!(default_config.model_families.contains_key("hy3"));
     assert!(default_config.model_families.contains_key("hy3_exact"));
     assert!(default_config.model_families.contains_key("hy3_tencent"));
@@ -1058,6 +1059,19 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
         .expect("glm-5.2 exact family exists");
     assert!(
         glm52
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+
+    // GLM-5.3: exact family forwards reasoning_effort alongside thinking.type.
+    let glm53 = config
+        .model_families
+        .get("z_ai_glm_5_3")
+        .expect("glm-5.3 exact family exists");
+    assert!(
+        glm53
             .transform
             .append_chat_request_morphs
             .iter()
