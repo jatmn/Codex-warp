@@ -595,6 +595,7 @@ fn soft_remove_provider_preserves_model_overlays() {
                 ..ModelCatalogEntry::default()
             },
             false,
+            false,
         )
         .unwrap();
     store.soft_remove_provider("legacy").unwrap();
@@ -646,6 +647,7 @@ fn soft_removed_primary_provider_does_not_replay_retained_model_overlays() {
                 id: "stale-model".into(),
                 ..ModelCatalogEntry::default()
             },
+            false,
             false,
         )
         .unwrap();
@@ -1221,7 +1223,9 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
         },
     );
 
-    store.upsert_model_catalog("manual", &entry, false).unwrap();
+    store
+        .upsert_model_catalog("manual", &entry, false, false)
+        .unwrap();
     store
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
@@ -1230,6 +1234,129 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
     assert!(provider.model_is_enabled("my-model"));
     assert!(provider.model_is_enabled("gpt-4"));
     assert!(provider.disabled_models.is_empty());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn delete_ui_created_model_overlay_keeps_toml_backed_rows() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-ui-created-overlay-delete-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("overlay.db")).unwrap();
+    let toml_entry = ModelCatalogEntry {
+        id: "manual/toml-model".into(),
+        ..ModelCatalogEntry::default()
+    };
+    let ui_entry = ModelCatalogEntry {
+        id: "manual/ui-model".into(),
+        ..ModelCatalogEntry::default()
+    };
+
+    store
+        .upsert_model_catalog("manual", &toml_entry, false, false)
+        .unwrap();
+    store
+        .upsert_model_catalog("manual", &ui_entry, false, true)
+        .unwrap();
+
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        let ui_created: i64 = db
+            .query_row(
+                "SELECT ui_created FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+                params!["manual", ui_entry.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ui_created, 1);
+    }
+
+    assert!(
+        store
+            .delete_ui_created_model_overlay("manual", &ui_entry.id)
+            .unwrap(),
+        "the UI-created overlay must be deleted"
+    );
+
+    let db = store.db.lock().expect("sqlite lock poisoned");
+    let toml_rows: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2 AND ui_created = 0",
+            params!["manual", toml_entry.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ui_rows: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+            params!["manual", ui_entry.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(toml_rows, 1, "TOML-backed overlay must remain");
+    assert_eq!(ui_rows, 0, "UI-created overlay must be hard-deleted");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn opening_legacy_model_overlay_rows_defaults_them_to_not_ui_created() {
+    use rusqlite::{Connection, params};
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-legacy-ui-created-migration-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("overlay.db");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE model_overlays (
+            provider_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            managed INTEGER NOT NULL DEFAULT 0,
+            catalog_json TEXT,
+            removed INTEGER NOT NULL DEFAULT 0,
+            route_order INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (provider_id, model_id)
+        );",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO model_overlays(provider_id, model_id) VALUES (?1, ?2)",
+        params!["manual", "manual/legacy-model"],
+    )
+    .unwrap();
+    drop(db);
+
+    let store = Store::open(&path).unwrap();
+    assert!(
+        !store
+            .delete_ui_created_model_overlay("manual", "manual/legacy-model")
+            .unwrap(),
+        "legacy rows must be treated as TOML-backed"
+    );
+    let db = store.db.lock().expect("sqlite lock poisoned");
+    let ui_created: i64 = db
+        .query_row(
+            "SELECT ui_created FROM model_overlays WHERE provider_id = ?1 AND model_id = ?2",
+            params!["manual", "manual/legacy-model"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ui_created, 0);
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1391,6 +1518,7 @@ fn enabled_model_route_seeds_survive_store_reopen() {
                     ..ModelCatalogEntry::default()
                 },
                 false,
+                false,
             )
             .unwrap();
     }
@@ -1461,6 +1589,7 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
                 enabled: false,
                 ..ModelCatalogEntry::default()
             },
+            false,
             false,
         )
         .unwrap();

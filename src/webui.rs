@@ -1925,7 +1925,7 @@ async fn add_model(
     };
 
     store
-        .upsert_model_catalog(&id, &entry, managed)
+        .upsert_model_catalog(&id, &entry, managed, !already_in_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
@@ -1997,7 +1997,7 @@ async fn update_model(
     };
 
     store
-        .upsert_model_catalog(&id, &updated, managed)
+        .upsert_model_catalog(&id, &updated, managed, false)
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
@@ -2056,16 +2056,26 @@ async fn delete_model(
         let upstream_id = catalog_entry
             .as_ref()
             .and_then(|entry| entry.upstream_id.clone());
-        let mut snapshot = provider.clone();
-        if catalog_entry.is_some() {
-            snapshot.suppress_catalog_model(&model_id, upstream_id.as_deref());
+        let managed_snapshot = if managed {
+            let mut snapshot = provider.clone();
+            if catalog_entry.is_some() {
+                // Managed providers are fully overlay-owned, so a deleted
+                // catalog entry can be removed entirely from the snapshot.
+                snapshot.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
+            } else {
+                snapshot.disable_model(&model_id);
+            }
+            Some(snapshot)
         } else {
-            snapshot.disable_model(&model_id);
-        }
-        let managed_snapshot = if managed { Some(snapshot) } else { None };
+            None
+        };
         (catalog_entry, upstream_id, managed_snapshot)
     };
 
+    // Managed providers are fully overlay-owned. For TOML-backed providers,
+    // only a row explicitly marked as UI-created may be hard-deleted; ordinary
+    // overlay rows can be edits or enablement changes to a TOML catalog entry.
+    let mut hard_delete = managed;
     if let Some(entry) = &catalog_entry {
         if managed {
             let snapshot = managed_snapshot
@@ -2074,6 +2084,11 @@ async fn delete_model(
             store
                 .delete_managed_model_catalog_entry(&id, &model_id, snapshot)
                 .map_err(|err| ApiError::internal(err.to_string()))?;
+        } else if store
+            .delete_ui_created_model_overlay(&id, &model_id)
+            .map_err(|err| ApiError::internal(err.to_string()))?
+        {
+            hard_delete = true;
         } else {
             store
                 .soft_remove_model(&id, &model_id, Some(entry))
@@ -2094,7 +2109,11 @@ async fn delete_model(
         let provider = provider_config_mut(&mut config, &id)
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         if catalog_entry.is_some() {
-            provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            if hard_delete {
+                provider.remove_model_catalog_entry(&model_id, upstream_id.as_deref());
+            } else {
+                provider.suppress_catalog_model(&model_id, upstream_id.as_deref());
+            }
         } else {
             provider.disable_model(&model_id);
         }

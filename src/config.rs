@@ -402,6 +402,19 @@ impl ProviderConfig {
         }
     }
 
+    /// Hard-remove a Web UI-managed catalog entry: drop the catalog row and
+    /// clear any matching disabled-model entries so the model does not remain
+    /// visible as a dead entry after deletion.
+    pub fn remove_model_catalog_entry(&mut self, model_id: &str, upstream_id: Option<&str>) {
+        self.model_catalog.retain(|entry| entry.id != model_id);
+        self.clear_disabled_overlapping(model_id);
+        // Clearing an empty upstream id is a no-op because disabled model
+        // entries are always non-empty, so we can skip the explicit check.
+        if let Some(upstream_id) = upstream_id {
+            self.clear_disabled_overlapping(upstream_id);
+        }
+    }
+
     pub fn api_key(&self) -> Option<String> {
         if let Some(value) = &self.api_key {
             return Some(value.clone());

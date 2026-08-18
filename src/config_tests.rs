@@ -1169,3 +1169,63 @@ fn hy3_exact_ids_inherit_broad_family_transform() {
         );
     }
 }
+
+#[test]
+fn remove_model_catalog_entry_clears_disabled_upstream_alias() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "custom-model".into(),
+        upstream_id: Some("upstream-alias".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("upstream-alias".into());
+    provider.remove_model_catalog_entry("custom-model", Some("upstream-alias"));
+    assert!(provider.model_catalog.is_empty());
+    assert!(provider.disabled_models.is_empty());
+}
+
+#[test]
+fn remove_model_catalog_entry_clears_disabled_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "custom-model".into(),
+        upstream_id: Some("upstream-alias".into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("custom-model".into());
+    provider.remove_model_catalog_entry("custom-model", Some("upstream-alias"));
+    assert!(provider.model_catalog.is_empty());
+    assert!(provider.disabled_models.is_empty());
+}
+
+#[test]
+fn remove_model_catalog_entry_with_none_upstream_id_clears_disabled_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "custom-model".into(),
+        upstream_id: None,
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("custom-model".into());
+    provider.remove_model_catalog_entry("custom-model", None);
+    assert!(provider.model_catalog.is_empty());
+    assert!(provider.disabled_models.is_empty());
+}
+
+#[test]
+fn remove_model_catalog_entry_with_empty_upstream_id_clears_disabled_model_id() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "custom-model".into(),
+        upstream_id: Some(String::new()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    });
+    provider.disabled_models.push("custom-model".into());
+    provider.remove_model_catalog_entry("custom-model", Some(""));
+    assert!(provider.model_catalog.is_empty());
+    assert!(provider.disabled_models.is_empty());
+}

@@ -1173,14 +1173,25 @@
     ev.preventDefault();
     const fd = new FormData(modelForm);
     const providerId = fd.get("provider_id");
+    const upstreamId = fd.get("upstream_id")?.trim() || "";
+    const mode = modelForm.dataset.mode || "create";
+    let id;
+    if (mode === "create") {
+      if (!upstreamId) {
+        status("Model ID is required");
+        return;
+      }
+      id = `${providerId}/${upstreamId}`.toLowerCase();
+    } else {
+      id = fd.get("id")?.trim() || "";
+    }
     const body = {
-      id: fd.get("id").trim(),
-      upstream_id: fd.get("upstream_id")?.trim() || null,
+      id,
+      upstream_id: upstreamId || null,
       display_name: fd.get("display_name")?.trim() || null,
       description: fd.get("description")?.trim() || null,
       enabled: editingModel?.enabled ?? true,
     };
-    const mode = modelForm.dataset.mode || "create";
     try {
       if (mode === "create") {
         await api(`/providers/${encodeURIComponent(providerId)}/models`, {
@@ -1189,7 +1200,7 @@
         });
       } else {
         await api(
-          `/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(body.id)}`,
+          `/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(id)}`,
           { method: "PUT", body: JSON.stringify(body) },
         );
       }
@@ -1207,14 +1218,13 @@
       modelForm.dataset.mode = "edit";
       $("#model-form-title").textContent = "Edit model";
       idInput.value = m.id;
-      idInput.readOnly = true;
       modelForm.querySelector("[name=upstream_id]").value = m.upstream_id || "";
       modelForm.querySelector("[name=display_name]").value = m.display_name || "";
       modelForm.querySelector("[name=description]").value = m.description || "";
     } else {
       modelForm.dataset.mode = "create";
       $("#model-form-title").textContent = "Add model";
-      idInput.readOnly = false;
+      idInput.value = "";
     }
     modelDialog.showModal();
   }

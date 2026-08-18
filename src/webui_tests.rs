@@ -88,6 +88,18 @@ fn css_rule_body<'a>(css: &'a str, selector: &str) -> &'a str {
     &body[..close]
 }
 
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    std::env::temp_dir().join(format!(
+        "{}-{}",
+        prefix,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
 #[test]
 fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
     let state = test_state();
@@ -267,6 +279,17 @@ fn model_persist_clear_optional_fields() {
     assert!(entry.display_name.is_none());
     assert!(entry.description.is_none());
     assert!(!entry.enabled);
+}
+
+#[test]
+fn model_form_requires_an_upstream_id_only_when_creating() {
+    let index = include_str!("webui_static/index.html");
+    let app = webui_js_source();
+
+    assert!(index.contains("<label>Model ID <input name=\"upstream_id\"></label>"));
+    assert!(!index.contains("<input name=\"upstream_id\" required>"));
+    assert!(app.contains("if (mode === \"create\") {\n      if (!upstreamId)"));
+    assert!(app.contains("upstream_id: upstreamId || null"));
 }
 
 #[test]
@@ -3198,4 +3221,203 @@ fn logging_settings_use_pinned_fallback_when_snapshot_filter_is_unset() {
     assert_eq!(after.tracing_filter_wanted, "codex_warp=warn");
     assert_eq!(after.tracing_filter_effective, "codex_warp=warn");
     assert!(after.tracing_applied);
+}
+
+#[tokio::test]
+async fn delete_model_removes_managed_overlay_model() {
+    let dir = unique_temp_dir("codex-warp-delete-managed-model");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "example/gpt-test".into(),
+            upstream_id: Some("gpt-test".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        disabled_models: vec!["gpt-test".into()],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .create_provider_with_catalog("example", &provider, &provider.model_catalog)
+        .unwrap();
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("example".into(), provider);
+    }
+
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("example".to_string(), "example/gpt-test".to_string())),
+    )
+    .await
+    .expect("delete managed catalog model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let config = state.config.read().expect("config lock");
+    let provider = config.providers.get("example").expect("provider exists");
+    assert!(
+        provider
+            .model_catalog
+            .iter()
+            .find(|entry| entry.id == "example/gpt-test")
+            .is_none(),
+        "deleted model must be removed from the managed provider catalog"
+    );
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .all(|disabled| disabled != "example/gpt-test" && disabled != "gpt-test"),
+        "deleted model must not become a disabled entry"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
+    let dir = unique_temp_dir("codex-warp-delete-overlay-model");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "manual".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let (_, Json(_)) = add_model(
+        State(state.clone()),
+        Path("manual".to_string()),
+        Json(ModelCatalogEntry {
+            id: "manual/gpt-4o".into(),
+            upstream_id: Some("gpt-4o".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect("add model");
+
+    {
+        let config = state.config.read().expect("config lock");
+        let provider = config.providers.get("manual").expect("provider exists");
+        assert!(
+            provider
+                .model_catalog
+                .iter()
+                .any(|entry| entry.id == "manual/gpt-4o"),
+            "added model must be present in the catalog"
+        );
+    }
+
+    let deleted = delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/gpt-4o".to_string())),
+    )
+    .await
+    .expect("delete UI-added model");
+    assert_eq!(deleted, StatusCode::NO_CONTENT);
+
+    let config = state.config.read().expect("config lock");
+    let provider = config.providers.get("manual").expect("provider exists");
+    assert!(
+        provider
+            .model_catalog
+            .iter()
+            .find(|entry| entry.id == "manual/gpt-4o")
+            .is_none(),
+        "deleted UI-added model must be removed from the catalog"
+    );
+    assert!(
+        provider
+            .disabled_models
+            .iter()
+            .all(|disabled| disabled != "manual/gpt-4o" && disabled != "gpt-4o"),
+        "deleted UI-added model must not become a disabled entry"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn delete_model_soft_removes_toml_catalog_after_an_edit() {
+    let dir = unique_temp_dir("codex-warp-delete-edited-toml-model");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "manual/friendly".into(),
+            upstream_id: Some("upstream-friendly".into()),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("manual".into(), provider.clone());
+    }
+
+    let _ = update_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/friendly".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Set("Friendly".into()),
+            description: OptionalPatch::Absent,
+            enabled: None,
+        }),
+    )
+    .await
+    .expect("edit TOML catalog model");
+
+    delete_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/friendly".to_string())),
+    )
+    .await
+    .expect("delete TOML catalog model");
+
+    let mut replayed = AppConfig::default();
+    replayed.providers.insert("manual".into(), provider);
+    state
+        .store
+        .as_ref()
+        .expect("store")
+        .apply_overlays_with_tracing_fallback(&mut replayed, None)
+        .expect("replay model overlays");
+
+    let replayed_provider = &replayed.providers["manual"];
+    assert!(
+        replayed_provider.model_catalog.is_empty(),
+        "the TOML catalog model must remain deleted after restart"
+    );
+    assert!(
+        !replayed_provider.model_is_enabled("manual/friendly")
+            && !replayed_provider.model_is_enabled("upstream-friendly"),
+        "the deletion tombstone must suppress both catalog and upstream aliases"
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
 }
