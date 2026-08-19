@@ -5449,6 +5449,16 @@ fn deepseek_v4_pro_tool_markup_in_content_is_suppressed() {
     }));
     accum.apply_chat_chunk(&json!({
         "choices": [{
+            "delta": {"content": "<invoke name=\"exec_command\">echo hi</invoke>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "<function_call name=\"exec_command\">{\"cmd\":\"ls\"}</function_call>"}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
             "delta": {"tool_calls": [{
                 "index": 0,
                 "function": {"arguments": ":\"rg -n spam\"}"}
@@ -5473,6 +5483,8 @@ fn deepseek_v4_pro_tool_markup_in_content_is_suppressed() {
                 || e.contains("<tool>")
                 || e.contains("<function>fn x()")
                 || e.contains("<think>some reasoning")
+                || e.contains("<invoke name=\"exec_command\">echo hi</invoke>")
+                || e.contains("<function_call name=\"exec_command\">")
         });
     assert!(
         !leaked,

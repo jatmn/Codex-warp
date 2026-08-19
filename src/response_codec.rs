@@ -882,13 +882,8 @@ impl ChatAccum {
             // leak tool-invocation markup as `content` fragments (e.g. "<parameter",
             // "<tool", "<invoke"). Suppress that markup so it is not forwarded
             // as assistant text. Fixes excess `<parameter>` spam.
-            let content = if content
-                .chars()
-                .take_while(|c| c.is_whitespace() || *c == '<')
-                .last()
-                .is_some_and(|c| c == '<')
-                && Self::looks_like_tool_markup(&content)
-            {
+            let trimmed = content.trim_start();
+            let content = if trimmed.starts_with('<') && Self::looks_like_tool_markup(trimmed) {
                 String::new()
             } else {
                 content
@@ -1088,13 +1083,24 @@ impl ChatAccum {
     /// model may leak inside `content` while also emitting native `tool_calls`.
     fn looks_like_tool_markup(text: &str) -> bool {
         let trimmed = text.trim_start();
-        let lower = trimmed.to_ascii_lowercase();
-        lower.starts_with("<parameter")
-            || lower.starts_with("<tool")
-            || lower.starts_with("<invoke")
-            || lower.starts_with("<function")
-            || lower.starts_with("<function_call")
-            || lower.starts_with("<think")
+        Self::starts_with_ci_ascii(trimmed, "<parameter")
+            || Self::starts_with_ci_ascii(trimmed, "<tool")
+            || Self::starts_with_ci_ascii(trimmed, "<invoke")
+            || Self::starts_with_ci_ascii(trimmed, "<function")
+            || Self::starts_with_ci_ascii(trimmed, "<function_call")
+            || Self::starts_with_ci_ascii(trimmed, "<think")
+    }
+
+    /// Returns true when `text` starts with `prefix`, ignoring ASCII case, without
+    /// allocating a lowercased copy. Prefixes here are short ASCII tags, so a byte
+    /// comparison is sufficient.
+    fn starts_with_ci_ascii(text: &str, prefix: &str) -> bool {
+        text.len() >= prefix.len()
+            && text
+                .as_bytes()
+                .iter()
+                .zip(prefix.as_bytes().iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
     }
 
     fn end_turn(&self, continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>) -> bool {
