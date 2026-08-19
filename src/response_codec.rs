@@ -43,17 +43,23 @@ struct NativeReasoningBuffer {
 }
 
 impl NativeReasoningBuffer {
-    fn append(&mut self, delta: &NativeReasoningSummaryDelta) {
-        if self.template.is_none()
-            || self.item_id.as_deref() != Some(delta.item_id.as_str())
-            || self.summary_index != Some(delta.summary_index)
-        {
+    fn append(&mut self, delta: &NativeReasoningSummaryDelta) -> Option<String> {
+        let identity_changed = self.template.is_some()
+            && (self.item_id.as_deref() != Some(delta.item_id.as_str())
+                || self.summary_index != Some(delta.summary_index));
+        let flushed = if identity_changed {
+            self.take_all()
+        } else {
+            None
+        };
+        if flushed.is_some() || self.template.is_none() {
             self.pending.clear();
             self.template = Some(delta.template.clone());
             self.item_id = Some(delta.item_id.clone());
             self.summary_index = Some(delta.summary_index);
         }
         self.pending.push_str(&delta.text);
+        flushed
     }
 
     fn take_flush(&mut self) -> Option<String> {
@@ -384,7 +390,10 @@ pub(crate) fn native_stream_to_responses(
                     &tool_policy,
                 );
                 if let Some(reasoning) = native_reasoning_summary_delta(&morphed) {
-                    native_reasoning_buffer.append(&reasoning);
+                    if let Some(flushed) = native_reasoning_buffer.append(&reasoning) {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                        yield Ok(Bytes::from(flushed));
+                    }
                     if let Some(flushed) = native_reasoning_buffer.take_flush() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
                         yield Ok(Bytes::from(flushed));

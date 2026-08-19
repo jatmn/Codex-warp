@@ -273,6 +273,45 @@ async fn native_stream_reasoning_summary_deltas_flush_at_paragraphs() {
 }
 
 #[tokio::test]
+async fn native_stream_reasoning_summary_deltas_reset_on_different_item_id() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"First \"}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_2\",\"summary_index\":0,\"delta\":\"second.\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_reasoning_item_change".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let deltas = events
+        .iter()
+        .filter_map(|event| {
+            let text = String::from_utf8_lossy(event.as_ref().ok()?);
+            let data = sse_data(&text)?;
+            let value = serde_json::from_str::<Value>(&data).ok()?;
+            (value["type"] == "response.reasoning_summary_text.delta").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deltas.len(),
+        2,
+        "a different item_id should flush the previous reasoning buffer"
+    );
+    assert_eq!(deltas[0]["delta"], "First ");
+    assert_eq!(deltas[1]["delta"], "second.");
+}
+
+#[tokio::test]
 async fn native_stream_semantic_error_becomes_response_failed() {
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
