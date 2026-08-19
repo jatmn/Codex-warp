@@ -402,6 +402,7 @@ async fn native_stream_reasoning_buffer_does_not_use_stale_identity_after_flush(
 async fn native_stream_semantic_error_becomes_response_failed() {
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"partial reasoning\"}\n\n",
         "data: {\"error\":{\"message\":\"quota exceeded\"}}\n\n",
         "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
     );
@@ -418,8 +419,10 @@ async fn native_stream_semantic_error_becomes_response_failed() {
     .collect::<Vec<_>>()
     .await;
 
-    assert_eq!(events.len(), 2, "the semantic error terminates the stream");
-    let event = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert_eq!(events.len(), 3, "the semantic error terminates the stream");
+    let reasoning = String::from_utf8_lossy(events[1].as_ref().expect("stream item succeeds"));
+    assert!(reasoning.contains("partial reasoning"));
+    let event = String::from_utf8_lossy(events[2].as_ref().expect("stream item succeeds"));
     assert!(event.contains("response.failed"));
     assert!(event.contains("resp_native"));
     assert!(event.contains("\"status\":\"failed\""));
@@ -3876,9 +3879,45 @@ fn chat_stream_reasoning_flushes_a_small_block_without_waiting_for_completion() 
         .find(|event| event["type"] == "response.reasoning_summary_text.delta")
         .expect("reaching the block threshold emits reasoning");
     assert_eq!(
-        delta["delta"].as_str().expect("reasoning delta").len(),
+        delta["delta"]
+            .as_str()
+            .expect("reasoning delta")
+            .chars()
+            .count(),
         REASONING_DELTA_FLUSH_CHARS
     );
+}
+
+#[test]
+fn reasoning_flush_threshold_counts_characters_not_utf8_bytes() {
+    let almost_full = "思".repeat(REASONING_DELTA_FLUSH_CHARS - 1);
+    assert!(!reasoning_should_flush(&almost_full));
+    assert!(reasoning_should_flush(&(almost_full + "思")));
+}
+
+#[test]
+fn chat_stream_flushes_reasoning_before_output_text() {
+    let mut accum = ChatAccum::default();
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "reasoning_content": "Think first.",
+                "content": "Answer second."
+            }
+        }]
+    }));
+    let reasoning_index = events
+        .iter()
+        .position(|event| {
+            event.contains("response.reasoning_summary_text.delta")
+                && event.contains("Think first.")
+        })
+        .expect("reasoning is flushed at the content boundary");
+    let output_index = events
+        .iter()
+        .position(|event| event.contains("response.output_text.delta"))
+        .expect("content is emitted");
+    assert!(reasoning_index < output_index);
 }
 
 #[test]
@@ -4054,7 +4093,7 @@ fn chat_stream_debug_summary_counts_reasoning_without_text() {
 
     assert_eq!(summary["reasoning_content_chars"], 11);
     assert_eq!(summary["content_chars"], 7);
-    assert_eq!(summary["emitted_reasoning_delta_events"], 1);
+    assert_eq!(summary["emitted_reasoning_delta_events"], 2);
     assert_eq!(summary["emitted_output_text_delta_events"], 1);
     assert_eq!(summary["upstream_fields"][0], "content");
     assert_eq!(summary["upstream_fields"][1], "reasoning_content");
@@ -4741,6 +4780,7 @@ async fn chat_stream_error_frame_followed_by_done_does_not_record_completion() {
         &json!({"model": "test-model", "prompt_cache_key": "session"}),
     );
     let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"partial reasoning\"}}]}\n\n",
         "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",
         "data: [DONE]\n\n"
     );
@@ -4761,6 +4801,21 @@ async fn chat_stream_error_frame_followed_by_done_does_not_record_completion() {
         String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
             .contains("response.failed")
     }));
+    let reasoning_index = events
+        .iter()
+        .position(|event| {
+            String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+                .contains("partial reasoning")
+        })
+        .expect("buffered reasoning is preserved before the failure");
+    let failure_index = events
+        .iter()
+        .position(|event| {
+            String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
+                .contains("response.failed")
+        })
+        .expect("stream fails");
+    assert!(reasoning_index < failure_index);
     assert!(!events.iter().any(|event| {
         String::from_utf8_lossy(event.as_ref().expect("stream item succeeds"))
             .contains("response.completed")

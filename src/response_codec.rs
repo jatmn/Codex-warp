@@ -31,68 +31,71 @@ const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
 const REASONING_DELTA_FLUSH_CHARS: usize = 160;
 const REASONING_DELTA_FLUSH_PARAGRAPH: &str = "\n\n";
 
+fn reasoning_should_flush(pending: &str) -> bool {
+    let text_only = pending
+        .strip_prefix(REASONING_DISPLAY_HEADER)
+        .unwrap_or(pending);
+    !text_only.is_empty()
+        && (text_only.chars().count() >= REASONING_DELTA_FLUSH_CHARS
+            || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH))
+}
+
 /// Buffers native `response.reasoning_summary_text.delta` events so tiny
 /// provider fragments are coalesced into the same small display blocks used
 /// for chat-completions reasoning.
 #[derive(Default)]
 struct NativeReasoningBuffer {
     pending: String,
-    template: Option<Value>,
-    item_id: Option<String>,
-    summary_index: Option<u64>,
+    active: Option<NativeReasoningIdentity>,
+}
+
+struct NativeReasoningIdentity {
+    template: Value,
+    item_id: String,
+    summary_index: u64,
 }
 
 impl NativeReasoningBuffer {
     fn append(&mut self, delta: &NativeReasoningSummaryDelta) -> Option<String> {
         // Identity is the Responses (item_id, summary_index) pair. A change
         // means the previous buffered summary is complete and must flush first.
-        let identity_changed = self.template.is_some()
-            && (self.item_id.as_deref() != Some(delta.item_id.as_str())
-                || self.summary_index != Some(delta.summary_index));
+        let identity_changed = self.active.as_ref().is_some_and(|active| {
+            active.item_id != delta.item_id || active.summary_index != delta.summary_index
+        });
         let flushed = if identity_changed {
             self.take_all()
         } else {
             None
         };
-        if self.template.is_none() {
+        if self.active.is_none() {
             self.pending.clear();
-            self.template = Some(delta.template.clone());
-            self.item_id = Some(delta.item_id.clone());
-            self.summary_index = Some(delta.summary_index);
+            self.active = Some(NativeReasoningIdentity {
+                template: delta.template.clone(),
+                item_id: delta.item_id.clone(),
+                summary_index: delta.summary_index,
+            });
         }
         self.pending.push_str(&delta.text);
         flushed
     }
 
     fn take_flush(&mut self) -> Option<String> {
-        let text_only = self
-            .pending
-            .strip_prefix(REASONING_DISPLAY_HEADER)
-            .unwrap_or(&self.pending);
-        let should_flush = !text_only.is_empty()
-            && (text_only.len() >= REASONING_DELTA_FLUSH_CHARS
-                || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH));
-        if should_flush { self.take_all() } else { None }
+        reasoning_should_flush(&self.pending)
+            .then(|| self.take_all())
+            .flatten()
     }
 
     fn take_all(&mut self) -> Option<String> {
         if self.pending.is_empty() {
-            self.clear_identity();
+            self.active = None;
             return None;
         }
-        let mut value = self.template.take()?;
+        let mut value = self.active.take()?.template;
         if let Some(delta) = value.get_mut("delta") {
             *delta = Value::String(self.pending.clone());
         }
         self.pending.clear();
-        self.clear_identity();
         Some(sse("response.reasoning_summary_text.delta", value))
-    }
-
-    fn clear_identity(&mut self) {
-        self.template = None;
-        self.item_id = None;
-        self.summary_index = None;
     }
 }
 
@@ -172,12 +175,20 @@ pub(crate) fn chat_stream_to_responses(
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
+                    if let Some(event) = state.take_reasoning_delta() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                        yield Ok(Bytes::from(event));
+                    }
                     yield Ok(Bytes::from(chat_failed_event(&response_id, err.to_string())));
                     return;
                 }
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
+                if let Some(event) = state.take_reasoning_delta() {
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                    yield Ok(Bytes::from(event));
+                }
                 yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream SSE frame buffer exceeded maximum size")));
                 return;
             }
@@ -186,6 +197,10 @@ pub(crate) fn chat_stream_to_responses(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
+                    if let Some(event) = state.take_reasoning_delta() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                        yield Ok(Bytes::from(event));
+                    }
                     yield Ok(Bytes::from(chat_failed_event(&response_id, "upstream SSE frame was not valid UTF-8")));
                     return;
                 };
@@ -204,6 +219,10 @@ pub(crate) fn chat_stream_to_responses(
                 let value = match serde_json::from_str::<Value>(&data) {
                     Ok(value) => value,
                     Err(_) => {
+                        if let Some(event) = state.take_reasoning_delta() {
+                            log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                            yield Ok(Bytes::from(event));
+                        }
                         yield Ok(Bytes::from(chat_failed_event(
                             &response_id,
                             "upstream chat stream contained invalid JSON",
@@ -213,6 +232,10 @@ pub(crate) fn chat_stream_to_responses(
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {
+                    if let Some(event) = state.take_reasoning_delta() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                        yield Ok(Bytes::from(event));
+                    }
                     yield Ok(Bytes::from(chat_failed_event(&response_id, message)));
                     return;
                 }
@@ -263,6 +286,10 @@ pub(crate) fn chat_stream_to_responses(
                     "completion": "truncated_eof"
                 }));
                 let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
+                if let Some(event) = state.take_reasoning_delta() {
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                    yield Ok(Bytes::from(event));
+                }
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
                 yield Ok(Bytes::from(failed));
                 return;
@@ -288,6 +315,10 @@ pub(crate) fn chat_stream_to_responses(
                 "completion": "truncated_eof"
             }));
             let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
+            if let Some(event) = state.take_reasoning_delta() {
+                log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
+                yield Ok(Bytes::from(event));
+            }
             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
             yield Ok(Bytes::from(failed));
             return;
@@ -350,9 +381,23 @@ pub(crate) fn native_stream_to_responses(
         let mut native_reasoning_buffer = NativeReasoningBuffer::default();
 
         'upstream: while let Some(chunk) = bytes.next().await {
-            let chunk = chunk.map_err(std::io::Error::other)?;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    if let Some(flushed) = native_reasoning_buffer.take_all() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                        yield Ok(Bytes::from(flushed));
+                    }
+                    yield Err(std::io::Error::other(err));
+                    return;
+                }
+            };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
+                if let Some(flushed) = native_reasoning_buffer.take_all() {
+                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                    yield Ok(Bytes::from(flushed));
+                }
                 yield Err(std::io::Error::other(SSE_FRAME_BUFFER_EXCEEDED_MESSAGE));
                 return;
             }
@@ -362,12 +407,20 @@ pub(crate) fn native_stream_to_responses(
                 let frame = match String::from_utf8(frame) {
                     Ok(frame) => frame,
                     Err(err) => {
+                        if let Some(flushed) = native_reasoning_buffer.take_all() {
+                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                            yield Ok(Bytes::from(flushed));
+                        }
                         yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
                         return;
                     }
                 };
                 response_id = native_sse_response_id(&frame).or(response_id);
                 if let Some(message) = native_sse_error_message(&frame) {
+                    if let Some(flushed) = native_reasoning_buffer.take_all() {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                        yield Ok(Bytes::from(flushed));
+                    }
                     let failed = native_failed_event(response_id.as_deref(), message);
                     log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
                     yield Ok(Bytes::from(failed));
@@ -798,6 +851,9 @@ impl ChatAccum {
 
             let content = chat_content_text(delta.get("content"));
             if !content.is_empty() {
+                if let Some(event) = self.take_reasoning_delta() {
+                    events.push(event);
+                }
                 if self.message_item_id.is_none() {
                     let item_id = generated_id("msg");
                     self.message_item_id = Some(item_id.clone());
@@ -825,6 +881,9 @@ impl ChatAccum {
             }
 
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                if let Some(event) = self.take_reasoning_delta() {
+                    events.push(event);
+                }
                 for call in calls {
                     let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     if self.tool_calls.len() <= index {
@@ -962,19 +1021,12 @@ impl ChatAccum {
         event
     }
 
+    fn take_reasoning_delta(&mut self) -> Option<String> {
+        (!self.reasoning_pending.is_empty()).then(|| self.flush_reasoning_delta())
+    }
+
     fn take_reasoning_flush(&mut self) -> Option<String> {
-        let text_only = self
-            .reasoning_pending
-            .strip_prefix(REASONING_DISPLAY_HEADER)
-            .unwrap_or(&self.reasoning_pending);
-        let should_flush = !text_only.is_empty()
-            && (text_only.len() >= REASONING_DELTA_FLUSH_CHARS
-                || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH));
-        if should_flush {
-            Some(self.flush_reasoning_delta())
-        } else {
-            None
-        }
+        reasoning_should_flush(&self.reasoning_pending).then(|| self.flush_reasoning_delta())
     }
 
     fn reasoning_delta_event(&self, delta: &str) -> String {
