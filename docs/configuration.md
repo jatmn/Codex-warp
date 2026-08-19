@@ -187,6 +187,7 @@ Supported request morph kinds:
 | `text_format` | Convert Responses `text.format` JSON schema to chat `response_format`. |
 | `thinking_type` | Convert `reasoning.effort` to provider `thinking.type`. |
 | `static_string` | Set a fixed string value such as `thinking.keep = "all"`. |
+| `static_bool` | Set a fixed boolean value such as `thinking.clear_thinking = false`. |
 
 Example:
 

@@ -502,6 +502,7 @@ pub struct TransformConfig {
     pub unsupported_tool_types: Vec<String>,
     pub unsupported_tool_strategy: UnsupportedToolStrategy,
     pub reasoning_effort_none_value: Option<String>,
+    pub reasoning_effort_aliases: BTreeMap<String, String>,
     pub drop_empty_tool_choice: bool,
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: bool,
@@ -517,6 +518,7 @@ impl Default for TransformConfig {
             unsupported_tool_types: vec!["custom".to_string()],
             unsupported_tool_strategy: UnsupportedToolStrategy::AsFunction,
             reasoning_effort_none_value: None,
+            reasoning_effort_aliases: BTreeMap::new(),
             drop_empty_tool_choice: true,
             force_parallel_tool_calls: None,
             // Some OpenAI-compatible gateways reject stream_options. Providers
@@ -540,6 +542,7 @@ pub struct TransformConfigPatch {
     pub unsupported_tool_types: Option<Vec<String>>,
     pub unsupported_tool_strategy: Option<UnsupportedToolStrategy>,
     pub reasoning_effort_none_value: Option<String>,
+    pub reasoning_effort_aliases: BTreeMap<String, String>,
     pub drop_empty_tool_choice: Option<bool>,
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: Option<bool>,
@@ -580,6 +583,9 @@ impl TransformConfigPatch {
         if let Some(value) = &self.reasoning_effort_none_value {
             transform.reasoning_effort_none_value = Some(value.clone());
         }
+        transform
+            .reasoning_effort_aliases
+            .extend(self.reasoning_effort_aliases.clone());
         if let Some(drop_empty_tool_choice) = self.drop_empty_tool_choice {
             transform.drop_empty_tool_choice = drop_empty_tool_choice;
         }
@@ -641,6 +647,7 @@ pub enum RequestMorphKind {
     TextFormat,
     ThinkingType,
     StaticString,
+    StaticBool,
 }
 
 fn default_chat_request_morphs() -> Vec<RequestMorph> {

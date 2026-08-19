@@ -535,6 +535,28 @@ fn static_string_morph_sets_provider_fields() {
 }
 
 #[test]
+fn static_bool_morph_sets_provider_fields() {
+    let request = json!({
+        "model": "glm-5.3",
+        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "code"}]}],
+        "stream": true
+    });
+    let mut transform = TransformConfig::default();
+    transform
+        .chat_request_morphs
+        .push(crate::config::RequestMorph {
+            from: String::new(),
+            to: Some("thinking.clear_thinking".to_string()),
+            value: Some("false".to_string()),
+            kind: RequestMorphKind::StaticBool,
+        });
+
+    let transformed = responses_to_chat(request, &transform);
+
+    assert_eq!(transformed.body["thinking"]["clear_thinking"], false);
+}
+
+#[test]
 fn native_responses_preserves_responses_fields_by_default() {
     let request = json!({
         "model": "test-model",

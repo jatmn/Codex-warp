@@ -13,6 +13,7 @@ use tokio::sync::RwLock as AsyncRwLock;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
+use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
 
 fn test_state(config: AppConfig) -> AppState {
@@ -415,6 +416,7 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(glm53_max.body["reasoning_effort"], "max");
     assert_eq!(glm53_max.body["thinking"]["type"], "enabled");
+    assert_eq!(glm53_max.body["thinking"]["clear_thinking"], false);
 
     let glm53_none = responses_to_chat(
         json!({
@@ -427,6 +429,32 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(glm53_none.body["reasoning_effort"], "low");
     assert_eq!(glm53_none.body["thinking"]["type"], "enabled");
+    assert_eq!(glm53_none.body["thinking"]["clear_thinking"], false);
+
+    for (input, expected) in [("medium", "high"), ("minimal", "low"), ("xhigh", "max")] {
+        let transformed = responses_to_chat(
+            json!({
+                "model": "glm-5.3",
+                "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                "reasoning": {"effort": input},
+                "stream": true
+            }),
+            &glm53.transform,
+        );
+        assert_eq!(transformed.body["reasoning_effort"], expected);
+        assert_eq!(transformed.body["thinking"]["type"], "enabled");
+    }
+
+    let glm53_native = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "medium"}}),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_native.body["reasoning"]["effort"], "high");
+    let glm53_native_none = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "none"}}),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_native_none.body["reasoning"]["effort"], "low");
 
     let grok45 = selected_provider(
         &config,
@@ -586,6 +614,7 @@ fn glm_5_3_replays_reasoning_history_for_tool_continuations() {
     );
     assert_eq!(transformed.body["messages"][1]["role"], "tool");
     assert_eq!(transformed.body["messages"][1]["content"], "result");
+    assert_eq!(transformed.body["thinking"]["clear_thinking"], false);
 }
 
 #[tokio::test]

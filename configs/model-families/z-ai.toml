@@ -97,6 +97,7 @@ auto_review_model_override = "glm-5.3"
 # history and map an explicit disable request to the provider's lightest mode.
 preserve_reasoning_content_history = true
 reasoning_effort_none_value = "low"
+reasoning_effort_aliases = { medium = "high", minimal = "low", xhigh = "max" }
 
 [[model_families.z_ai_glm_5_3.transform.remove_chat_request_morphs]]
 from = "reasoning.effort"
@@ -113,3 +114,9 @@ from = ""
 to = "thinking.type"
 value = "enabled"
 kind = "static_string"
+
+[[model_families.z_ai_glm_5_3.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.clear_thinking"
+value = "false"
+kind = "static_bool"

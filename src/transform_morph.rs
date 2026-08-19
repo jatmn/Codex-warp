@@ -53,6 +53,22 @@ pub(crate) fn apply_request_morphs(
                     insert_path_in_map(out, target, Value::String(value.clone()));
                 }
             }
+            RequestMorphKind::StaticBool => {
+                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
+                    None
+                } else {
+                    Some(morph.from.as_str())
+                }) else {
+                    continue;
+                };
+                if let Some(value) = morph
+                    .value
+                    .as_deref()
+                    .and_then(|value| value.parse::<bool>().ok())
+                {
+                    insert_path_in_map(out, target, Value::Bool(value));
+                }
+            }
         }
     }
 }
@@ -81,6 +97,27 @@ pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &Tr
         && let Some(Value::String(effort)) = reasoning.get_mut("effort")
     {
         remap_disable_reasoning_effort(effort, none_value);
+    }
+}
+
+pub(crate) fn apply_reasoning_effort_aliases(body: &mut Value, transform: &TransformConfig) {
+    let remap = |effort: &mut String| {
+        if let Some(value) = transform
+            .reasoning_effort_aliases
+            .get(&effort.to_ascii_lowercase())
+        {
+            *effort = value.clone();
+        }
+    };
+    if let Some(Value::String(effort)) = body.get_mut("reasoning_effort") {
+        remap(effort);
+    }
+    if let Some(Value::String(effort)) = body
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| reasoning.get_mut("effort"))
+    {
+        remap(effort);
     }
 }
 
@@ -157,6 +194,22 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 };
                 if let Some(value) = &morph.value {
                     insert_path(request, target, Value::String(value.clone()));
+                }
+            }
+            RequestMorphKind::StaticBool => {
+                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
+                    None
+                } else {
+                    Some(morph.from.as_str())
+                }) else {
+                    continue;
+                };
+                if let Some(value) = morph
+                    .value
+                    .as_deref()
+                    .and_then(|value| value.parse::<bool>().ok())
+                {
+                    insert_path(request, target, Value::Bool(value));
                 }
             }
         }

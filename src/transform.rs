@@ -14,6 +14,7 @@ use crate::namespace_helpers::expand_namespace_tool;
 use crate::namespace_helpers::is_custom_tool_call_type;
 use crate::namespace_helpers::is_function_call_type;
 use crate::transform_morph::apply_native_request_morphs;
+use crate::transform_morph::apply_reasoning_effort_aliases;
 use crate::transform_morph::apply_reasoning_effort_none_value;
 use crate::transform_morph::apply_request_morphs;
 use crate::transform_morph::strip_disabled_reasoning_effort;
@@ -179,6 +180,7 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
     let mut body = Value::Object(out);
     apply_reasoning_effort_none_value(&mut body, transform);
+    apply_reasoning_effort_aliases(&mut body, transform);
     strip_disabled_reasoning_effort(&mut body, transform);
     let diagnostics = transform_diagnostics(&request, &body, input_tools.len(), tool_diagnostics);
 
@@ -193,6 +195,8 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 pub fn normalize_responses_request(request: Value, transform: &TransformConfig) -> NativeTransform {
     let mut request = request;
     apply_native_request_morphs(&mut request, transform);
+    apply_reasoning_effort_none_value(&mut request, transform);
+    apply_reasoning_effort_aliases(&mut request, transform);
     let mut helpers = NamespaceHelpers::default();
     let mut used_names = BTreeSet::new();
     let mut all_tools = Vec::new();

@@ -1076,6 +1076,10 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
         Some("low")
     );
     assert_eq!(
+        glm53.transform.reasoning_effort_aliases.get("medium"),
+        Some(&"high".to_string())
+    );
+    assert_eq!(
         glm53.transform.preserve_reasoning_content_history,
         Some(true)
     );
@@ -1088,6 +1092,17 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
                 morph.from == "reasoning.effort"
                     && morph.to.as_deref() == Some("thinking.type")
                     && morph.kind == Some(RequestMorphKind::ThinkingType)
+            })
+    );
+    assert!(
+        glm53
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|morph| {
+                morph.kind == RequestMorphKind::StaticBool
+                    && morph.to.as_deref() == Some("thinking.clear_thinking")
+                    && morph.value.as_deref() == Some("false")
             })
     );
     assert!(
