@@ -44,6 +44,8 @@ struct NativeReasoningBuffer {
 
 impl NativeReasoningBuffer {
     fn append(&mut self, delta: &NativeReasoningSummaryDelta) -> Option<String> {
+        // Identity is the Responses (item_id, summary_index) pair. A change
+        // means the previous buffered summary is complete and must flush first.
         let identity_changed = self.template.is_some()
             && (self.item_id.as_deref() != Some(delta.item_id.as_str())
                 || self.summary_index != Some(delta.summary_index));
@@ -52,7 +54,7 @@ impl NativeReasoningBuffer {
         } else {
             None
         };
-        if flushed.is_some() || self.template.is_none() {
+        if self.template.is_none() {
             self.pending.clear();
             self.template = Some(delta.template.clone());
             self.item_id = Some(delta.item_id.clone());
@@ -75,14 +77,22 @@ impl NativeReasoningBuffer {
 
     fn take_all(&mut self) -> Option<String> {
         if self.pending.is_empty() {
+            self.clear_identity();
             return None;
         }
-        let mut value = self.template.clone()?;
+        let mut value = self.template.take()?;
         if let Some(delta) = value.get_mut("delta") {
             *delta = Value::String(self.pending.clone());
         }
         self.pending.clear();
+        self.clear_identity();
         Some(sse("response.reasoning_summary_text.delta", value))
+    }
+
+    fn clear_identity(&mut self) {
+        self.template = None;
+        self.item_id = None;
+        self.summary_index = None;
     }
 }
 
@@ -109,10 +119,10 @@ fn native_reasoning_summary_delta(frame: &str) -> Option<NativeReasoningSummaryD
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let text = value.get("delta").and_then(Value::as_str)?.to_string();
-    value
-        .as_object_mut()
-        .expect("reasoning event is an object")
-        .insert("delta".to_string(), Value::String(String::new()));
+    // Keep a template of the original event with an empty delta so later flushes
+    // preserve provider fields without panicking on unexpected shapes.
+    let object = value.as_object_mut()?;
+    object.insert("delta".to_string(), Value::String(String::new()));
     Some(NativeReasoningSummaryDelta {
         item_id,
         summary_index,
