@@ -577,6 +577,28 @@ fn native_responses_preserves_responses_fields_by_default() {
 }
 
 #[test]
+fn native_responses_apply_static_bool_morphs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [],
+        "stream": true
+    });
+    let mut transform = TransformConfig::default();
+    transform
+        .responses_request_morphs
+        .push(crate::config::RequestMorph {
+            from: String::new(),
+            to: Some("thinking.clear_thinking".to_string()),
+            value: Some("false".to_string()),
+            kind: RequestMorphKind::StaticBool,
+        });
+
+    let normalized = normalize_responses_request(request, &transform).body;
+
+    assert_eq!(normalized["thinking"]["clear_thinking"], false);
+}
+
+#[test]
 fn native_responses_morphs_additional_tools() {
     let request = json!({
         "model": "test-model",
