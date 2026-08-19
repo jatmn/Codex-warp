@@ -234,6 +234,48 @@ async fn native_stream_reasoning_summary_deltas_are_coalesced() {
 }
 
 #[tokio::test]
+async fn native_stream_keepalive_does_not_flush_buffered_reasoning() {
+    let body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"First \"}\n\n",
+        ": keepalive\n\n",
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rsn_1\",\"summary_index\":0,\"delta\":\"second.\"}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\"}}\n\n"
+    );
+    let events = native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_native_reasoning_keepalive".to_string(),
+        200,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream item succeeds")) == ": keepalive\n\n"
+    }));
+    let deltas = events
+        .iter()
+        .filter_map(|event| {
+            let text = String::from_utf8_lossy(event.as_ref().ok()?);
+            let data = sse_data(&text)?;
+            let value = serde_json::from_str::<Value>(&data).ok()?;
+            (value["type"] == "response.reasoning_summary_text.delta").then_some(value)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deltas.len(),
+        1,
+        "keepalives must not split a reasoning block"
+    );
+    assert_eq!(deltas[0]["delta"], "First second.");
+}
+
+#[tokio::test]
 async fn native_stream_reasoning_summary_deltas_flush_at_paragraphs() {
     let body = concat!(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_native\",\"status\":\"in_progress\"}}\n\n",

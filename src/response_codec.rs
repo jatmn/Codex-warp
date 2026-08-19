@@ -106,11 +106,24 @@ struct NativeReasoningSummaryDelta {
     template: Value,
 }
 
-fn native_reasoning_summary_delta(frame: &str) -> Option<NativeReasoningSummaryDelta> {
-    let data = sse_data(frame)?;
-    let mut value = serde_json::from_str::<Value>(&data).ok()?;
-    if value.get("type").and_then(Value::as_str)? != "response.reasoning_summary_text.delta" {
-        return None;
+/// A native SSE frame can be a reasoning delta, a meaningful Responses event,
+/// or transport-only framing such as a comment heartbeat. Only meaningful
+/// Responses events establish a boundary for buffered reasoning.
+enum NativeReasoningFrame {
+    Reasoning(NativeReasoningSummaryDelta),
+    Other,
+    DataLess,
+}
+
+fn classify_native_reasoning_frame(frame: &str) -> NativeReasoningFrame {
+    let Some(data) = sse_data(frame) else {
+        return NativeReasoningFrame::DataLess;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
+        return NativeReasoningFrame::Other;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("response.reasoning_summary_text.delta") {
+        return NativeReasoningFrame::Other;
     }
     let item_id = value
         .get("item_id")
@@ -121,12 +134,20 @@ fn native_reasoning_summary_delta(frame: &str) -> Option<NativeReasoningSummaryD
         .get("summary_index")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let text = value.get("delta").and_then(Value::as_str)?.to_string();
+    let Some(text) = value
+        .get("delta")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return NativeReasoningFrame::Other;
+    };
     // Keep a template of the original event with an empty delta so later flushes
     // preserve provider fields without panicking on unexpected shapes.
-    let object = value.as_object_mut()?;
+    let Some(object) = value.as_object_mut() else {
+        return NativeReasoningFrame::Other;
+    };
     object.insert("delta".to_string(), Value::String(String::new()));
-    Some(NativeReasoningSummaryDelta {
+    NativeReasoningFrame::Reasoning(NativeReasoningSummaryDelta {
         item_id,
         summary_index,
         text,
@@ -452,22 +473,29 @@ pub(crate) fn native_stream_to_responses(
                     &namespace_helpers,
                     &tool_policy,
                 );
-                if let Some(reasoning) = native_reasoning_summary_delta(&morphed) {
-                    if let Some(flushed) = native_reasoning_buffer.append(&reasoning) {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                        yield Ok(Bytes::from(flushed));
+                match classify_native_reasoning_frame(&morphed) {
+                    NativeReasoningFrame::Reasoning(reasoning) => {
+                        if let Some(flushed) = native_reasoning_buffer.append(&reasoning) {
+                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                            yield Ok(Bytes::from(flushed));
+                        }
+                        if let Some(flushed) = native_reasoning_buffer.take_flush() {
+                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                            yield Ok(Bytes::from(flushed));
+                        }
                     }
-                    if let Some(flushed) = native_reasoning_buffer.take_flush() {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                        yield Ok(Bytes::from(flushed));
+                    NativeReasoningFrame::Other => {
+                        if let Some(flushed) = native_reasoning_buffer.take_all() {
+                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
+                            yield Ok(Bytes::from(flushed));
+                        }
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
+                        yield Ok(Bytes::from(morphed));
                     }
-                } else {
-                    if let Some(flushed) = native_reasoning_buffer.take_all() {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                        yield Ok(Bytes::from(flushed));
+                    NativeReasoningFrame::DataLess => {
+                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
+                        yield Ok(Bytes::from(morphed));
                     }
-                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
-                    yield Ok(Bytes::from(morphed));
                 }
                 if terminal.is_some() {
                     break 'upstream;
