@@ -88,9 +88,28 @@ patterns = [
 [model_families.z_ai_glm_5_3.model_metadata]
 context_window = 1000000
 input_modalities = ["text"]
+default_reasoning_level = "max"
+supported_reasoning_levels = ["low", "high", "max"]
 auto_review_model_override = "glm-5.3"
+
+[model_families.z_ai_glm_5_3.transform]
+# GLM-5.3 always requires enabled thinking. Preserve Codex tool-loop reasoning
+# history and map an explicit disable request to the provider's lightest mode.
+preserve_reasoning_content_history = true
+reasoning_effort_none_value = "low"
+
+[[model_families.z_ai_glm_5_3.transform.remove_chat_request_morphs]]
+from = "reasoning.effort"
+to = "thinking.type"
+kind = "thinking_type"
 
 [[model_families.z_ai_glm_5_3.transform.append_chat_request_morphs]]
 from = "reasoning.effort"
 to = "reasoning_effort"
 kind = "rename"
+
+[[model_families.z_ai_glm_5_3.transform.append_chat_request_morphs]]
+from = ""
+to = "thinking.type"
+value = "enabled"
+kind = "static_string"

@@ -398,6 +398,36 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     assert_eq!(glm_high.body["reasoning_effort"], "high");
     assert_eq!(glm_high.body["thinking"]["type"], "enabled");
 
+    let glm53 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.3"),
+    );
+    let glm53_max = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "max"},
+            "stream": true
+        }),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_max.body["reasoning_effort"], "max");
+    assert_eq!(glm53_max.body["thinking"]["type"], "enabled");
+
+    let glm53_none = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_none.body["reasoning_effort"], "low");
+    assert_eq!(glm53_none.body["thinking"]["type"], "enabled");
+
     let grok45 = selected_provider(
         &config,
         PRIMARY_PROVIDER_ID,
@@ -509,6 +539,53 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(hy3_tencent_high.body["reasoning_effort"], "high");
     assert_eq!(hy3_tencent_high.body["thinking"]["type"], "enabled");
+}
+
+#[test]
+fn glm_5_3_replays_reasoning_history_for_tool_continuations() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.provider.base_url = "https://provider.example/v1".to_string();
+    let selected = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.3"),
+    );
+    let transformed = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Need the lookup."}]
+                },
+                {
+                    "type": "function_call",
+                    "name": "lookup",
+                    "arguments": "{\"query\":\"value\"}",
+                    "call_id": "call_1"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "result"
+                }
+            ],
+            "stream": true
+        }),
+        &selected.transform,
+    );
+
+    assert_eq!(
+        transformed.body["messages"][0]["reasoning_content"],
+        "Need the lookup."
+    );
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+    assert_eq!(transformed.body["messages"][1]["role"], "tool");
+    assert_eq!(transformed.body["messages"][1]["content"], "result");
 }
 
 #[tokio::test]
