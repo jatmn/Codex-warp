@@ -141,6 +141,43 @@ fn openrouter_provider_gets_attribution_headers() {
 }
 
 #[test]
+fn trailing_dot_openrouter_hostname_gets_attribution_headers() {
+    let provider = ProviderConfig {
+        base_url: "https://openrouter.ai./api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+
+    let request = Client::new().post("https://openrouter.ai./api/v1/chat/completions");
+    let request = apply_headers(request, &provider, &HeaderMap::new())
+        .build()
+        .expect("request builds");
+    let headers = request.headers();
+
+    assert_eq!(
+        headers
+            .get("HTTP-Referer")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://github.com/jatmn/Codex-warp")
+    );
+    assert_eq!(
+        headers
+            .get("X-OpenRouter-Title")
+            .and_then(|value| value.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers.get("X-Title").and_then(|value| value.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers
+            .get("X-OpenRouter-Categories")
+            .and_then(|value| value.to_str().ok()),
+        Some("cli-agent,programming-app")
+    );
+}
+
+#[test]
 fn user_headers_override_openrouter_attribution() {
     let mut provider = ProviderConfig {
         base_url: "https://openrouter.ai/api/v1".to_string(),

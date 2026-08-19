@@ -37,7 +37,11 @@ fn provider_targets_openrouter(provider: &ProviderConfig) -> bool {
     reqwest::Url::parse(&provider.base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
-        .is_some_and(|host| host.eq_ignore_ascii_case("openrouter.ai"))
+        .is_some_and(|host| {
+            host.strip_suffix('.')
+                .unwrap_or(&host)
+                .eq_ignore_ascii_case("openrouter.ai")
+        })
 }
 
 fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
