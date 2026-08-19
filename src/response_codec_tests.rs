@@ -5399,7 +5399,7 @@ async fn chat_stream_transport_error_still_fails() {
 /// `delta.content`. Those fragments must NOT be forwarded as assistant text.
 #[test]
 fn deepseek_v4_pro_tool_markup_in_content_is_suppressed() {
-    let mut accum = ChatAccum::default();
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
     // A leaked markup fragment can arrive BEFORE any native tool_calls chunk.
     accum.apply_chat_chunk(&json!({
         "choices": [{

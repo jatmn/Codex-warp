@@ -166,6 +166,7 @@ const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer excee
 
 // Stream conversion carries request context rather than a new struct.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
     response_id: String,
@@ -177,6 +178,33 @@ pub(crate) fn chat_stream_to_responses(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    chat_stream_to_responses_with_tool_markup_suppression(
+        upstream,
+        response_id,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        debug_log,
+        request_log_id,
+        continue_guard,
+        usage_recorder,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
+    upstream: reqwest::Response,
+    response_id: String,
+    custom_tool_names: BTreeSet<String>,
+    namespace_helpers: NamespaceHelpers,
+    tool_policy: ToolPolicyConfig,
+    debug_log: DebugLog,
+    request_log_id: String,
+    continue_guard: ContinueGuardState,
+    usage_recorder: Option<UsageRecorder>,
+    suppress_duplicate_tool_markup: bool,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
             "type": "response.created",
@@ -185,7 +213,7 @@ pub(crate) fn chat_stream_to_responses(
         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &created_event);
         yield Ok(Bytes::from(created_event));
 
-        let mut state = ChatAccum::default();
+        let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
@@ -754,6 +782,7 @@ pub(crate) struct ChatAccum {
     reasoning_text: String,
     reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
+    suppress_duplicate_tool_markup: bool,
     usage: Option<Value>,
     finish_reason: Option<String>,
 }
@@ -766,6 +795,12 @@ pub(crate) struct ToolCallAccum {
 }
 
 impl ChatAccum {
+    fn with_tool_markup_suppression(suppress_duplicate_tool_markup: bool) -> Self {
+        Self {
+            suppress_duplicate_tool_markup,
+            ..Self::default()
+        }
+    }
     fn from_chat_completion(value: &Value) -> Self {
         let mut accum = Self::default();
         if let Some(usage) = value.get("usage") {
@@ -883,7 +918,10 @@ impl ChatAccum {
             // "<tool", "<invoke"). Suppress that markup so it is not forwarded
             // as assistant text. Fixes excess `<parameter>` spam.
             let trimmed = content.trim_start();
-            let content = if trimmed.starts_with('<') && Self::looks_like_tool_markup(trimmed) {
+            let content = if self.suppress_duplicate_tool_markup
+                && trimmed.starts_with('<')
+                && Self::looks_like_tool_markup(trimmed)
+            {
                 String::new()
             } else {
                 content

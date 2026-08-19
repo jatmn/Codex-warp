@@ -105,6 +105,7 @@ supports_parallel_tool_calls = true
 auto_review_model_override = "deepseek-v4-flash"
 
 [model_families.deepseek_v4_pro.transform]
+suppress_duplicate_tool_markup = true
 force_parallel_tool_calls = false
 preserve_reasoning_content_history = true
 

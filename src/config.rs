@@ -507,6 +507,7 @@ pub struct TransformConfig {
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: bool,
     pub preserve_reasoning_content_history: bool,
+    pub suppress_duplicate_tool_markup: bool,
 }
 
 impl Default for TransformConfig {
@@ -525,6 +526,7 @@ impl Default for TransformConfig {
             // that support usage chunks can opt in explicitly.
             request_stream_options_include_usage: false,
             preserve_reasoning_content_history: false,
+            suppress_duplicate_tool_markup: false,
         }
     }
 }
@@ -547,6 +549,7 @@ pub struct TransformConfigPatch {
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: Option<bool>,
     pub preserve_reasoning_content_history: Option<bool>,
+    pub suppress_duplicate_tool_markup: Option<bool>,
 }
 
 impl TransformConfigPatch {
@@ -599,6 +602,9 @@ impl TransformConfigPatch {
         }
         if let Some(preserve_reasoning_content_history) = self.preserve_reasoning_content_history {
             transform.preserve_reasoning_content_history = preserve_reasoning_content_history;
+        }
+        if let Some(suppress_duplicate_tool_markup) = self.suppress_duplicate_tool_markup {
+            transform.suppress_duplicate_tool_markup = suppress_duplicate_tool_markup;
         }
     }
 }
