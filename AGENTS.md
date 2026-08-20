@@ -150,6 +150,36 @@ on the PR Rust diff. If mutants fail, strengthen the assertion on the behavior
 you meant to protect. Do not add a second test that only duplicates coverage
 theater.
 
+### Required Local CI Preflight
+
+Before **every local commit**, every new PR submission, and every push that
+updates an existing PR, run the full local Linux preflight:
+
+```bash
+bash scripts/ci-preflight.sh
+```
+
+For a PR whose base is not `main`, run
+`bash scripts/ci-preflight.sh --base origin/<base-branch>` instead. This is
+required; do not bypass Git hooks with `--no-verify` or treat remote CI as the
+first execution of these checks. Install the versioned hooks once per checkout:
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+`scripts/ci-preflight.sh` explicitly runs the non-Windows CI gates in this
+order: `cargo update --workspace --locked`; `typos`;
+`SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs
+whitespace/prose, Web UI JavaScript, chart harness, and crate-wide Clippy);
+`cargo test --locked`; `cargo build --locked`;
+`RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
+`--help` smoke checks; `git diff --check`; conditional Rust-diff
+`cargo mutants --no-shuffle -vV --in-diff ... -- --locked`;
+`cargo deny check bans licenses sources`; and `cargo audit`. The Windows job is
+the sole excluded CI check. `cargo audit` still runs locally, but its advisory
+result is non-blocking because CI marks it `continue-on-error`.
+
 When asserting JSON or other structured values, check that the field exists.
 Do not hide a missing key with `unwrap_or(0)`, `unwrap_or("")`, or similar
 defaults in tests. Use `get` plus `assert!`/`unwrap` on the option, or match

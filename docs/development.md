@@ -138,20 +138,32 @@ Studio Build Tools, or run from a Developer PowerShell.
 
 ## Local Validation
 
-Run these before committing code changes:
+Before every local commit, new PR submission, and push that updates a PR, run
+the full local Linux CI preflight:
 
 ```bash
-bash scripts/source-checks.sh
-cargo test --locked
-cargo build --locked
-git diff --check
+bash scripts/ci-preflight.sh
 ```
 
-`scripts/source-checks.sh` runs rustfmt, `typos`, docs whitespace, docs
-contraction capitalization (lowercase first-person contractions outside code
-spans), `node --check` for the Web UI scripts, the chart harness, and crate-wide
-Clippy (`cargo clippy --locked --all-targets --all-features -- -D warnings`). Those Clippy hits are
-review findings. Install the spell checker with `cargo install typos-cli --locked`.
+For a PR with a non-`main` base, use
+`bash scripts/ci-preflight.sh --base origin/<base-branch>`. Do not use
+`git commit --no-verify` or `git push --no-verify` to bypass this requirement.
+Install the versioned hooks once per checkout to run the preflight automatically
+at commit and push time:
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+The preflight runs every Linux CI check explicitly: `cargo update --workspace
+--locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
+Web UI JavaScript syntax, chart harness, and crate-wide Clippy); `cargo test
+--locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
+--locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
+--check`; conditional Rust-diff `cargo mutants --no-shuffle -vV --in-diff ...
+-- --locked`; `cargo deny check bans licenses sources`; and `cargo audit`.
+The Windows job is intentionally excluded. `cargo audit` runs but remains
+non-blocking, matching the CI workflow's `continue-on-error` policy.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
 ownership, pointer reclaim only on hit, paint only with a measured CSS width,
