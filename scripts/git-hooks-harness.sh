@@ -13,18 +13,25 @@ trap cleanup EXIT
 git -C "$repo" init --quiet
 git -C "$repo" config user.name hook-harness
 git -C "$repo" config user.email hook-harness@example.invalid
-mkdir -p "$repo/scripts" "$repo/.githooks"
+mkdir -p "$repo/scripts" "$repo/.githooks" "$repo/empty-hooks"
+git -C "$repo" config core.hooksPath "$repo/empty-hooks"
 cp "$root/scripts/run-preflight-hook.sh" "$repo/scripts/"
 
 cat >"$repo/scripts/ci-preflight.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-test "$(cat validation-target.txt)" = index
+case "$(cat validation-target.txt)" in
+  unborn|index) ;;
+  *) exit 1 ;;
+esac
 EOF
 chmod +x "$repo/scripts/ci-preflight.sh"
 
-printf 'base\n' >"$repo/validation-target.txt"
+printf 'unborn\n' >"$repo/validation-target.txt"
 git -C "$repo" add scripts validation-target.txt
+(cd "$repo" && bash scripts/run-preflight-hook.sh --index --base HEAD)
+printf 'base\n' >"$repo/validation-target.txt"
+git -C "$repo" add validation-target.txt
 git -C "$repo" commit --quiet -m initial
 printf 'index\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt

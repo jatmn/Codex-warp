@@ -24,7 +24,11 @@ done
 root="$(git rev-parse --show-toplevel)"
 if [ "$mode" = index ]; then
   tree="$(git write-tree)"
-  treeish="$(printf 'preflight index snapshot\n' | git commit-tree "$tree" -p HEAD)"
+  parent=()
+  if git rev-parse --verify --quiet HEAD >/dev/null; then
+    parent=(-p HEAD)
+  fi
+  treeish="$(printf 'preflight index snapshot\n' | git commit-tree "$tree" "${parent[@]}")"
 fi
 
 worktree="$(mktemp -d)"

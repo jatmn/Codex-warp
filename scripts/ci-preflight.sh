@@ -58,7 +58,11 @@ require_command cargo-audit 'cargo install cargo-audit --locked'
 # tracked changes for pre-commit. With a clean worktree this is exactly the
 # merge-base-to-HEAD PR diff; with pending changes it checks their prospective
 # contents against the same merge base.
-merge_base="$(git merge-base "$base_ref" HEAD)"
+if ! merge_base="$(git merge-base "$base_ref" HEAD)"; then
+  # An initial/orphan branch has no shared history with its configured base.
+  # Diffing directly against the base still validates the entire pending tree.
+  merge_base="$base_ref"
+fi
 
 echo 'ci-preflight: cargo update --workspace --locked'
 cargo update --workspace --locked
