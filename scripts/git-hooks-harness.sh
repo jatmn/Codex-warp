@@ -16,10 +16,14 @@ git -C "$repo" config user.email hook-harness@example.invalid
 mkdir -p "$repo/scripts" "$repo/.githooks" "$repo/empty-hooks"
 git -C "$repo" config core.hooksPath "$repo/empty-hooks"
 cp "$root/scripts/run-preflight-hook.sh" "$repo/scripts/"
+cp "$root/scripts/install-git-hooks.sh" "$repo/scripts/"
+cp "$root/.githooks/pre-commit" "$repo/.githooks/"
 
 cat >"$repo/scripts/ci-preflight.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+test "${1:-}" = --base
+test "${2:-}" = HEAD
 case "$(cat validation-target.txt)" in
   unborn|index) ;;
   *) exit 1 ;;
@@ -33,10 +37,15 @@ git -C "$repo" add scripts validation-target.txt
 printf 'base\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 git -C "$repo" commit --quiet -m initial
+(
+  cd "$repo"
+  bash scripts/install-git-hooks.sh --base HEAD
+)
 printf 'index\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
-(cd "$repo" && bash scripts/run-preflight-hook.sh --index --base HEAD)
+git -C "$repo" commit --quiet -m index-branch
+test "$(git -C "$repo" show HEAD:validation-target.txt)" = index
 
 cp "$root/.githooks/pre-push" "$repo/.githooks/"
 cat >"$repo/scripts/run-preflight-hook.sh" <<'EOF'
@@ -45,8 +54,7 @@ set -euo pipefail
 printf '%s\n' "$2" >>"$HOOK_CALLS"
 EOF
 chmod +x "$repo/scripts/run-preflight-hook.sh"
-git -C "$repo" add validation-target.txt
-git -C "$repo" commit --quiet -m first-branch
+git -C "$repo" config --worktree core.hooksPath "$repo/empty-hooks"
 first_sha="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" switch --quiet -c second
 printf 'second\n' >"$repo/validation-target.txt"

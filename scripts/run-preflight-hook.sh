@@ -31,6 +31,11 @@ if [ "$mode" = index ]; then
   treeish="$(printf 'preflight index snapshot\n' | git commit-tree "$tree" "${parent[@]}")"
 fi
 
+# Git hook invocations export the caller's index and worktree environment.
+# The snapshot above intentionally consumes that index; the detached worktree
+# below must not inherit it.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 worktree="$(mktemp -d)"
 rmdir "$worktree"
 cleanup() {
