@@ -175,7 +175,7 @@ whitespace/prose, Web UI JavaScript, chart harness, and crate-wide Clippy);
 `cargo test --locked`; `cargo build --locked`;
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
 `--help` smoke checks; `git diff --check`; conditional Rust-diff
-`cargo mutants --no-shuffle -vV --in-diff ... -- --locked`;
+`cargo mutants -o <temporary-dir> --no-shuffle -vV --in-diff ... -- --locked`;
 `cargo deny check bans licenses sources`; and `cargo audit`. The Windows job is
 the sole excluded CI check. `cargo audit` still runs locally, but its advisory
 result is non-blocking because CI marks it `continue-on-error`.

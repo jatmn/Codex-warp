@@ -160,8 +160,9 @@ The preflight runs every Linux CI check explicitly: `cargo update --workspace
 Web UI JavaScript syntax, chart harness, and crate-wide Clippy); `cargo test
 --locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
 --locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
---check`; conditional Rust-diff `cargo mutants --no-shuffle -vV --in-diff ...
--- --locked`; `cargo deny check bans licenses sources`; and `cargo audit`.
+--check`; conditional Rust-diff `cargo mutants -o <temporary-dir> --no-shuffle
+-vV --in-diff ... -- --locked`; `cargo deny check bans licenses sources`; and
+`cargo audit`.
 The Windows job is intentionally excluded. `cargo audit` runs but remains
 non-blocking, matching the CI workflow's `continue-on-error` policy.
 

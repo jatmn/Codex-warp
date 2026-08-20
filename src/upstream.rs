@@ -219,7 +219,7 @@ pub(crate) async fn proxy_chat_responses(
     .await
     {
         Ok(upstream) => upstream,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
 
     let mut status = upstream.status();
@@ -313,7 +313,7 @@ pub(crate) async fn proxy_chat_responses(
                     fallback_outcome,
                     cache_capability,
                 );
-                return response;
+                return *response;
             }
         };
         status = retry.status();
@@ -491,7 +491,7 @@ async fn send_chat_completions(
     provider: &ProviderConfig,
     headers: &HeaderMap,
     request_log_id: &str,
-) -> Result<reqwest::Response, Response> {
+) -> Result<reqwest::Response, Box<Response>> {
     let request = match build_upstream_json_request(
         &state.client,
         url,
@@ -511,7 +511,7 @@ async fn send_chat_completions(
                 }),
                 &err,
             );
-            return Err(error_response(StatusCode::BAD_GATEWAY, err));
+            return Err(Box::new(error_response(StatusCode::BAD_GATEWAY, err)));
         }
     };
     match state.client.execute(request).await {
@@ -526,7 +526,10 @@ async fn send_chat_completions(
                 }),
                 &err.to_string(),
             );
-            Err(error_response(StatusCode::BAD_GATEWAY, err.to_string()))
+            Err(Box::new(error_response(
+                StatusCode::BAD_GATEWAY,
+                err.to_string(),
+            )))
         }
     }
 }

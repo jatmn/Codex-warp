@@ -88,11 +88,12 @@ if git ls-files --others --exclude-standard -- '*.rs' | grep -q .; then
 fi
 
 mutants_diff="$(mktemp)"
-trap 'rm -f "$mutants_diff"' EXIT
+mutants_output_dir="$(mktemp -d)"
+trap 'rm -f "$mutants_diff"; rm -rf "$mutants_output_dir"' EXIT
 git diff "$base_ref" -- '*.rs' >"$mutants_diff"
 if [ -s "$mutants_diff" ]; then
-  echo "ci-preflight: cargo mutants --no-shuffle -vV --in-diff $mutants_diff -- --locked"
-  cargo mutants --no-shuffle -vV --in-diff "$mutants_diff" -- --locked
+  echo "ci-preflight: cargo mutants -o $mutants_output_dir --no-shuffle -vV --in-diff $mutants_diff -- --locked"
+  cargo mutants -o "$mutants_output_dir" --no-shuffle -vV --in-diff "$mutants_diff" -- --locked
 else
   echo 'ci-preflight: no Rust diff; skipping cargo mutants (matches CI)'
 fi
