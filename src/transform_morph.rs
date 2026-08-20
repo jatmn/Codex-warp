@@ -3,6 +3,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::config::RequestMorphKind;
+use crate::config::RequestMorphValue;
 use crate::config::TransformConfig;
 
 pub(crate) fn apply_request_morphs(
@@ -49,8 +50,8 @@ pub(crate) fn apply_request_morphs(
                 }) else {
                     continue;
                 };
-                if let Some(value) = &morph.value {
-                    insert_path_in_map(out, target, Value::String(value.clone()));
+                if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_str) {
+                    insert_path_in_map(out, target, Value::String(value.to_string()));
                 }
             }
             RequestMorphKind::StaticBool => {
@@ -61,11 +62,7 @@ pub(crate) fn apply_request_morphs(
                 }) else {
                     continue;
                 };
-                if let Some(value) = morph
-                    .value
-                    .as_deref()
-                    .and_then(|value| value.parse::<bool>().ok())
-                {
+                if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_bool) {
                     insert_path_in_map(out, target, Value::Bool(value));
                 }
             }
@@ -192,8 +189,8 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 }) else {
                     continue;
                 };
-                if let Some(value) = &morph.value {
-                    insert_path(request, target, Value::String(value.clone()));
+                if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_str) {
+                    insert_path(request, target, Value::String(value.to_string()));
                 }
             }
             RequestMorphKind::StaticBool => {
@@ -204,11 +201,7 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 }) else {
                     continue;
                 };
-                if let Some(value) = morph
-                    .value
-                    .as_deref()
-                    .and_then(|value| value.parse::<bool>().ok())
-                {
+                if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_bool) {
                     insert_path(request, target, Value::Bool(value));
                 }
             }

@@ -885,6 +885,41 @@ fn model_family_morph_rejects_unknown_fields() {
 }
 
 #[test]
+fn static_morphs_require_typed_values_at_config_load() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [[transform.chat_request_morphs]]
+            from = ""
+            to = "thinking.clear_thinking"
+            value = false
+            kind = "static_bool"
+            "#,
+    )
+    .expect("unquoted static_bool value parses");
+    assert_eq!(
+        config.transform.chat_request_morphs[0].value,
+        Some(RequestMorphValue::Bool(false))
+    );
+
+    let error = toml::from_str::<AppConfig>(
+        r#"
+            [[transform.responses_request_morphs]]
+            from = ""
+            to = "thinking.clear_thinking"
+            value = "false"
+            kind = "static_bool"
+            "#,
+    )
+    .expect_err("quoted static_bool value is rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("static_bool morph requires a boolean value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn model_family_remove_morph_selector_rejects_unknown_fields() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1102,7 +1137,7 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .any(|morph| {
                 morph.kind == RequestMorphKind::StaticBool
                     && morph.to.as_deref() == Some("thinking.clear_thinking")
-                    && morph.value.as_deref() == Some("false")
+                    && morph.value == Some(RequestMorphValue::Bool(false))
             })
     );
     assert!(
@@ -1113,7 +1148,7 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .any(|morph| {
                 morph.kind == RequestMorphKind::StaticString
                     && morph.to.as_deref() == Some("thinking.type")
-                    && morph.value.as_deref() == Some("enabled")
+                    && morph.value == Some(RequestMorphValue::String("enabled".to_string()))
             })
     );
     let glm5 = config

@@ -118,5 +118,5 @@ kind = "static_string"
 [[model_families.z_ai_glm_5_3.transform.append_chat_request_morphs]]
 from = ""
 to = "thinking.clear_thinking"
-value = "false"
+value = false
 kind = "static_bool"

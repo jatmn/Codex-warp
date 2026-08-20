@@ -3,7 +3,9 @@ use std::env;
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::de::Error as _;
 
 pub use crate::config_loader::configured_provider_by_id;
 pub use crate::config_loader::configured_provider_entries;
@@ -627,15 +629,89 @@ fn remove_morphs(morphs: &mut Vec<RequestMorph>, selectors: &[MorphSelector]) {
     });
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RequestMorph {
     pub from: String,
-    #[serde(default)]
     pub to: Option<String>,
-    #[serde(default)]
-    pub value: Option<String>,
+    pub value: Option<RequestMorphValue>,
     pub kind: RequestMorphKind,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum RequestMorphValue {
+    String(String),
+    Bool(bool),
+}
+
+impl RequestMorphValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(value) => Some(value),
+            Self::Bool(_) => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::String(_) => None,
+            Self::Bool(value) => Some(*value),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRequestMorph {
+    from: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    value: Option<RequestMorphValue>,
+    kind: RequestMorphKind,
+}
+
+impl<'de> Deserialize<'de> for RequestMorph {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawRequestMorph::deserialize(deserializer)?;
+        let morph = Self {
+            from: raw.from,
+            to: raw.to,
+            value: raw.value,
+            kind: raw.kind,
+        };
+        morph.validate().map_err(D::Error::custom)?;
+        Ok(morph)
+    }
+}
+
+impl RequestMorph {
+    fn validate(&self) -> Result<(), String> {
+        let static_target = self.to.is_some() || !self.from.is_empty();
+        match self.kind {
+            RequestMorphKind::StaticString => {
+                if !static_target {
+                    return Err("static_string morph requires a target path".to_string());
+                }
+                if !matches!(self.value, Some(RequestMorphValue::String(_))) {
+                    return Err("static_string morph requires a string value".to_string());
+                }
+            }
+            RequestMorphKind::StaticBool => {
+                if !static_target {
+                    return Err("static_bool morph requires a target path".to_string());
+                }
+                if !matches!(self.value, Some(RequestMorphValue::Bool(_))) {
+                    return Err("static_bool morph requires a boolean value".to_string());
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, serde::Serialize)]

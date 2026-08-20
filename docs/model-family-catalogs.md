@@ -203,7 +203,7 @@ Supported morph kinds:
 | `text_format` | Convert Responses `text.format` JSON schema to chat `response_format`. |
 | `thinking_type` | Convert `reasoning.effort` into provider `thinking.type`. |
 | `static_string` | Set a fixed string value. |
-| `static_bool` | Set a fixed boolean value. |
+| `static_bool` | Set a fixed boolean value; `value` must be a TOML boolean. |
 
 ## Common Transform Patterns
 

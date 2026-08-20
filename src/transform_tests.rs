@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::RequestMorphKind;
+use crate::config::RequestMorphValue;
 use crate::config::TransformConfig;
 
 #[test]
@@ -525,7 +526,7 @@ fn static_string_morph_sets_provider_fields() {
         .push(crate::config::RequestMorph {
             from: String::new(),
             to: Some("thinking.keep".to_string()),
-            value: Some("all".to_string()),
+            value: Some(RequestMorphValue::String("all".to_string())),
             kind: RequestMorphKind::StaticString,
         });
 
@@ -547,7 +548,7 @@ fn static_bool_morph_sets_provider_fields() {
         .push(crate::config::RequestMorph {
             from: String::new(),
             to: Some("thinking.clear_thinking".to_string()),
-            value: Some("false".to_string()),
+            value: Some(RequestMorphValue::Bool(false)),
             kind: RequestMorphKind::StaticBool,
         });
 
@@ -589,7 +590,7 @@ fn native_responses_apply_static_bool_morphs() {
         .push(crate::config::RequestMorph {
             from: String::new(),
             to: Some("thinking.clear_thinking".to_string()),
-            value: Some("false".to_string()),
+            value: Some(RequestMorphValue::Bool(false)),
             kind: RequestMorphKind::StaticBool,
         });
 
