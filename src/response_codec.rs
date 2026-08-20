@@ -24,137 +24,6 @@ use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
 
-/// Coalesce provider-specific token or line-sized reasoning deltas into the
-/// small display blocks used by Codex clients for native reasoning summaries.
-/// A paragraph boundary still flushes immediately so structured reasoning is
-/// not held behind an arbitrary character count.
-const REASONING_DELTA_FLUSH_CHARS: usize = 160;
-const REASONING_DELTA_FLUSH_PARAGRAPH: &str = "\n\n";
-
-fn reasoning_should_flush(pending: &str) -> bool {
-    let text_only = pending
-        .strip_prefix(REASONING_DISPLAY_HEADER)
-        .unwrap_or(pending);
-    !text_only.is_empty()
-        && (text_only.chars().count() >= REASONING_DELTA_FLUSH_CHARS
-            || text_only.contains(REASONING_DELTA_FLUSH_PARAGRAPH))
-}
-
-/// Buffers native `response.reasoning_summary_text.delta` events so tiny
-/// provider fragments are coalesced into the same small display blocks used
-/// for chat-completions reasoning.
-#[derive(Default)]
-struct NativeReasoningBuffer {
-    pending: String,
-    active: Option<NativeReasoningIdentity>,
-}
-
-struct NativeReasoningIdentity {
-    template: Value,
-    item_id: String,
-    summary_index: u64,
-}
-
-impl NativeReasoningBuffer {
-    fn append(&mut self, delta: &NativeReasoningSummaryDelta) -> Option<String> {
-        // Identity is the Responses (item_id, summary_index) pair. A change
-        // means the previous buffered summary is complete and must flush first.
-        let identity_changed = self.active.as_ref().is_some_and(|active| {
-            active.item_id != delta.item_id || active.summary_index != delta.summary_index
-        });
-        let flushed = if identity_changed {
-            self.take_all()
-        } else {
-            None
-        };
-        if self.active.is_none() {
-            self.pending.clear();
-            self.active = Some(NativeReasoningIdentity {
-                template: delta.template.clone(),
-                item_id: delta.item_id.clone(),
-                summary_index: delta.summary_index,
-            });
-        }
-        self.pending.push_str(&delta.text);
-        flushed
-    }
-
-    fn take_flush(&mut self) -> Option<String> {
-        reasoning_should_flush(&self.pending)
-            .then(|| self.take_all())
-            .flatten()
-    }
-
-    fn take_all(&mut self) -> Option<String> {
-        if self.pending.is_empty() {
-            self.active = None;
-            return None;
-        }
-        let mut value = self.active.take()?.template;
-        if let Some(delta) = value.get_mut("delta") {
-            *delta = Value::String(self.pending.clone());
-        }
-        self.pending.clear();
-        Some(sse("response.reasoning_summary_text.delta", value))
-    }
-}
-
-struct NativeReasoningSummaryDelta {
-    item_id: String,
-    summary_index: u64,
-    text: String,
-    template: Value,
-}
-
-/// A native SSE frame can be a reasoning delta, a meaningful Responses event,
-/// or transport-only framing such as a comment heartbeat. Only meaningful
-/// Responses events establish a boundary for buffered reasoning.
-enum NativeReasoningFrame {
-    Reasoning(NativeReasoningSummaryDelta),
-    Other,
-    DataLess,
-}
-
-fn classify_native_reasoning_frame(frame: &str) -> NativeReasoningFrame {
-    let Some(data) = sse_data(frame) else {
-        return NativeReasoningFrame::DataLess;
-    };
-    let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
-        return NativeReasoningFrame::Other;
-    };
-    if value.get("type").and_then(Value::as_str) != Some("response.reasoning_summary_text.delta") {
-        return NativeReasoningFrame::Other;
-    }
-    let item_id = value
-        .get("item_id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let summary_index = value
-        .get("summary_index")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let Some(text) = value
-        .get("delta")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-    else {
-        return NativeReasoningFrame::Other;
-    };
-    // Keep a template of the original event with an empty delta so later flushes
-    // preserve provider fields without panicking on unexpected shapes.
-    let Some(object) = value.as_object_mut() else {
-        return NativeReasoningFrame::Other;
-    };
-    object.insert("delta".to_string(), Value::String(String::new()));
-    NativeReasoningFrame::Reasoning(NativeReasoningSummaryDelta {
-        item_id,
-        summary_index,
-        text,
-        template: value,
-    })
-}
-
 /// Maximum number of entries allowed in the continue-guard budget map to prevent
 /// unbounded memory growth during long-running proxy sessions.
 const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
@@ -224,7 +93,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_content_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -234,7 +103,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_content_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -246,7 +115,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_content_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -268,7 +137,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 let value = match serde_json::from_str::<Value>(&data) {
                     Ok(value) => value,
                     Err(_) => {
-                        if let Some(event) = state.take_reasoning_delta() {
+                        for event in state.failure_content_events() {
                             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                             yield Ok(Bytes::from(event));
                         }
@@ -281,7 +150,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_content_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -335,10 +204,6 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                     "completion": "truncated_eof"
                 }));
                 let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-                if let Some(event) = state.take_reasoning_delta() {
-                    log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
-                    yield Ok(Bytes::from(event));
-                }
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
                 yield Ok(Bytes::from(failed));
                 return;
@@ -363,11 +228,11 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 "backend": "open_ai_chat",
                 "completion": "truncated_eof"
             }));
-            let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-            if let Some(event) = state.take_reasoning_delta() {
+            for event in state.failure_content_events() {
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                 yield Ok(Bytes::from(event));
             }
+            let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &failed);
             yield Ok(Bytes::from(failed));
             return;
@@ -427,26 +292,11 @@ pub(crate) fn native_stream_to_responses(
         let mut terminal_received = false;
         let mut usage_recorder = usage_recorder;
         let mut response_id = None;
-        let mut native_reasoning_buffer = NativeReasoningBuffer::default();
 
         'upstream: while let Some(chunk) = bytes.next().await {
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    if let Some(flushed) = native_reasoning_buffer.take_all() {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                        yield Ok(Bytes::from(flushed));
-                    }
-                    yield Err(std::io::Error::other(err));
-                    return;
-                }
-            };
+            let chunk = chunk.map_err(std::io::Error::other)?;
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                if let Some(flushed) = native_reasoning_buffer.take_all() {
-                    log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                    yield Ok(Bytes::from(flushed));
-                }
                 yield Err(std::io::Error::other(SSE_FRAME_BUFFER_EXCEEDED_MESSAGE));
                 return;
             }
@@ -456,20 +306,12 @@ pub(crate) fn native_stream_to_responses(
                 let frame = match String::from_utf8(frame) {
                     Ok(frame) => frame,
                     Err(err) => {
-                        if let Some(flushed) = native_reasoning_buffer.take_all() {
-                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                            yield Ok(Bytes::from(flushed));
-                        }
                         yield Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err));
                         return;
                     }
                 };
                 response_id = native_sse_response_id(&frame).or(response_id);
                 if let Some(message) = native_sse_error_message(&frame) {
-                    if let Some(flushed) = native_reasoning_buffer.take_all() {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                        yield Ok(Bytes::from(flushed));
-                    }
                     let failed = native_failed_event(response_id.as_deref(), message);
                     log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &failed);
                     yield Ok(Bytes::from(failed));
@@ -501,30 +343,8 @@ pub(crate) fn native_stream_to_responses(
                     &namespace_helpers,
                     &tool_policy,
                 );
-                match classify_native_reasoning_frame(&morphed) {
-                    NativeReasoningFrame::Reasoning(reasoning) => {
-                        if let Some(flushed) = native_reasoning_buffer.append(&reasoning) {
-                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                            yield Ok(Bytes::from(flushed));
-                        }
-                        if let Some(flushed) = native_reasoning_buffer.take_flush() {
-                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                            yield Ok(Bytes::from(flushed));
-                        }
-                    }
-                    NativeReasoningFrame::Other => {
-                        if let Some(flushed) = native_reasoning_buffer.take_all() {
-                            log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                            yield Ok(Bytes::from(flushed));
-                        }
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
-                        yield Ok(Bytes::from(morphed));
-                    }
-                    NativeReasoningFrame::DataLess => {
-                        log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
-                        yield Ok(Bytes::from(morphed));
-                    }
-                }
+                log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &morphed);
+                yield Ok(Bytes::from(morphed));
                 if terminal.is_some() {
                     break 'upstream;
                 }
@@ -532,10 +352,6 @@ pub(crate) fn native_stream_to_responses(
         }
 
         if !terminal_received {
-            if let Some(flushed) = native_reasoning_buffer.take_all() {
-                log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
-                yield Ok(Bytes::from(flushed));
-            }
             let message = if pending.is_empty() {
                 "upstream Responses stream ended before a terminal response event"
             } else {
@@ -780,11 +596,71 @@ pub(crate) struct ChatAccum {
     reasoning_display_header_emitted: bool,
     text: String,
     reasoning_text: String,
-    reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
     suppress_duplicate_tool_markup: bool,
+    native_tool_call_seen: bool,
+    deferred_content: Vec<String>,
+    deferred_code_state: Option<MarkdownCodeState>,
+    content_code_state: MarkdownCodeState,
+    tool_markup_sanitizer: ToolMarkupSanitizer,
     usage: Option<Value>,
     finish_reason: Option<String>,
+}
+
+#[derive(Default)]
+struct ToolMarkupSanitizer {
+    pending_start: String,
+    pending_scan_from: usize,
+    pending_tag: Option<&'static str>,
+    active_closing_tag: Option<&'static str>,
+    active_opening_tag: Option<&'static str>,
+    active_depth: usize,
+    closing_prefix: String,
+    unterminated_tool_body: String,
+    treat_tool_as_marker: bool,
+    code_state: MarkdownCodeState,
+}
+
+#[derive(Clone, Copy)]
+struct MarkdownCodeState {
+    fence_marker: u8,
+    fence_len: usize,
+    inline_ticks: usize,
+    pending_marker: Option<u8>,
+    pending_count: usize,
+    line_start: bool,
+    leading_spaces: usize,
+    indented_line: bool,
+    escape_run: usize,
+}
+
+impl Default for MarkdownCodeState {
+    fn default() -> Self {
+        Self {
+            fence_marker: 0,
+            fence_len: 0,
+            inline_ticks: 0,
+            pending_marker: None,
+            pending_count: 0,
+            line_start: true,
+            leading_spaces: 0,
+            indented_line: false,
+            escape_run: 0,
+        }
+    }
+}
+
+enum ToolMarkupStart {
+    Opening {
+        start: usize,
+        tag: &'static str,
+        opening_end: usize,
+        self_closing: bool,
+    },
+    Possible {
+        start: usize,
+    },
+    Plain,
 }
 
 #[derive(Default, Clone)]
@@ -862,6 +738,10 @@ impl ChatAccum {
             .unwrap_or_default();
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
+            let native_tool_calls = delta
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .filter(|calls| !calls.is_empty());
             if let Some(finish_reason) = chat_finish_reason(&choice) {
                 self.finish_reason = Some(finish_reason.to_string());
             }
@@ -893,10 +773,9 @@ impl ChatAccum {
                         }),
                     ));
                 }
-                self.reasoning_text.push_str(&reasoning);
                 if !self.reasoning_display_header_emitted {
                     self.reasoning_display_header_emitted = true;
-                    if !self.reasoning_text.trim_start().starts_with("**") {
+                    if !incoming.trim_start().starts_with("**") {
                         events.push(sse(
                             "response.reasoning_summary_text.delta",
                             json!({
@@ -908,58 +787,19 @@ impl ChatAccum {
                         ));
                     }
                 }
-                self.reasoning_pending.push_str(&reasoning);
-                events.extend(self.take_reasoning_flush());
-            }
-
-            let content = chat_content_text(delta.get("content"));
-            // Some providers (e.g. deepseek-v4-pro) emit native `tool_calls` AND also
-            // leak tool-invocation markup as `content` fragments (e.g. "<parameter",
-            // "<tool", "<invoke"). Suppress that markup so it is not forwarded
-            // as assistant text. Fixes excess `<parameter>` spam.
-            let trimmed = content.trim_start();
-            let content = if self.suppress_duplicate_tool_markup
-                && trimmed.starts_with('<')
-                && Self::looks_like_tool_markup(trimmed)
-            {
-                String::new()
-            } else {
-                content
-            };
-            if !content.is_empty() {
-                if let Some(event) = self.take_reasoning_delta() {
-                    events.push(event);
-                }
-                if self.message_item_id.is_none() {
-                    let item_id = generated_id("msg");
-                    self.message_item_id = Some(item_id.clone());
-                    events.push(sse(
-                        "response.output_item.added",
-                        json!({
-                            "type": "response.output_item.added",
-                            "item": {
-                                "id": item_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "content": []
-                            }
-                        }),
-                    ));
-                }
-                self.text.push_str(&content);
+                self.reasoning_text.push_str(&reasoning);
                 events.push(sse(
-                    "response.output_text.delta",
+                    "response.reasoning_summary_text.delta",
                     json!({
-                        "type": "response.output_text.delta",
-                        "delta": content
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
+                        "summary_index": 0,
+                        "delta": reasoning.as_str()
                     }),
                 ));
             }
 
-            if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                if let Some(event) = self.take_reasoning_delta() {
-                    events.push(event);
-                }
+            if let Some(calls) = native_tool_calls {
                 for call in calls {
                     let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
                     if self.tool_calls.len() <= index {
@@ -986,6 +826,21 @@ impl ChatAccum {
                     }
                 }
             }
+            if !self.native_tool_call_seen
+                && self.tool_calls.iter().any(|call| !call.name.is_empty())
+            {
+                self.native_tool_call_seen = true;
+                self.tool_markup_sanitizer.code_state = self
+                    .deferred_code_state
+                    .take()
+                    .unwrap_or(self.content_code_state);
+                self.flush_deferred_content(&mut events);
+            }
+
+            self.apply_content(chat_content_text(delta.get("content")), &mut events);
+        }
+        if self.has_semantic_terminal_finish_reason() && !self.native_tool_call_seen {
+            self.flush_unconfirmed_content(&mut events);
         }
         events
     }
@@ -997,7 +852,7 @@ impl ChatAccum {
     }
 
     pub(crate) fn finish(
-        &self,
+        &mut self,
         response_id: &str,
         custom_tool_names: &BTreeSet<String>,
         namespace_helpers: &NamespaceHelpers,
@@ -1005,9 +860,7 @@ impl ChatAccum {
         continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     ) -> Vec<String> {
         let mut events = Vec::new();
-        if !self.reasoning_pending.is_empty() {
-            events.push(self.reasoning_delta_event(&self.reasoning_pending));
-        }
+        self.finalize_content(&mut events);
         if !self.reasoning_text.is_empty() {
             events.push(sse(
                 "response.output_item.done",
@@ -1091,54 +944,100 @@ impl ChatAccum {
         events
     }
 
-    fn flush_reasoning_delta(&mut self) -> String {
-        let event = self.reasoning_delta_event(&self.reasoning_pending);
-        self.reasoning_pending.clear();
-        event
+    fn apply_content(&mut self, content: String, events: &mut Vec<String>) {
+        if content.is_empty() {
+            return;
+        }
+        if !self.suppress_duplicate_tool_markup {
+            self.emit_content(content, events);
+            return;
+        }
+
+        if self.native_tool_call_seen {
+            let content = self.tool_markup_sanitizer.push(&content);
+            self.emit_content(content, events);
+        } else {
+            let state_before_content = self.content_code_state;
+            let content_is_plain = self.deferred_content.is_empty()
+                && matches!(
+                    tool_markup_start(&content, &mut self.content_code_state),
+                    ToolMarkupStart::Plain
+                );
+            if content_is_plain {
+                self.emit_content(content, events);
+            } else {
+                if self.deferred_content.is_empty() {
+                    self.deferred_code_state = Some(state_before_content);
+                }
+                self.deferred_content.push(content);
+            }
+        }
     }
 
-    fn take_reasoning_delta(&mut self) -> Option<String> {
-        (!self.reasoning_pending.is_empty()).then(|| self.flush_reasoning_delta())
-    }
-
-    fn take_reasoning_flush(&mut self) -> Option<String> {
-        reasoning_should_flush(&self.reasoning_pending).then(|| self.flush_reasoning_delta())
-    }
-
-    fn reasoning_delta_event(&self, delta: &str) -> String {
-        sse(
-            "response.reasoning_summary_text.delta",
+    fn emit_content(&mut self, content: String, events: &mut Vec<String>) {
+        if content.is_empty() {
+            return;
+        }
+        if self.message_item_id.is_none() {
+            let item_id = generated_id("msg");
+            self.message_item_id = Some(item_id.clone());
+            events.push(sse(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {
+                        "id": item_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "content": []
+                    }
+                }),
+            ));
+        }
+        self.text.push_str(&content);
+        events.push(sse(
+            "response.output_text.delta",
             json!({
-                "type": "response.reasoning_summary_text.delta",
-                "item_id": self.reasoning_item_id.as_deref().unwrap_or(""),
-                "summary_index": 0,
-                "delta": delta
+                "type": "response.output_text.delta",
+                "delta": content
             }),
-        )
+        ));
     }
 
-    /// Returns true when `text` begins like an XML tool-invocation tag that a
-    /// model may leak inside `content` while also emitting native `tool_calls`.
-    fn looks_like_tool_markup(text: &str) -> bool {
-        let trimmed = text.trim_start();
-        Self::starts_with_ci_ascii(trimmed, "<parameter")
-            || Self::starts_with_ci_ascii(trimmed, "<tool")
-            || Self::starts_with_ci_ascii(trimmed, "<invoke")
-            || Self::starts_with_ci_ascii(trimmed, "<function")
-            || Self::starts_with_ci_ascii(trimmed, "<function_call")
-            || Self::starts_with_ci_ascii(trimmed, "<think")
+    fn flush_deferred_content(&mut self, events: &mut Vec<String>) {
+        for content in std::mem::take(&mut self.deferred_content) {
+            let content = self.tool_markup_sanitizer.push(&content);
+            self.emit_content(content, events);
+        }
     }
 
-    /// Returns true when `text` starts with `prefix`, ignoring ASCII case, without
-    /// allocating a lowercased copy. Prefixes here are short ASCII tags, so a byte
-    /// comparison is sufficient.
-    fn starts_with_ci_ascii(text: &str, prefix: &str) -> bool {
-        text.len() >= prefix.len()
-            && text
-                .as_bytes()
-                .iter()
-                .zip(prefix.as_bytes().iter())
-                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    fn flush_unconfirmed_content(&mut self, events: &mut Vec<String>) {
+        self.deferred_code_state = None;
+        for content in std::mem::take(&mut self.deferred_content) {
+            self.emit_content(content, events);
+        }
+    }
+
+    fn finalize_content(&mut self, events: &mut Vec<String>) {
+        if self.native_tool_call_seen {
+            self.flush_deferred_content(events);
+            let content = self.tool_markup_sanitizer.finish();
+            self.emit_content(content, events);
+        } else {
+            self.flush_unconfirmed_content(events);
+        }
+    }
+
+    fn failure_content_events(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        if self.native_tool_call_seen {
+            self.flush_deferred_content(&mut events);
+            let content = self.tool_markup_sanitizer.finish();
+            self.emit_content(content, &mut events);
+        } else {
+            self.flush_unconfirmed_content(&mut events);
+        }
+        events
     }
 
     fn end_turn(&self, continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>) -> bool {
@@ -1161,6 +1060,421 @@ impl ChatAccum {
         }
         !decision.force_follow_up
     }
+}
+
+impl ToolMarkupSanitizer {
+    fn push(&mut self, content: &str) -> String {
+        let mut input = content.to_string();
+        let mut cursor = 0;
+        if !self.pending_start.is_empty() {
+            self.pending_start.push_str(content);
+            input = std::mem::take(&mut self.pending_start);
+            let recognized_tag = self.pending_tag.or_else(|| recognized_opening_tag(&input));
+            self.pending_tag = recognized_tag;
+            if let Some(tag) = recognized_tag {
+                let search_from = self.pending_scan_from.min(input.len());
+                let Some(relative_end) = input[search_from..].find('>') else {
+                    self.pending_scan_from = input.len();
+                    self.pending_start = input;
+                    return String::new();
+                };
+                let opening_end = search_from + relative_end + '>'.len_utf8();
+                let opening = &input[..opening_end];
+                if !(opening
+                    .strip_suffix('>')
+                    .is_some_and(|opening| opening.trim_end().ends_with('/'))
+                    || tag == "tool" && self.treat_tool_as_marker)
+                {
+                    self.active_closing_tag = Some(closing_tag(tag));
+                    self.active_opening_tag = Some(opening_tag(tag));
+                    self.active_depth = 1;
+                }
+                cursor = opening_end;
+                self.pending_tag = None;
+            }
+            self.pending_scan_from = 0;
+        }
+        let mut output = String::new();
+
+        loop {
+            let remaining = &input[cursor..];
+            if let Some(closing_tag) = self.active_closing_tag {
+                if closing_tag == "</tool>" {
+                    self.unterminated_tool_body.push_str(remaining);
+                }
+                self.closing_prefix.push_str(remaining);
+                let buffered = std::mem::take(&mut self.closing_prefix);
+                let opening_tag = self
+                    .active_opening_tag
+                    .expect("active markup always records its opening tag");
+                let mut scan_from = 0;
+                let mut completed_at = None;
+                while let Some((start, end, is_closing, self_closing)) =
+                    next_same_tag_token(&buffered, scan_from, opening_tag, closing_tag)
+                {
+                    scan_from = end;
+                    if is_closing {
+                        self.active_depth = self.active_depth.saturating_sub(1);
+                        if self.active_depth == 0 {
+                            completed_at = Some(end);
+                            break;
+                        }
+                    } else if !self_closing {
+                        self.active_depth += 1;
+                    }
+                    debug_assert!(end > start);
+                }
+                if let Some(end) = completed_at {
+                    input = buffered[end..].to_string();
+                    cursor = 0;
+                    self.active_closing_tag = None;
+                    self.active_opening_tag = None;
+                    self.active_depth = 0;
+                    self.closing_prefix.clear();
+                    self.unterminated_tool_body.clear();
+                    continue;
+                }
+                self.closing_prefix =
+                    trailing_markup_token_prefix(&buffered, &[opening_tag, closing_tag]);
+                break;
+            }
+
+            match tool_markup_start(remaining, &mut self.code_state) {
+                ToolMarkupStart::Opening {
+                    start,
+                    tag,
+                    opening_end,
+                    self_closing,
+                } => {
+                    output.push_str(&remaining[..start]);
+                    if !(self_closing || tag == "tool" && self.treat_tool_as_marker) {
+                        self.active_closing_tag = Some(closing_tag(tag));
+                        self.active_opening_tag = Some(opening_tag(tag));
+                        self.active_depth = 1;
+                    }
+                    cursor = cursor
+                        .checked_add(opening_end)
+                        .expect("opening offset remains within the current content");
+                    if cursor == input.len() {
+                        break;
+                    }
+                }
+                ToolMarkupStart::Possible { start } => {
+                    output.push_str(&remaining[..start]);
+                    self.pending_start = remaining[start..].to_string();
+                    self.pending_scan_from = self.pending_start.len();
+                    self.pending_tag = recognized_opening_tag(&self.pending_start);
+                    break;
+                }
+                ToolMarkupStart::Plain => {
+                    output.push_str(remaining);
+                    break;
+                }
+            }
+        }
+        output
+    }
+
+    fn finish(&mut self) -> String {
+        self.pending_start.clear();
+        self.pending_scan_from = 0;
+        self.pending_tag = None;
+        self.active_closing_tag = None;
+        self.active_opening_tag = None;
+        self.active_depth = 0;
+        self.closing_prefix.clear();
+        let unterminated_tool_body = std::mem::take(&mut self.unterminated_tool_body);
+        if unterminated_tool_body.is_empty() {
+            return String::new();
+        }
+        let mut fallback = ToolMarkupSanitizer {
+            treat_tool_as_marker: true,
+            ..ToolMarkupSanitizer::default()
+        };
+        let mut content = fallback.push(&unterminated_tool_body);
+        content.push_str(&fallback.finish());
+        content
+    }
+}
+
+fn tool_markup_start(text: &str, code_state: &mut MarkdownCodeState) -> ToolMarkupStart {
+    let leading_whitespace = text.len() - text.trim_start().len();
+    let input_started_at_line_start = code_state.line_start;
+    let bytes = text.as_bytes();
+    let mut skip_until = 0;
+    if let Some(pending_marker) = code_state.pending_marker {
+        let continued = bytes
+            .iter()
+            .take_while(|byte| **byte == pending_marker)
+            .count();
+        code_state.pending_count += continued;
+        skip_until = continued;
+        if bytes.get(continued).is_none() {
+            return ToolMarkupStart::Plain;
+        }
+        resolve_markdown_marker_run(code_state, pending_marker, code_state.pending_count);
+        code_state.pending_marker = None;
+        code_state.pending_count = 0;
+    }
+    for (candidate, byte) in bytes.iter().copied().enumerate() {
+        if candidate < skip_until {
+            continue;
+        }
+        if byte == b'\n' {
+            code_state.line_start = true;
+            code_state.leading_spaces = 0;
+            code_state.indented_line = false;
+            code_state.escape_run = 0;
+            continue;
+        }
+        if code_state.line_start && byte == b' ' {
+            code_state.leading_spaces += 1;
+            code_state.indented_line = code_state.leading_spaces >= 4;
+            continue;
+        }
+        if code_state.line_start && byte == b'\t' {
+            code_state.indented_line = true;
+            continue;
+        }
+        code_state.line_start = false;
+        if byte == b'\\' {
+            code_state.escape_run += 1;
+            continue;
+        }
+        let escaped = code_state.escape_run % 2 == 1;
+        code_state.escape_run = 0;
+        if matches!(byte, b'`' | b'~') {
+            let marker = byte;
+            let count = bytes[candidate..]
+                .iter()
+                .take_while(|byte| **byte == marker)
+                .count();
+            if candidate + count == bytes.len() {
+                code_state.pending_marker = Some(marker);
+                code_state.pending_count = count;
+                break;
+            } else {
+                resolve_markdown_marker_run(code_state, marker, count);
+            }
+            skip_until = candidate + count;
+            continue;
+        }
+        if byte != b'<'
+            || escaped
+            || code_state.fence_len > 0
+            || code_state.inline_ticks > 0
+            || code_state.indented_line
+        {
+            continue;
+        }
+        let strip_start = if input_started_at_line_start && candidate == leading_whitespace {
+            0
+        } else {
+            candidate
+        };
+        match tool_markup_at_start(&text[candidate..]) {
+            ToolMarkupStart::Opening {
+                tag,
+                opening_end,
+                self_closing,
+                ..
+            } => {
+                return ToolMarkupStart::Opening {
+                    start: strip_start,
+                    tag,
+                    opening_end: candidate
+                        .checked_add(opening_end)
+                        .expect("opening offset remains within the scanned content"),
+                    self_closing,
+                };
+            }
+            ToolMarkupStart::Possible { .. } => {
+                return ToolMarkupStart::Possible { start: strip_start };
+            }
+            ToolMarkupStart::Plain => {}
+        }
+    }
+    ToolMarkupStart::Plain
+}
+
+fn resolve_markdown_marker_run(state: &mut MarkdownCodeState, marker: u8, count: usize) {
+    if state.fence_len > 0 {
+        if marker == state.fence_marker && count >= state.fence_len {
+            state.fence_marker = 0;
+            state.fence_len = 0;
+        }
+    } else if state.inline_ticks > 0 {
+        if marker == b'`' && count == state.inline_ticks {
+            state.inline_ticks = 0;
+        }
+    } else if count >= 3 {
+        state.fence_marker = marker;
+        state.fence_len = count;
+    } else if marker == b'`' {
+        state.inline_ticks = count;
+    }
+}
+
+const TOOL_MARKUP_TAGS: [&str; 7] = [
+    "function_call",
+    "tool_calls",
+    "parameter",
+    "function",
+    "invoke",
+    "think",
+    "tool",
+];
+
+fn tool_markup_at_start(text: &str) -> ToolMarkupStart {
+    for tag in TOOL_MARKUP_TAGS {
+        let prefix = format!("<{tag}");
+        if starts_with_ci_ascii(&prefix, text) {
+            return ToolMarkupStart::Possible { start: 0 };
+        }
+        if !starts_with_ci_ascii(text, &prefix) {
+            continue;
+        }
+        let rest = &text[prefix.len()..];
+        let Some(boundary) = rest.as_bytes().first() else {
+            return ToolMarkupStart::Possible { start: 0 };
+        };
+        if !(boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/')) {
+            continue;
+        }
+        let Some((opening_end, _)) = text.char_indices().find(|(_, character)| *character == '>')
+        else {
+            return ToolMarkupStart::Possible { start: 0 };
+        };
+        let opening_end = opening_end + '>'.len_utf8();
+        let opening = &text[..opening_end];
+        return ToolMarkupStart::Opening {
+            start: 0,
+            tag,
+            opening_end,
+            self_closing: opening
+                .strip_suffix('>')
+                .is_some_and(|opening| opening.trim_end().ends_with('/')),
+        };
+    }
+    ToolMarkupStart::Plain
+}
+
+fn recognized_opening_tag(text: &str) -> Option<&'static str> {
+    for tag in TOOL_MARKUP_TAGS {
+        let prefix = format!("<{tag}");
+        if !starts_with_ci_ascii(text, &prefix) {
+            continue;
+        }
+        let boundary = text.as_bytes().get(prefix.len())?;
+        if boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/') {
+            return Some(tag);
+        }
+    }
+    None
+}
+
+fn next_same_tag_token(
+    text: &str,
+    from: usize,
+    opening_tag: &str,
+    closing_tag: &str,
+) -> Option<(usize, usize, bool, bool)> {
+    for (relative_start, _) in text[from..].match_indices('<') {
+        let start = from + relative_start;
+        let candidate = &text[start..];
+        let (token, is_closing) = if starts_with_ci_ascii(candidate, closing_tag) {
+            (closing_tag, true)
+        } else if starts_with_ci_ascii(candidate, opening_tag) {
+            (opening_tag, false)
+        } else {
+            continue;
+        };
+        let has_valid_boundary = is_closing
+            || candidate
+                .as_bytes()
+                .get(token.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+        if !has_valid_boundary {
+            continue;
+        }
+        let relative_end = candidate.find('>')?;
+        let end = start + relative_end + '>'.len_utf8();
+        let self_closing = !is_closing
+            && text[start..end]
+                .strip_suffix('>')
+                .is_some_and(|opening| opening.trim_end().ends_with('/'));
+        return Some((start, end, is_closing, self_closing));
+    }
+    None
+}
+
+fn trailing_markup_token_prefix(text: &str, tokens: &[&str]) -> String {
+    if let Some(start) = text.rfind('<') {
+        let suffix = &text[start..];
+        if tokens.iter().any(|token| {
+            starts_with_ci_ascii(suffix, token)
+                && suffix
+                    .as_bytes()
+                    .get(token.len())
+                    .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+                && !suffix.contains('>')
+        }) {
+            return suffix.to_string();
+        }
+    }
+    let max_len = tokens
+        .iter()
+        .map(|token| token.len())
+        .max()
+        .unwrap_or(0)
+        .min(text.len());
+    for len in (1..=max_len).rev() {
+        let Some(suffix) = text.get(text.len() - len..) else {
+            continue;
+        };
+        if tokens
+            .iter()
+            .any(|token| starts_with_ci_ascii(token, suffix))
+        {
+            return suffix.to_string();
+        }
+    }
+    String::new()
+}
+
+fn opening_tag(tag: &str) -> &'static str {
+    match tag {
+        "function_call" => "<function_call",
+        "tool_calls" => "<tool_calls",
+        "parameter" => "<parameter",
+        "function" => "<function",
+        "invoke" => "<invoke",
+        "think" => "<think",
+        "tool" => "<tool",
+        _ => unreachable!("tool markup tag is selected from a closed set"),
+    }
+}
+
+fn closing_tag(tag: &str) -> &'static str {
+    match tag {
+        "function_call" => "</function_call>",
+        "tool_calls" => "</tool_calls>",
+        "parameter" => "</parameter>",
+        "function" => "</function>",
+        "invoke" => "</invoke>",
+        "think" => "</think>",
+        "tool" => "</tool>",
+        _ => unreachable!("tool markup tag is selected from a closed set"),
+    }
+}
+
+fn starts_with_ci_ascii(text: &str, prefix: &str) -> bool {
+    text.len() >= prefix.len()
+        && text
+            .as_bytes()
+            .iter()
+            .zip(prefix.as_bytes())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2174,6 +2488,24 @@ pub(crate) fn chat_json_to_responses_with_policy(
     tool_policy: &ToolPolicyConfig,
     continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
 ) -> Value {
+    chat_json_to_responses_with_tool_markup_suppression(
+        value,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        continue_guard,
+        false,
+    )
+}
+
+pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
+    value: Value,
+    custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
+    tool_policy: &ToolPolicyConfig,
+    continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
+    suppress_duplicate_tool_markup: bool,
+) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
         .get("id")
@@ -2189,7 +2521,23 @@ pub(crate) fn chat_json_to_responses_with_policy(
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
-        let content = chat_message_text(message);
+        let native_tool_call_seen = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty())
+                })
+            });
+        let mut content = chat_message_text(message);
+        let original_content_was_empty = content.is_empty();
+        if suppress_duplicate_tool_markup && native_tool_call_seen {
+            content = sanitized_chat_message_text(message);
+        }
+        let content_suppressed = !original_content_was_empty && content.is_empty();
         let mut message_parts = Vec::new();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
@@ -2205,7 +2553,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                 "role": "assistant",
                 "content": message_parts
             }));
-        } else if message.get("content").is_some() {
+        } else if message.get("content").is_some() && !content_suppressed {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -2258,6 +2606,36 @@ fn chat_finish_reason(choice: &Value) -> Option<&str> {
 
 fn chat_message_text(message: &Value) -> String {
     chat_content_text(message.get("content"))
+}
+
+fn sanitized_chat_message_text(message: &Value) -> String {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    match message.get("content") {
+        Some(Value::String(text)) => {
+            let mut content = sanitizer.push(text);
+            content.push_str(&sanitizer.finish());
+            content
+        }
+        Some(Value::Array(items)) => {
+            let mut sanitized_parts = Vec::new();
+            for part in items.iter().filter_map(chat_content_part_text) {
+                let sanitized = sanitizer.push(part);
+                if !sanitized.is_empty() {
+                    sanitized_parts.push(sanitized);
+                }
+            }
+            let tail = sanitizer.finish();
+            if !tail.is_empty() {
+                sanitized_parts.push(tail);
+            }
+            let parts = sanitized_parts
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            join_chat_content_parts(&parts)
+        }
+        _ => String::new(),
+    }
 }
 
 fn chat_content_text(content: Option<&Value>) -> String {

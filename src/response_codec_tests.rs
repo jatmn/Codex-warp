@@ -5394,6 +5394,69 @@ async fn chat_stream_transport_error_still_fails() {
     );
 }
 
+#[tokio::test]
+async fn chat_stream_failure_restores_unconfirmed_tool_like_content() {
+    let stream = futures_util::stream::iter([
+        Ok::<Bytes, std::io::Error>(Bytes::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"<function>documentation</function>\"}}]}\n\n",
+        )),
+        Err(std::io::Error::other("connection reset")),
+    ]);
+    let upstream = axum::http::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .body(reqwest::Body::wrap_stream(stream))
+        .expect("test response builds")
+        .into();
+    let events = collect_chat_stream_text(
+        chat_stream_to_responses_with_tool_markup_suppression(
+            upstream,
+            "resp_transport".to_string(),
+            BTreeSet::new(),
+            NamespaceHelpers::default(),
+            crate::config::ToolPolicyConfig::default(),
+            DebugLog::disabled(),
+            "dbg_transport".to_string(),
+            ContinueGuardState::default(),
+            None,
+            true,
+        )
+        .collect::<Vec<_>>()
+        .await,
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<function>documentation</function>")),
+        "unconfirmed content disappeared on failure: {events:?}"
+    );
+    assert!(events.iter().any(|event| event.contains("response.failed")));
+}
+
+#[test]
+fn chat_stream_failure_restores_confirmed_standalone_tool_body() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool>"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Working on it."}}]
+    }));
+
+    let events = accum.failure_content_events();
+    assert!(events.iter().any(|event| event.contains("Working on it.")));
+    assert!(!events.iter().any(|event| event.contains("<tool>")));
+}
+
 /// Regression for the deepseek-v4-pro `<parameter>` spam: the model emits native
 /// `tool_calls` AND leaks tool-markup fragments ("<parameter ...", "<tool ...") as
 /// `delta.content`. Those fragments must NOT be forwarded as assistant text.
@@ -5509,5 +5572,787 @@ fn deepseek_v4_pro_tool_markup_in_content_is_suppressed() {
             .iter()
             .any(|e| e.contains("<hello>this is not a tool tag</hello>")),
         "non-tool XML-looking content was suppressed"
+    );
+}
+
+#[test]
+fn deepseek_tool_markup_split_across_content_deltas_is_suppressed() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    let first = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<par"}}]
+    }));
+    let second = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "ameter name=\"cmd\">rg -n spam</parameter>"}}]
+    }));
+    assert!(first.is_empty(), "partial prefix was emitted: {first:?}");
+    assert!(
+        second.is_empty(),
+        "candidate markup was emitted: {second:?}"
+    );
+    let legitimate = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Working on it."}}]
+    }));
+    assert!(
+        legitimate.is_empty(),
+        "content following an unresolved candidate was emitted out of order: {legitimate:?}"
+    );
+
+    let confirmed = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{\"cmd\":\"rg -n spam\"}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+    assert!(
+        confirmed
+            .iter()
+            .any(|event| event.contains("Working on it.")),
+        "legitimate deferred content was not restored: {confirmed:?}"
+    );
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(events.iter().any(|event| event.contains("exec_command")));
+    assert!(events.iter().any(|event| event.contains("Working on it.")));
+    assert!(
+        !events.iter().any(|event| event.contains("<parameter")),
+        "split markup leaked into output: {events:?}"
+    );
+}
+
+#[test]
+fn unfinished_tool_tag_prefix_is_suppressed_at_native_call_completion() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    let partial = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<par"}}]
+    }));
+    assert!(
+        partial.is_empty(),
+        "partial prefix was emitted: {partial:?}"
+    );
+
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{}"}
+            }]}
+        }]
+    }));
+    let terminal = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {}, "finish_reason": "tool_calls"}]
+    }));
+    let events = terminal
+        .into_iter()
+        .chain(accum.finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+        ))
+        .collect::<Vec<_>>();
+
+    assert!(events.iter().any(|event| event.contains("exec_command")));
+    assert!(
+        !events.iter().any(|event| event.contains("<par")),
+        "unfinished duplicate prefix leaked into output: {events:?}"
+    );
+}
+
+#[test]
+fn tool_markup_body_and_close_split_across_deltas_are_suppressed() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<parameter name=\"cmd\">"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "rg -n spam"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "</para"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "meter>Working on it."}}]
+    }));
+    let confirmed = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    assert!(
+        confirmed
+            .iter()
+            .any(|event| event.contains("Working on it.")),
+        "legitimate suffix was not emitted: {confirmed:?}"
+    );
+    assert!(
+        !confirmed.iter().any(|event| {
+            event.contains("rg -n spam")
+                || event.contains("<parameter")
+                || event.contains("</parameter>")
+        }),
+        "split markup leaked into output: {confirmed:?}"
+    );
+}
+
+#[test]
+fn tool_markup_body_split_after_native_call_is_suppressed() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    for content in [
+        "<parameter name=\"cmd\">",
+        "rg -n spam",
+        "</para",
+        "meter>Working on it.",
+    ] {
+        let events = accum.apply_chat_chunk(&json!({
+            "choices": [{"delta": {"content": content}}]
+        }));
+        assert!(
+            !events.iter().any(|event| event.contains("rg -n spam")),
+            "split body leaked before its close: {events:?}"
+        );
+        if content.ends_with("Working on it.") {
+            assert!(events.iter().any(|event| event.contains("Working on it.")));
+        }
+    }
+}
+
+#[test]
+fn malformed_native_tool_call_does_not_confirm_markup_suppression() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<parameter>docs</parameter>"}}]
+    }));
+    let terminal = accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{}]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    assert!(
+        terminal
+            .iter()
+            .any(|event| event.contains("<parameter>docs</parameter>")),
+        "malformed tool call erased legitimate content: {terminal:?}"
+    );
+}
+
+#[test]
+fn coalesced_tool_markup_preserves_legitimate_suffix() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{}"}
+            }]}
+        }]
+    }));
+    let content = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {
+            "content": "<parameter name=\"cmd\">rg -n spam</parameter>\nWorking on it."
+        }}]
+    }));
+
+    assert!(content.iter().any(|event| event.contains("Working on it.")));
+    assert!(!content.iter().any(|event| event.contains("rg -n spam")));
+}
+
+#[test]
+fn prose_before_split_tool_markup_is_preserved_without_leaking_markup() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    let first = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Working.<par"}}]
+    }));
+    let second = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "ameter name=\"cmd\">rg</parameter>Done."}}]
+    }));
+    let events = first.into_iter().chain(second).collect::<Vec<_>>();
+
+    assert!(events.iter().any(|event| event.contains("Working.")));
+    assert!(events.iter().any(|event| event.contains("Done.")));
+    assert!(!events.iter().any(|event| event.contains("<parameter")));
+    assert!(!events.iter().any(|event| event.contains("rg</parameter>")));
+}
+
+#[test]
+fn tool_and_tool_calls_wrappers_are_suppressed_as_complete_elements() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    let tool = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool>exec_command</tool>After tool."}}]
+    }));
+    let wrapper = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool_calls><invoke name=\"exec_command\">x</invoke></tool_calls>After wrapper."}}]
+    }));
+    let events = tool.into_iter().chain(wrapper).collect::<Vec<_>>();
+
+    assert!(events.iter().any(|event| event.contains("After tool.")));
+    assert!(events.iter().any(|event| event.contains("After wrapper.")));
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.contains("exec_command</tool>"))
+    );
+    assert!(!events.iter().any(|event| event.contains("</tool>")));
+    assert!(!events.iter().any(|event| event.contains("command</tool")));
+    assert!(!events.iter().any(|event| event.contains("<tool_calls>")));
+}
+
+#[test]
+fn nested_tool_wrapper_close_split_across_deltas_is_suppressed() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    let first = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool><invoke name=\"exec_command\">x</invoke>"}}]
+    }));
+    let second = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "</tool>After"}}]
+    }));
+    let events = first.into_iter().chain(second).collect::<Vec<_>>();
+
+    assert!(events.iter().any(|event| event.contains("After")));
+    assert!(!events.iter().any(|event| event.contains("</tool>")));
+    assert!(!events.iter().any(|event| event.contains("<invoke")));
+}
+
+#[test]
+fn nested_tool_wrapper_with_text_prefix_is_fully_suppressed() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    let content = sanitizer
+        .push("<tool>exec_command<invoke name=\"exec_command\">x</invoke></tool>After")
+        + &sanitizer.finish();
+    assert_eq!(content, "After");
+}
+
+#[test]
+fn same_tag_nesting_waits_for_the_outer_close() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<tool_calls><tool_calls data=\"split"), "");
+    assert_eq!(
+        sanitizer.push("\">x</tool_calls></tool_calls>After"),
+        "After"
+    );
+}
+
+#[test]
+fn escaped_markup_remains_literal_across_content_boundaries() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("Use \\"), "Use \\");
+    assert_eq!(
+        sanitizer.push("<parameter>name</parameter> in docs. \\\\"),
+        "<parameter>name</parameter> in docs. \\\\"
+    );
+    assert_eq!(sanitizer.push("<invoke>duplicate</invoke>After"), "After");
+}
+
+#[test]
+fn markdown_code_blocks_remain_literal_when_a_native_call_coexists() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    let prefix = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Here is XML:\n``"}}]
+    }));
+    let split_fence = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "`xml\n"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    let fenced = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<function>docs</function>\n```\n"}}]
+    }));
+    let indented = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "    <parameter>example</parameter>\n"}}]
+    }));
+    let tilde_fence = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "~~~xml\n<invoke>docs</invoke>\n~~~\n"}}]
+    }));
+    let events = prefix
+        .into_iter()
+        .chain(split_fence)
+        .chain(fenced)
+        .chain(indented)
+        .chain(tilde_fence)
+        .collect::<Vec<_>>();
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<function>docs</function>"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<parameter>example</parameter>"))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<invoke>docs</invoke>"))
+    );
+}
+
+#[test]
+fn markdown_delimiters_only_close_the_matching_code_context() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    let content = sanitizer.push(concat!(
+        "````xml\n",
+        "~~~~\n<function>A</function>\n",
+        "```\n<invoke>B</invoke>\n",
+        "````\n",
+        "`code ~ <think>C</think> `\n",
+        "<parameter>duplicate</parameter>After"
+    ));
+    let content = content + &sanitizer.finish();
+
+    assert!(content.contains("<function>A</function>"));
+    assert!(content.contains("<invoke>B</invoke>"));
+    assert!(content.contains("<think>C</think>"));
+    assert!(content.ends_with("After"));
+    assert!(!content.contains("duplicate"));
+    assert!(!content.contains("<parameter>"));
+}
+
+#[test]
+fn multiline_inline_code_span_remains_literal() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    let content = sanitizer
+        .push("`example\n<parameter>literal</parameter>\n` <invoke>duplicate</invoke>After")
+        + &sanitizer.finish();
+
+    assert!(content.contains("<parameter>literal</parameter>"));
+    assert!(!content.contains("duplicate"));
+    assert!(content.ends_with("After"));
+}
+
+#[test]
+fn deferred_content_replays_from_its_starting_markdown_state() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "```xml\nexample\n"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "```\n<parameter>duplicate</parameter>After"}}]
+    }));
+    let confirmed = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+
+    assert!(confirmed.iter().any(|event| event.contains("After")));
+    assert!(!confirmed.iter().any(|event| event.contains("duplicate")));
+    assert!(!confirmed.iter().any(|event| event.contains("<parameter>")));
+}
+
+#[test]
+fn midline_chunk_whitespace_is_preserved_around_suppressed_markup() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Before"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": " <parameter>x</parameter>After"}}]
+    }));
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(events.iter().any(|event| event.contains("Before After")));
+}
+
+#[test]
+fn dense_and_split_markup_is_sanitized_without_reprocessing_prior_bytes() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    let dense = "<parameter/>".repeat(2_000) + "After";
+    assert_eq!(sanitizer.push(&dense), "After");
+
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<parameter name=\""), "");
+    assert_eq!(sanitizer.pending_tag, Some("parameter"));
+    for _ in 0..2_000 {
+        assert_eq!(sanitizer.push("x"), "");
+    }
+    assert_eq!(sanitizer.push("\"/>After"), "After");
+
+    let mut slash_boundary = ToolMarkupSanitizer::default();
+    assert_eq!(slash_boundary.push("<invoke/"), "");
+    assert_eq!(slash_boundary.pending_tag, Some("invoke"));
+}
+
+#[test]
+fn split_and_prefixed_fence_runs_preserve_only_their_code_contents() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("prefix `"), "prefix `");
+    assert_eq!(sanitizer.push("``"), "``");
+    assert_eq!(
+        sanitizer.push("xml\n<function>literal</function>\n"),
+        "xml\n<function>literal</function>\n"
+    );
+    assert_eq!(
+        sanitizer.push("```\n<parameter>duplicate</parameter>After"),
+        "```\nAfter"
+    );
+
+    let mut prefixed = ToolMarkupSanitizer::default();
+    let content = prefixed.push(
+        "prefix ```xml\n<invoke>literal</invoke>\n```\n<parameter>duplicate</parameter>After",
+    );
+    assert!(content.contains("<invoke>literal</invoke>"));
+    assert!(!content.contains("duplicate"));
+    assert!(content.ends_with("After"));
+}
+
+#[test]
+fn standalone_tool_marker_preserves_following_text_at_completion() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool>"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Working on it."}, "finish_reason": "tool_calls"}]
+    }));
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(events.iter().any(|event| event.contains("Working on it.")));
+    assert!(!events.iter().any(|event| event.contains("<tool>")));
+}
+
+#[test]
+fn tool_like_content_without_a_native_call_is_preserved_in_order() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<function>fn x() {}</function>"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": " remains documentation"}, "finish_reason": "stop"}]
+    }));
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(
+        events.iter().any(|event| {
+            event.contains("<function>fn x() {}</function> remains documentation")
+        })
+    );
+}
+
+#[test]
+fn unfinished_tool_prefix_without_a_native_call_is_preserved() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<par"}}]
+    }));
+    let terminal = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    }));
+
+    assert!(
+        terminal.iter().any(|event| event.contains("<par")),
+        "unconfirmed partial content was lost: {terminal:?}"
+    );
+}
+
+#[test]
+fn deferred_content_without_a_finish_reason_is_restored_on_done() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<function>docs</function>"}}]
+    }));
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<function>docs</function>")),
+        "DONE completion lost unconfirmed content: {events:?}"
+    );
+}
+
+#[test]
+fn tool_tag_name_extensions_are_not_suppressed() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "<tool"}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": "{}"}
+            }]}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "box>hammer</toolbox>"}, "finish_reason": "tool_calls"}]
+    }));
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<toolbox>hammer</toolbox>")),
+        "valid XML-like content was suppressed: {events:?}"
+    );
+}
+
+#[test]
+fn non_stream_duplicate_tool_markup_is_suppressed_only_with_a_native_call() {
+    let convert = |content: &str, tool_calls: Option<Value>| {
+        let mut message = json!({"role": "assistant", "content": content});
+        if let Some(tool_calls) = tool_calls {
+            message["tool_calls"] = tool_calls;
+        }
+        chat_json_to_responses_with_tool_markup_suppression(
+            json!({
+                "id": "chat_test",
+                "choices": [{"message": message, "finish_reason": "tool_calls"}]
+            }),
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+            true,
+        )
+    };
+    let native_call = json!([{
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "exec_command", "arguments": "{}"}
+    }]);
+
+    let split_array = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "id": "chat_parts",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "<para"},
+                        {"type": "text", "text": "meter name=\"cmd\">rg</parameter>After"}
+                    ],
+                    "tool_calls": native_call.clone()
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        true,
+    );
+    assert_eq!(split_array["output"][0]["content"][0]["text"], "After");
+
+    let fenced = convert(
+        "Here is XML:\n```xml\n<function>docs</function>\n```",
+        Some(native_call.clone()),
+    );
+    assert_eq!(
+        fenced["output"][0]["content"][0]["text"],
+        "Here is XML:\n```xml\n<function>docs</function>\n```"
+    );
+
+    let duplicate = convert(
+        "<parameter name=\"cmd\">rg -n spam</parameter>",
+        Some(native_call.clone()),
+    );
+    assert!(
+        duplicate["output"]
+            .as_array()
+            .expect("output array")
+            .iter()
+            .all(|item| item["type"] != "message"),
+        "duplicate markup remained in non-stream output: {duplicate}"
+    );
+    assert!(
+        duplicate["output"]
+            .as_array()
+            .expect("output array")
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["name"] == "exec_command")
+    );
+
+    let without_call = convert("<function>fn x() {}</function>", None);
+    assert_eq!(
+        without_call["output"][0]["content"][0]["text"],
+        "<function>fn x() {}</function>"
+    );
+
+    let extended_name = convert("<functionality>docs</functionality>", Some(native_call));
+    assert_eq!(
+        extended_name["output"][0]["content"][0]["text"],
+        "<functionality>docs</functionality>"
+    );
+
+    let suffix = convert(
+        "<parameter name=\"cmd\">rg -n spam</parameter>\nWorking on it.",
+        Some(json!([{
+            "id": "call_2",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }])),
+    );
+    assert_eq!(
+        suffix["output"][0]["content"][0]["text"],
+        "\nWorking on it."
+    );
+
+    let prefixed = convert(
+        "Working.\n<parameter name=\"cmd\">rg -n spam</parameter>Done.",
+        Some(json!([{
+            "id": "call_5",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }])),
+    );
+    assert_eq!(
+        prefixed["output"][0]["content"][0]["text"],
+        "Working.\nDone."
+    );
+
+    let self_closing = convert(
+        "  <parameter name=\"cmd\" />Working on it.",
+        Some(json!([{
+            "id": "call_3",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }])),
+    );
+    assert_eq!(
+        self_closing["output"][0]["content"][0]["text"],
+        "Working on it."
+    );
+
+    let empty_content = convert(
+        "",
+        Some(json!([{
+            "id": "call_4",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }])),
+    );
+    assert!(
+        empty_content["output"]
+            .as_array()
+            .expect("output array")
+            .iter()
+            .any(|item| item["type"] == "message"),
+        "an originally empty message was mistaken for suppressed content: {empty_content}"
+    );
+
+    let malformed = convert(
+        "<parameter>docs</parameter>",
+        Some(json!([{"function": {"arguments": "{}"}}])),
+    );
+    assert_eq!(
+        malformed["output"][0]["content"][0]["text"],
+        "<parameter>docs</parameter>"
     );
 }

@@ -29,7 +29,7 @@ use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
-use crate::response_codec::chat_json_to_responses_with_policy;
+use crate::response_codec::chat_json_to_responses_with_tool_markup_suppression;
 use crate::response_codec::chat_stream_to_responses_with_tool_markup_suppression;
 use crate::response_codec::chat_usage_to_responses_usage;
 use crate::response_codec::morph_native_response_value;
@@ -454,12 +454,13 @@ pub(crate) async fn proxy_chat_responses(
                         (!normalized_usage.is_null()).then_some(&normalized_usage),
                     );
                 }
-                Json(chat_json_to_responses_with_policy(
+                Json(chat_json_to_responses_with_tool_markup_suppression(
                     value,
                     &chat_transform.custom_tool_names,
                     &chat_transform.namespace_helpers,
                     &tool_policy,
                     Some((&state.debug_log, &request_log_id, &continue_guard)),
+                    selected.transform.suppress_duplicate_tool_markup,
                 ))
                 .into_response()
             }

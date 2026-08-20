@@ -47,6 +47,12 @@ fn selected_provider_applies_matching_model_family_transform() {
         &config.provider,
         Some("deepseek-v4-flash"),
     );
+    let v4_pro = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("deepseek-v4-pro"),
+    );
 
     assert!(
         !v3_2
@@ -63,6 +69,8 @@ fn selected_provider_applies_matching_model_family_transform() {
             .any(|morph| morph.kind == crate::config::RequestMorphKind::ThinkingType)
     );
     assert_eq!(v4_flash.transform.force_parallel_tool_calls, Some(false));
+    assert!(!v4_flash.transform.suppress_duplicate_tool_markup);
+    assert!(v4_pro.transform.suppress_duplicate_tool_markup);
 }
 
 #[test]

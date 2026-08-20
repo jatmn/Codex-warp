@@ -962,6 +962,49 @@ async fn ordinary_chat_request_without_schema_is_unchanged() {
 }
 
 #[tokio::test]
+async fn non_stream_chat_route_applies_duplicate_tool_markup_suppression() {
+    let (base_url, _bodies, server) = spawn_chat_script(vec![(
+        200,
+        json!({
+            "id": "chat_test",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "<parameter name=\"cmd\">rg -n spam</parameter>",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\":\"rg -n spam\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+    )])
+    .await;
+    let mut selected = selected_provider_at(&base_url);
+    selected.transform.suppress_duplicate_tool_markup = true;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected,
+        HeaderMap::new(),
+        json!({
+            "model": "deepseek-v4-pro",
+            "stream": false,
+            "input": "run rg"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    let output = body["output"].as_array().expect("output array");
+    assert_eq!(output.len(), 1, "duplicate message remained: {body}");
+    assert_eq!(output[0]["type"], "function_call");
+    assert_eq!(output[0]["name"], "exec_command");
+    server.abort();
+}
+
+#[tokio::test]
 async fn json_object_capability_cache_skips_known_failing_json_schema() {
     let (base_url, bodies, server) = spawn_chat_script(vec![
         (
