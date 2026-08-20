@@ -168,6 +168,12 @@ first execution of these checks. Install the versioned hooks once per checkout:
 bash scripts/install-git-hooks.sh
 ```
 
+For a non-`main` PR base, configure the hooks with the same base once:
+
+```bash
+bash scripts/install-git-hooks.sh --base origin/<base-branch>
+```
+
 `scripts/ci-preflight.sh` explicitly runs the non-Windows CI gates in this
 order: `cargo update --workspace --locked`; `typos`;
 `SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs

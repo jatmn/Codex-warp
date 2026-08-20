@@ -155,6 +155,13 @@ at commit and push time:
 bash scripts/install-git-hooks.sh
 ```
 
+For a non-`main` PR base, install the hooks with that base so automatic commit
+and push checks use the same target:
+
+```bash
+bash scripts/install-git-hooks.sh --base origin/<base-branch>
+```
+
 The preflight runs every Linux CI check explicitly: `cargo update --workspace
 --locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
 Web UI JavaScript syntax, chart harness, and crate-wide Clippy); `cargo test

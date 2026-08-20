@@ -51,9 +51,14 @@ require_command() {
 }
 
 require_command typos 'cargo install typos-cli --locked'
-require_command cargo-mutants 'cargo install cargo-mutants --locked'
 require_command cargo-deny 'cargo install cargo-deny --locked'
 require_command cargo-audit 'cargo install cargo-audit --locked'
+
+# Match CI's BASE_SHA...HEAD selection while retaining staged and unstaged
+# tracked changes for pre-commit. With a clean worktree this is exactly the
+# merge-base-to-HEAD PR diff; with pending changes it checks their prospective
+# contents against the same merge base.
+merge_base="$(git merge-base "$base_ref" HEAD)"
 
 echo 'ci-preflight: cargo update --workspace --locked'
 cargo update --workspace --locked
@@ -79,19 +84,20 @@ target/debug/codex-warp --version
 echo 'ci-preflight: target/debug/codex-warp --help'
 target/debug/codex-warp --help >/dev/null
 
-echo "ci-preflight: git diff --check $base_ref"
-git diff --check "$base_ref"
-
-if git ls-files --others --exclude-standard -- '*.rs' | grep -q .; then
-  echo 'ci-preflight: stage or remove untracked Rust files before running mutation checks' >&2
-  exit 2
-fi
+echo "ci-preflight: git diff --check $merge_base"
+git diff --check "$merge_base"
 
 mutants_diff="$(mktemp)"
-mutants_output_dir="$(mktemp -d)"
-trap 'rm -f "$mutants_diff"; rm -rf "$mutants_output_dir"' EXIT
-git diff "$base_ref" -- '*.rs' >"$mutants_diff"
+trap 'rm -f "$mutants_diff"' EXIT
+git diff "$merge_base" -- '*.rs' >"$mutants_diff"
 if [ -s "$mutants_diff" ]; then
+  require_command cargo-mutants 'cargo install cargo-mutants --locked'
+  if git ls-files --others --exclude-standard -- '*.rs' | grep -q .; then
+    echo 'ci-preflight: stage or remove untracked Rust files before running mutation checks' >&2
+    exit 2
+  fi
+  mutants_output_dir="$(mktemp -d)"
+  trap 'rm -f "$mutants_diff"; rm -rf "$mutants_output_dir"' EXIT
   echo "ci-preflight: cargo mutants -o $mutants_output_dir --no-shuffle -vV --in-diff $mutants_diff -- --locked"
   cargo mutants -o "$mutants_output_dir" --no-shuffle -vV --in-diff "$mutants_diff" -- --locked
 else
