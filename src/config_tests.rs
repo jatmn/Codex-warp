@@ -67,6 +67,7 @@ fn example_configs_parse_request_morphs() {
     );
     assert!(default_config.model_families.contains_key("z_ai_glm_5"));
     assert!(default_config.model_families.contains_key("z_ai_glm_5_2"));
+    assert!(default_config.model_families.contains_key("z_ai_glm_5_3"));
     assert!(default_config.model_families.contains_key("hy3"));
     assert!(default_config.model_families.contains_key("hy3_exact"));
     assert!(default_config.model_families.contains_key("hy3_tencent"));
@@ -1051,17 +1052,54 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
     );
 
-    // GLM-5.2: exact family forwards reasoning_effort alongside thinking.type.
-    let glm52 = config
+    // GLM-5.2 and GLM-5.3: exact families forward reasoning_effort alongside thinking.type.
+    assert_has_reasoning_effort_append_morph(&config, "z_ai_glm_5_2", "glm-5.2");
+    assert_has_reasoning_effort_append_morph(&config, "z_ai_glm_5_3", "glm-5.3");
+    let glm53 = config
         .model_families
-        .get("z_ai_glm_5_2")
-        .expect("glm-5.2 exact family exists");
+        .get("z_ai_glm_5_3")
+        .expect("glm-5.3 exact family exists");
+    assert_eq!(
+        glm53.model_metadata.default_reasoning_level.as_deref(),
+        Some("max")
+    );
+    assert_eq!(
+        glm53.model_metadata.supported_reasoning_levels,
+        Some(vec![
+            "low".to_string(),
+            "high".to_string(),
+            "max".to_string()
+        ])
+    );
+    assert_eq!(
+        glm53.transform.reasoning_effort_none_value.as_deref(),
+        Some("low")
+    );
+    assert_eq!(
+        glm53.transform.reasoning_effort_aliases.get("medium"),
+        Some(&"high".to_string())
+    );
     assert!(
-        glm52
+        glm53
+            .transform
+            .remove_chat_request_morphs
+            .iter()
+            .any(|morph| {
+                morph.from == "reasoning.effort"
+                    && morph.to.as_deref() == Some("thinking.type")
+                    && morph.kind == Some(RequestMorphKind::ThinkingType)
+            })
+    );
+    assert!(
+        glm53
             .transform
             .append_chat_request_morphs
             .iter()
-            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+            .any(|morph| {
+                morph.kind == RequestMorphKind::StaticString
+                    && morph.to.as_deref() == Some("thinking.type")
+                    && morph.value.as_deref() == Some("enabled")
+            })
     );
     let glm5 = config
         .model_families
@@ -1073,6 +1111,20 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .append_chat_request_morphs
             .iter()
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+}
+fn assert_has_reasoning_effort_append_morph(config: &AppConfig, family_id: &str, label: &str) {
+    let family = config
+        .model_families
+        .get(family_id)
+        .unwrap_or_else(|| panic!("{label} family should exist"));
+    assert!(
+        family
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort")),
+        "{label} should have a reasoning.effort -> reasoning_effort append morph"
     );
 }
 

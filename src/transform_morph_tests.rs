@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
+use std::collections::BTreeMap;
 
 #[test]
 fn reasoning_effort_none_value_remaps_none_in_top_level_and_reasoning_object() {
@@ -37,6 +38,25 @@ fn reasoning_effort_none_value_is_noop_when_unset() {
     let mut body = json!({"reasoning_effort": "none"});
     apply_reasoning_effort_none_value(&mut body, &transform);
     assert_eq!(body["reasoning_effort"], "none");
+}
+
+#[test]
+fn reasoning_effort_aliases_remap_top_level_and_native_reasoning_values() {
+    let transform = TransformConfig {
+        reasoning_effort_aliases: BTreeMap::from([
+            ("medium".to_string(), "high".to_string()),
+            ("xhigh".to_string(), "max".to_string()),
+        ]),
+        ..TransformConfig::default()
+    };
+
+    let mut body = json!({"reasoning_effort": "MEDIUM"});
+    apply_reasoning_effort_aliases(&mut body, &transform);
+    assert_eq!(body["reasoning_effort"], "high");
+
+    let mut body = json!({"reasoning": {"effort": "xhigh"}});
+    apply_reasoning_effort_aliases(&mut body, &transform);
+    assert_eq!(body["reasoning"]["effort"], "max");
 }
 
 #[test]

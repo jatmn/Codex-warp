@@ -214,7 +214,7 @@ the other headers) under `[provider.headers]` or `[providers.<id>.headers]`.
 | Alibaba Cloud | [`configs/model-families/qwen.toml`](configs/model-families/qwen.toml) | `qwen3.6-35b-a3b`; conservative broad defaults for `qwen3.6*` and `qwen3.7*` |
 | xAI | [`configs/model-families/x-ai.toml`](configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-build-0.1` |
 | Xiaomi | [`configs/model-families/xiaomi.toml`](configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
-| Z.ai | [`configs/model-families/z-ai.toml`](configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2` |
+| Z.ai | [`configs/model-families/z-ai.toml`](configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2`, `glm-5.3` |
 | Tencent Hunyuan 3 (Hy3) | [`configs/model-families/hy3.toml`](configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
 
 ## More Docs

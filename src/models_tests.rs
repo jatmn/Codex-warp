@@ -446,6 +446,28 @@ fn deepseek_family_metadata_is_variant_specific() {
 }
 
 #[test]
+fn glm_5_3_family_metadata_matches_its_upstream_reasoning_contract() {
+    let body =
+        Bytes::from_static(br#"{"object":"list","data":[{"id":"glm-5.3","object":"model"}]}"#);
+    let provider = ProviderConfig::default();
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    let models = normalize_models(&body, &provider, &config).expect("models are normalized");
+
+    assert_eq!(models[0]["context_window"], 1_000_000);
+    assert_eq!(models[0]["input_modalities"], json!(["text"]));
+    assert_eq!(models[0]["default_reasoning_level"], "max");
+    assert_eq!(
+        models[0]["supported_reasoning_levels"],
+        json!([
+            {"effort": "low", "description": "low"},
+            {"effort": "high", "description": "high"},
+            {"effort": "max", "description": "max"}
+        ])
+    );
+}
+
+#[test]
 fn mimo_family_metadata_replaces_xiaomi_provider_overrides() {
     let body = Bytes::from_static(
             br#"{"object":"list","data":[{"id":"mimo-v2.5","object":"model"},{"id":"mimo-v2.5-pro","object":"model"}]}"#,

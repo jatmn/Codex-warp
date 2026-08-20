@@ -10,9 +10,11 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
+use crate::config::Backend;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
+use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
 
 fn test_state(config: AppConfig) -> AppState {
@@ -398,6 +400,76 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     assert_eq!(glm_high.body["reasoning_effort"], "high");
     assert_eq!(glm_high.body["thinking"]["type"], "enabled");
 
+    let glm53 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.3"),
+    );
+    let glm53_max = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "max"},
+            "stream": true
+        }),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_max.body["reasoning_effort"], "max");
+    assert_eq!(glm53_max.body["thinking"]["type"], "enabled");
+
+    let glm53_none = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_none.body["reasoning_effort"], "low");
+    assert_eq!(glm53_none.body["thinking"]["type"], "enabled");
+
+    for (input, expected) in [("medium", "high"), ("minimal", "low"), ("xhigh", "max")] {
+        let transformed = responses_to_chat(
+            json!({
+                "model": "glm-5.3",
+                "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                "reasoning": {"effort": input},
+                "stream": true
+            }),
+            &glm53.transform,
+        );
+        assert_eq!(transformed.body["reasoning_effort"], expected);
+        assert_eq!(transformed.body["thinking"]["type"], "enabled");
+    }
+
+    let glm53_native = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "medium"}}),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_native.body["reasoning"]["effort"], "high");
+    let glm53_native_none = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "none"}}),
+        &glm53.transform,
+    );
+    assert_eq!(glm53_native_none.body["reasoning"]["effort"], "low");
+
+    let mut native_config = config.clone();
+    native_config.transform.backend = Backend::Responses;
+    let glm53_native_provider = selected_provider(
+        &native_config,
+        PRIMARY_PROVIDER_ID,
+        &native_config.provider,
+        Some("glm-5.3"),
+    );
+    let glm53_native = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "medium"}}),
+        &glm53_native_provider.transform,
+    );
+    assert_eq!(glm53_native.body["reasoning"]["effort"], "high");
+    assert_eq!(glm53_native.body["thinking"]["type"], "enabled");
+
     let grok45 = selected_provider(
         &config,
         PRIMARY_PROVIDER_ID,
@@ -509,6 +581,60 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(hy3_tencent_high.body["reasoning_effort"], "high");
     assert_eq!(hy3_tencent_high.body["thinking"]["type"], "enabled");
+}
+
+#[test]
+fn glm_5_3_clears_unknown_reasoning_history_for_tool_continuations() {
+    let mut config = load_config_layers(&[]).expect("default config loads");
+    config.provider.base_url = "https://provider.example/v1".to_string();
+    let selected = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("glm-5.3"),
+    );
+    let transformed = responses_to_chat(
+        json!({
+            "model": "glm-5.3",
+            "input": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Need the lookup."}]
+                },
+                {
+                    "type": "function_call",
+                    "name": "lookup",
+                    "arguments": "{\"query\":\"value\"}",
+                    "call_id": "call_1"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "result"
+                }
+            ],
+            "stream": true
+        }),
+        &selected.transform,
+    );
+
+    assert!(
+        transformed.body["messages"][0]
+            .get("reasoning_content")
+            .is_none(),
+        "unknown Responses reasoning history must not be replayed as preserved Z.ai thinking"
+    );
+    assert_eq!(
+        transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+    assert_eq!(transformed.body["messages"][1]["role"], "tool");
+    assert_eq!(transformed.body["messages"][1]["content"], "result");
+    assert_eq!(transformed.body["thinking"]["type"], "enabled");
+    assert!(
+        transformed.body["thinking"].get("clear_thinking").is_none(),
+        "GLM-5.3 must retain Z.ai's safe clearing default when history provenance is unknown"
+    );
 }
 
 #[tokio::test]

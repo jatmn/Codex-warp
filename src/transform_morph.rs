@@ -84,6 +84,27 @@ pub(crate) fn apply_reasoning_effort_none_value(body: &mut Value, transform: &Tr
     }
 }
 
+pub(crate) fn apply_reasoning_effort_aliases(body: &mut Value, transform: &TransformConfig) {
+    let remap = |effort: &mut String| {
+        if let Some(value) = transform
+            .reasoning_effort_aliases
+            .get(&effort.to_ascii_lowercase())
+        {
+            *effort = value.clone();
+        }
+    };
+    if let Some(Value::String(effort)) = body.get_mut("reasoning_effort") {
+        remap(effort);
+    }
+    if let Some(Value::String(effort)) = body
+        .get_mut("reasoning")
+        .and_then(Value::as_object_mut)
+        .and_then(|reasoning| reasoning.get_mut("effort"))
+    {
+        remap(effort);
+    }
+}
+
 pub(crate) fn strip_disabled_reasoning_effort(body: &mut Value, transform: &TransformConfig) {
     let strips_disable_effort = transform
         .chat_request_morphs

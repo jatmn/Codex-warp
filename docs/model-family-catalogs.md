@@ -31,7 +31,7 @@ Provider/gateway behavior belongs in
 | Alibaba Cloud | [`qwen.toml`](../configs/model-families/qwen.toml) | `qwen3.6-35b-a3b`; conservative broad defaults for `qwen3.6*` and `qwen3.7*` |
 | xAI | [`x-ai.toml`](../configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-build-0.1` |
 | Xiaomi | [`xiaomi.toml`](../configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
-| Z.ai | [`z-ai.toml`](../configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2` |
+| Z.ai | [`z-ai.toml`](../configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2`, `glm-5.3` |
 | Tencent Hunyuan 3 (Hy3) | [`hy3.toml`](../configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
 
 The default catalogs live in
@@ -68,6 +68,7 @@ transform behavior.
 | Xiaomi | `mimo-v2.5-pro` | 1,000k | text | low, medium, high; default medium | provider/default | Gateway profile does not carry model-specific overrides. |
 | Z.ai | `glm-5`, `glm-5.1` family | 200k | text | low, medium, high; default medium | provider/default | Broad GLM-5 transform converts `reasoning.effort` to `thinking.type`; forces `parallel_tool_calls = false`. |
 | Z.ai | `glm-5.2` | 1,000k | text | low, medium, high; default medium | provider/default | Inherits broad GLM-5 transform; forwards `reasoning_effort` alongside `thinking.type` (GLM-5.2 honors it natively). |
+| Z.ai | `glm-5.3` | 1,000k | text | low, high, max; default max | provider/default | Always enables thinking; forwards `reasoning_effort`, and maps disable and legacy Codex effort names to valid levels. |
 | Tencent Hy3 | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` | 256k | text | none, low, high; default high | provider/default | 256K MoE model with hybrid thinking. Drops `medium` from advertised levels and maps `none` -> `no_think` via `reasoning_effort_none_value`; coerces Codex `custom` tools to functions (`as_function`); forces `parallel_tool_calls = false`; sets `preserve_reasoning_content_history = true` for multi-turn tool+reasoning loops. Reasoning is surfaced from provider `reasoning_details`/`reasoning_content`/`reasoning` fields. |
 
 ## Matching And Priority
@@ -186,6 +187,7 @@ Transforms let a model entry override or adjust request translation.
 | `unsupported_tool_types` | Tool types to rewrite, drop, or pass through. |
 | `unsupported_tool_strategy` | `drop`, `as_function`, or `passthrough`. |
 | `reasoning_effort_none_value` | Remap disable-effort synonyms (`none`, `off`, `disabled`) on `reasoning_effort` to a provider-valid fallback (for example `no_think` on Hy3 or `low` on grok-4.5). |
+| `reasoning_effort_aliases` | Remap non-native effort names to provider-valid levels after request morphs, for example `medium` to `high`. |
 | `drop_empty_tool_choice` | Whether to avoid forwarding empty/default tool choice. |
 | `force_parallel_tool_calls` | Force `parallel_tool_calls` to a boolean value. |
 | `request_stream_options_include_usage` | Defaults to `false` for compatibility with gateways that reject `stream_options`. Enable it for providers that support `stream_options.include_usage`; when enabled, it is added if the caller did not supply `stream_options`. |
