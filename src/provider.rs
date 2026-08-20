@@ -10,8 +10,6 @@ use crate::config::provider_id_for_config_model;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 
-const MAX_SESSION_MODELS: usize = 1024;
-
 pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value) -> bool {
     let Some(model) = body
         .get("model")
@@ -21,7 +19,6 @@ pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value
         return false;
     };
     if model != "codex-auto-review" {
-        remember_session_model(state, body, &model).await;
         return false;
     }
 
@@ -32,7 +29,7 @@ pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value
         .clone()
         .filter(|model| !model.is_empty());
     let session_model = match guardian_session_key(body) {
-        Some(key) => state.session_models.read().await.get(key).cloned(),
+        Some(key) => state.session_models.write().await.get(key),
         None => None,
     };
     let Some(model) = configured_model.or(session_model) else {
@@ -42,7 +39,14 @@ pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value
     true
 }
 
-async fn remember_session_model(state: &AppState, body: &Value, model: &str) {
+pub(crate) async fn remember_session_model(state: &AppState, body: &Value) {
+    let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+    else {
+        return;
+    };
     let Some(key) = body
         .get("prompt_cache_key")
         .and_then(Value::as_str)
@@ -50,13 +54,7 @@ async fn remember_session_model(state: &AppState, body: &Value, model: &str) {
     else {
         return;
     };
-    let mut session_models = state.session_models.write().await;
-    if !session_models.contains_key(key) && session_models.len() >= MAX_SESSION_MODELS {
-        if let Some(oldest_key) = session_models.keys().next().cloned() {
-            session_models.remove(&oldest_key);
-        }
-    }
-    session_models.insert(key.to_string(), model.to_string());
+    state.session_models.write().await.remember(key, model);
 }
 
 fn guardian_session_key(body: &Value) -> Option<&str> {

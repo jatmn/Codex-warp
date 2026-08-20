@@ -657,6 +657,7 @@ pub(crate) fn codex_model_info(
         synthetic_model_info(id)
     };
 
+    let provider_supplied_auto_review_target = model.get("auto_review_model_override").is_some();
     apply_provider_model_metadata(&mut info, model);
     for family in matching_model_families(config, id) {
         apply_model_metadata_config(&mut info, &family.model_metadata);
@@ -665,12 +666,22 @@ pub(crate) fn codex_model_info(
     if let Some(overrides) = provider.model_metadata.overrides.get(id) {
         apply_model_metadata_config(&mut info, overrides);
     }
-    localize_auto_review_model_override(&mut info, id, provider);
+    localize_auto_review_model_override(
+        &mut info,
+        id,
+        provider,
+        provider_supplied_auto_review_target,
+    );
 
     Some(info)
 }
 
-fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &ProviderConfig) {
+fn localize_auto_review_model_override(
+    info: &mut Value,
+    id: &str,
+    provider: &ProviderConfig,
+    provider_supplied_target: bool,
+) {
     let Some(target) = info
         .get("auto_review_model_override")
         .and_then(Value::as_str)
@@ -678,7 +689,7 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     else {
         return;
     };
-    if target.is_empty() || provider.model_catalog.is_empty() {
+    if target.is_empty() || (provider.model_catalog.is_empty() && provider_supplied_target) {
         return;
     }
     info["auto_review_model_override"] =

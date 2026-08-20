@@ -237,6 +237,21 @@ fn manual_provider_catalog_sets_provider_local_auto_review_models() {
 }
 
 #[test]
+fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
+    let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/deepseek-v4-flash-0731",
+        &ProviderConfig::default(),
+        false,
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
 fn versioned_deepseek_v4_flash_models_advertise_a_routable_auto_review_target() {
     let config = load_config_layers(&[]).expect("default config loads");
     let mut provider = ProviderConfig::default();
@@ -825,7 +840,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -892,7 +907,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -939,7 +954,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1082,7 +1097,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1151,7 +1166,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1225,7 +1240,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),

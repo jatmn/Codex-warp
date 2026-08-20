@@ -16,6 +16,59 @@ use crate::process_log::TracingReload;
 use crate::store::Store;
 use crate::structured_output::StructuredOutputCache;
 
+const MAX_SESSION_MODELS: usize = 1024;
+const MAX_SESSION_MODEL_KEY_BYTES: usize = 512;
+const MAX_SESSION_MODEL_ID_BYTES: usize = 512;
+
+#[derive(Default)]
+pub(crate) struct SessionModelCache {
+    entries: BTreeMap<String, SessionModelEntry>,
+    next_use: u64,
+}
+
+struct SessionModelEntry {
+    model: String,
+    last_use: u64,
+}
+
+impl SessionModelCache {
+    pub(crate) fn get(&mut self, key: &str) -> Option<String> {
+        let next_use = self.advance_use();
+        let entry = self.entries.get_mut(key)?;
+        entry.last_use = next_use;
+        Some(entry.model.clone())
+    }
+
+    pub(crate) fn remember(&mut self, key: &str, model: &str) {
+        if key.len() > MAX_SESSION_MODEL_KEY_BYTES || model.len() > MAX_SESSION_MODEL_ID_BYTES {
+            return;
+        }
+        let last_use = self.advance_use();
+        if !self.entries.contains_key(key)
+            && self.entries.len() == MAX_SESSION_MODELS
+            && let Some(evicted_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_use)
+                .map(|(key, _)| key.clone())
+        {
+            self.entries.remove(&evicted_key);
+        }
+        self.entries.insert(
+            key.to_string(),
+            SessionModelEntry {
+                model: model.to_string(),
+                last_use,
+            },
+        );
+    }
+
+    fn advance_use(&mut self) -> u64 {
+        self.next_use = self.next_use.wrapping_add(1);
+        self.next_use
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
@@ -23,7 +76,7 @@ pub(crate) struct AppState {
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
-    pub(crate) session_models: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
     /// Monotonically changes after a Web UI mutation updates live configuration.
     pub(crate) config_revision: Arc<AtomicU64>,
     /// Serializes Web UI mutations so live config and SQLite overlays update
@@ -64,7 +117,7 @@ impl AppState {
             config,
             client,
             model_routes,
-            session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+            session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
             mutation_lock,
             debug_log,

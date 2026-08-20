@@ -59,6 +59,26 @@ async fn provider_not_selected_response_uses_generic_error_for_codex_auto_review
     assert!(!message.contains("codex-auto-review"));
 }
 
+#[tokio::test]
+async fn responses_returns_provider_selection_errors_before_dispatch() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let response = responses(
+        axum::extract::State(state),
+        axum::http::HeaderMap::new(),
+        axum::Json(json!({"model": "missing-model", "input": "hello"})),
+    )
+    .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+}
+
 #[test]
 fn args_parse_config_overrides_and_debug_flags() {
     let args = Args::try_parse_from([
