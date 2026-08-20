@@ -10,6 +10,7 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
+use crate::config::Backend;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
@@ -455,6 +456,22 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
         &glm53.transform,
     );
     assert_eq!(glm53_native_none.body["reasoning"]["effort"], "low");
+
+    let mut native_config = config.clone();
+    native_config.transform.backend = Backend::Responses;
+    let glm53_native_provider = selected_provider(
+        &native_config,
+        PRIMARY_PROVIDER_ID,
+        &native_config.provider,
+        Some("glm-5.3"),
+    );
+    let glm53_native = normalize_responses_request(
+        json!({"model": "glm-5.3", "input": [], "reasoning": {"effort": "medium"}}),
+        &glm53_native_provider.transform,
+    );
+    assert_eq!(glm53_native.body["reasoning"]["effort"], "high");
+    assert_eq!(glm53_native.body["thinking"]["type"], "enabled");
+    assert_eq!(glm53_native.body["thinking"]["clear_thinking"], false);
 
     let grok45 = selected_provider(
         &config,

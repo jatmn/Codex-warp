@@ -43,11 +43,7 @@ pub(crate) fn apply_request_morphs(
                 }
             }
             RequestMorphKind::StaticString => {
-                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
-                    None
-                } else {
-                    Some(morph.from.as_str())
-                }) else {
+                let Some(target) = morph.static_target() else {
                     continue;
                 };
                 if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_str) {
@@ -55,11 +51,7 @@ pub(crate) fn apply_request_morphs(
                 }
             }
             RequestMorphKind::StaticBool => {
-                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
-                    None
-                } else {
-                    Some(morph.from.as_str())
-                }) else {
+                let Some(target) = morph.static_target() else {
                     continue;
                 };
                 if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_bool) {
@@ -182,11 +174,7 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 }
             }
             RequestMorphKind::StaticString => {
-                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
-                    None
-                } else {
-                    Some(morph.from.as_str())
-                }) else {
+                let Some(target) = morph.static_target() else {
                     continue;
                 };
                 if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_str) {
@@ -194,11 +182,7 @@ pub(crate) fn apply_native_request_morphs(request: &mut Value, transform: &Trans
                 }
             }
             RequestMorphKind::StaticBool => {
-                let Some(target) = morph.to.as_deref().or(if morph.from.is_empty() {
-                    None
-                } else {
-                    Some(morph.from.as_str())
-                }) else {
+                let Some(target) = morph.static_target() else {
                     continue;
                 };
                 if let Some(value) = morph.value.as_ref().and_then(RequestMorphValue::as_bool) {

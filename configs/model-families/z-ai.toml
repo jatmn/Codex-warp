@@ -120,3 +120,15 @@ from = ""
 to = "thinking.clear_thinking"
 value = false
 kind = "static_bool"
+
+[[model_families.z_ai_glm_5_3.transform.append_responses_request_morphs]]
+from = ""
+to = "thinking.type"
+value = "enabled"
+kind = "static_string"
+
+[[model_families.z_ai_glm_5_3.transform.append_responses_request_morphs]]
+from = ""
+to = "thinking.clear_thinking"
+value = false
+kind = "static_bool"

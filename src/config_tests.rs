@@ -948,6 +948,23 @@ fn static_morphs_require_typed_values_at_config_load() {
             .contains("static_string morph requires a string value"),
         "unexpected error: {error}"
     );
+
+    for (kind, value) in [("static_bool", "false"), ("static_string", "\"enabled\"")] {
+        let error = toml::from_str::<AppConfig>(&format!(
+            r#"
+                [[transform.chat_request_morphs]]
+                from = "thinking.type"
+                to = ""
+                value = {value}
+                kind = "{kind}"
+                "#,
+        ))
+        .expect_err("empty static morph target is rejected");
+        assert!(
+            error.to_string().contains("requires a target path"),
+            "unexpected error: {error}"
+        );
+    }
 }
 
 #[test]

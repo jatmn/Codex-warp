@@ -689,8 +689,15 @@ impl<'de> Deserialize<'de> for RequestMorph {
 }
 
 impl RequestMorph {
+    pub fn static_target(&self) -> Option<&str> {
+        match self.to.as_deref() {
+            Some(target) => (!target.is_empty()).then_some(target),
+            None => (!self.from.is_empty()).then_some(self.from.as_str()),
+        }
+    }
+
     fn validate(&self) -> Result<(), String> {
-        let static_target = self.to.is_some() || !self.from.is_empty();
+        let static_target = self.static_target().is_some();
         match self.kind {
             RequestMorphKind::StaticString => {
                 if !static_target {

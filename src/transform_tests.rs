@@ -558,6 +558,26 @@ fn static_bool_morph_sets_provider_fields() {
 }
 
 #[test]
+fn invalid_static_morph_target_is_ignored_at_runtime() {
+    let request = json!({"model": "test-model", "input": [], "stream": true});
+    let mut transform = TransformConfig::default();
+    let invalid = crate::config::RequestMorph {
+        from: "thinking.type".to_string(),
+        to: Some(String::new()),
+        value: Some(RequestMorphValue::Bool(false)),
+        kind: RequestMorphKind::StaticBool,
+    };
+    transform.chat_request_morphs.push(invalid.clone());
+    transform.responses_request_morphs.push(invalid);
+
+    let chat = responses_to_chat(request.clone(), &transform);
+    let native = normalize_responses_request(request, &transform);
+
+    assert!(chat.body.get("").is_none());
+    assert!(native.body.get("").is_none());
+}
+
+#[test]
 fn native_responses_preserves_responses_fields_by_default() {
     let request = json!({
         "model": "test-model",
