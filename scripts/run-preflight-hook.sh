@@ -34,4 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 git -C "$root" worktree add --detach --quiet "$worktree" "$treeish"
-bash "$worktree/scripts/ci-preflight.sh" --base "$base_ref"
+(
+  cd "$worktree"
+  bash scripts/ci-preflight.sh --base "$base_ref"
+)

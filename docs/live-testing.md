@@ -98,11 +98,10 @@ status 0 and the last-message file contains `hello`.
 
 ## Local Validation
 
-Before committing code changes:
+Before every local commit, new PR submission, and PR-update push, run the
+[full local CI preflight](development.md#local-validation). The preflight is
+also required after a live smoke test changes code or configuration:
 
 ```bash
-cargo fmt --check
-cargo test --locked
-cargo build --locked
-git diff --check
+bash scripts/ci-preflight.sh
 ```

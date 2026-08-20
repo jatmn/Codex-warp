@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-head_sha="$(git -C "$root" rev-parse HEAD)"
+base_ref="$(git -C "$root" config --worktree --get codex-warp.preflight-base || printf '%s' origin/main)"
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
     refs/heads/*)
       [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
-      if [ "$local_sha" != "$head_sha" ]; then
-        echo "pre-push: checkout the branch being pushed before pushing it" >&2
-        exit 1
-      fi
+      bash "$root/scripts/run-preflight-hook.sh" --head "$local_sha" --base "$base_ref"
       ;;
   esac
 done
-base_ref="$(git -C "$root" config --worktree --get codex-warp.preflight-base || printf '%s' origin/main)"
-exec bash "$root/scripts/run-preflight-hook.sh" --head "$head_sha" --base "$base_ref"

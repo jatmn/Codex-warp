@@ -179,7 +179,7 @@ live-region clear, canvas interactivity attrs, bar paint anchors) and
 `footer-status.js` (analytics footer copy when chart-math is missing, boot
 errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
 
-For documentation-only changes:
+For a quick documentation-only feedback loop before the mandatory preflight:
 
 ```bash
 SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh

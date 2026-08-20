@@ -72,22 +72,21 @@ You are responsible for keeping your PR green. If review feedback requires new
 commits, re-run the relevant checks after those commits and make sure CI passes
 again.
 
-For code changes, run:
+Before every local commit, new PR submission, and PR-update push, run the full
+local CI preflight:
 
 ```bash
-bash scripts/source-checks.sh
-cargo test --locked
-cargo build --locked
-git diff --check
+bash scripts/ci-preflight.sh
 ```
 
-`scripts/source-checks.sh` is the mechanical review gate: rustfmt, `typos`
-spelling, docs whitespace, docs contraction capitalization, Web UI JavaScript
-syntax, the chart harness, and crate-wide Clippy (`-D warnings`). Treat
-Clippy hits as review findings, not as optional style. Install `typos`
-with `cargo install typos-cli --locked`.
+For a PR with a non-`main` base, pass `--base origin/<base-branch>`. Install
+the versioned hooks with `bash scripts/install-git-hooks.sh` so commits and
+pushes run the same check automatically. The preflight includes the mechanical
+review gate, tests, build, docs, CLI smoke checks, mutation testing when Rust
+changes, and supply-chain checks; do not replace it with a partial checklist.
 
-For documentation-only changes, run:
+For a quick documentation-only feedback loop before the mandatory preflight,
+run:
 
 ```bash
 SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh
@@ -100,7 +99,7 @@ is part of the change.
 
 ## Review And Follow-Up
 
-Re-run `bash scripts/source-checks.sh` after every fix commit and before
+Re-run `bash scripts/ci-preflight.sh` after every fix commit and before
 requesting another AI or human review. Mechanical nits (spelling, rustfmt,
 docs capitalization, Clippy) belong in that pass, not in round two.
 
