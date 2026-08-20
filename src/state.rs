@@ -21,6 +21,9 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Most recent concrete model per Codex prompt-cache session. Guardian
+    /// requests namespace the same key with `guardian:`.
+    pub(crate) session_models: Arc<AsyncRwLock<BTreeMap<String, String>>>,
     /// Monotonically changes after a Web UI mutation updates live configuration.
     pub(crate) config_revision: Arc<AtomicU64>,
     /// Serializes Web UI mutations so live config and SQLite overlays update
@@ -61,6 +64,7 @@ impl AppState {
             config,
             client,
             model_routes,
+            session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             config_revision,
             mutation_lock,
             debug_log,

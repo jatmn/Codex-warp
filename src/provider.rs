@@ -10,6 +10,62 @@ use crate::config::provider_id_for_config_model;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 
+const MAX_SESSION_MODELS: usize = 1024;
+
+pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value) -> bool {
+    let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return false;
+    };
+    if model != "codex-auto-review" {
+        remember_session_model(state, body, &model).await;
+        return false;
+    }
+
+    let configured_model = state
+        .read_config()
+        .config
+        .auto_review_model
+        .clone()
+        .filter(|model| !model.is_empty());
+    let session_model = match guardian_session_key(body) {
+        Some(key) => state.session_models.read().await.get(key).cloned(),
+        None => None,
+    };
+    let Some(model) = configured_model.or(session_model) else {
+        return false;
+    };
+    body["model"] = Value::String(model);
+    true
+}
+
+async fn remember_session_model(state: &AppState, body: &Value, model: &str) {
+    let Some(key) = body
+        .get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty() && !key.starts_with("guardian:"))
+    else {
+        return;
+    };
+    let mut session_models = state.session_models.write().await;
+    if !session_models.contains_key(key) && session_models.len() >= MAX_SESSION_MODELS {
+        if let Some(oldest_key) = session_models.keys().next().cloned() {
+            session_models.remove(&oldest_key);
+        }
+    }
+    session_models.insert(key.to_string(), model.to_string());
+}
+
+fn guardian_session_key(body: &Value) -> Option<&str> {
+    body.get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .and_then(|key| key.strip_prefix("guardian:"))
+        .filter(|key| !key.is_empty())
+}
+
 fn provider_accepts_requested_model(provider: &ProviderConfig, model: Option<&str>) -> bool {
     match model {
         Some(model) if !model.is_empty() => provider.model_is_enabled(model),

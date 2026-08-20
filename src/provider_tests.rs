@@ -187,6 +187,52 @@ async fn codex_auto_review_does_not_fall_back_to_default_provider() {
 }
 
 #[tokio::test]
+async fn codex_auto_review_resolves_to_the_configured_default_model() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [config]
+            auto_review_model = "kimi/k2-review"
+            "#,
+    )
+    .expect("config parses");
+    let mut body = json!({"model": "codex-auto-review", "input": "approve?"});
+
+    let state = test_state(config);
+
+    assert!(resolve_auto_review_model(&state, &mut body).await);
+    assert_eq!(body["model"], "kimi/k2-review");
+}
+
+#[tokio::test]
+async fn codex_auto_review_resolves_to_the_active_session_model_without_a_configured_default() {
+    let state = test_state(AppConfig::default());
+    let mut session = json!({
+        "model": "concentrate.ai/deepseek-v4-flash-0731",
+        "prompt_cache_key": "session-1",
+        "input": "work"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut session).await);
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1",
+        "input": "approve?"
+    });
+
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "concentrate.ai/deepseek-v4-flash-0731");
+}
+
+#[tokio::test]
+async fn codex_auto_review_stays_unresolved_without_a_configured_or_active_model() {
+    let state = test_state(AppConfig::default());
+    let mut body = json!({"model": "codex-auto-review", "input": "approve?"});
+
+    assert!(!resolve_auto_review_model(&state, &mut body).await);
+    assert_eq!(body["model"], "codex-auto-review");
+}
+
+#[tokio::test]
 async fn prefixed_models_route_to_named_provider_without_catalog_entry() {
     let config: AppConfig = toml::from_str(
         r#"

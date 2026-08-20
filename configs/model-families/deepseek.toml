@@ -58,9 +58,9 @@ force_parallel_tool_calls = false
 [model_families.deepseek_v4_flash]
 priority = 10
 patterns = [
-  "deepseek-v4-flash",
-  "deepseek_v4_flash",
-  "deepseek-ai/deepseek-v4-flash",
+  "deepseek-v4-flash*",
+  "deepseek_v4_flash*",
+  "deepseek-ai/deepseek-v4-flash*",
 ]
 
 [model_families.deepseek_v4_flash.model_metadata]

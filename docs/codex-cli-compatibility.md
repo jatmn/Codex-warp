@@ -100,6 +100,14 @@ Codex sends a separate Guardian request when reviewing whether an agent action
 should be approved. Those requests use a `prompt_cache_key` that starts with
 `guardian:`.
 
+Codex normally replaces the review sentinel with the active model's
+`auto_review_model_override` from `/v1/models`. If a client sends the literal
+`codex-auto-review` instead, Warp resolves it to the concrete model it observed
+for the matching session (`guardian:<prompt_cache_key>`). Configure
+`[config].auto_review_model` to override that session-aware default. Warp
+leaves the request unresolved when neither source is available rather than
+guessing between multiple configured gateways.
+
 Warp does not decide allow or deny locally. It still forwards Codex's Guardian
 policy, transcript, planned action, schema, tools, and model. For Guardian
 Chat Completions requests only, it appends a short system clarification that

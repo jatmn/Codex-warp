@@ -33,6 +33,7 @@ use crate::models::seed_model_routes_from_config_and_store;
 use crate::process_log::ProcessLog;
 use crate::process_log::TracingReload;
 use crate::process_log::init_tracing;
+use crate::provider::resolve_auto_review_model;
 use crate::provider::select_provider;
 use crate::state::AppState;
 use crate::store::Store;
@@ -390,8 +391,9 @@ pub(crate) fn provider_not_selected_response(state: &AppState, body: &Value) -> 
 async fn responses(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Response {
+    resolve_auto_review_model(&state, &mut body).await;
     let selected = match select_provider(&state, &body).await {
         Some(selected) => selected,
         None => return provider_not_selected_response(&state, &body),

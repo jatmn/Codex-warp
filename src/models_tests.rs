@@ -236,6 +236,27 @@ fn manual_provider_catalog_sets_provider_local_auto_review_models() {
     );
 }
 
+#[test]
+fn versioned_deepseek_v4_flash_models_advertise_a_routable_auto_review_target() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "concentrate.ai/deepseek-v4-flash-0731".to_string(),
+        ..ModelCatalogEntry::default()
+    });
+
+    let models = manual_catalog_models(&provider, &config);
+    let model = models
+        .iter()
+        .find(|model| model["slug"] == "concentrate.ai/deepseek-v4-flash-0731")
+        .expect("versioned DeepSeek V4 Flash model exists");
+
+    assert_eq!(
+        model["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
 fn assert_auto_review_overrides(
     config_path: &str,
     provider_id: &str,
@@ -804,6 +825,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -870,6 +892,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -916,6 +939,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1058,6 +1082,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1126,6 +1151,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1199,6 +1225,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),

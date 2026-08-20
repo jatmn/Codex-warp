@@ -174,6 +174,8 @@ pub struct LoaderConfig {
     pub tool_policy_include: Vec<PathBuf>,
     pub tool_policy_replace: bool,
     pub hide_codex_builtin_models: bool,
+    /// Concrete model used when Codex sends the `codex-auto-review` sentinel.
+    pub auto_review_model: Option<String>,
 }
 
 impl Default for LoaderConfig {
@@ -184,6 +186,7 @@ impl Default for LoaderConfig {
             tool_policy_include: Vec::new(),
             tool_policy_replace: false,
             hide_codex_builtin_models: true,
+            auto_review_model: None,
         }
     }
 }
