@@ -68,7 +68,7 @@ transform behavior.
 | Xiaomi | `mimo-v2.5-pro` | 1,000k | text | low, medium, high; default medium | provider/default | Gateway profile does not carry model-specific overrides. |
 | Z.ai | `glm-5`, `glm-5.1` family | 200k | text | low, medium, high; default medium | provider/default | Broad GLM-5 transform converts `reasoning.effort` to `thinking.type`; forces `parallel_tool_calls = false`. |
 | Z.ai | `glm-5.2` | 1,000k | text | low, medium, high; default medium | provider/default | Inherits broad GLM-5 transform; forwards `reasoning_effort` alongside `thinking.type` (GLM-5.2 honors it natively). |
-| Z.ai | `glm-5.3` | 1,000k | text | low, high, max; default max | provider/default | Always enables thinking; forwards `reasoning_effort`, maps disable and legacy Codex effort names to valid levels, and preserves multi-turn reasoning history with `clear_thinking = false`. |
+| Z.ai | `glm-5.3` | 1,000k | text | low, high, max; default max | provider/default | Always enables thinking; forwards `reasoning_effort`, and maps disable and legacy Codex effort names to valid levels. |
 | Tencent Hy3 | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` | 256k | text | none, low, high; default high | provider/default | 256K MoE model with hybrid thinking. Drops `medium` from advertised levels and maps `none` -> `no_think` via `reasoning_effort_none_value`; coerces Codex `custom` tools to functions (`as_function`); forces `parallel_tool_calls = false`; sets `preserve_reasoning_content_history = true` for multi-turn tool+reasoning loops. Reasoning is surfaced from provider `reasoning_details`/`reasoning_content`/`reasoning` fields. |
 
 ## Matching And Priority
@@ -203,7 +203,6 @@ Supported morph kinds:
 | `text_format` | Convert Responses `text.format` JSON schema to chat `response_format`. |
 | `thinking_type` | Convert `reasoning.effort` into provider `thinking.type`. |
 | `static_string` | Set a fixed string value. |
-| `static_bool` | Set a fixed boolean value; `value` must be a TOML boolean. |
 
 ## Common Transform Patterns
 

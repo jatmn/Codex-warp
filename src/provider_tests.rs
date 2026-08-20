@@ -417,7 +417,6 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(glm53_max.body["reasoning_effort"], "max");
     assert_eq!(glm53_max.body["thinking"]["type"], "enabled");
-    assert_eq!(glm53_max.body["thinking"]["clear_thinking"], false);
 
     let glm53_none = responses_to_chat(
         json!({
@@ -430,7 +429,6 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(glm53_none.body["reasoning_effort"], "low");
     assert_eq!(glm53_none.body["thinking"]["type"], "enabled");
-    assert_eq!(glm53_none.body["thinking"]["clear_thinking"], false);
 
     for (input, expected) in [("medium", "high"), ("minimal", "low"), ("xhigh", "max")] {
         let transformed = responses_to_chat(
@@ -471,7 +469,6 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(glm53_native.body["reasoning"]["effort"], "high");
     assert_eq!(glm53_native.body["thinking"]["type"], "enabled");
-    assert_eq!(glm53_native.body["thinking"]["clear_thinking"], false);
 
     let grok45 = selected_provider(
         &config,
@@ -587,7 +584,7 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
 }
 
 #[test]
-fn glm_5_3_replays_reasoning_history_for_tool_continuations() {
+fn glm_5_3_clears_unknown_reasoning_history_for_tool_continuations() {
     let mut config = load_config_layers(&[]).expect("default config loads");
     config.provider.base_url = "https://provider.example/v1".to_string();
     let selected = selected_provider(
@@ -621,9 +618,11 @@ fn glm_5_3_replays_reasoning_history_for_tool_continuations() {
         &selected.transform,
     );
 
-    assert_eq!(
-        transformed.body["messages"][0]["reasoning_content"],
-        "Need the lookup."
+    assert!(
+        transformed.body["messages"][0]
+            .get("reasoning_content")
+            .is_none(),
+        "unknown Responses reasoning history must not be replayed as preserved Z.ai thinking"
     );
     assert_eq!(
         transformed.body["messages"][0]["tool_calls"][0]["function"]["name"],
@@ -631,7 +630,11 @@ fn glm_5_3_replays_reasoning_history_for_tool_continuations() {
     );
     assert_eq!(transformed.body["messages"][1]["role"], "tool");
     assert_eq!(transformed.body["messages"][1]["content"], "result");
-    assert_eq!(transformed.body["thinking"]["clear_thinking"], false);
+    assert_eq!(transformed.body["thinking"]["type"], "enabled");
+    assert!(
+        transformed.body["thinking"].get("clear_thinking").is_none(),
+        "GLM-5.3 must retain Z.ai's safe clearing default when history provenance is unknown"
+    );
 }
 
 #[tokio::test]

@@ -885,89 +885,6 @@ fn model_family_morph_rejects_unknown_fields() {
 }
 
 #[test]
-fn static_morphs_require_typed_values_at_config_load() {
-    let config: AppConfig = toml::from_str(
-        r#"
-            [[transform.chat_request_morphs]]
-            from = ""
-            to = "thinking.clear_thinking"
-            value = false
-            kind = "static_bool"
-            "#,
-    )
-    .expect("unquoted static_bool value parses");
-    assert_eq!(
-        config.transform.chat_request_morphs[0].value,
-        Some(RequestMorphValue::Bool(false))
-    );
-
-    let config: AppConfig = toml::from_str(
-        r#"
-            [[transform.chat_request_morphs]]
-            from = "thinking.type"
-            value = "enabled"
-            kind = "static_string"
-            "#,
-    )
-    .expect("static_string may use its source path as the target");
-    assert_eq!(
-        config.transform.chat_request_morphs[0].value,
-        Some(RequestMorphValue::String("enabled".to_string()))
-    );
-
-    let error = toml::from_str::<AppConfig>(
-        r#"
-            [[transform.responses_request_morphs]]
-            from = ""
-            to = "thinking.clear_thinking"
-            value = "false"
-            kind = "static_bool"
-            "#,
-    )
-    .expect_err("quoted static_bool value is rejected");
-    assert!(
-        error
-            .to_string()
-            .contains("static_bool morph requires a boolean value"),
-        "unexpected error: {error}"
-    );
-
-    let error = toml::from_str::<AppConfig>(
-        r#"
-            [[transform.chat_request_morphs]]
-            from = ""
-            to = "thinking.type"
-            value = true
-            kind = "static_string"
-            "#,
-    )
-    .expect_err("static_string requires a string value");
-    assert!(
-        error
-            .to_string()
-            .contains("static_string morph requires a string value"),
-        "unexpected error: {error}"
-    );
-
-    for (kind, value) in [("static_bool", "false"), ("static_string", "\"enabled\"")] {
-        let error = toml::from_str::<AppConfig>(&format!(
-            r#"
-                [[transform.chat_request_morphs]]
-                from = "thinking.type"
-                to = ""
-                value = {value}
-                kind = "{kind}"
-                "#,
-        ))
-        .expect_err("empty static morph target is rejected");
-        assert!(
-            error.to_string().contains("requires a target path"),
-            "unexpected error: {error}"
-        );
-    }
-}
-
-#[test]
 fn model_family_remove_morph_selector_rejects_unknown_fields() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1162,10 +1079,6 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
         glm53.transform.reasoning_effort_aliases.get("medium"),
         Some(&"high".to_string())
     );
-    assert_eq!(
-        glm53.transform.preserve_reasoning_content_history,
-        Some(true)
-    );
     assert!(
         glm53
             .transform
@@ -1183,20 +1096,9 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .append_chat_request_morphs
             .iter()
             .any(|morph| {
-                morph.kind == RequestMorphKind::StaticBool
-                    && morph.to.as_deref() == Some("thinking.clear_thinking")
-                    && morph.value == Some(RequestMorphValue::Bool(false))
-            })
-    );
-    assert!(
-        glm53
-            .transform
-            .append_chat_request_morphs
-            .iter()
-            .any(|morph| {
                 morph.kind == RequestMorphKind::StaticString
                     && morph.to.as_deref() == Some("thinking.type")
-                    && morph.value == Some(RequestMorphValue::String("enabled".to_string()))
+                    && morph.value.as_deref() == Some("enabled")
             })
     );
     let glm5 = config

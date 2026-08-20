@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::RequestMorphKind;
-use crate::config::RequestMorphValue;
 use crate::config::TransformConfig;
 
 #[test]
@@ -526,55 +525,13 @@ fn static_string_morph_sets_provider_fields() {
         .push(crate::config::RequestMorph {
             from: String::new(),
             to: Some("thinking.keep".to_string()),
-            value: Some(RequestMorphValue::String("all".to_string())),
+            value: Some("all".to_string()),
             kind: RequestMorphKind::StaticString,
         });
 
     let transformed = responses_to_chat(request, &transform);
 
     assert_eq!(transformed.body["thinking"]["keep"], "all");
-}
-
-#[test]
-fn static_bool_morph_sets_provider_fields() {
-    let request = json!({
-        "model": "glm-5.3",
-        "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "code"}]}],
-        "stream": true
-    });
-    let mut transform = TransformConfig::default();
-    transform
-        .chat_request_morphs
-        .push(crate::config::RequestMorph {
-            from: String::new(),
-            to: Some("thinking.clear_thinking".to_string()),
-            value: Some(RequestMorphValue::Bool(true)),
-            kind: RequestMorphKind::StaticBool,
-        });
-
-    let transformed = responses_to_chat(request, &transform);
-
-    assert_eq!(transformed.body["thinking"]["clear_thinking"], true);
-}
-
-#[test]
-fn invalid_static_morph_target_is_ignored_at_runtime() {
-    let request = json!({"model": "test-model", "input": [], "stream": true});
-    let mut transform = TransformConfig::default();
-    let invalid = crate::config::RequestMorph {
-        from: "thinking.type".to_string(),
-        to: Some(String::new()),
-        value: Some(RequestMorphValue::Bool(false)),
-        kind: RequestMorphKind::StaticBool,
-    };
-    transform.chat_request_morphs.push(invalid.clone());
-    transform.responses_request_morphs.push(invalid);
-
-    let chat = responses_to_chat(request.clone(), &transform);
-    let native = normalize_responses_request(request, &transform);
-
-    assert!(chat.body.get("").is_none());
-    assert!(native.body.get("").is_none());
 }
 
 #[test]
@@ -595,28 +552,6 @@ fn native_responses_preserves_responses_fields_by_default() {
     assert_eq!(normalized["include"][0], "reasoning.encrypted_content");
     assert!(normalized.get("reasoning_effort").is_none());
     assert!(normalized.get("response_format").is_none());
-}
-
-#[test]
-fn native_responses_apply_static_bool_morphs() {
-    let request = json!({
-        "model": "test-model",
-        "input": [],
-        "stream": true
-    });
-    let mut transform = TransformConfig::default();
-    transform
-        .responses_request_morphs
-        .push(crate::config::RequestMorph {
-            from: String::new(),
-            to: Some("thinking.clear_thinking".to_string()),
-            value: Some(RequestMorphValue::Bool(false)),
-            kind: RequestMorphKind::StaticBool,
-        });
-
-    let normalized = normalize_responses_request(request, &transform).body;
-
-    assert_eq!(normalized["thinking"]["clear_thinking"], false);
 }
 
 #[test]
