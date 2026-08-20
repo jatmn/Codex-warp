@@ -15,6 +15,7 @@ elif [ "$#" -ne 0 ]; then
   exit 2
 fi
 
-git -C "$root" config core.hooksPath .githooks
-git -C "$root" config codex-warp.preflight-base "$base_ref"
+git -C "$root" config extensions.worktreeConfig true
+git -C "$root" config --worktree core.hooksPath .githooks
+git -C "$root" config --worktree codex-warp.preflight-base "$base_ref"
 echo "Installed .githooks with preflight base $base_ref for this checkout."

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
-base_ref="$(git -C "$root" config --get codex-warp.preflight-base || printf '%s' origin/main)"
-exec bash "$root/scripts/ci-preflight.sh" --base "$base_ref"
+base_ref="$(git -C "$root" config --worktree --get codex-warp.preflight-base || printf '%s' origin/main)"
+exec bash "$root/scripts/run-preflight-hook.sh" --index --base "$base_ref"

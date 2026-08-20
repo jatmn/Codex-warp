@@ -13,5 +13,5 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       ;;
   esac
 done
-base_ref="$(git -C "$root" config --get codex-warp.preflight-base || printf '%s' origin/main)"
-exec bash "$root/scripts/ci-preflight.sh" --base "$base_ref"
+base_ref="$(git -C "$root" config --worktree --get codex-warp.preflight-base || printf '%s' origin/main)"
+exec bash "$root/scripts/run-preflight-hook.sh" --head "$head_sha" --base "$base_ref"
