@@ -901,6 +901,20 @@ fn static_morphs_require_typed_values_at_config_load() {
         Some(RequestMorphValue::Bool(false))
     );
 
+    let config: AppConfig = toml::from_str(
+        r#"
+            [[transform.chat_request_morphs]]
+            from = "thinking.type"
+            value = "enabled"
+            kind = "static_string"
+            "#,
+    )
+    .expect("static_string may use its source path as the target");
+    assert_eq!(
+        config.transform.chat_request_morphs[0].value,
+        Some(RequestMorphValue::String("enabled".to_string()))
+    );
+
     let error = toml::from_str::<AppConfig>(
         r#"
             [[transform.responses_request_morphs]]
@@ -915,6 +929,23 @@ fn static_morphs_require_typed_values_at_config_load() {
         error
             .to_string()
             .contains("static_bool morph requires a boolean value"),
+        "unexpected error: {error}"
+    );
+
+    let error = toml::from_str::<AppConfig>(
+        r#"
+            [[transform.chat_request_morphs]]
+            from = ""
+            to = "thinking.type"
+            value = true
+            kind = "static_string"
+            "#,
+    )
+    .expect_err("static_string requires a string value");
+    assert!(
+        error
+            .to_string()
+            .contains("static_string morph requires a string value"),
         "unexpected error: {error}"
     );
 }

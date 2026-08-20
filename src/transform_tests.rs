@@ -548,13 +548,13 @@ fn static_bool_morph_sets_provider_fields() {
         .push(crate::config::RequestMorph {
             from: String::new(),
             to: Some("thinking.clear_thinking".to_string()),
-            value: Some(RequestMorphValue::Bool(false)),
+            value: Some(RequestMorphValue::Bool(true)),
             kind: RequestMorphKind::StaticBool,
         });
 
     let transformed = responses_to_chat(request, &transform);
 
-    assert_eq!(transformed.body["thinking"]["clear_thinking"], false);
+    assert_eq!(transformed.body["thinking"]["clear_thinking"], true);
 }
 
 #[test]
