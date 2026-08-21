@@ -149,7 +149,12 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let Some(token) = next_tag_outside_markdown(&input, &mut self.markdown) else {
+            let token = if self.active_tag.is_some() {
+                next_tag(&input)
+            } else {
+                next_tag_outside_markdown(&input, &mut self.markdown)
+            };
+            let Some(token) = token else {
                 let split_at = possible_tag_start(&input).unwrap_or(input.len());
                 if self.active_tag.is_some() {
                     self.pending = input;
@@ -203,7 +208,6 @@ impl Sanitizer {
                     end
                 }
             };
-            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -692,5 +696,18 @@ mod tests {
         assert!(output.contains("<function>tab</function>"));
         assert!(!output.contains("duplicate"));
         assert!(output.ends_with("After"));
+    }
+
+    #[test]
+    fn markdown_delimiters_inside_suppressed_markup_do_not_change_state() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool note=\"```\">```<function>x</function>```</tool>After"),
+            "After"
+        );
+        assert_eq!(
+            sanitizer.push("<parameter>duplicate</parameter>Done"),
+            "Done"
+        );
     }
 }
