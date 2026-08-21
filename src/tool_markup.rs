@@ -496,6 +496,7 @@ struct MarkdownCodeState {
     pending_marker: Option<PendingMarker>,
     closing_fence: bool,
     leading_spaces: Option<usize>,
+    indented_line: bool,
     escaped: bool,
 }
 
@@ -508,6 +509,7 @@ impl Default for MarkdownCodeState {
             pending_marker: None,
             closing_fence: false,
             leading_spaces: Some(0),
+            indented_line: false,
             escaped: false,
         }
     }
@@ -528,7 +530,7 @@ impl MarkdownCodeState {
     /// tag, then report whether the tag is outside Markdown code.
     fn permits_markup(&mut self) -> bool {
         self.resolve_pending_marker();
-        self.fence.is_none() && self.inline_ticks.is_none() && !self.escaped
+        self.fence.is_none() && self.inline_ticks.is_none() && !self.indented_line && !self.escaped
     }
 
     fn consume(&mut self, text: &str) {
@@ -654,6 +656,7 @@ impl MarkdownCodeState {
 
     fn start_line(&mut self) {
         self.leading_spaces = Some(0);
+        self.indented_line = false;
     }
 
     fn mark_nonspace(&mut self) {
@@ -661,9 +664,15 @@ impl MarkdownCodeState {
     }
 
     fn track_line_byte(&mut self, byte: u8) {
+        if byte == b'\t' && self.leading_spaces.is_some() {
+            self.indented_line = true;
+        }
         if byte == b' ' {
             if let Some(spaces) = self.leading_spaces.as_mut() {
                 *spaces += 1;
+                if *spaces >= 4 {
+                    self.indented_line = true;
+                }
             }
         } else {
             self.mark_nonspace();
@@ -952,6 +961,19 @@ mod tests {
             "`literal <tool>duplicate</tool>` after "
         );
         assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_preserves_indented_code_and_resumes_after_newline() {
+        let mut sanitizer = Sanitizer::default();
+        let output = sanitizer.push(
+            "    <parameter>spaces</parameter>\n\t<function>tab</function>\n<invoke>duplicate</invoke>After",
+        ) + &sanitizer.finish();
+
+        assert!(output.contains("<parameter>spaces</parameter>"));
+        assert!(output.contains("<function>tab</function>"));
+        assert!(!output.contains("duplicate"));
+        assert!(output.ends_with("After"));
     }
 
     #[test]
