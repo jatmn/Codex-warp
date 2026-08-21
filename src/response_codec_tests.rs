@@ -5879,6 +5879,58 @@ fn nested_tool_wrapper_with_text_prefix_is_fully_suppressed() {
 }
 
 #[test]
+fn self_closing_and_nested_same_tag_markup_do_not_change_depth() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<tool><tool/>inner</tool>After"), "After");
+
+    let mut split = ToolMarkupSanitizer::default();
+    assert_eq!(split.push("<tool/"), "");
+    assert_eq!(split.push(">After"), "After");
+}
+
+#[test]
+fn split_closing_prefix_is_reassembled_without_leaking_markup() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<parameter>body</para"), "");
+    assert_eq!(sanitizer.push("meter>After"), "After");
+
+    assert_eq!(
+        trailing_markup_token_prefix("<parameterX", &["<parameter"]),
+        ""
+    );
+    assert_eq!(
+        trailing_markup_token_prefix("<parameter>", &["<parameter"]),
+        ""
+    );
+}
+
+#[test]
+fn unterminated_tool_body_fallback_preserves_nested_literal_text() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(
+        sanitizer.push("<tool>body <parameter>literal</parameter>"),
+        ""
+    );
+    assert_eq!(sanitizer.finish(), "body ");
+
+    let mut direct_marker = ToolMarkupSanitizer {
+        treat_tool_as_marker: true,
+        ..ToolMarkupSanitizer::default()
+    };
+    assert_eq!(direct_marker.push("<parameter>literal</parameter>"), "");
+    let mut split_marker = ToolMarkupSanitizer {
+        treat_tool_as_marker: true,
+        ..ToolMarkupSanitizer::default()
+    };
+    assert_eq!(split_marker.push("<parameter"), "");
+    assert_eq!(split_marker.push(">literal</parameter>"), "");
+
+    let mut nested_tool = ToolMarkupSanitizer::default();
+    assert_eq!(nested_tool.push("<tool>body <tool>literal</tool>"), "");
+    assert_eq!(nested_tool.finish(), "body literal</tool>");
+}
+
+#[test]
 fn same_tag_nesting_waits_for_the_outer_close() {
     let mut sanitizer = ToolMarkupSanitizer::default();
     assert_eq!(sanitizer.push("<tool_calls><tool_calls data=\"split"), "");
@@ -6249,6 +6301,58 @@ fn non_stream_duplicate_tool_markup_is_suppressed_only_with_a_native_call() {
         true,
     );
     assert_eq!(split_array["output"][0]["content"][0]["text"], "After");
+
+    let array_tail = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "id": "chat_tail",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Before <parameter>duplicate</parameter>"},
+                        {"type": "text", "text": "After"}
+                    ],
+                    "tool_calls": native_call.clone()
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        true,
+    );
+    assert_eq!(
+        array_tail["output"][0]["content"][0]["text"],
+        "Before After"
+    );
+
+    let unterminated_array = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "id": "chat_unterminated_array",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "<tool>body"},
+                        {"type": "text", "text": "After"}
+                    ],
+                    "tool_calls": native_call.clone()
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        true,
+    );
+    assert_eq!(
+        unterminated_array["output"][0]["content"][0]["text"],
+        "bodyAfter"
+    );
 
     let fenced = convert(
         "Here is XML:\n```xml\n<function>docs</function>\n```",
