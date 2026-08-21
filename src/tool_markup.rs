@@ -643,14 +643,16 @@ fn possible_tag_at_start(suffix: &str) -> bool {
             && suffix
                 .as_bytes()
                 .get(opening.len())
-                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'/')
+            && !suffix.contains('>');
         let closing_continues = suffix
             .get(..closing.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
             && suffix
                 .as_bytes()
                 .get(closing.len())
-                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>');
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            && !suffix.contains('>');
         opening_prefix || closing_prefix || opening_continues || closing_continues
     })
 }
@@ -855,7 +857,7 @@ mod tests {
     fn possible_tag_start_retains_only_plausible_incomplete_tags() {
         assert_eq!(possible_tag_start("Before <tool "), Some(7));
         assert_eq!(possible_tag_start("Before </tool"), Some(7));
-        assert_eq!(possible_tag_start("Before </tool>"), Some(7));
+        assert_eq!(possible_tag_start("Before </tool>"), None);
         assert_eq!(possible_tag_start("Before <toolbox"), None);
         assert_eq!(possible_tag_start("Before </toolbox"), None);
     }
