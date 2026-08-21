@@ -406,6 +406,22 @@ fn derived_auto_review_aliases_keep_canonical_single_matches_routable() {
 }
 
 #[test]
+fn exact_auto_review_catalog_id_remains_authoritative() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "review-model".to_string(),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    assert_eq!(
+        provider_local_model_id(&provider, "source-model", "review-model"),
+        Some("review-model")
+    );
+}
+
+#[test]
 fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
     let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
     localize_auto_review_model_override(
