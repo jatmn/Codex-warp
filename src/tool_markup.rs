@@ -127,6 +127,7 @@ pub(crate) struct Sanitizer {
     pending: String,
     active_tag: Option<&'static str>,
     active_depth: usize,
+    markdown: MarkdownCodeState,
 }
 
 #[allow(dead_code)] // wired by the following response-adapter layer
@@ -143,7 +144,7 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let Some(token) = next_tag(&input) else {
+            let Some(token) = next_tag_outside_markdown(&input, &mut self.markdown) else {
                 let split_at = possible_tag_start(&input).unwrap_or(input.len());
                 if self.active_tag.is_some() {
                     self.pending = input;
@@ -190,6 +191,7 @@ impl Sanitizer {
                     end
                 }
             };
+            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -254,6 +256,53 @@ impl MarkdownCodeState {
             self.escaped = false;
         }
     }
+}
+
+fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> Option<TagToken> {
+    let mut start = 0;
+    while start < input.len() {
+        let character = input[start..]
+            .chars()
+            .next()
+            .expect("start remains on a UTF-8 boundary");
+        if character == '<'
+            && markdown.permits_markup()
+            && let Some(token) = next_tag(&input[start..]).filter(|token| match token {
+                TagToken::Opening { start, .. } | TagToken::Closing { start, .. } => *start == 0,
+            })
+        {
+            return Some(match token {
+                TagToken::Opening {
+                    tag,
+                    end,
+                    self_closing,
+                    ..
+                } => TagToken::Opening {
+                    tag,
+                    start,
+                    end: start + end,
+                    self_closing,
+                },
+                TagToken::Closing { tag, end, .. } => TagToken::Closing {
+                    tag,
+                    start,
+                    end: start + end,
+                },
+            });
+        }
+        let end = if matches!(character, '`' | '~') {
+            start
+                + input[start..]
+                    .bytes()
+                    .take_while(|byte| *byte == character as u8)
+                    .count()
+        } else {
+            start + character.len_utf8()
+        };
+        markdown.consume(&input[start..end]);
+        start = end;
+    }
+    None
 }
 
 fn possible_tag_start(input: &str) -> Option<usize> {
@@ -444,5 +493,19 @@ mod tests {
         assert!(!state.permits_markup());
         state.consume("````");
         assert!(state.permits_markup());
+    }
+
+    #[test]
+    fn sanitizer_preserves_escaped_and_markdown_literal_markup() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("Use ` <tool>literal</tool> ` and \\<parameter>escaped</parameter>."),
+            "Use ` <tool>literal</tool> ` and \\<parameter>escaped</parameter>."
+        );
+        assert_eq!(sanitizer.finish(), "");
+        let mut fenced = sanitizer.push("\n```xml\n<function>example</function>\n```\n");
+        fenced.push_str(&sanitizer.finish());
+        assert_eq!(fenced, "\n```xml\n<function>example</function>\n```\n");
+        assert_eq!(sanitizer.push("<tool>duplicate</tool>After"), "After");
     }
 }
