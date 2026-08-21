@@ -179,7 +179,6 @@ mod tests {
         assert_eq!(next_tag("</function extra>"), None);
         assert_eq!(next_tag("<parameter note=\"unterminated"), None);
     }
-
     #[test]
     fn closing_tag_end_requires_the_delimiter_after_whitespace() {
         assert_eq!(closing_tag_end(">After"), Some(1));
