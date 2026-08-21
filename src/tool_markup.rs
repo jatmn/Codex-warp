@@ -37,9 +37,14 @@ pub(crate) fn recognized_tag(input: &str) -> Option<&'static str> {
 #[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     let mut quote = None;
+    let mut escaped = false;
     for (offset, byte) in input.as_bytes().iter().copied().enumerate() {
         if let Some(delimiter) = quote {
-            if byte == delimiter {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
                 quote = None;
             }
         } else if matches!(byte, b'\'' | b'\"') {
