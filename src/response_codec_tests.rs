@@ -5433,3 +5433,26 @@ fn tool_markup_suppression_waits_for_a_named_native_call() {
             .any(|event| event.contains("<parameter>docs</parameter>"))
     );
 }
+
+#[test]
+fn tool_markup_suppression_streams_plain_text_and_restores_deferred_content_on_failure() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Before "}}]
+    }));
+    assert!(events.iter().any(|event| event.contains("Before ")));
+
+    assert!(
+        accum
+            .apply_chat_chunk(
+                &json!({"choices": [{"delta": {"content": "<parameter>docs</parameter>"}}]})
+            )
+            .is_empty()
+    );
+    let events = accum.failure_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<parameter>docs</parameter>"))
+    );
+}

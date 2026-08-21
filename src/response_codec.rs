@@ -167,6 +167,7 @@ const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer excee
 
 // Stream conversion carries request context rather than a new struct.
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))] // the route integration slice wires this adapter
 pub(crate) fn chat_stream_to_responses(
     upstream: reqwest::Response,
     response_id: String,
@@ -894,6 +895,7 @@ impl ChatAccum {
             if !content.is_empty()
                 && self.suppress_duplicate_tool_markup
                 && !self.native_tool_call_seen
+                && (!self.deferred_content.is_empty() || Sanitizer::may_contain_markup(&content))
             {
                 self.deferred_content.push(content);
             } else if !content.is_empty() {
@@ -966,16 +968,7 @@ impl ChatAccum {
         continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     ) -> Vec<String> {
         let mut events = Vec::new();
-        if self.suppress_duplicate_tool_markup {
-            if self.native_tool_call_seen {
-                let tail = self.tool_markup_sanitizer.finish();
-                self.emit_content(tail, &mut events);
-            } else {
-                for content in std::mem::take(&mut self.deferred_content) {
-                    self.emit_content(content, &mut events);
-                }
-            }
-        }
+        self.finalize_tool_markup_content(&mut events);
         if !self.reasoning_pending.is_empty() {
             events.push(self.reasoning_delta_event(&self.reasoning_pending));
         }
@@ -1059,6 +1052,30 @@ impl ChatAccum {
             }),
         ));
         events.push("data: [DONE]\n\n".to_string());
+        events
+    }
+
+    fn finalize_tool_markup_content(&mut self, events: &mut Vec<String>) {
+        if !self.suppress_duplicate_tool_markup {
+            return;
+        }
+        if self.native_tool_call_seen {
+            let tail = self.tool_markup_sanitizer.finish();
+            self.emit_content(tail, events);
+        } else {
+            for content in std::mem::take(&mut self.deferred_content) {
+                self.emit_content(content, events);
+            }
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // consumed by the route integration slice
+    fn failure_events(&mut self) -> Vec<String> {
+        let mut events = Vec::new();
+        if let Some(event) = self.take_reasoning_delta() {
+            events.push(event);
+        }
+        self.finalize_tool_markup_content(&mut events);
         events
     }
 
