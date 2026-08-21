@@ -13,16 +13,23 @@ function isWithinBase(target) {
 }
 
 function resolveWithinBase(input) {
-  const segments = typeof input === "string" ? input.split("/") : [];
+  const normalizedInput = typeof input === "string" ? input.replaceAll("\\", "/") : "";
+  const segments = normalizedInput.split("/");
   if (
-    path.isAbsolute(input) ||
-    segments.length === 0 ||
-    segments.some((segment) => segment === "." || segment === ".." || !SAFE_SEGMENT.test(segment))
+    (typeof input === "string" &&
+      (path.isAbsolute(input) || path.isAbsolute(normalizedInput))) ||
+    normalizedInput.length === 0 ||
+    segments.some(
+      (segment, index) =>
+        segment === ".." ||
+        (segment === "" && index !== segments.length - 1) ||
+        (segment !== "" && segment !== "." && !SAFE_SEGMENT.test(segment))
+    )
   ) {
     throw new Error(`unsafe documentation path: ${input}`);
   }
 
-  const resolved = path.resolve(BASE_DIR, input);
+  const resolved = path.resolve(BASE_DIR, normalizedInput);
   if (!isWithinBase(resolved)) {
     throw new Error(`documentation path escapes repository: ${input}`);
   }
@@ -31,7 +38,7 @@ function resolveWithinBase(input) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${input}`);
   }
-  return real;
+  return resolved;
 }
 
 function resolveChild(target, name) {
@@ -44,7 +51,7 @@ function resolveChild(target, name) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
-  return real;
+  return resolved;
 }
 
 function walk(target, out) {
