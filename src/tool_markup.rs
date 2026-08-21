@@ -1,4 +1,5 @@
 /// The end of a complete XML-like opening tag.
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OpeningTag {
     pub(crate) end: usize,
@@ -8,6 +9,7 @@ pub(crate) struct OpeningTag {
 /// Finds an opening tag delimiter without treating `>` in a quoted attribute
 /// as structural. This is deliberately independent of response conversion so
 /// stream and non-stream adapters share exactly the same token contract.
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     let mut quote = None;
     let mut escaped = false;
