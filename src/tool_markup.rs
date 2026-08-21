@@ -423,6 +423,14 @@ mod tests {
         assert!(state.permits_markup());
         state.consume("~");
         assert!(state.permits_markup());
+
+        let mut inline = MarkdownCodeState::default();
+        inline.consume("`x");
+        assert!(!inline.permits_markup());
+        inline.consume("~x");
+        assert!(!inline.permits_markup());
+        inline.consume("`x");
+        assert!(inline.permits_markup());
     }
 
     #[test]
