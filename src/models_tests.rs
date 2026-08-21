@@ -290,6 +290,83 @@ fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
 }
 
 #[test]
+fn derived_auto_review_aliases_require_one_enabled_match_across_alias_kinds() {
+    let cases = [
+        (
+            "duplicate suffixes",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+        (
+            "duplicate upstream ids",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/first".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/second".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+        (
+            "suffix and upstream id collision",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/second".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+    ];
+
+    for (name, model_catalog) in cases {
+        let provider = ProviderConfig {
+            model_catalog,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            provider_local_model_id(&provider, "source-model", "review"),
+            None,
+            "{name} must not select a route by catalog order"
+        );
+    }
+}
+
+#[test]
+fn derived_auto_review_aliases_keep_canonical_single_matches_routable() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "gateway/Review_Model".to_string(),
+            upstream_id: Some("review_model".to_string()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    assert_eq!(
+        provider_local_model_id(&provider, "source-model", "review-model"),
+        Some("gateway/Review_Model")
+    );
+}
+
+#[test]
 fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
     let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
     localize_auto_review_model_override(

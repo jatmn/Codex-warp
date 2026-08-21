@@ -726,53 +726,69 @@ fn provider_local_model_id_for_targets<'a>(
     targets: &[String],
 ) -> Option<&'a str> {
     for target in targets {
-        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| &entry.id) {
+        if let Some(id) = provider_catalog_id_for_catalog_id(provider, target) {
             return Some(id);
         }
     }
     if let Some((prefix, _)) = current_model.rsplit_once('/') {
         for target in targets {
             let prefixed_target = format!("{prefix}/{target}");
-            if let Some(id) =
-                provider_catalog_id_for_target(provider, &prefixed_target, |entry| &entry.id)
-            {
+            if let Some(id) = provider_catalog_id_for_catalog_id(provider, &prefixed_target) {
                 return Some(id);
             }
         }
     }
     for target in targets {
-        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| {
-            entry
-                .id
-                .rsplit_once('/')
-                .map_or(&entry.id, |(_, suffix)| suffix)
-        }) {
-            return Some(id);
-        }
-        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| {
-            entry.upstream_id.as_deref().unwrap_or("")
-        }) {
+        if let Some(id) = provider_catalog_id_for_derived_alias(provider, target) {
             return Some(id);
         }
     }
     None
 }
 
-/// Return an exact catalog match when present, otherwise one unambiguous match
-/// under the same model-family canonicalization used by metadata matching.
-fn provider_catalog_id_for_target<'a>(
+/// Resolve an authoritative catalog ID. Exact IDs are unique by catalog
+/// validation; canonical aliases still require a unique enabled entry.
+fn provider_catalog_id_for_catalog_id<'a>(
     provider: &'a ProviderConfig,
     target: &str,
-    value: impl Fn(&'a ModelCatalogEntry) -> &'a str,
 ) -> Option<&'a str> {
     if let Some(entry) = provider
         .model_catalog
         .iter()
-        .find(|entry| value(entry) == target && provider.model_is_enabled(&entry.id))
+        .find(|entry| entry.id == target && provider.model_is_enabled(&entry.id))
     {
         return Some(entry.id.as_str());
     }
     let target = canonical_model_family_id(target);
+    provider_catalog_id_for_unique_match(provider, |entry| {
+        canonical_model_family_id(&entry.id) == target
+    })
+}
+
+/// Resolve a suffix or upstream-ID alias only when it identifies one enabled
+/// catalog entry across *both* alias forms. Unlike a catalog ID, either alias
+/// can legitimately be shared by multiple routes.
+fn provider_catalog_id_for_derived_alias<'a>(
+    provider: &'a ProviderConfig,
+    target: &str,
+) -> Option<&'a str> {
+    let target = canonical_model_family_id(target);
+    provider_catalog_id_for_unique_match(provider, |entry| {
+        entry
+            .id
+            .rsplit_once('/')
+            .is_some_and(|(_, suffix)| canonical_model_family_id(suffix) == target)
+            || entry
+                .upstream_id
+                .as_deref()
+                .is_some_and(|upstream_id| canonical_model_family_id(upstream_id) == target)
+    })
+}
+
+fn provider_catalog_id_for_unique_match<'a>(
+    provider: &'a ProviderConfig,
+    matches: impl Fn(&'a ModelCatalogEntry) -> bool,
+) -> Option<&'a str> {
     let mut matches = provider
         .model_catalog
         .iter()
@@ -781,7 +797,7 @@ fn provider_catalog_id_for_target<'a>(
         // in which case advertising it would make Guardian route to a model
         // that provider selection rejects.
         .filter(|entry| provider.model_is_enabled(&entry.id))
-        .filter(|entry| canonical_model_family_id(value(entry)) == target)
+        .filter(|entry| matches(entry))
         .map(|entry| entry.id.as_str());
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
