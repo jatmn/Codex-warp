@@ -121,10 +121,10 @@ pub(crate) fn next_tag(input: &str) -> Option<TagToken> {
 
 #[cfg(test)]
 mod tests {
-    use super::opening_tag;
-    use super::next_tag;
-    use super::recognized_tag;
     use super::TagToken;
+    use super::next_tag;
+    use super::opening_tag;
+    use super::recognized_tag;
 
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
