@@ -351,19 +351,44 @@ fn derived_auto_review_aliases_require_one_enabled_match_across_alias_kinds() {
 
 #[test]
 fn derived_auto_review_aliases_keep_canonical_single_matches_routable() {
-    let provider = ProviderConfig {
-        model_catalog: vec![ModelCatalogEntry {
-            id: "gateway/Review_Model".to_string(),
-            upstream_id: Some("review_model".to_string()),
-            ..ModelCatalogEntry::default()
-        }],
-        ..ProviderConfig::default()
-    };
+    let cases = [
+        (
+            "suffix only",
+            ModelCatalogEntry {
+                id: "gateway/Review_Model".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+        (
+            "upstream id only",
+            ModelCatalogEntry {
+                id: "gateway/other".to_string(),
+                upstream_id: Some("review_model".to_string()),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+        (
+            "both alias kinds",
+            ModelCatalogEntry {
+                id: "gateway/Review_Model".to_string(),
+                upstream_id: Some("review_model".to_string()),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+    ];
 
-    assert_eq!(
-        provider_local_model_id(&provider, "source-model", "review-model"),
-        Some("gateway/Review_Model")
-    );
+    for (name, entry) in cases {
+        let expected = entry.id.clone();
+        let provider = ProviderConfig {
+            model_catalog: vec![entry],
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            provider_local_model_id(&provider, "source-model", "review-model"),
+            Some(expected.as_str()),
+            "{name} must retain a canonical, unique route"
+        );
+    }
 }
 
 #[test]
