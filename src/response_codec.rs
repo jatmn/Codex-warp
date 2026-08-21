@@ -22,6 +22,7 @@ use crate::namespace_helpers::is_function_call_type;
 use crate::provider::complete_session_model_update;
 use crate::state::AppState;
 use crate::store::UsageRecorder;
+use crate::tool_markup::Sanitizer;
 use crate::tool_policy::apply_tool_policy_to_function_call;
 
 const REASONING_DISPLAY_HEADER: &str = "**Reasoning**\n\n";
@@ -889,6 +890,10 @@ pub(crate) struct ChatAccum {
     reasoning_text: String,
     reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
+    suppress_duplicate_tool_markup: bool,
+    native_tool_call_seen: bool,
+    deferred_content: Vec<String>,
+    tool_markup_sanitizer: Sanitizer,
     usage: Option<Value>,
     finish_reason: Option<String>,
 }
@@ -901,6 +906,14 @@ pub(crate) struct ToolCallAccum {
 }
 
 impl ChatAccum {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_tool_markup_suppression(suppress_duplicate_tool_markup: bool) -> Self {
+        Self {
+            suppress_duplicate_tool_markup,
+            ..Self::default()
+        }
+    }
+
     fn from_chat_completion(value: &Value) -> Self {
         let mut accum = Self::default();
         if let Some(usage) = value.get("usage") {
@@ -1044,34 +1057,21 @@ impl ChatAccum {
             }
 
             let content = chat_content_text(delta.get("content"));
-            if !content.is_empty() {
+            if !content.is_empty()
+                && self.suppress_duplicate_tool_markup
+                && !self.native_tool_call_seen
+            {
+                self.deferred_content.push(content);
+            } else if !content.is_empty() {
                 if let Some(event) = self.take_reasoning_delta() {
                     events.push(event);
                 }
-                if self.message_item_id.is_none() {
-                    let item_id = generated_id("msg");
-                    self.message_item_id = Some(item_id.clone());
-                    events.push(sse(
-                        "response.output_item.added",
-                        json!({
-                            "type": "response.output_item.added",
-                            "item": {
-                                "id": item_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "content": []
-                            }
-                        }),
-                    ));
-                }
-                self.text.push_str(&content);
-                events.push(sse(
-                    "response.output_text.delta",
-                    json!({
-                        "type": "response.output_text.delta",
-                        "delta": content
-                    }),
-                ));
+                let content = if self.suppress_duplicate_tool_markup {
+                    self.tool_markup_sanitizer.push(&content)
+                } else {
+                    content
+                };
+                self.emit_content(content, &mut events);
             }
 
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -1104,6 +1104,15 @@ impl ChatAccum {
                     }
                 }
             }
+            if !self.native_tool_call_seen
+                && self.tool_calls.iter().any(|call| !call.name.is_empty())
+            {
+                self.native_tool_call_seen = true;
+                for content in std::mem::take(&mut self.deferred_content) {
+                    let sanitized = self.tool_markup_sanitizer.push(&content);
+                    self.emit_content(sanitized, &mut events);
+                }
+            }
         }
         events
     }
@@ -1115,7 +1124,7 @@ impl ChatAccum {
     }
 
     pub(crate) fn finish(
-        &self,
+        &mut self,
         response_id: &str,
         custom_tool_names: &BTreeSet<String>,
         namespace_helpers: &NamespaceHelpers,
@@ -1123,6 +1132,16 @@ impl ChatAccum {
         continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     ) -> Vec<String> {
         let mut events = Vec::new();
+        if self.suppress_duplicate_tool_markup {
+            if self.native_tool_call_seen {
+                let tail = self.tool_markup_sanitizer.finish();
+                self.emit_content(tail, &mut events);
+            } else {
+                for content in std::mem::take(&mut self.deferred_content) {
+                    self.emit_content(content, &mut events);
+                }
+            }
+        }
         if !self.reasoning_pending.is_empty() {
             events.push(self.reasoning_delta_event(&self.reasoning_pending));
         }
@@ -1213,6 +1232,30 @@ impl ChatAccum {
         let event = self.reasoning_delta_event(&self.reasoning_pending);
         self.reasoning_pending.clear();
         event
+    }
+
+    fn emit_content(&mut self, content: String, events: &mut Vec<String>) {
+        if content.is_empty() {
+            return;
+        }
+        if self.message_item_id.is_none() {
+            let item_id = generated_id("msg");
+            self.message_item_id = Some(item_id.clone());
+            events.push(sse(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": {"id": item_id, "type": "message", "role": "assistant", "content": []}
+                }),
+            ));
+        }
+        self.text.push_str(&content);
+        events.push(sse(
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta", "delta": content
+            }),
+        ));
     }
 
     fn take_reasoning_delta(&mut self) -> Option<String> {
