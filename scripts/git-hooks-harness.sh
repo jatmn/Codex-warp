@@ -77,6 +77,13 @@ test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" 
 for hook_name in pre-commit pre-merge-commit pre-applypatch pre-push commit-msg; do
   test -f "$hooks_dir/$hook_name"
 done
+# Reinstallation must retain the originally active hook path rather than
+# treating the durable dispatcher directory as the hook chain to preserve.
+(
+  cd "$repo"
+  bash scripts/install-git-hooks.sh --base HEAD
+)
+test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/custom-hooks"
 printf 'index\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
