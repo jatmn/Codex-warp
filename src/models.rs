@@ -657,7 +657,10 @@ pub(crate) fn codex_model_info(
         synthetic_model_info(id)
     };
 
-    let provider_supplied_auto_review_target = model.get("auto_review_model_override").is_some();
+    let provider_supplied_auto_review_target = model
+        .get("auto_review_model_override")
+        .and_then(Value::as_str)
+        .is_some_and(|target| !target.is_empty());
     apply_provider_model_metadata(&mut info, model);
     for family in matching_model_families(config, id) {
         apply_model_metadata_config(&mut info, &family.model_metadata);
@@ -692,8 +695,28 @@ fn localize_auto_review_model_override(
     if target.is_empty() || (provider.model_catalog.is_empty() && provider_supplied_target) {
         return;
     }
+    if provider.model_catalog.is_empty() {
+        if is_versioned_model_id(id, &target) {
+            info["auto_review_model_override"] = json!(id);
+        }
+        return;
+    }
     info["auto_review_model_override"] =
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
+}
+
+fn is_versioned_model_id(id: &str, target: &str) -> bool {
+    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    let Some(version) = id
+        .strip_prefix(target)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+    else {
+        return false;
+    };
+    !version.is_empty()
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'_')
 }
 
 fn provider_local_model_id<'a>(

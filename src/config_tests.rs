@@ -949,6 +949,23 @@ fn model_family_patterns_support_wildcards() {
 }
 
 #[test]
+fn deepseek_flash_version_patterns_exclude_prefix_collisions() {
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    let has_flash_auto_review_target = |model| {
+        matching_model_families(&config, model)
+            .into_iter()
+            .any(|family| {
+                family.model_metadata.auto_review_model_override.as_deref()
+                    == Some("deepseek-v4-flash")
+            })
+    };
+
+    assert!(!has_flash_auto_review_target("deepseek-v4-flashback"));
+    assert!(has_flash_auto_review_target("deepseek-v4-flash-0731"));
+}
+
+#[test]
 fn model_family_matches_are_sorted_by_priority() {
     let mut config = AppConfig::default();
     config.model_families.insert(

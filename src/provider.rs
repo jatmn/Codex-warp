@@ -1,3 +1,4 @@
+use axum::http::StatusCode;
 use serde_json::Value;
 
 use crate::config::AppConfig;
@@ -55,6 +56,16 @@ pub(crate) async fn remember_session_model(state: &AppState, body: &Value) {
         return;
     };
     state.session_models.write().await.remember(key, model);
+}
+
+pub(crate) async fn remember_session_model_on_upstream_success(
+    state: &AppState,
+    body: &Value,
+    status: StatusCode,
+) {
+    if status.is_success() {
+        remember_session_model(state, body).await;
+    }
 }
 
 fn guardian_session_key(body: &Value) -> Option<&str> {

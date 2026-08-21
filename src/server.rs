@@ -33,7 +33,7 @@ use crate::models::seed_model_routes_from_config_and_store;
 use crate::process_log::ProcessLog;
 use crate::process_log::TracingReload;
 use crate::process_log::init_tracing;
-use crate::provider::remember_session_model;
+use crate::provider::remember_session_model_on_upstream_success;
 use crate::provider::resolve_auto_review_model;
 use crate::provider::select_provider;
 use crate::state::AppState;
@@ -399,11 +399,13 @@ async fn responses(
         Some(selected) => selected,
         None => return provider_not_selected_response(&state, &body),
     };
-    remember_session_model(&state, &body).await;
-    match selected.transform.backend {
-        Backend::OpenAiChat => proxy_chat_responses(state, selected, headers, body).await,
-        Backend::Responses => proxy_native_responses(state, selected, headers, body).await,
-    }
+    let session_body = body.clone();
+    let response = match selected.transform.backend {
+        Backend::OpenAiChat => proxy_chat_responses(state.clone(), selected, headers, body).await,
+        Backend::Responses => proxy_native_responses(state.clone(), selected, headers, body).await,
+    };
+    remember_session_model_on_upstream_success(&state, &session_body, response.status()).await;
+    response
 }
 
 #[cfg(test)]
