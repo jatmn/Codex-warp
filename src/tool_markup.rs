@@ -221,25 +221,20 @@ impl MarkdownCodeState {
     }
 
     fn consume(&mut self, text: &str) {
-        let bytes = text.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            let byte = bytes[index];
+        for run in text.as_bytes().chunk_by(|left, right| left == right) {
+            let byte = run[0];
             if byte == b'\n' {
                 self.escaped = false;
-                index += 1;
                 continue;
             }
             if byte == b'\\' {
-                self.escaped = !self.escaped;
-                index += 1;
+                if !run.len().is_multiple_of(2) {
+                    self.escaped = !self.escaped;
+                }
                 continue;
             }
             if matches!(byte, b'`' | b'~') && !self.escaped {
-                let count = bytes[index..]
-                    .iter()
-                    .take_while(|candidate| **candidate == byte)
-                    .count();
+                let count = run.len();
                 if let Some((marker, length)) = self.fence {
                     if marker == byte && count >= length {
                         self.fence = None;
@@ -254,11 +249,9 @@ impl MarkdownCodeState {
                     self.inline_ticks = Some(count);
                 }
                 self.escaped = false;
-                index += count;
                 continue;
             }
             self.escaped = false;
-            index += 1;
         }
     }
 }
@@ -422,6 +415,13 @@ mod tests {
         state.consume("\\");
         assert!(state.permits_markup());
         state.consume("\\\n");
+        assert!(state.permits_markup());
+
+        state.consume("\\```");
+        assert!(state.permits_markup());
+        state.consume("~~");
+        assert!(state.permits_markup());
+        state.consume("~");
         assert!(state.permits_markup());
     }
 
