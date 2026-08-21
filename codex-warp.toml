@@ -63,6 +63,10 @@ tool_policy_include = [
 # Auto-review model choices belong in model-family metadata. When a family target
 # is unprefixed, Codex Warp resolves it to the matching model in the selected
 # provider catalog so review turns stay on the same gateway.
+# If a Codex client instead sends the literal `codex-auto-review` model, set a
+# concrete, routable fallback here. Otherwise Warp uses the active model it
+# observed for the matching session.
+# auto_review_model = "provider-id/review-model"
 
 [transform]
 # open_ai_chat translates Codex /responses requests to /chat/completions.

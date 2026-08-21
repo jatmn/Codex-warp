@@ -187,6 +187,287 @@ async fn codex_auto_review_does_not_fall_back_to_default_provider() {
 }
 
 #[tokio::test]
+async fn codex_auto_review_resolves_to_the_configured_default_model() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [config]
+            auto_review_model = "kimi/k2-review"
+            "#,
+    )
+    .expect("config parses");
+    let mut body = json!({"model": "codex-auto-review", "input": "approve?"});
+
+    let state = test_state(config);
+
+    assert!(resolve_auto_review_model(&state, &mut body).await);
+    assert_eq!(body["model"], "kimi/k2-review");
+}
+
+#[tokio::test]
+async fn codex_auto_review_resolves_to_the_active_session_model_without_a_configured_default() {
+    let state = test_state(AppConfig::default());
+    let mut session = json!({
+        "model": "concentrate.ai/deepseek-v4-flash-0731",
+        "prompt_cache_key": "session-1",
+        "input": "work"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut session).await);
+    remember_session_model(&state, &session).await;
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1",
+        "input": "approve?"
+    });
+
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "concentrate.ai/deepseek-v4-flash-0731");
+}
+
+#[tokio::test]
+async fn rejected_request_does_not_replace_the_active_session_model() {
+    let config: AppConfig = toml::from_str(
+        r#"
+            [provider]
+            base_url = "https://default.example/v1"
+
+            [[provider.model_catalog]]
+            id = "active-model"
+
+            [providers.other]
+            base_url = "https://other.example/v1"
+            "#,
+    )
+    .expect("config parses");
+    let state = test_state(config);
+    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
+    assert!(select_provider(&state, &active).await.is_some());
+    remember_session_model(&state, &active).await;
+
+    let rejected = json!({"model": "unknown-model", "prompt_cache_key": "session-1"});
+    assert!(select_provider(&state, &rejected).await.is_none());
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn later_started_session_request_wins_when_streams_complete_out_of_order() {
+    let state = test_state(AppConfig::default());
+    let first = json!({"model": "first-model", "prompt_cache_key": "session-1"});
+    let second = json!({"model": "second-model", "prompt_cache_key": "session-1"});
+    let first_update = begin_session_model_update(&state, &first)
+        .await
+        .expect("first request is cacheable");
+    let second_update = begin_session_model_update(&state, &second)
+        .await
+        .expect("second request is cacheable");
+
+    complete_session_model_update(&state, &second_update).await;
+    complete_session_model_update(&state, &first_update).await;
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "second-model");
+}
+
+#[tokio::test]
+async fn in_flight_session_request_resolves_auto_review_until_it_is_dropped() {
+    let state = test_state(AppConfig::default());
+    let request = json!({"model": "streaming-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &request)
+        .await
+        .expect("streaming request is cacheable");
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "streaming-model");
+
+    drop(update);
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut review).await);
+}
+
+#[tokio::test]
+async fn failed_later_session_request_does_not_block_an_earlier_success() {
+    let state = test_state(AppConfig::default());
+    let first = json!({"model": "first-model", "prompt_cache_key": "session-1"});
+    let failed_later = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let first_update = begin_session_model_update(&state, &first)
+        .await
+        .expect("first request is cacheable");
+    let failed_later_update = begin_session_model_update(&state, &failed_later)
+        .await
+        .expect("later request is cacheable");
+
+    complete_session_model_update(&state, &first_update).await;
+    drop(failed_later_update);
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "first-model");
+}
+
+#[tokio::test]
+async fn session_model_cache_rejects_oversized_identifiers() {
+    let state = test_state(AppConfig::default());
+    let oversized_key_request = json!({
+        "model": "valid-model",
+        "prompt_cache_key": "x".repeat(513)
+    });
+    remember_session_model(&state, &oversized_key_request).await;
+
+    let mut oversized_key_review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": format!("guardian:{}", "x".repeat(513))
+    });
+    assert!(!resolve_auto_review_model(&state, &mut oversized_key_review).await);
+
+    let oversized_model_request = json!({
+        "model": "m".repeat(513),
+        "prompt_cache_key": "oversized-model"
+    });
+    remember_session_model(&state, &oversized_model_request).await;
+    let mut oversized_model_review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:oversized-model"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut oversized_model_review).await);
+}
+
+#[tokio::test]
+async fn session_model_cache_accepts_identifiers_at_its_byte_limits() {
+    let state = test_state(AppConfig::default());
+    let key = "k".repeat(512);
+    let model = "m".repeat(512);
+    let request = json!({"model": model, "prompt_cache_key": key});
+    remember_session_model(&state, &request).await;
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": format!("guardian:{}", "k".repeat(512))
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "m".repeat(512));
+}
+
+#[tokio::test]
+async fn guardian_requests_do_not_replace_session_models() {
+    let state = test_state(AppConfig::default());
+    let request = json!({
+        "model": "invalid-session-model",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    remember_session_model(&state, &request).await;
+
+    let mut nested_review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:guardian:session-1"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut nested_review).await);
+}
+
+#[tokio::test]
+async fn session_model_cache_evicts_the_least_recently_used_session() {
+    let state = test_state(AppConfig::default());
+    for index in 0..1024 {
+        let request = json!({
+            "model": format!("model-{index}"),
+            "prompt_cache_key": format!("z-{index:04}")
+        });
+        remember_session_model(&state, &request).await;
+    }
+    let refreshed = json!({
+        "model": "model-0",
+        "prompt_cache_key": "z-0000"
+    });
+    remember_session_model(&state, &refreshed).await;
+    let replacement = json!({"model": "replacement", "prompt_cache_key": "a-new"});
+    remember_session_model(&state, &replacement).await;
+
+    let mut retained = json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:z-0000"});
+    assert!(resolve_auto_review_model(&state, &mut retained).await);
+    assert_eq!(retained["model"], "model-0");
+    let mut evicted = json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:z-0001"});
+    assert!(!resolve_auto_review_model(&state, &mut evicted).await);
+}
+
+#[tokio::test]
+async fn completing_the_same_session_update_refreshes_its_lru_entry() {
+    let state = test_state(AppConfig::default());
+    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &active)
+        .await
+        .expect("session update is cacheable");
+    complete_session_model_update(&state, &update).await;
+    for index in 0..1023 {
+        let request = json!({
+            "model": format!("model-{index}"),
+            "prompt_cache_key": format!("other-{index:04}")
+        });
+        remember_session_model(&state, &request).await;
+    }
+
+    complete_session_model_update(&state, &update).await;
+    let replacement = json!({"model": "replacement", "prompt_cache_key": "replacement"});
+    remember_session_model(&state, &replacement).await;
+
+    let mut review =
+        json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn pending_session_order_registry_stops_at_its_capacity() {
+    let state = test_state(AppConfig::default());
+    let mut updates = Vec::new();
+    for index in 0..1024 {
+        let request = json!({
+            "model": "pending-model",
+            "prompt_cache_key": format!("pending-{index:04}")
+        });
+        updates.push(
+            begin_session_model_update(&state, &request)
+                .await
+                .expect("capacity has not yet been reached"),
+        );
+    }
+    let overflow = json!({"model": "overflow", "prompt_cache_key": "pending-overflow"});
+    assert!(
+        begin_session_model_update(&state, &overflow)
+            .await
+            .is_none()
+    );
+    assert_eq!(updates.len(), 1024);
+}
+
+#[tokio::test]
+async fn codex_auto_review_stays_unresolved_without_a_configured_or_active_model() {
+    let state = test_state(AppConfig::default());
+    let mut body = json!({"model": "codex-auto-review", "input": "approve?"});
+
+    assert!(!resolve_auto_review_model(&state, &mut body).await);
+    assert_eq!(body["model"], "codex-auto-review");
+}
+
+#[tokio::test]
 async fn prefixed_models_route_to_named_provider_without_catalog_entry() {
     let config: AppConfig = toml::from_str(
         r#"

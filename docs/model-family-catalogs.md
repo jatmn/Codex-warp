@@ -81,9 +81,11 @@ priority = 0
 patterns = ["example-*"]
 ```
 
-Patterns are case-insensitive and support `*` wildcards. Matching entries are
-applied in ascending `priority`; ties are sorted by entry id. This lets a broad
-family entry apply shared behavior first, then exact model entries override it.
+Patterns are case-insensitive, treat `-` and `_` as equivalent, and support `*`
+wildcards. Matching entries are applied in ascending `priority`; ties are sorted
+by entry id. This lets a broad family entry apply shared behavior first, then
+exact model entries override it. Matching canonicalizes only the comparison;
+the provider's original model ID remains the routable ID returned to Codex.
 
 Recommended priority convention:
 

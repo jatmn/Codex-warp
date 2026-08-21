@@ -930,11 +930,7 @@ fn model_family_patterns_support_wildcards() {
     config.model_families.insert(
         "glm".to_string(),
         ModelFamilyConfig {
-            patterns: vec![
-                "z-ai/glm-5*".to_string(),
-                "glm-5*".to_string(),
-                "glm_5*".to_string(),
-            ],
+            patterns: vec!["z-ai/glm-5*".to_string(), "glm-5*".to_string()],
             ..ModelFamilyConfig::default()
         },
     );
@@ -945,7 +941,26 @@ fn model_family_patterns_support_wildcards() {
         1
     );
     assert_eq!(matching_model_families(&config, "GLM_5_AIR").len(), 1);
+    assert_eq!(matching_model_families(&config, "z_ai/GLM_5_AIR").len(), 1);
     assert!(matching_model_families(&config, "glm-4.5").is_empty());
+}
+
+#[test]
+fn deepseek_flash_version_patterns_exclude_prefix_collisions() {
+    let config = load_config_layers(&[]).expect("default config loads");
+
+    let has_flash_auto_review_target = |model| {
+        matching_model_families(&config, model)
+            .into_iter()
+            .any(|family| {
+                family.model_metadata.auto_review_model_override.as_deref()
+                    == Some("deepseek-v4-flash")
+            })
+    };
+
+    assert!(!has_flash_auto_review_target("deepseek-v4-flashback"));
+    assert!(has_flash_auto_review_target("deepseek-v4-flash-0731"));
+    assert!(has_flash_auto_review_target("DeepSeek_V4_Flash-0731"));
 }
 
 #[test]

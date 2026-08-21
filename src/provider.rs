@@ -9,6 +9,70 @@ use crate::config::provider_entries;
 use crate::config::provider_id_for_config_model;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
+use crate::state::SessionModelUpdate;
+
+pub(crate) async fn resolve_auto_review_model(state: &AppState, body: &mut Value) -> bool {
+    let Some(model) = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return false;
+    };
+    if model != "codex-auto-review" {
+        return false;
+    }
+
+    let configured_model = state
+        .read_config()
+        .config
+        .auto_review_model
+        .clone()
+        .filter(|model| !model.is_empty());
+    let session_model = match guardian_session_key(body) {
+        Some(key) => state.session_models.write().await.get(key),
+        None => None,
+    };
+    let Some(model) = configured_model.or(session_model) else {
+        return false;
+    };
+    body["model"] = Value::String(model);
+    true
+}
+
+#[cfg(test)]
+pub(crate) async fn remember_session_model(state: &AppState, body: &Value) {
+    let Some(update) = begin_session_model_update(state, body).await else {
+        return;
+    };
+    complete_session_model_update(state, &update).await;
+}
+
+pub(crate) async fn begin_session_model_update(
+    state: &AppState,
+    body: &Value,
+) -> Option<SessionModelUpdate> {
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())?;
+    let key = body
+        .get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .filter(|key| !key.is_empty() && !key.starts_with("guardian:"))?;
+    state.session_models.write().await.begin_update(key, model)
+}
+
+pub(crate) async fn complete_session_model_update(state: &AppState, update: &SessionModelUpdate) {
+    state.session_models.write().await.complete_update(update);
+}
+
+fn guardian_session_key(body: &Value) -> Option<&str> {
+    body.get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .and_then(|key| key.strip_prefix("guardian:"))
+        .filter(|key| !key.is_empty())
+}
 
 fn provider_accepts_requested_model(provider: &ProviderConfig, model: Option<&str>) -> bool {
     match model {

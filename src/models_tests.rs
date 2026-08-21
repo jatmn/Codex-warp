@@ -236,6 +236,421 @@ fn manual_provider_catalog_sets_provider_local_auto_review_models() {
     );
 }
 
+#[test]
+fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "mimo_v2.5".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "mimo_v2.5_pro".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "mimo_v2.5_pro")
+        .expect("Mimo Pro model is listed");
+
+    assert_eq!(model["auto_review_model_override"], "mimo_v2.5");
+}
+
+#[test]
+fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "mimo-v2.5".to_string(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "mimo-v2.5-pro".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "mimo-v2.5-pro")
+        .expect("Mimo Pro model is listed");
+
+    // No enabled base target is available, so keep the selected model rather
+    // than advertise the disabled catalog alias as Guardian's review route.
+    assert_eq!(model["auto_review_model_override"], "mimo-v2.5-pro");
+}
+
+#[test]
+fn derived_auto_review_aliases_require_one_enabled_match_across_alias_kinds() {
+    let cases = [
+        (
+            "duplicate suffixes",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+        (
+            "duplicate upstream ids",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/first".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/second".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+        (
+            "suffix and upstream id collision",
+            vec![
+                ModelCatalogEntry {
+                    id: "gateway-a/review".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway-b/second".to_string(),
+                    upstream_id: Some("review".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+        (
+            "canonical id and upstream id collision",
+            vec![
+                ModelCatalogEntry {
+                    id: "review_model".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway/other".to_string(),
+                    upstream_id: Some("review-model".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
+    ];
+
+    for (name, model_catalog) in cases {
+        let provider = ProviderConfig {
+            model_catalog,
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            provider_local_model_id(&provider, "source-model", "review"),
+            None,
+            "{name} must not select a route by catalog order"
+        );
+    }
+}
+
+#[test]
+fn derived_auto_review_aliases_keep_canonical_single_matches_routable() {
+    let cases = [
+        (
+            "suffix only",
+            ModelCatalogEntry {
+                id: "gateway/Review_Model".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+        (
+            "upstream id only",
+            ModelCatalogEntry {
+                id: "gateway/other".to_string(),
+                upstream_id: Some("review_model".to_string()),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+        (
+            "both alias kinds",
+            ModelCatalogEntry {
+                id: "gateway/Review_Model".to_string(),
+                upstream_id: Some("review_model".to_string()),
+                ..ModelCatalogEntry::default()
+            },
+        ),
+    ];
+
+    for (name, entry) in cases {
+        let expected = entry.id.clone();
+        let provider = ProviderConfig {
+            model_catalog: vec![entry],
+            ..ProviderConfig::default()
+        };
+        assert_eq!(
+            provider_local_model_id(&provider, "source-model", "review-model"),
+            Some(expected.as_str()),
+            "{name} must retain a canonical, unique route"
+        );
+    }
+}
+
+#[test]
+fn exact_auto_review_catalog_id_remains_authoritative() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "review-model".to_string(),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    assert_eq!(
+        provider_catalog_id_for_catalog_id(&provider, "review-model"),
+        Some("review-model")
+    );
+    assert_eq!(
+        provider_local_model_id(&provider, "source-model", "review-model"),
+        Some("review-model")
+    );
+}
+
+#[test]
+fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
+    let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/deepseek-v4-flash-0731",
+        &ProviderConfig::default(),
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
+    let mut info = json!({"auto_review_model_override": "deepseek_v4_flash"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/deepseek-v4-flash-0731",
+        &ProviderConfig::default(),
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn model_variant_ids_require_a_nonempty_delimited_suffix() {
+    assert!(is_model_variant_id(
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash"
+    ));
+    assert!(is_model_variant_id(
+        "deepseek_v4_flash_2026_08",
+        "deepseek-v4-flash"
+    ));
+    assert!(is_model_variant_id(
+        "deepseek-v4-flash-preview",
+        "deepseek-v4-flash"
+    ));
+    assert!(is_model_variant_id(
+        "deepseek_v4_flash_preview",
+        "deepseek-v4-flash"
+    ));
+    assert!(!is_model_variant_id(
+        "deepseek-v4-flash-",
+        "deepseek-v4-flash"
+    ));
+    assert!(!is_model_variant_id(
+        "deepseek-v4-flashback",
+        "deepseek-v4-flash"
+    ));
+}
+
+#[test]
+fn empty_upstream_auto_review_override_does_not_suppress_family_localization() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"deepseek-v4-flash-0731","auto_review_model_override":""}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_null_auto_review_target_does_not_block_family_localization() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"concentrate.ai/deepseek-v4-flash-0731","auto_review_model_override":null}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_overridden_auto_review_target_does_not_block_family_localization() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"concentrate.ai/deepseek-v4-flash-0731","auto_review_model_override":"upstream-review"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_matching_upstream_auto_review_target_still_localizes_versioned_model() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"concentrate.ai/deepseek-v4-flash-0731","auto_review_model_override":"deepseek-v4-flash"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_underscore_versioned_flash_model() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"deepseek_v4_flash_0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek_v4_flash_0731"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_suffixed_flash_models_to_their_routable_ids() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"deepseek-v4-flash-preview"},{"id":"deepseek_v4_flash_preview"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-v4-flash-preview"
+    );
+    assert_eq!(
+        models[1]["auto_review_model_override"],
+        "deepseek_v4_flash_preview"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_canonical_flash_variant_aliases_to_their_original_ids() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"DeepSeek-V4-Flash-0731"},{"id":"deepseek-v4-flash_0731"},{"id":"deepseek-ai/DeepSeek_V4_Flash-0731"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    for model in models {
+        let id = model["slug"].as_str().expect("model has a slug");
+        assert_eq!(model["auto_review_model_override"], id);
+        assert_eq!(model["context_window"], 1_000_000);
+    }
+}
+
+#[test]
+fn live_catalog_variant_does_not_fall_back_to_a_static_base_review_target() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"cline-pass/deepseek-v4-flash-0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "cline-pass/deepseek-v4-flash".to_string(),
+        ..ModelCatalogEntry::default()
+    });
+
+    let models = normalize_models(&body, &provider, &config).expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "cline-pass/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn namespaced_underscore_flash_variant_advertises_its_own_review_target() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"deepseek-ai/deepseek_v4_flash_0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-ai/deepseek_v4_flash_0731"
+    );
+}
+
+#[test]
+fn live_catalog_preserves_distinct_family_auto_review_target() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"deepseek-v4-pro"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(models[0]["auto_review_model_override"], "deepseek-v4-flash");
+}
+
+#[test]
+fn versioned_deepseek_v4_flash_models_advertise_a_routable_auto_review_target() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "concentrate.ai/deepseek-v4-flash-0731".to_string(),
+        ..ModelCatalogEntry::default()
+    });
+
+    let models = manual_catalog_models(&provider, &config);
+    let model = models
+        .iter()
+        .find(|model| model["slug"] == "concentrate.ai/deepseek-v4-flash-0731")
+        .expect("versioned DeepSeek V4 Flash model exists");
+
+    assert_eq!(
+        model["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
 fn assert_auto_review_overrides(
     config_path: &str,
     provider_id: &str,
@@ -804,6 +1219,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -870,6 +1286,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -916,6 +1333,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1058,6 +1476,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1126,6 +1545,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),
@@ -1199,6 +1619,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
         debug_log: DebugLog::disabled(),

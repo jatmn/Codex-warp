@@ -597,6 +597,35 @@ async fn json_schema_capable_upstream_is_not_retried() {
 }
 
 #[tokio::test]
+async fn native_proxy_forwards_a_completed_response() {
+    let app = axum::Router::new().route(
+        "/responses",
+        post(|| async { Json(json!({"id": "resp_test", "status": "completed"})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&format!("http://{addr}")),
+        HeaderMap::new(),
+        json!({"model": "test-model", "stream": false, "input": "hello"}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json(response).await["status"], "completed");
+    server.abort();
+}
+
+#[tokio::test]
 async fn unavailable_json_schema_retries_once_with_json_object() {
     let (base_url, bodies, server) = spawn_chat_script(vec![
         (

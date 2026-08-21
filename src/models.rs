@@ -16,8 +16,10 @@ use serde_json::json;
 
 use crate::config;
 use crate::config::AppConfig;
+use crate::config::ModelCatalogEntry;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
+use crate::config::canonical_model_family_id;
 use crate::config::matching_model_families;
 use crate::config::provider_entries;
 use crate::http::apply_headers_with_accept;
@@ -678,11 +680,33 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     else {
         return;
     };
-    if target.is_empty() || provider.model_catalog.is_empty() {
+    if target.is_empty() {
+        return;
+    }
+    if canonical_model_family_id(&target) == "deepseek-v4-flash" && is_model_variant_id(id, &target)
+    {
+        info["auto_review_model_override"] = json!(id);
+        return;
+    }
+    if provider.model_catalog.is_empty() {
         return;
     }
     info["auto_review_model_override"] =
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
+}
+
+/// Whether `id` is a nonempty dash/underscore suffix variant of `target`.
+///
+/// The DeepSeek family catalog matches both spellings with a trailing wildcard,
+/// so live-catalog localization must recognize the same variants instead of
+/// leaving their base review target advertised.
+fn is_model_variant_id(id: &str, target: &str) -> bool {
+    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    let target = canonical_model_family_id(target);
+    let id = canonical_model_family_id(id);
+    id.strip_prefix(&target)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .is_some_and(|suffix| !suffix.is_empty())
 }
 
 fn provider_local_model_id<'a>(
@@ -703,46 +727,80 @@ fn provider_local_model_id_for_targets<'a>(
     targets: &[String],
 ) -> Option<&'a str> {
     for target in targets {
-        if let Some(entry) = provider
-            .model_catalog
-            .iter()
-            .find(|entry| entry.id == *target)
-        {
-            return Some(entry.id.as_str());
+        if let Some(id) = provider_catalog_id_for_catalog_id(provider, target) {
+            return Some(id);
         }
     }
     if let Some((prefix, _)) = current_model.rsplit_once('/') {
         for target in targets {
             let prefixed_target = format!("{prefix}/{target}");
-            if let Some(entry) = provider
-                .model_catalog
-                .iter()
-                .find(|entry| entry.id == prefixed_target)
-            {
-                return Some(entry.id.as_str());
+            if let Some(id) = provider_catalog_id_for_catalog_id(provider, &prefixed_target) {
+                return Some(id);
             }
         }
     }
     for target in targets {
-        let mut matches = provider
-            .model_catalog
-            .iter()
-            .filter(|entry| {
-                entry
-                    .id
-                    .rsplit_once('/')
-                    .is_some_and(|(_, suffix)| suffix == target)
-                    || entry.upstream_id.as_deref() == Some(target)
-            })
-            .map(|entry| entry.id.as_str());
-        let Some(first) = matches.next() else {
-            continue;
-        };
-        if matches.next().is_none() {
-            return Some(first);
+        if let Some(id) = provider_catalog_id_for_derived_alias(provider, target) {
+            return Some(id);
         }
     }
     None
+}
+
+/// Resolve an authoritative catalog ID. Only an exact ID is authoritative;
+/// canonical spellings are aliases and must share the ambiguity check below.
+fn provider_catalog_id_for_catalog_id<'a>(
+    provider: &'a ProviderConfig,
+    target: &str,
+) -> Option<&'a str> {
+    if let Some(entry) = provider
+        .model_catalog
+        .iter()
+        .find(|entry| entry.id == target && provider.model_is_enabled(&entry.id))
+    {
+        return Some(entry.id.as_str());
+    }
+    None
+}
+
+/// Resolve every non-exact catalog alias only when it identifies one enabled
+/// entry. Canonical IDs, suffixes, and upstream IDs can all denote a route,
+/// so they must share one cardinality decision.
+fn provider_catalog_id_for_derived_alias<'a>(
+    provider: &'a ProviderConfig,
+    target: &str,
+) -> Option<&'a str> {
+    let exact_target = target;
+    let target = canonical_model_family_id(target);
+    provider_catalog_id_for_unique_match(provider, |entry| {
+        (entry.id != exact_target && canonical_model_family_id(&entry.id) == target)
+            || entry
+                .id
+                .rsplit_once('/')
+                .is_some_and(|(_, suffix)| canonical_model_family_id(suffix) == target)
+            || entry
+                .upstream_id
+                .as_deref()
+                .is_some_and(|upstream_id| canonical_model_family_id(upstream_id) == target)
+    })
+}
+
+fn provider_catalog_id_for_unique_match<'a>(
+    provider: &'a ProviderConfig,
+    matches: impl Fn(&'a ModelCatalogEntry) -> bool,
+) -> Option<&'a str> {
+    let mut matches = provider
+        .model_catalog
+        .iter()
+        // The override must be selectable by the same provider.  A catalog
+        // alias can be present but disabled (including through disabled_models),
+        // in which case advertising it would make Guardian route to a model
+        // that provider selection rejects.
+        .filter(|entry| provider.model_is_enabled(&entry.id))
+        .filter(|entry| matches(entry))
+        .map(|entry| entry.id.as_str());
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 pub(crate) fn synthetic_model_info(id: &str) -> Value {
