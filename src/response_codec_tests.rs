@@ -5488,3 +5488,87 @@ fn tool_markup_suppression_applies_to_non_stream_strings_and_content_arrays() {
         .expect("sanitized output text");
     assert_eq!(text, "Before After");
 }
+
+#[test]
+fn non_stream_tool_markup_suppression_requires_both_opt_in_and_a_named_call() {
+    let convert = |enabled, tool_calls: Value| {
+        chat_json_to_responses_with_tool_markup_suppression(
+            json!({
+                "choices": [{"message": {
+                    "content": "<parameter>docs</parameter>",
+                    "tool_calls": tool_calls
+                }}]
+            }),
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+            enabled,
+        )
+    };
+    let named_call = json!([{"function": {"name": "exec_command"}}]);
+    let disabled = convert(false, named_call);
+    assert_eq!(
+        disabled["output"][0]["content"][0]["text"],
+        "<parameter>docs</parameter>"
+    );
+
+    let unnamed_call = json!([{"function": {"name": ""}}]);
+    let unconfirmed = convert(true, unnamed_call);
+    assert_eq!(
+        unconfirmed["output"][0]["content"][0]["text"],
+        "<parameter>docs</parameter>"
+    );
+}
+
+#[test]
+fn non_stream_tool_markup_suppression_handles_string_and_empty_content() {
+    let convert = |content: Value| {
+        chat_json_to_responses_with_tool_markup_suppression(
+            json!({
+                "choices": [{"message": {
+                    "content": content,
+                    "tool_calls": [{"function": {"name": "exec_command"}}]
+                }}]
+            }),
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+            true,
+        )
+    };
+
+    let suppressed = convert(json!("<parameter>duplicate</parameter>"));
+    assert_eq!(suppressed["output"].as_array().map(Vec::len), Some(1));
+    assert_eq!(suppressed["output"][0]["type"], "function_call");
+
+    let partially_suppressed = convert(json!("Before <parameter>duplicate</parameter>After"));
+    assert_eq!(
+        partially_suppressed["output"][0]["content"][0]["text"],
+        "Before After"
+    );
+
+    let empty = convert(json!(""));
+    assert_eq!(empty["output"].as_array().map(Vec::len), Some(2));
+    assert_eq!(empty["output"][0]["type"], "message");
+    assert_eq!(empty["output"][0]["content"], json!([]));
+}
+
+#[test]
+fn non_stream_content_array_preserves_unterminated_sanitizer_tail() {
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "choices": [{"message": {
+                "content": [{"type": "text", "text": "<tool>working"}],
+                "tool_calls": [{"function": {"name": "exec_command"}}]
+            }}]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        true,
+    );
+    assert_eq!(converted["output"][0]["content"][0]["text"], "working");
+}
