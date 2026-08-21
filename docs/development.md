@@ -156,10 +156,10 @@ bash scripts/install-git-hooks.sh
 ```
 
 The bootstrap remains installed when branches change, but always dispatches to
-the checked-out branch's versioned scripts. If that branch does not provide the
-preflight implementation, it fails closed rather than silently skipping the
-check. Re-run the installer once after updating from an earlier hook
-installation to migrate its hook path.
+the checked-out branch's versioned hook and preflight scripts. If that branch
+does not provide the preflight implementation, it fails closed rather than
+silently skipping the check. Re-run the installer once after updating from an
+earlier hook installation to migrate its hook path.
 
 For a non-`main` PR base, install the hooks with that base so automatic commit
 and push checks use the same target:

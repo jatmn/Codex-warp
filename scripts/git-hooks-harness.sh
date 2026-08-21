@@ -16,6 +16,7 @@ git -C "$repo" config user.email hook-harness@example.invalid
 mkdir -p "$repo/scripts" "$repo/empty-hooks"
 git -C "$repo" config core.hooksPath "$repo/empty-hooks"
 cp "$root/scripts/run-preflight-hook.sh" "$repo/scripts/"
+cp "$root/scripts/git-hook-bootstrap.sh" "$repo/scripts/"
 cp "$root/scripts/install-git-hooks.sh" "$repo/scripts/"
 
 cat >"$repo/scripts/ci-preflight.sh" <<'EOF'
