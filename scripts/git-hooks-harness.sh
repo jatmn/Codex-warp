@@ -24,6 +24,9 @@ cat >"$repo/scripts/ci-preflight.sh" <<'EOF'
 set -euo pipefail
 test "${1:-}" = --base
 test "${2:-}" = HEAD
+if [ -n "${HOOK_MARKER:-}" ]; then
+  printf '%s\n' "$(git rev-parse HEAD)" >>"$HOOK_MARKER"
+fi
 case "$(cat validation-target.txt)" in
   unborn|index) ;;
   *) exit 1 ;;
@@ -41,6 +44,8 @@ legacy_branch="$(git -C "$repo" branch --show-current)"
 git -C "$repo" switch --quiet -c protected
 mkdir -p "$repo/.githooks"
 cp "$root/.githooks/pre-commit" "$repo/.githooks/"
+cp "$root/.githooks/pre-merge-commit" "$repo/.githooks/"
+cp "$root/.githooks/pre-applypatch" "$repo/.githooks/"
 cp "$root/.githooks/pre-push" "$repo/.githooks/"
 git -C "$repo" add .githooks
 git -C "$repo" commit --quiet -m hooks
@@ -49,13 +54,40 @@ git -C "$repo" commit --quiet -m hooks
   bash scripts/install-git-hooks.sh --base HEAD
 )
 hooks_dir="$(git -C "$repo" config --worktree --get core.hooksPath)"
-test -f "$hooks_dir/pre-commit"
-test -f "$hooks_dir/pre-push"
+for hook_name in pre-commit pre-merge-commit pre-applypatch pre-push; do
+  test -f "$hooks_dir/$hook_name"
+done
 printf 'index\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
 git -C "$repo" commit --quiet -m index-branch
 test "$(git -C "$repo" show HEAD:validation-target.txt)" = index
+
+git -C "$repo" switch --quiet -c merge-source
+printf 'merge source\n' >"$repo/merge-source.txt"
+git -C "$repo" add merge-source.txt
+git -C "$repo" commit --quiet -m merge-source
+git -C "$repo" switch --quiet protected
+printf 'protected\n' >"$repo/protected.txt"
+git -C "$repo" add protected.txt
+git -C "$repo" commit --quiet -m protected
+merge_calls="$repo/merge-hook-calls"
+export HOOK_MARKER="$merge_calls"
+git -C "$repo" merge --no-ff --no-edit merge-source
+test -s "$merge_calls"
+unset HOOK_MARKER
+
+git -C "$repo" switch --quiet -c mail-source
+printf 'mail source\n' >"$repo/mail-source.txt"
+git -C "$repo" add mail-source.txt
+git -C "$repo" commit --quiet -m mail-source
+git -C "$repo" format-patch -1 --stdout >"$repo/mail.patch"
+git -C "$repo" switch --quiet protected
+applypatch_calls="$repo/applypatch-hook-calls"
+export HOOK_MARKER="$applypatch_calls"
+git -C "$repo" am "$repo/mail.patch"
+test -s "$applypatch_calls"
+unset HOOK_MARKER
 
 cat >"$repo/scripts/run-preflight-hook.sh" <<'EOF'
 #!/usr/bin/env bash

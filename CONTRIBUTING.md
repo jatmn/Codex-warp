@@ -88,6 +88,11 @@ installation. The preflight includes the mechanical
 review gate, tests, build, docs, CLI smoke checks, mutation testing when Rust
 changes, and supply-chain checks; do not replace it with a partial checklist.
 
+The hooks cover ordinary commits, non-fast-forward merge commits, `git am`, and
+branch pushes. Git has no preventative hook for a bare `git cherry-pick`; use
+`git cherry-pick --no-commit <commit>`, run the preflight, then commit the
+result. A push is rejected if its target has not passed the pre-push check.
+
 For a quick documentation-only feedback loop before the mandatory preflight,
 run:
 

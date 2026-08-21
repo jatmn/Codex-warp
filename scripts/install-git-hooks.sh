@@ -19,9 +19,10 @@ git -C "$root" config extensions.worktreeConfig true
 git_dir="$(git -C "$root" rev-parse --absolute-git-dir)"
 hooks_dir="$git_dir/codex-warp-hooks"
 mkdir -p "$hooks_dir"
-cp "$root/scripts/git-hook-bootstrap.sh" "$hooks_dir/pre-commit"
-cp "$root/scripts/git-hook-bootstrap.sh" "$hooks_dir/pre-push"
-chmod 755 "$hooks_dir/pre-commit" "$hooks_dir/pre-push"
+for hook_name in pre-commit pre-merge-commit pre-applypatch pre-push; do
+  cp "$root/scripts/git-hook-bootstrap.sh" "$hooks_dir/$hook_name"
+  chmod 755 "$hooks_dir/$hook_name"
+done
 git -C "$root" config --worktree core.hooksPath "$hooks_dir"
 git -C "$root" config --worktree codex-warp.preflight-base "$base_ref"
 echo "Installed durable preflight hooks with base $base_ref for this checkout."

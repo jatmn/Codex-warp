@@ -161,6 +161,12 @@ does not provide the preflight implementation, it fails closed rather than
 silently skipping the check. Re-run the installer once after updating from an
 earlier hook installation to migrate its hook path.
 
+The hooks run for ordinary commits, non-fast-forward merge commits, `git am`,
+and branch pushes. Git has no preventative hook for a bare `git cherry-pick`.
+Use `git cherry-pick --no-commit <commit>`, run the preflight, then commit the
+result so validation occurs before the commit is recorded. The pre-push hook
+remains a backstop for any branch update.
+
 For a non-`main` PR base, install the hooks with that base so automatic commit
 and push checks use the same target:
 

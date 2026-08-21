@@ -175,6 +175,13 @@ to migrate the hook path. If a checkout moves to a branch that does not provide
 the preflight scripts, the installed hook fails closed instead of silently
 allowing the commit or push.
 
+The installed hooks automatically cover ordinary commits, non-fast-forward
+merge commits, `git am`, and branch pushes. Git offers no preventative hook for
+a bare `git cherry-pick`; use `git cherry-pick --no-commit <commit>`, run the
+preflight, then create the commit so the check runs before the result is
+recorded. The pre-push hook remains a backstop for any commit that reaches a
+branch push.
+
 For a non-`main` PR base, configure the hooks with the same base once:
 
 ```bash
