@@ -14,22 +14,21 @@ function isWithinBase(target) {
 
 function resolveWithinBase(input) {
   const normalizedInput = typeof input === "string" ? input.replaceAll("\\", "/") : "";
-  const segments = normalizedInput.split("/");
+  const segments = normalizedInput.split("/").filter((segment) => segment !== "");
   if (
     (typeof input === "string" &&
       (path.isAbsolute(input) || path.isAbsolute(normalizedInput))) ||
-    normalizedInput.length === 0 ||
+    segments.length === 0 ||
     segments.some(
-      (segment, index) =>
+      (segment) =>
         segment === ".." ||
-        (segment === "" && index !== segments.length - 1) ||
         (segment !== "" && segment !== "." && !SAFE_SEGMENT.test(segment))
     )
   ) {
     throw new Error(`unsafe documentation path: ${input}`);
   }
 
-  const resolved = path.resolve(BASE_DIR, normalizedInput);
+  const resolved = path.resolve(BASE_DIR, segments.join("/"));
   if (!isWithinBase(resolved)) {
     throw new Error(`documentation path escapes repository: ${input}`);
   }
