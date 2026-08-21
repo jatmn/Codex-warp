@@ -24,6 +24,15 @@ done
 root="$(git rev-parse --show-toplevel)"
 object_dir="$(mktemp -d)"
 object_alternates="$(git -C "$root" rev-parse --path-format=absolute --git-path objects)"
+worktree="$(mktemp -d)"
+cleanup() {
+  GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" \
+    git -C "$root" worktree remove --force "$worktree" >/dev/null 2>&1 || true
+  rm -rf "$worktree" "$object_dir"
+}
+trap cleanup EXIT
+rmdir "$worktree"
+
 if [ "$mode" = index ]; then
   tree="$(GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" git write-tree)"
   parent=()
@@ -38,14 +47,6 @@ fi
 # below must not inherit it.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
-worktree="$(mktemp -d)"
-rmdir "$worktree"
-cleanup() {
-  GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" \
-    git -C "$root" worktree remove --force "$worktree" >/dev/null 2>&1 || true
-  rm -rf "$object_dir"
-}
-trap cleanup EXIT
 GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" \
   git -C "$root" worktree add --detach --quiet "$worktree" "$treeish"
 (
