@@ -204,6 +204,65 @@ impl Sanitizer {
     }
 }
 
+/// Tracks Markdown contexts in which XML-like text must remain literal.
+/// Scanner integration is intentionally added by the next stack slice.
+#[allow(dead_code)]
+#[derive(Default)]
+struct MarkdownCodeState {
+    fence: Option<(u8, usize)>,
+    inline_ticks: Option<usize>,
+    escaped: bool,
+}
+
+#[allow(dead_code)]
+impl MarkdownCodeState {
+    fn permits_markup(&self) -> bool {
+        self.fence.is_none() && self.inline_ticks.is_none() && !self.escaped
+    }
+
+    fn consume(&mut self, text: &str) {
+        let bytes = text.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if byte == b'\n' {
+                self.escaped = false;
+                index += 1;
+                continue;
+            }
+            if byte == b'\\' {
+                self.escaped = !self.escaped;
+                index += 1;
+                continue;
+            }
+            if matches!(byte, b'`' | b'~') && !self.escaped {
+                let count = bytes[index..]
+                    .iter()
+                    .take_while(|candidate| **candidate == byte)
+                    .count();
+                if let Some((marker, length)) = self.fence {
+                    if marker == byte && count >= length {
+                        self.fence = None;
+                    }
+                } else if let Some(length) = self.inline_ticks {
+                    if byte == b'`' && count == length {
+                        self.inline_ticks = None;
+                    }
+                } else if count >= 3 {
+                    self.fence = Some((byte, count));
+                } else if byte == b'`' {
+                    self.inline_ticks = Some(count);
+                }
+                self.escaped = false;
+                index += count;
+                continue;
+            }
+            self.escaped = false;
+            index += 1;
+        }
+    }
+}
+
 fn possible_tag_start(input: &str) -> Option<usize> {
     let start = input.rfind('<')?;
     let suffix = &input[start..];
@@ -237,6 +296,7 @@ fn possible_tag_start(input: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::MarkdownCodeState;
     use super::Sanitizer;
     use super::TagToken;
     use super::next_tag;
@@ -347,5 +407,34 @@ mod tests {
         assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
         assert!(Sanitizer::may_contain_markup("before <parameter "));
         assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
+    }
+
+    #[test]
+    fn markdown_state_tracks_inline_code_and_escapes() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("`");
+        assert!(!state.permits_markup());
+        state.consume("`");
+        assert!(state.permits_markup());
+
+        state.consume("\\");
+        assert!(!state.permits_markup());
+        state.consume("\\");
+        assert!(state.permits_markup());
+        state.consume("\\\n");
+        assert!(state.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_requires_matching_fence_marker_and_length() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("````");
+        assert!(!state.permits_markup());
+        state.consume("~~~");
+        assert!(!state.permits_markup());
+        state.consume("```");
+        assert!(!state.permits_markup());
+        state.consume("````");
+        assert!(state.permits_markup());
     }
 }
