@@ -63,6 +63,7 @@ pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
 #[cfg(test)]
 mod tests {
     use super::opening_tag;
+    use super::recognized_tag;
 
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
@@ -74,5 +75,14 @@ mod tests {
     #[test]
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
+    }
+
+    #[test]
+    fn recognized_tags_are_case_insensitive_and_require_a_tag_boundary() {
+        assert_eq!(recognized_tag("<FUNCTION_CALL name=\"run\">"), Some("function_call"));
+        assert_eq!(recognized_tag("<parameter/>"), Some("parameter"));
+        assert_eq!(recognized_tag("<toolbox>"), None);
+        assert_eq!(recognized_tag("<functionality>"), None);
+        assert_eq!(recognized_tag("<invoke"), None);
     }
 }
