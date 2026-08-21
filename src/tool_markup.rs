@@ -241,6 +241,7 @@ impl Sanitizer {
 struct MarkdownCodeState {
     fence: Option<(u8, usize)>,
     inline_ticks: Option<usize>,
+    pending_marker: Option<(u8, usize)>,
     escaped: bool,
 }
 
@@ -251,7 +252,22 @@ impl MarkdownCodeState {
     }
 
     fn consume(&mut self, text: &str) {
-        for run in text.as_bytes().chunk_by(|left, right| left == right) {
+        let mut runs = text
+            .as_bytes()
+            .chunk_by(|left, right| left == right)
+            .peekable();
+        if let Some((marker, mut count)) = self.pending_marker.take() {
+            if runs.peek().is_some_and(|run| run[0] == marker) {
+                let continued = runs.next().expect("peeked marker run").len();
+                count = count.checked_add(continued).expect("marker run fits usize");
+            }
+            if runs.peek().is_none() {
+                self.pending_marker = Some((marker, count));
+                return;
+            }
+            self.resolve_marker_run(marker, count);
+        }
+        while let Some(run) = runs.next() {
             let byte = run[0];
             if byte == b'\n' {
                 self.escaped = false;
@@ -265,23 +281,37 @@ impl MarkdownCodeState {
             }
             if matches!(byte, b'`' | b'~') && !self.escaped {
                 let count = run.len();
-                if let Some((marker, length)) = self.fence {
-                    if marker == byte && count >= length {
-                        self.fence = None;
-                    }
-                } else if let Some(length) = self.inline_ticks {
-                    if byte == b'`' && count == length {
-                        self.inline_ticks = None;
-                    }
-                } else if count >= 3 {
-                    self.fence = Some((byte, count));
-                } else if byte == b'`' {
-                    self.inline_ticks = Some(count);
+                if runs.peek().is_none() {
+                    self.pending_marker = Some((byte, count));
+                    return;
                 }
+                self.resolve_marker_run(byte, count);
                 self.escaped = false;
                 continue;
             }
             self.escaped = false;
+        }
+    }
+
+    fn resolve_pending_marker(&mut self) {
+        if let Some((marker, count)) = self.pending_marker.take() {
+            self.resolve_marker_run(marker, count);
+        }
+    }
+
+    fn resolve_marker_run(&mut self, marker: u8, count: usize) {
+        if let Some((fence_marker, length)) = self.fence {
+            if marker == fence_marker && count >= length {
+                self.fence = None;
+            }
+        } else if let Some(length) = self.inline_ticks {
+            if marker == b'`' && count == length {
+                self.inline_ticks = None;
+            }
+        } else if count >= 3 {
+            self.fence = Some((marker, count));
+        } else if marker == b'`' {
+            self.inline_ticks = Some(count);
         }
     }
 }
@@ -289,6 +319,9 @@ impl MarkdownCodeState {
 fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> Option<TagToken> {
     let mut characters = input.char_indices().peekable();
     while let Some((start, character)) = characters.next() {
+        if character == '<' {
+            markdown.resolve_pending_marker();
+        }
         if character == '<'
             && markdown.permits_markup()
             && let Some(token) = next_tag(&input[start..]).filter(|token| match token {
@@ -517,8 +550,10 @@ mod tests {
     fn markdown_state_tracks_inline_code_and_escapes() {
         let mut state = MarkdownCodeState::default();
         state.consume("`");
+        state.resolve_pending_marker();
         assert!(!state.permits_markup());
         state.consume("`");
+        state.resolve_pending_marker();
         assert!(state.permits_markup());
 
         state.consume("\\");
@@ -548,13 +583,41 @@ mod tests {
     fn markdown_state_requires_matching_fence_marker_and_length() {
         let mut state = MarkdownCodeState::default();
         state.consume("````");
+        state.resolve_pending_marker();
         assert!(!state.permits_markup());
         state.consume("~~~");
+        state.resolve_pending_marker();
         assert!(!state.permits_markup());
         state.consume("```");
+        state.resolve_pending_marker();
         assert!(!state.permits_markup());
         state.consume("````");
+        state.resolve_pending_marker();
         assert!(state.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_reassembles_split_fence_runs() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("``");
+        state.consume("`");
+        state.consume("xml\n");
+        assert!(!state.permits_markup());
+        state.consume("``");
+        state.consume("`\n");
+        assert!(state.permits_markup());
+
+        let mut inline = MarkdownCodeState::default();
+        inline.consume("`x");
+        assert!(!inline.permits_markup());
+        inline.consume("~x");
+        assert!(!inline.permits_markup());
+        inline.consume("`x");
+        assert!(inline.permits_markup());
+
+        let mut short_tilde = MarkdownCodeState::default();
+        short_tilde.consume("~~x");
+        assert!(short_tilde.permits_markup());
     }
 
     #[test]
@@ -569,5 +632,18 @@ mod tests {
         fenced.push_str(&sanitizer.finish());
         assert_eq!(fenced, "\n```xml\n<function>example</function>\n```\n");
         assert_eq!(sanitizer.push("<tool>duplicate</tool>After"), "After");
+    }
+
+    #[test]
+    fn sanitizer_preserves_fence_delimiters_split_across_chunks() {
+        let mut sanitizer = Sanitizer::default();
+        let mut output = sanitizer.push("Here is XML:\n``");
+        output.push_str(&sanitizer.push("`xml\n<function>literal</function>\n"));
+        output.push_str(&sanitizer.push("```\n<invoke>duplicate</invoke>After"));
+        output.push_str(&sanitizer.finish());
+
+        assert!(output.contains("<function>literal</function>"));
+        assert!(!output.contains("duplicate"));
+        assert!(output.ends_with("After"));
     }
 }
