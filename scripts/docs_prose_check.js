@@ -7,6 +7,7 @@ const path = require("path");
 const CONTRACTION = /\b(i['’]ll|i['’]ve|i['’]m|i['’]d)\b/;
 const BASE_DIR = fs.realpathSync(path.resolve(__dirname, ".."));
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+const visitedDirectories = new Set();
 
 function isWithinBase(target) {
   return target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`);
@@ -56,6 +57,9 @@ function resolveChild(target, name) {
 function walk(target, out) {
   const st = fs.statSync(target);
   if (st.isDirectory()) {
+    const realTarget = fs.realpathSync(target);
+    if (visitedDirectories.has(realTarget)) return;
+    visitedDirectories.add(realTarget);
     for (const name of fs.readdirSync(target)) {
       if (name === "." || name === "..") continue;
       walk(resolveChild(target, name), out);
