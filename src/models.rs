@@ -768,7 +768,7 @@ fn provider_catalog_id_for_target<'a>(
     if let Some(entry) = provider
         .model_catalog
         .iter()
-        .find(|entry| value(entry) == target)
+        .find(|entry| value(entry) == target && provider.model_is_enabled(&entry.id))
     {
         return Some(entry.id.as_str());
     }
@@ -776,6 +776,11 @@ fn provider_catalog_id_for_target<'a>(
     let mut matches = provider
         .model_catalog
         .iter()
+        // The override must be selectable by the same provider.  A catalog
+        // alias can be present but disabled (including through disabled_models),
+        // in which case advertising it would make Guardian route to a model
+        // that provider selection rejects.
+        .filter(|entry| provider.model_is_enabled(&entry.id))
         .filter(|entry| canonical_model_family_id(value(entry)) == target)
         .map(|entry| entry.id.as_str());
     let first = matches.next()?;

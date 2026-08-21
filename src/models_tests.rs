@@ -262,6 +262,34 @@ fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
 }
 
 #[test]
+fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "mimo-v2.5".to_string(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "mimo-v2.5-pro".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "mimo-v2.5-pro")
+        .expect("Mimo Pro model is listed");
+
+    // No enabled base target is available, so keep the selected model rather
+    // than advertise the disabled catalog alias as Guardian's review route.
+    assert_eq!(model["auto_review_model_override"], "mimo-v2.5-pro");
+}
+
+#[test]
 fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
     let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
     localize_auto_review_model_override(
