@@ -279,6 +279,29 @@ async fn later_started_session_request_wins_when_streams_complete_out_of_order()
 }
 
 #[tokio::test]
+async fn in_flight_session_request_resolves_auto_review_until_it_is_dropped() {
+    let state = test_state(AppConfig::default());
+    let request = json!({"model": "streaming-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &request)
+        .await
+        .expect("streaming request is cacheable");
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "streaming-model");
+
+    drop(update);
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(!resolve_auto_review_model(&state, &mut review).await);
+}
+
+#[tokio::test]
 async fn failed_later_session_request_does_not_block_an_earlier_success() {
     let state = test_state(AppConfig::default());
     let first = json!({"model": "first-model", "prompt_cache_key": "session-1"});
@@ -286,11 +309,12 @@ async fn failed_later_session_request_does_not_block_an_earlier_success() {
     let first_update = begin_session_model_update(&state, &first)
         .await
         .expect("first request is cacheable");
-    let _failed_later_update = begin_session_model_update(&state, &failed_later)
+    let failed_later_update = begin_session_model_update(&state, &failed_later)
         .await
         .expect("later request is cacheable");
 
     complete_session_model_update(&state, &first_update).await;
+    drop(failed_later_update);
 
     let mut review = json!({
         "model": "codex-auto-review",

@@ -25,6 +25,7 @@ const MAX_SESSION_MODEL_ID_BYTES: usize = 512;
 #[derive(Default)]
 pub(crate) struct SessionModelCache {
     entries: BTreeMap<String, SessionModelEntry>,
+    pending: BTreeMap<String, Vec<PendingSessionModelEntry>>,
     orders: BTreeMap<String, Weak<SessionModelOrder>>,
     next_use: u64,
 }
@@ -33,6 +34,12 @@ struct SessionModelEntry {
     model: String,
     last_use: u64,
     _order: Arc<SessionModelOrder>,
+}
+
+struct PendingSessionModelEntry {
+    model: String,
+    request: u64,
+    token: Weak<()>,
 }
 
 #[derive(Default)]
@@ -46,10 +53,34 @@ pub(crate) struct SessionModelUpdate {
     model: String,
     request: u64,
     order: Arc<SessionModelOrder>,
+    // The cache holds a Weak reference to this token. Dropping an unfinished
+    // update (for example after a failed or cancelled stream) makes its
+    // provisional mapping invisible without an async cleanup path.
+    _token: Arc<()>,
 }
 
 impl SessionModelCache {
     pub(crate) fn get(&mut self, key: &str) -> Option<String> {
+        let latest_successful_request = self
+            .entries
+            .get(key)
+            .map(|entry| {
+                entry
+                    ._order
+                    .latest_successful_request
+                    .load(Ordering::Relaxed)
+            })
+            .unwrap_or_default();
+        if let Some(pending) = self.pending.get_mut(key) {
+            pending.retain(|entry| entry.token.upgrade().is_some());
+            if let Some(entry) = pending
+                .iter()
+                .filter(|entry| entry.request > latest_successful_request)
+                .max_by_key(|entry| entry.request)
+            {
+                return Some(entry.model.clone());
+            }
+        }
         let next_use = self.advance_use();
         let entry = self.entries.get_mut(key)?;
         entry.last_use = next_use;
@@ -65,6 +96,10 @@ impl SessionModelCache {
         }
         let request = self.advance_use();
         self.orders.retain(|_, order| order.upgrade().is_some());
+        self.pending.retain(|_, pending| {
+            pending.retain(|entry| entry.token.upgrade().is_some());
+            !pending.is_empty()
+        });
         let order = match self
             .entries
             .get(key)
@@ -79,16 +114,33 @@ impl SessionModelCache {
             }
             None => return None,
         };
+        let token = Arc::new(());
+        self.pending
+            .entry(key.to_string())
+            .or_default()
+            .push(PendingSessionModelEntry {
+                model: model.to_string(),
+                request,
+                token: Arc::downgrade(&token),
+            });
         Some(SessionModelUpdate {
             key: key.to_string(),
             model: model.to_string(),
             request,
             order,
+            _token: token,
         })
     }
 
     pub(crate) fn complete_update(&mut self, update: &SessionModelUpdate) {
         let last_use = self.advance_use();
+        if let Some(pending) = self.pending.get_mut(&update.key) {
+            pending
+                .retain(|entry| entry.token.upgrade().is_some() && entry.request != update.request);
+            if pending.is_empty() {
+                self.pending.remove(&update.key);
+            }
+        }
         if update
             .order
             .latest_successful_request
