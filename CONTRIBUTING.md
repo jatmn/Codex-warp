@@ -87,6 +87,8 @@ does not provide them. Re-run the installer once after updating from an earlier 
 installation. The preflight includes the mechanical
 review gate, tests, build, docs, CLI smoke checks, mutation testing when Rust
 changes, and supply-chain checks; do not replace it with a partial checklist.
+The installer chains existing Git hooks rather than replacing them, including
+custom hooks in your previous `core.hooksPath` and ordinary `.git/hooks` hooks.
 
 The hooks cover ordinary commits, non-fast-forward merge commits, `git am`, and
 branch pushes. Git has no preventative hook for a bare `git cherry-pick`; use

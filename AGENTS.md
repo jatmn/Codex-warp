@@ -174,6 +174,8 @@ After updating from an earlier hook installation, run the installer once again
 to migrate the hook path. If a checkout moves to a branch that does not provide
 the preflight scripts, the installed hook fails closed instead of silently
 allowing the commit or push.
+The installer chains pre-existing custom and default Git hooks rather than
+replacing them.
 
 The installed hooks automatically cover ordinary commits, non-fast-forward
 merge commits, `git am`, and branch pushes. Git offers no preventative hook for

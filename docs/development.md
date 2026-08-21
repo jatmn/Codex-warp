@@ -160,6 +160,8 @@ the checked-out branch's versioned hook and preflight scripts. If that branch
 does not provide the preflight implementation, it fails closed rather than
 silently skipping the check. Re-run the installer once after updating from an
 earlier hook installation to migrate its hook path.
+It also chains the hooks that were active before installation, so existing
+`core.hooksPath` and ordinary `.git/hooks` policies continue to run.
 
 The hooks run for ordinary commits, non-fast-forward merge commits, `git am`,
 and branch pushes. Git has no preventative hook for a bare `git cherry-pick`.

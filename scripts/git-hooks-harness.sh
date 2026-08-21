@@ -13,7 +13,7 @@ trap cleanup EXIT
 git -C "$repo" init --quiet
 git -C "$repo" config user.name hook-harness
 git -C "$repo" config user.email hook-harness@example.invalid
-mkdir -p "$repo/scripts" "$repo/empty-hooks"
+mkdir -p "$repo/scripts" "$repo/empty-hooks" "$repo/custom-hooks"
 git -C "$repo" config core.hooksPath "$repo/empty-hooks"
 cp "$root/scripts/run-preflight-hook.sh" "$repo/scripts/"
 cp "$root/scripts/git-hook-bootstrap.sh" "$repo/scripts/"
@@ -49,12 +49,32 @@ cp "$root/.githooks/pre-applypatch" "$repo/.githooks/"
 cp "$root/.githooks/pre-push" "$repo/.githooks/"
 git -C "$repo" add .githooks
 git -C "$repo" commit --quiet -m hooks
+cat >"$repo/custom-hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pre-commit\n' >>"$CUSTOM_HOOK_CALLS"
+EOF
+cat >"$repo/custom-hooks/commit-msg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'commit-msg\n' >>"$CUSTOM_HOOK_CALLS"
+EOF
+cat >"$repo/custom-hooks/pre-push" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat >>"$CUSTOM_PUSH_CALLS"
+EOF
+chmod +x "$repo/custom-hooks/pre-commit" "$repo/custom-hooks/commit-msg" "$repo/custom-hooks/pre-push"
+git -C "$repo" config core.hooksPath "$repo/custom-hooks"
+custom_calls="$repo/custom-hook-calls"
+export CUSTOM_HOOK_CALLS="$custom_calls"
 (
   cd "$repo"
   bash scripts/install-git-hooks.sh --base HEAD
 )
 hooks_dir="$(git -C "$repo" config --worktree --get core.hooksPath)"
-for hook_name in pre-commit pre-merge-commit pre-applypatch pre-push; do
+test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/custom-hooks"
+for hook_name in pre-commit pre-merge-commit pre-applypatch pre-push commit-msg; do
   test -f "$hooks_dir/$hook_name"
 done
 printf 'index\n' >"$repo/validation-target.txt"
@@ -62,6 +82,8 @@ git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
 git -C "$repo" commit --quiet -m index-branch
 test "$(git -C "$repo" show HEAD:validation-target.txt)" = index
+test "$(sed -n '1p' "$custom_calls")" = pre-commit
+test "$(sed -n '2p' "$custom_calls")" = commit-msg
 
 git -C "$repo" switch --quiet -c merge-source
 printf 'merge source\n' >"$repo/merge-source.txt"
@@ -104,11 +126,15 @@ git -C "$repo" commit --quiet -m second-branch
 second_sha="$(git -C "$repo" rev-parse HEAD)"
 calls="$repo/hook-calls"
 export HOOK_CALLS="$calls"
+custom_push_calls="$repo/custom-push-calls"
+export CUSTOM_PUSH_CALLS="$custom_push_calls"
 printf 'refs/heads/first %s refs/heads/first 0000000000000000000000000000000000000000\nrefs/heads/second %s refs/heads/second 0000000000000000000000000000000000000000\n' "$first_sha" "$second_sha" |
   (cd "$repo" && bash "$hooks_dir/pre-push")
 test "$(sed -n '1p' "$calls")" = "$first_sha"
 test "$(sed -n '2p' "$calls")" = "$second_sha"
 test "$(wc -l <"$calls")" -eq 2
+test "$(wc -l <"$custom_push_calls")" -eq 2
+unset CUSTOM_PUSH_CALLS
 
 git -C "$repo" checkout -- scripts/run-preflight-hook.sh
 git -C "$repo" config --worktree core.hooksPath "$hooks_dir"
