@@ -416,6 +416,10 @@ fn exact_auto_review_catalog_id_remains_authoritative() {
     };
 
     assert_eq!(
+        provider_catalog_id_for_catalog_id(&provider, "review-model"),
+        Some("review-model")
+    );
+    assert_eq!(
         provider_local_model_id(&provider, "source-model", "review-model"),
         Some("review-model")
     );
