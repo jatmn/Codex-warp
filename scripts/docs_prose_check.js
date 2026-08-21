@@ -13,7 +13,7 @@ function isWithinBase(target) {
 }
 
 function resolveWithinBase(input) {
-  const normalizedInput = typeof input === "string" ? input.replaceAll("\\", "/") : "";
+  const normalizedInput = typeof input === "string" ? input.replace(/\\/g, "/") : "";
   const segments = normalizedInput.split("/").filter((segment) => segment !== "");
   if (
     (typeof input === "string" &&
