@@ -251,21 +251,29 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
 }
 
 #[test]
-fn versioned_model_ids_require_a_nonempty_numeric_version_suffix() {
-    assert!(is_versioned_model_id(
+fn model_variant_ids_require_a_nonempty_delimited_suffix() {
+    assert!(is_model_variant_id(
         "deepseek-v4-flash-0731",
         "deepseek-v4-flash"
     ));
-    assert!(is_versioned_model_id(
+    assert!(is_model_variant_id(
         "deepseek_v4_flash_2026_08",
         "deepseek-v4-flash"
     ));
-    assert!(!is_versioned_model_id(
+    assert!(is_model_variant_id(
+        "deepseek-v4-flash-preview",
+        "deepseek-v4-flash"
+    ));
+    assert!(is_model_variant_id(
+        "deepseek_v4_flash_preview",
+        "deepseek-v4-flash"
+    ));
+    assert!(!is_model_variant_id(
         "deepseek-v4-flash-",
         "deepseek-v4-flash"
     ));
-    assert!(!is_versioned_model_id(
-        "deepseek-v4-flash-preview",
+    assert!(!is_model_variant_id(
+        "deepseek-v4-flashback",
         "deepseek-v4-flash"
     ));
 }
@@ -340,6 +348,25 @@ fn live_catalog_localizes_underscore_versioned_flash_model() {
     assert_eq!(
         models[0]["auto_review_model_override"],
         "deepseek_v4_flash_0731"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_suffixed_flash_models_to_their_routable_ids() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"deepseek-v4-flash-preview"},{"id":"deepseek_v4_flash_preview"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-v4-flash-preview"
+    );
+    assert_eq!(
+        models[1]["auto_review_model_override"],
+        "deepseek_v4_flash_preview"
     );
 }
 

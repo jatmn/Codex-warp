@@ -682,7 +682,7 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
         return;
     }
     if provider.model_catalog.is_empty() {
-        if is_versioned_model_id(id, &target) {
+        if is_model_variant_id(id, &target) {
             info["auto_review_model_override"] = json!(id);
         }
         return;
@@ -691,18 +691,18 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
 }
 
-fn is_versioned_model_id(id: &str, target: &str) -> bool {
+/// Whether `id` is a nonempty dash/underscore suffix variant of `target`.
+///
+/// The DeepSeek family catalog matches both spellings with a trailing wildcard,
+/// so live-catalog localization must recognize the same variants instead of
+/// leaving their base review target advertised.
+fn is_model_variant_id(id: &str, target: &str) -> bool {
     let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
     let target = target.replace('_', "-");
     let id = id.replace('_', "-");
     id.strip_prefix(&target)
         .and_then(|suffix| suffix.strip_prefix('-'))
-        .is_some_and(|version| {
-            !version.is_empty()
-                && version
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'_')
-        })
+        .is_some_and(|suffix| !suffix.is_empty())
 }
 
 fn provider_local_model_id<'a>(
