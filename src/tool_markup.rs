@@ -444,6 +444,7 @@ mod tests {
         assert_eq!(possible_tag_start("Before <tool "), Some(7));
         assert_eq!(possible_tag_start("Before </tool"), Some(7));
         assert_eq!(possible_tag_start("Before </tool>"), None);
+        assert_eq!(possible_tag_start("Before </tool >"), None);
         assert_eq!(possible_tag_start("Before <toolbox"), None);
         assert_eq!(possible_tag_start("Before </toolbox"), None);
     }
