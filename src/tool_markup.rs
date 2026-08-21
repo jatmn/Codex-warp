@@ -668,11 +668,13 @@ impl MarkdownCodeState {
             self.indented_line = true;
         }
         if byte == b' ' {
-            if let Some(spaces) = self.leading_spaces.as_mut() {
-                *spaces += 1;
-                if *spaces >= 4 {
-                    self.indented_line = true;
-                }
+            if let Some(spaces) = self.leading_spaces.as_mut()
+                && !self.indented_line
+            {
+                *spaces = spaces
+                    .checked_add(1)
+                    .expect("Markdown indentation fits usize");
+                self.indented_line = *spaces >= 4;
             }
         } else {
             self.mark_nonspace();
