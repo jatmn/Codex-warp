@@ -127,7 +127,6 @@ mod tests {
     use super::next_tag;
     use super::opening_tag;
     use super::recognized_tag;
-
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
         let tag = opening_tag("<parameter note=\"a > b\"/>After").expect("complete tag");
@@ -139,7 +138,6 @@ mod tests {
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
     }
-
     #[test]
     fn backslash_before_quote_does_not_escape_xml_quote() {
         let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
