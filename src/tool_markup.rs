@@ -276,13 +276,17 @@ fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> O
                 } => TagToken::Opening {
                     tag,
                     start,
-                    end: start + end,
+                    end: start
+                        .checked_add(end)
+                        .expect("tag end remains within input"),
                     self_closing,
                 },
                 TagToken::Closing { tag, end, .. } => TagToken::Closing {
                     tag,
                     start,
-                    end: start + end,
+                    end: start
+                        .checked_add(end)
+                        .expect("tag end remains within input"),
                 },
             });
         }
