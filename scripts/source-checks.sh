@@ -27,7 +27,13 @@ if [ "$skip_typos" != "1" ]; then
 fi
 
 docs_files=(README.md AGENTS.md CONTRIBUTING.md SECURITY.md docs)
-if grep -RInE '[[:blank:]]$' "${docs_files[@]}"; then
+trailing_whitespace=0
+while IFS= read -r -d '' doc; do
+  if grep -nIHE '[[:blank:]]$' "$doc"; then
+    trailing_whitespace=1
+  fi
+done < <(find -P "${docs_files[@]}" -type f -print0)
+if [ "$trailing_whitespace" -ne 0 ]; then
   echo "source-checks: trailing whitespace in docs" >&2
   fail=1
 fi
