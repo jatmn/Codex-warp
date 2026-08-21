@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub use crate::config_loader::canonical_model_family_id;
 pub use crate::config_loader::configured_provider_by_id;
 pub use crate::config_loader::configured_provider_entries;
 pub use crate::config_loader::load_config_layers;

@@ -277,9 +277,15 @@ pub fn matches_model_pattern_for_sort(pattern: &str, model: &str) -> bool {
     matches_model_pattern(pattern, model)
 }
 
+/// Canonical comparison form for model-family aliases. Preserve the provider's
+/// original model ID for routing and display; use this only for matching.
+pub fn canonical_model_family_id(value: &str) -> String {
+    value.to_ascii_lowercase().replace('_', "-")
+}
+
 fn matches_model_pattern_exact(pattern: &str, model: &str) -> bool {
-    let pattern = pattern.to_ascii_lowercase();
-    let model = model.to_ascii_lowercase();
+    let pattern = canonical_model_family_id(pattern);
+    let model = canonical_model_family_id(model);
     if pattern == "*" || pattern == model {
         return true;
     }

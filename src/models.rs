@@ -18,6 +18,7 @@ use crate::config;
 use crate::config::AppConfig;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
+use crate::config::canonical_model_family_id;
 use crate::config::matching_model_families;
 use crate::config::provider_entries;
 use crate::http::apply_headers_with_accept;
@@ -699,8 +700,8 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
 /// leaving their base review target advertised.
 fn is_model_variant_id(id: &str, target: &str) -> bool {
     let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
-    let target = target.replace('_', "-");
-    let id = id.replace('_', "-");
+    let target = canonical_model_family_id(target);
+    let id = canonical_model_family_id(id);
     id.strip_prefix(&target)
         .and_then(|suffix| suffix.strip_prefix('-'))
         .is_some_and(|suffix| !suffix.is_empty())
