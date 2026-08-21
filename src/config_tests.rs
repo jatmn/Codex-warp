@@ -1178,6 +1178,20 @@ fn transform_patch_can_remove_inherited_morphs_before_appending() {
 }
 
 #[test]
+fn transform_patch_can_enable_duplicate_tool_markup_suppression() {
+    let mut transform = TransformConfig::default();
+    assert!(!transform.suppress_duplicate_tool_markup);
+
+    TransformConfigPatch {
+        suppress_duplicate_tool_markup: Some(true),
+        ..TransformConfigPatch::default()
+    }
+    .apply_to(&mut transform);
+
+    assert!(transform.suppress_duplicate_tool_markup);
+}
+
+#[test]
 fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
     let config = load_config_layers(&[]).expect("default parses");
     // These should NOT match the hy3 family, which would otherwise inherit the
