@@ -39,6 +39,10 @@ elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
 fi
 
+if ! bash scripts/git-hooks-harness.sh; then
+  fail=1
+fi
+
 if command -v node >/dev/null 2>&1; then
   js_files=(
     src/webui_static/theme-bootstrap.js

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+base_ref="$(git -C "$root" config --worktree --get codex-warp.preflight-base || printf '%s' origin/main)"
+runner="$root/scripts/run-preflight-hook.sh"
+if [ ! -f "$runner" ]; then
+  echo 'codex-warp preflight: this branch does not provide scripts/run-preflight-hook.sh; switch to a supported branch or reinstall the hooks.' >&2
+  exit 1
+fi
+exec bash "$runner" --index --base "$base_ref"

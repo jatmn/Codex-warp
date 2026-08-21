@@ -11,12 +11,8 @@
 
 ## Validation
 
-- [ ] `bash scripts/source-checks.sh` (fmt, typos, docs prose, JS, crate-wide clippy)
-- [ ] `cargo update --workspace --locked` (CI also runs this)
-- [ ] `cargo test --locked`
-- [ ] `cargo build --locked`
-- [ ] `target/debug/codex-warp --version`
-- [ ] `target/debug/codex-warp --help`
+- [ ] `bash scripts/ci-preflight.sh` (use `--base origin/<base-branch>` for a non-`main` base)
+- [ ] Durable preflight hooks are installed with `bash scripts/install-git-hooks.sh`
 
 ## Maintainer checklist
 

@@ -72,22 +72,39 @@ You are responsible for keeping your PR green. If review feedback requires new
 commits, re-run the relevant checks after those commits and make sure CI passes
 again.
 
-For code changes, run:
+Before ordinary local commits, new PR submission, and PR-update push, run the
+full local CI preflight:
 
 ```bash
-bash scripts/source-checks.sh
-cargo test --locked
-cargo build --locked
-git diff --check
+bash scripts/ci-preflight.sh
 ```
 
-`scripts/source-checks.sh` is the mechanical review gate: rustfmt, `typos`
-spelling, docs whitespace, docs contraction capitalization, Web UI JavaScript
-syntax, the chart harness, and crate-wide Clippy (`-D warnings`). Treat
-Clippy hits as review findings, not as optional style. Install `typos`
-with `cargo install typos-cli --locked`.
+For a PR with a non-`main` base, pass `--base origin/<base-branch>`. Install
+the durable hook bootstrap with `bash scripts/install-git-hooks.sh` so commits
+and pushes run the same check automatically. It dispatches to the versioned
+hook and preflight scripts in the current checkout and fails closed if a branch
+does not provide them. Re-run the installer once after updating from an earlier hook
+installation. The preflight includes the mechanical
+review gate, tests, build, docs, CLI smoke checks, mutation testing when Rust
+changes, and supply-chain checks; do not replace it with a partial checklist.
+The installer chains existing Git hooks rather than replacing them, including
+custom hooks in your previous `core.hooksPath` and ordinary `.git/hooks` hooks.
 
-For documentation-only changes, run:
+The hooks cover ordinary commits, `git am`, and branch pushes. Git cannot expose
+the exact target topology to a preventative hook for a bare non-fast-forward
+merge; use `git merge --no-ff --no-commit <branch>`, run the preflight, then
+commit the result. If you complete a bare merge, run the preflight immediately
+before pushing. Git also has no preventative hook for bare `git cherry-pick` or
+`git revert`, or for rewritten commits from `git rebase` / `git rebase
+--continue`. Use `git cherry-pick --no-commit <commit>` or `git revert
+--no-commit <commit>`, run the preflight, then commit the result. During a
+conflicted rebase, resolve and stage the conflict, run the preflight, then use
+`git rebase --continue`; run it once more after a non-conflicting rebase and
+before pushing. A push is rejected if its target has not passed the pre-push
+check.
+
+For a quick documentation-only feedback loop before the mandatory preflight,
+run:
 
 ```bash
 SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh
@@ -100,7 +117,7 @@ is part of the change.
 
 ## Review And Follow-Up
 
-Re-run `bash scripts/source-checks.sh` after every fix commit and before
+Re-run `bash scripts/ci-preflight.sh` after every fix commit and before
 requesting another AI or human review. Mechanical nits (spelling, rustfmt,
 docs capitalization, Clippy) belong in that pass, not in round two.
 

@@ -138,20 +138,61 @@ Studio Build Tools, or run from a Developer PowerShell.
 
 ## Local Validation
 
-Run these before committing code changes:
+Before ordinary local commits, new PR submission, and push that updates a PR,
+run the full local Linux CI preflight:
 
 ```bash
-bash scripts/source-checks.sh
-cargo test --locked
-cargo build --locked
-git diff --check
+bash scripts/ci-preflight.sh
 ```
 
-`scripts/source-checks.sh` runs rustfmt, `typos`, docs whitespace, docs
-contraction capitalization (lowercase first-person contractions outside code
-spans), `node --check` for the Web UI scripts, the chart harness, and crate-wide
-Clippy (`cargo clippy --locked --all-targets --all-features -- -D warnings`). Those Clippy hits are
-review findings. Install the spell checker with `cargo install typos-cli --locked`.
+For a PR with a non-`main` base, use
+`bash scripts/ci-preflight.sh --base origin/<base-branch>`. Do not use
+`git commit --no-verify` or `git push --no-verify` to bypass this requirement.
+Install the durable hook bootstrap once per checkout to run the versioned
+preflight automatically at commit and push time:
+
+```bash
+bash scripts/install-git-hooks.sh
+```
+
+The bootstrap remains installed when branches change, but always dispatches to
+the checked-out branch's versioned hook and preflight scripts. If that branch
+does not provide the preflight implementation, it fails closed rather than
+silently skipping the check. Re-run the installer once after updating from an
+earlier hook installation to migrate its hook path.
+It also chains the hooks that were active before installation, so existing
+`core.hooksPath` and ordinary `.git/hooks` policies continue to run.
+
+The hooks run for ordinary commits, `git am`, and branch pushes. Git cannot
+expose the exact target topology to a preventative hook for a bare
+non-fast-forward merge; use `git merge --no-ff --no-commit <branch>`, run the
+preflight, then commit the result. If you complete a bare merge, run the
+preflight immediately before pushing. Git also has no preventative hook for
+bare `git cherry-pick` or `git revert`, or for rewritten commits from `git
+rebase` / `git rebase --continue`. Use `git cherry-pick --no-commit <commit>`
+or `git revert --no-commit <commit>`, run the preflight, then commit the result
+so validation occurs before the commit is recorded. During a conflicted rebase,
+resolve and stage the conflict, run the preflight, then use `git rebase
+--continue`; run it once more after a non-conflicting rebase and before pushing.
+The pre-push hook remains a backstop for any branch update.
+
+For a non-`main` PR base, install the hooks with that base so automatic commit
+and push checks use the same target:
+
+```bash
+bash scripts/install-git-hooks.sh --base origin/<base-branch>
+```
+
+The preflight runs every Linux CI check explicitly: `cargo update --workspace
+--locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
+Web UI JavaScript syntax, chart harness, and crate-wide Clippy); `cargo test
+--locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
+--locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
+--check`; conditional Rust-diff `cargo mutants -o <temporary-dir> --no-shuffle
+-vV --in-diff ... -- --locked`; `cargo deny check bans licenses sources`; and
+`cargo audit`.
+The Windows job is intentionally excluded. `cargo audit` runs but remains
+non-blocking, matching the CI workflow's `continue-on-error` policy.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
 ownership, pointer reclaim only on hit, paint only with a measured CSS width,
@@ -159,7 +200,7 @@ live-region clear, canvas interactivity attrs, bar paint anchors) and
 `footer-status.js` (analytics footer copy when chart-math is missing, boot
 errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
 
-For documentation-only changes:
+For a quick documentation-only feedback loop before the mandatory preflight:
 
 ```bash
 SOURCE_CHECKS_CLIPPY=0 bash scripts/source-checks.sh
