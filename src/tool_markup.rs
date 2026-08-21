@@ -63,7 +63,9 @@ pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
 #[cfg(test)]
 mod opening_tag_tests {
     use super::opening_tag;
+    use super::next_tag;
     use super::recognized_tag;
+    use super::TagToken;
     use super::recognized_tag;
 
     #[test]
@@ -88,6 +90,29 @@ mod opening_tag_tests {
         assert_eq!(recognized_tag("<toolbox>"), None);
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
+    }
+
+    #[test]
+    fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
+        assert_eq!(
+            next_tag("before <parameter note=\"a > b\"/>After"),
+            Some(TagToken::Opening {
+                tag: "parameter",
+                start: 7,
+                end: 32,
+                self_closing: true,
+            })
+        );
+        assert_eq!(
+            next_tag("</FUNCTION >After"),
+            Some(TagToken::Closing {
+                tag: "function",
+                start: 0,
+                end: 12,
+            })
+        );
+        assert_eq!(next_tag("</function extra>"), None);
+        assert_eq!(next_tag("<parameter note=\"unterminated"), None);
     }
 }
 
