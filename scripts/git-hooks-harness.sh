@@ -13,6 +13,7 @@ trap cleanup EXIT
 git -C "$repo" init --quiet
 git -C "$repo" config user.name hook-harness
 git -C "$repo" config user.email hook-harness@example.invalid
+git -C "$repo" config extensions.worktreeConfig true
 mkdir -p "$repo/scripts" "$repo/empty-hooks" "$repo/custom-hooks"
 git -C "$repo" config core.hooksPath "$repo/empty-hooks"
 cp "$root/scripts/run-preflight-hook.sh" "$repo/scripts/"
@@ -28,9 +29,12 @@ if [ -n "${HOOK_MARKER:-}" ]; then
   printf '%s\n' "$(git rev-parse HEAD)" >>"$HOOK_MARKER"
 fi
 case "$(cat validation-target.txt)" in
-  unborn|index|staged) ;;
+  unborn|index|staged|staged2) ;;
   *) exit 1 ;;
 esac
+if [ "${EXPECT_MERGE_SNAPSHOT:-0}" = 1 ]; then
+  test "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3
+fi
 EOF
 chmod +x "$repo/scripts/ci-preflight.sh"
 
@@ -52,15 +56,42 @@ legacy_branch="$(git -C "$repo" branch --show-current)"
 git -C "$repo" switch --quiet -c protected
 mkdir -p "$repo/.githooks"
 cp "$root/.githooks/pre-commit" "$repo/.githooks/"
-cp "$root/.githooks/pre-merge-commit" "$repo/.githooks/"
 cp "$root/.githooks/pre-applypatch" "$repo/.githooks/"
 cp "$root/.githooks/pre-push" "$repo/.githooks/"
 git -C "$repo" add .githooks
 git -C "$repo" commit --quiet -m hooks
 
+# Migrate the first durable-bootstrap installer, which used the same durable
+# directory but did not record the previous hook path. It must not chain its
+# own dispatcher recursively.
+intermediate_hooks_dir="$(git -C "$repo" rev-parse --absolute-git-dir)/codex-warp-hooks"
+mkdir -p "$intermediate_hooks_dir"
+git -C "$repo" config --worktree core.hooksPath "$intermediate_hooks_dir"
+git -C "$repo" config --worktree --unset codex-warp.previous-hooks-path || true
+git -C "$repo" config --worktree codex-warp.preflight-base HEAD
+(
+  cd "$repo"
+  bash scripts/install-git-hooks.sh --base HEAD
+)
+hooks_dir="$(git -C "$repo" config --worktree --get core.hooksPath)"
+test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/.git/hooks"
+intermediate_calls="$repo/intermediate-hook-calls"
+export HOOK_MARKER="$intermediate_calls"
+printf 'index\n' >"$repo/validation-target.txt"
+git -C "$repo" add validation-target.txt
+git -C "$repo" commit --quiet -m intermediate-hook-migration
+test "$(wc -l <"$intermediate_calls")" -eq 1
+: >"$intermediate_calls"
+intermediate_sha="$(git -C "$repo" rev-parse HEAD)"
+printf 'refs/heads/protected %s refs/heads/protected 0000000000000000000000000000000000000000\n' "$intermediate_sha" |
+  (cd "$repo" && bash "$hooks_dir/pre-push")
+test "$(wc -l <"$intermediate_calls")" -eq 1
+unset HOOK_MARKER
+
 # Migrate the PR's original installer, which used .githooks directly. The
 # durable dispatcher must not invoke that same versioned hook twice.
 git -C "$repo" config --worktree core.hooksPath .githooks
+git -C "$repo" config --worktree --unset codex-warp.previous-hooks-path
 git -C "$repo" config --worktree codex-warp.preflight-base HEAD
 (
   cd "$repo"
@@ -70,7 +101,7 @@ hooks_dir="$(git -C "$repo" config --worktree --get core.hooksPath)"
 test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/.githooks"
 legacy_calls="$repo/legacy-hook-calls"
 export HOOK_MARKER="$legacy_calls"
-printf 'index\n' >"$repo/validation-target.txt"
+printf 'staged\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 git -C "$repo" commit --quiet -m legacy-hook-migration
 test "$(wc -l <"$legacy_calls")" -eq 1
@@ -95,12 +126,17 @@ cat >"$repo/custom-hooks/commit-msg" <<'EOF'
 set -euo pipefail
 printf 'commit-msg\n' >>"$CUSTOM_HOOK_CALLS"
 EOF
+cat >"$repo/custom-hooks/pre-merge-commit" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pre-merge-commit\n' >>"$CUSTOM_MERGE_CALLS"
+EOF
 cat >"$repo/custom-hooks/pre-push" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cat >>"$CUSTOM_PUSH_CALLS"
 EOF
-chmod +x "$repo/custom-hooks/pre-commit" "$repo/custom-hooks/commit-msg" "$repo/custom-hooks/pre-push"
+chmod +x "$repo/custom-hooks/pre-commit" "$repo/custom-hooks/commit-msg" "$repo/custom-hooks/pre-merge-commit" "$repo/custom-hooks/pre-push"
 git -C "$repo" config core.hooksPath "$repo/custom-hooks"
 custom_calls="$repo/custom-hook-calls"
 export CUSTOM_HOOK_CALLS="$custom_calls"
@@ -120,11 +156,16 @@ done
   bash scripts/install-git-hooks.sh --base HEAD
 )
 test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/custom-hooks"
-printf 'staged\n' >"$repo/validation-target.txt"
+custom_merge_calls="$repo/custom-merge-calls"
+export CUSTOM_MERGE_CALLS="$custom_merge_calls"
+(cd "$repo" && bash "$hooks_dir/pre-merge-commit")
+test "$(cat "$custom_merge_calls")" = pre-merge-commit
+unset CUSTOM_MERGE_CALLS
+printf 'staged2\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
 git -C "$repo" commit --quiet -m index-branch
-test "$(git -C "$repo" show HEAD:validation-target.txt)" = staged
+test "$(git -C "$repo" show HEAD:validation-target.txt)" = staged2
 test "$(sed -n '1p' "$custom_calls")" = pre-commit
 test "$(sed -n '2p' "$custom_calls")" = commit-msg
 
@@ -138,9 +179,12 @@ git -C "$repo" add protected.txt
 git -C "$repo" commit --quiet -m protected
 merge_calls="$repo/merge-hook-calls"
 export HOOK_MARKER="$merge_calls"
-git -C "$repo" merge --no-ff --no-edit merge-source
+export EXPECT_MERGE_SNAPSHOT=1
+git -C "$repo" merge --no-ff --no-commit merge-source
+git -C "$repo" commit --quiet -m merge
 test -s "$merge_calls"
 unset HOOK_MARKER
+unset EXPECT_MERGE_SNAPSHOT
 
 git -C "$repo" switch --quiet -c mail-source
 printf 'mail source\n' >"$repo/mail-source.txt"

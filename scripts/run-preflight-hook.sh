@@ -23,7 +23,14 @@ done
 
 root="$(git rev-parse --show-toplevel)"
 object_dir="$(mktemp -d)"
-object_alternates="$(git -C "$root" rev-parse --path-format=absolute --git-path objects)"
+object_alternates="${GIT_OBJECT_DIRECTORY:-$(git -C "$root" rev-parse --path-format=absolute --git-path objects)}"
+if [ -n "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" ]; then
+  object_path_separator=:
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) object_path_separator=';' ;;
+  esac
+  object_alternates="$object_alternates$object_path_separator${GIT_ALTERNATE_OBJECT_DIRECTORIES}"
+fi
 worktree="$(mktemp -d)"
 cleanup() {
   GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" \
@@ -38,6 +45,13 @@ if [ "$mode" = index ]; then
   parent=()
   if git rev-parse --verify --quiet HEAD >/dev/null; then
     parent=(-p HEAD)
+  fi
+  merge_head_file="$(git rev-parse --git-path MERGE_HEAD)"
+  if [ -f "$merge_head_file" ]; then
+    while read -r merge_parent; do
+      git rev-parse --verify --quiet "${merge_parent}^{commit}" >/dev/null || continue
+      parent+=(-p "$merge_parent")
+    done <"$merge_head_file"
   fi
   treeish="$(printf 'preflight index snapshot\n' | GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$object_alternates" git commit-tree "$tree" "${parent[@]}")"
 fi

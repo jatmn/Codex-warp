@@ -163,15 +163,18 @@ earlier hook installation to migrate its hook path.
 It also chains the hooks that were active before installation, so existing
 `core.hooksPath` and ordinary `.git/hooks` policies continue to run.
 
-The hooks run for ordinary commits, non-fast-forward merge commits, `git am`,
-and branch pushes. Git has no preventative hook for bare `git cherry-pick` or
-`git revert`, or for rewritten commits from `git rebase` / `git rebase
---continue`. Use `git cherry-pick --no-commit <commit>` or `git revert
---no-commit <commit>`, run the preflight, then commit the result so validation
-occurs before the commit is recorded. During a conflicted rebase, resolve and
-stage the conflict, run the preflight, then use `git rebase --continue`; run it
-once more after a non-conflicting rebase and before pushing. The pre-push hook
-remains a backstop for any branch update.
+The hooks run for ordinary commits, `git am`, and branch pushes. Git cannot
+expose the exact target topology to a preventative hook for a bare
+non-fast-forward merge; use `git merge --no-ff --no-commit <branch>`, run the
+preflight, then commit the result. If you complete a bare merge, run the
+preflight immediately before pushing. Git also has no preventative hook for
+bare `git cherry-pick` or `git revert`, or for rewritten commits from `git
+rebase` / `git rebase --continue`. Use `git cherry-pick --no-commit <commit>`
+or `git revert --no-commit <commit>`, run the preflight, then commit the result
+so validation occurs before the commit is recorded. During a conflicted rebase,
+resolve and stage the conflict, run the preflight, then use `git rebase
+--continue`; run it once more after a non-conflicting rebase and before pushing.
+The pre-push hook remains a backstop for any branch update.
 
 For a non-`main` PR base, install the hooks with that base so automatic commit
 and push checks use the same target:

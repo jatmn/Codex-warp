@@ -1,9 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-hook_dir="$(dirname "$0")"
-pre_commit="$hook_dir/pre-commit"
-if [ ! -f "$pre_commit" ]; then
-  echo 'codex-warp preflight: this branch does not provide .githooks/pre-commit; switch to a supported branch or reinstall the hooks.' >&2
-  exit 1
-fi
-exec bash "$pre_commit"

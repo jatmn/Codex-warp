@@ -90,14 +90,18 @@ changes, and supply-chain checks; do not replace it with a partial checklist.
 The installer chains existing Git hooks rather than replacing them, including
 custom hooks in your previous `core.hooksPath` and ordinary `.git/hooks` hooks.
 
-The hooks cover ordinary commits, non-fast-forward merge commits, `git am`, and
-branch pushes. Git has no preventative hook for bare `git cherry-pick` or `git
-revert`, or for rewritten commits from `git rebase` / `git rebase --continue`.
-Use `git cherry-pick --no-commit <commit>` or `git revert --no-commit <commit>`,
-run the preflight, then commit the result. During a conflicted rebase, resolve
-and stage the conflict, run the preflight, then use `git rebase --continue`; run
-it once more after a non-conflicting rebase and before pushing. A push is
-rejected if its target has not passed the pre-push check.
+The hooks cover ordinary commits, `git am`, and branch pushes. Git cannot expose
+the exact target topology to a preventative hook for a bare non-fast-forward
+merge; use `git merge --no-ff --no-commit <branch>`, run the preflight, then
+commit the result. If you complete a bare merge, run the preflight immediately
+before pushing. Git also has no preventative hook for bare `git cherry-pick` or
+`git revert`, or for rewritten commits from `git rebase` / `git rebase
+--continue`. Use `git cherry-pick --no-commit <commit>` or `git revert
+--no-commit <commit>`, run the preflight, then commit the result. During a
+conflicted rebase, resolve and stage the conflict, run the preflight, then use
+`git rebase --continue`; run it once more after a non-conflicting rebase and
+before pushing. A push is rejected if its target has not passed the pre-push
+check.
 
 For a quick documentation-only feedback loop before the mandatory preflight,
 run:

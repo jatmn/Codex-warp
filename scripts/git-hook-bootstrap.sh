@@ -8,7 +8,7 @@ previous_hooks_dir="$(git -C "$root" config --worktree --get codex-warp.previous
 previous_hook="${previous_hooks_dir:+$previous_hooks_dir/$hook_name}"
 versioned_hook=""
 case "$hook_name" in
-  pre-commit|pre-merge-commit|pre-applypatch|pre-push)
+  pre-commit|pre-applypatch|pre-push)
     versioned_hook="$root/.githooks/$hook_name"
     ;;
 esac

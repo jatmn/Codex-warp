@@ -17,15 +17,21 @@ fi
 
 git -C "$root" config extensions.worktreeConfig true
 git_dir="$(git -C "$root" rev-parse --absolute-git-dir)"
-default_hooks_dir="$(git -C "$root" rev-parse --path-format=absolute --git-path hooks)"
+common_git_dir="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+default_hooks_dir="$common_git_dir/hooks"
 hooks_dir="$git_dir/codex-warp-hooks"
 installed_hooks_path="$(git -C "$root" config --worktree --get core.hooksPath || true)"
 previous_hooks_dir="$(git -C "$root" config --worktree --get codex-warp.previous-hooks-path || true)"
 
 # Git permits only one hooks directory. Preserve the path that was active
 # before this installer took ownership, so the durable dispatchers can chain
-# a user's existing hooks instead of replacing them.
-if [ "$installed_hooks_path" != "$hooks_dir" ] || [ -z "$previous_hooks_dir" ]; then
+# a user's existing hooks instead of replacing them. The first durable
+# bootstrap version did not save a previous path; migrate it to the default
+# hook directory instead of treating its own dispatcher directory as prior.
+if [ "$installed_hooks_path" = "$hooks_dir" ] && [ -z "$previous_hooks_dir" ]; then
+  previous_hooks_dir="$default_hooks_dir"
+  git -C "$root" config --worktree codex-warp.previous-hooks-path "$previous_hooks_dir"
+elif [ "$installed_hooks_path" != "$hooks_dir" ]; then
   previous_hooks_path="$(git -C "$root" config --path --get core.hooksPath || true)"
   if [ -z "$previous_hooks_path" ]; then
     previous_hooks_dir="$default_hooks_dir"
@@ -57,6 +63,9 @@ for hook_name in "${hook_names[@]}"; do
   cp "$root/scripts/git-hook-bootstrap.sh" "$hooks_dir/$hook_name"
   chmod 755 "$hooks_dir/$hook_name"
 done
+# This dispatcher keeps any pre-existing merge policy active. Its bootstrap
+# intentionally has no versioned Codex Warp implementation because Git does
+# not expose the second parent of an automatic merge while the hook runs.
 git -C "$root" config --worktree core.hooksPath "$hooks_dir"
 git -C "$root" config --worktree codex-warp.preflight-base "$base_ref"
 echo "Installed durable preflight hooks with base $base_ref for this checkout; existing hooks remain chained from $previous_hooks_dir."
