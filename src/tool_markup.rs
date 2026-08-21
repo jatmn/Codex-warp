@@ -468,6 +468,11 @@ mod tests {
         let mut nested = Sanitizer::default();
         assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
         assert_eq!(nested.finish(), "body literal</tool>");
+
+        let mut fragmented = Sanitizer::default();
+        assert_eq!(fragmented.push("<tool>first"), "");
+        assert_eq!(fragmented.push(" second"), "");
+        assert_eq!(fragmented.finish(), "first second");
     }
 
     #[test]
