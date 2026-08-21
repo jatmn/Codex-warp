@@ -12,14 +12,9 @@ pub(crate) struct OpeningTag {
 #[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     let mut quote = None;
-    let mut escaped = false;
     for (offset, byte) in input.as_bytes().iter().copied().enumerate() {
         if let Some(delimiter) = quote {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == delimiter {
+            if byte == delimiter {
                 quote = None;
             }
         } else if matches!(byte, b'\'' | b'\"') {
@@ -49,5 +44,12 @@ mod tests {
     #[test]
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
+    }
+
+    #[test]
+    fn backslash_before_quote_does_not_escape_xml_quote() {
+        let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
+        assert_eq!(tag.end, r#"<parameter path="C:\">"#.len());
+        assert!(!tag.self_closing);
     }
 }
