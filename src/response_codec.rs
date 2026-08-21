@@ -225,7 +225,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -235,7 +235,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -247,7 +247,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -269,7 +269,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 let value = match serde_json::from_str::<Value>(&data) {
                     Ok(value) => value,
                     Err(_) => {
-                        if let Some(event) = state.take_reasoning_delta() {
+                        for event in state.failure_events() {
                             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                             yield Ok(Bytes::from(event));
                         }
@@ -282,7 +282,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -336,7 +336,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                     "completion": "truncated_eof"
                 }));
                 let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -365,7 +365,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
                 "completion": "truncated_eof"
             }));
             let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-            if let Some(event) = state.take_reasoning_delta() {
+            for event in state.failure_events() {
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                 yield Ok(Bytes::from(event));
             }
