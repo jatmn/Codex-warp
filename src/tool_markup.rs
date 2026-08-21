@@ -293,16 +293,17 @@ impl MarkdownCodeState {
                 continue;
             }
             if self.line_start && byte == b' ' {
-                self.leading_spaces += 1;
+                self.leading_spaces = self
+                    .leading_spaces
+                    .checked_add(run.len())
+                    .expect("Markdown indentation fits usize");
                 self.indented_line = self.leading_spaces >= 4;
                 self.escaped = false;
-                index += 1;
                 continue;
             }
             if self.line_start && byte == b'\t' {
                 self.indented_line = true;
                 self.escaped = false;
-                index += 1;
                 continue;
             }
             self.line_start = false;
