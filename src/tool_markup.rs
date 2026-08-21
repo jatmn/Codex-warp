@@ -79,8 +79,8 @@ mod tests {
 
     #[test]
     fn backslash_before_quote_does_not_escape_xml_quote() {
-        let tag = opening_tag(r#"<parameter path=\"C:\\">After"#).expect("complete tag");
-        assert_eq!(tag.end, r#"<parameter path=\"C:\\">"#.len());
+        let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
+        assert_eq!(tag.end, r#"<parameter path="C:\">"#.len());
         assert!(!tag.self_closing);
     }
 
