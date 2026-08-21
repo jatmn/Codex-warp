@@ -152,7 +152,7 @@ theater.
 
 ### Required Local CI Preflight
 
-Before **every local commit**, every new PR submission, and every push that
+Before ordinary local commits, every new PR submission, and every push that
 updates an existing PR, run the full local Linux preflight:
 
 ```bash
@@ -179,10 +179,13 @@ replacing them.
 
 The installed hooks automatically cover ordinary commits, non-fast-forward
 merge commits, `git am`, and branch pushes. Git offers no preventative hook for
-a bare `git cherry-pick`; use `git cherry-pick --no-commit <commit>`, run the
-preflight, then create the commit so the check runs before the result is
-recorded. The pre-push hook remains a backstop for any commit that reaches a
-branch push.
+bare `git cherry-pick` or `git revert`, or for rewritten commits from `git
+rebase` / `git rebase --continue`. Use `git cherry-pick --no-commit <commit>`
+or `git revert --no-commit <commit>`, run the preflight, then create the commit
+so the check runs before the result is recorded. During a conflicted rebase,
+resolve and stage the conflict, run the preflight, then use `git rebase
+--continue`; run it once more after a non-conflicting rebase and before pushing.
+The pre-push hook remains a backstop for any commit that reaches a branch push.
 
 For a non-`main` PR base, configure the hooks with the same base once:
 

@@ -36,7 +36,15 @@ chmod +x "$repo/scripts/ci-preflight.sh"
 
 printf 'unborn\n' >"$repo/validation-target.txt"
 git -C "$repo" add scripts validation-target.txt
+if git -C "$repo" fsck --no-reflogs --unreachable 2>/dev/null | grep -Eq 'unreachable (commit|tree)'; then
+  echo 'git-hooks-harness: fixture unexpectedly contains an unreachable snapshot object' >&2
+  exit 1
+fi
 (cd "$repo" && bash scripts/run-preflight-hook.sh --index --base HEAD)
+if git -C "$repo" fsck --no-reflogs --unreachable 2>/dev/null | grep -Eq 'unreachable (commit|tree)'; then
+  echo 'git-hooks-harness: index snapshot left an unreachable object' >&2
+  exit 1
+fi
 printf 'base\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 git -C "$repo" commit --quiet -m initial
@@ -182,5 +190,37 @@ if git -C "$repo" commit --quiet -m legacy; then
   exit 1
 fi
 test "$(git -C "$repo" rev-parse HEAD)" = "$legacy_head"
+
+# Linked worktrees share the common .git/hooks directory, rather than using a
+# hooks directory below their per-worktree Git metadata.
+git -C "$repo" config --worktree --unset-all core.hooksPath || true
+git -C "$repo" config --local --unset-all core.hooksPath || true
+mkdir -p "$repo/.git/hooks"
+cat >"$repo/.git/hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pre-commit\n' >>"$DEFAULT_HOOK_CALLS"
+EOF
+cat >"$repo/.git/hooks/commit-msg" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'commit-msg\n' >>"$DEFAULT_HOOK_CALLS"
+EOF
+chmod +x "$repo/.git/hooks/pre-commit" "$repo/.git/hooks/commit-msg"
+linked_worktree="$repo/linked-worktree"
+git -C "$repo" worktree add --detach --quiet "$linked_worktree" second
+(
+  cd "$linked_worktree"
+  bash scripts/install-git-hooks.sh --base HEAD
+)
+test "$(git -C "$linked_worktree" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/.git/hooks"
+default_calls="$repo/default-hook-calls"
+export DEFAULT_HOOK_CALLS="$default_calls"
+printf 'staged\n' >"$linked_worktree/validation-target.txt"
+git -C "$linked_worktree" add validation-target.txt
+git -C "$linked_worktree" commit --quiet -m linked-default-hooks
+test "$(sed -n '1p' "$default_calls")" = pre-commit
+test "$(sed -n '2p' "$default_calls")" = commit-msg
+unset DEFAULT_HOOK_CALLS
 
 echo 'git-hooks-harness: ok'

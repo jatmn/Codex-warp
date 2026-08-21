@@ -17,6 +17,7 @@ fi
 
 git -C "$root" config extensions.worktreeConfig true
 git_dir="$(git -C "$root" rev-parse --absolute-git-dir)"
+default_hooks_dir="$(git -C "$root" rev-parse --path-format=absolute --git-path hooks)"
 hooks_dir="$git_dir/codex-warp-hooks"
 installed_hooks_path="$(git -C "$root" config --worktree --get core.hooksPath || true)"
 previous_hooks_dir="$(git -C "$root" config --worktree --get codex-warp.previous-hooks-path || true)"
@@ -27,7 +28,7 @@ previous_hooks_dir="$(git -C "$root" config --worktree --get codex-warp.previous
 if [ "$installed_hooks_path" != "$hooks_dir" ] || [ -z "$previous_hooks_dir" ]; then
   previous_hooks_path="$(git -C "$root" config --path --get core.hooksPath || true)"
   if [ -z "$previous_hooks_path" ]; then
-    previous_hooks_dir="$git_dir/hooks"
+    previous_hooks_dir="$default_hooks_dir"
   elif [[ "$previous_hooks_path" = /* ]]; then
     previous_hooks_dir="$previous_hooks_path"
   else
