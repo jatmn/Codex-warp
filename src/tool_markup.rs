@@ -37,14 +37,9 @@ pub(crate) fn recognized_tag(input: &str) -> Option<&'static str> {
 #[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     let mut quote = None;
-    let mut escaped = false;
     for (offset, byte) in input.as_bytes().iter().copied().enumerate() {
         if let Some(delimiter) = quote {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == delimiter {
+            if byte == delimiter {
                 quote = None;
             }
         } else if matches!(byte, b'\'' | b'\"') {
@@ -62,10 +57,9 @@ pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
 
 #[cfg(test)]
 mod opening_tag_tests {
-    use super::opening_tag;
-    use super::next_tag;
-    use super::recognized_tag;
     use super::TagToken;
+    use super::next_tag;
+    use super::opening_tag;
     use super::recognized_tag;
 
     #[test]
@@ -188,6 +182,7 @@ pub(crate) struct Sanitizer {
     pending: String,
     active_tag: Option<&'static str>,
     active_depth: usize,
+    markdown: MarkdownCodeState,
 }
 
 #[allow(dead_code)] // wired by the following response-adapter layer
@@ -204,7 +199,7 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let Some(token) = next_tag(&input) else {
+            let Some(token) = next_tag_outside_markdown(&input, &mut self.markdown) else {
                 let split_at = possible_tag_start(&input).unwrap_or(input.len());
                 if self.active_tag.is_some() {
                     self.pending = input;
@@ -251,6 +246,7 @@ impl Sanitizer {
                     end
                 }
             };
+            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -263,6 +259,55 @@ impl Sanitizer {
         self.active_depth = 0;
         std::mem::take(&mut self.pending)
     }
+}
+
+fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> Option<TagToken> {
+    let mut characters = input.char_indices().peekable();
+    while let Some((start, character)) = characters.next() {
+        if character == '<'
+            && markdown.permits_markup()
+            && let Some(token) = next_tag(&input[start..]).filter(|token| match token {
+                TagToken::Opening { start, .. } | TagToken::Closing { start, .. } => *start == 0,
+            })
+        {
+            return Some(match token {
+                TagToken::Opening {
+                    tag,
+                    end,
+                    self_closing,
+                    ..
+                } => TagToken::Opening {
+                    tag,
+                    start,
+                    end: start
+                        .checked_add(end)
+                        .expect("tag end remains within input"),
+                    self_closing,
+                },
+                TagToken::Closing { tag, end, .. } => TagToken::Closing {
+                    tag,
+                    start,
+                    end: start
+                        .checked_add(end)
+                        .expect("tag end remains within input"),
+                },
+            });
+        }
+        if matches!(character, '`' | '~') {
+            while characters
+                .peek()
+                .is_some_and(|(_, candidate)| *candidate == character)
+            {
+                characters.next();
+            }
+        }
+        let end = characters
+            .peek()
+            .map(|(offset, _)| *offset)
+            .unwrap_or(input.len());
+        markdown.consume(&input[start..end]);
+    }
+    None
 }
 
 /// Tracks Markdown contexts in which XML-like text must remain literal.
@@ -518,7 +563,6 @@ mod tests {
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
     }
-<<<<<<< HEAD
     #[test]
     fn backslash_before_quote_does_not_escape_xml_quote() {
         let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
@@ -532,19 +576,11 @@ mod tests {
             recognized_tag("<FUNCTION_CALL name=\"run\">"),
             Some("function_call")
         );
-=======
-
-    #[test]
-    fn recognized_tags_are_case_insensitive_and_require_a_tag_boundary() {
-        assert_eq!(recognized_tag("<FUNCTION_CALL name=\"run\">"), Some("function_call"));
->>>>>>> 6ff68eb (test(tool_markup): cover recognized tag classification)
         assert_eq!(recognized_tag("<parameter/>"), Some("parameter"));
         assert_eq!(recognized_tag("<toolbox>"), None);
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
     }
-<<<<<<< HEAD
-
     #[test]
     fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
         assert_eq!(
@@ -769,6 +805,4 @@ mod tests {
         assert_eq!(terminal_fence.finish(), MarkdownFinish::Complete);
         assert!(terminal_fence.permits_markup());
     }
-=======
->>>>>>> 6ff68eb (test(tool_markup): cover recognized tag classification)
 }
