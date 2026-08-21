@@ -16,6 +16,7 @@ use serde_json::json;
 
 use crate::config;
 use crate::config::AppConfig;
+use crate::config::ModelCatalogEntry;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
 use crate::config::canonical_model_family_id;
@@ -725,46 +726,60 @@ fn provider_local_model_id_for_targets<'a>(
     targets: &[String],
 ) -> Option<&'a str> {
     for target in targets {
-        if let Some(entry) = provider
-            .model_catalog
-            .iter()
-            .find(|entry| entry.id == *target)
-        {
-            return Some(entry.id.as_str());
+        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| &entry.id) {
+            return Some(id);
         }
     }
     if let Some((prefix, _)) = current_model.rsplit_once('/') {
         for target in targets {
             let prefixed_target = format!("{prefix}/{target}");
-            if let Some(entry) = provider
-                .model_catalog
-                .iter()
-                .find(|entry| entry.id == prefixed_target)
+            if let Some(id) =
+                provider_catalog_id_for_target(provider, &prefixed_target, |entry| &entry.id)
             {
-                return Some(entry.id.as_str());
+                return Some(id);
             }
         }
     }
     for target in targets {
-        let mut matches = provider
-            .model_catalog
-            .iter()
-            .filter(|entry| {
-                entry
-                    .id
-                    .rsplit_once('/')
-                    .is_some_and(|(_, suffix)| suffix == target)
-                    || entry.upstream_id.as_deref() == Some(target)
-            })
-            .map(|entry| entry.id.as_str());
-        let Some(first) = matches.next() else {
-            continue;
-        };
-        if matches.next().is_none() {
-            return Some(first);
+        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| {
+            entry
+                .id
+                .rsplit_once('/')
+                .map_or(&entry.id, |(_, suffix)| suffix)
+        }) {
+            return Some(id);
+        }
+        if let Some(id) = provider_catalog_id_for_target(provider, target, |entry| {
+            entry.upstream_id.as_deref().unwrap_or("")
+        }) {
+            return Some(id);
         }
     }
     None
+}
+
+/// Return an exact catalog match when present, otherwise one unambiguous match
+/// under the same model-family canonicalization used by metadata matching.
+fn provider_catalog_id_for_target<'a>(
+    provider: &'a ProviderConfig,
+    target: &str,
+    value: impl Fn(&'a ModelCatalogEntry) -> &'a str,
+) -> Option<&'a str> {
+    if let Some(entry) = provider
+        .model_catalog
+        .iter()
+        .find(|entry| value(entry) == target)
+    {
+        return Some(entry.id.as_str());
+    }
+    let target = canonical_model_family_id(target);
+    let mut matches = provider
+        .model_catalog
+        .iter()
+        .filter(|entry| canonical_model_family_id(value(entry)) == target)
+        .map(|entry| entry.id.as_str());
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
 }
 
 pub(crate) fn synthetic_model_info(id: &str) -> Value {

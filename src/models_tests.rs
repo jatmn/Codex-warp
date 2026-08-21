@@ -237,6 +237,31 @@ fn manual_provider_catalog_sets_provider_local_auto_review_models() {
 }
 
 #[test]
+fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "mimo_v2.5".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "mimo_v2.5_pro".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "mimo_v2.5_pro")
+        .expect("Mimo Pro model is listed");
+
+    assert_eq!(model["auto_review_model_override"], "mimo_v2.5");
+}
+
+#[test]
 fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
     let mut info = json!({"auto_review_model_override": "deepseek-v4-flash"});
     localize_auto_review_model_override(
