@@ -282,6 +282,7 @@ impl Sanitizer {
         let disposition = self.markdown.finish();
         let pending = std::mem::take(&mut self.pending);
         let replay_buffer = std::mem::take(&mut self.replay_buffer);
+        let pending_is_recognized_tag = recognized_tag(&pending).is_some();
         let unterminated_tool_body = if self.active_tag == Some("tool") {
             std::mem::take(&mut self.unterminated_tool_body)
         } else {
@@ -300,7 +301,10 @@ impl Sanitizer {
             return output;
         }
         if disposition == MarkdownFinish::Complete {
-            return replay_buffer + &pending;
+            if pending_is_recognized_tag {
+                return replay_buffer + &pending;
+            }
+            return replay_buffer;
         }
 
         let mut replay = Self {
@@ -790,6 +794,11 @@ mod tests {
         let mut nested = Sanitizer::default();
         assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
         assert_eq!(nested.finish(), "body literal</tool>");
+
+        let mut fragmented = Sanitizer::default();
+        assert_eq!(fragmented.push("<tool>first"), "");
+        assert_eq!(fragmented.push(" second"), "");
+        assert_eq!(fragmented.finish(), "first second");
     }
 
     #[test]
