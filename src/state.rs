@@ -184,6 +184,54 @@ impl SessionModelCache {
     }
 }
 
+#[cfg(test)]
+mod session_model_cache_tests {
+    use super::*;
+
+    #[test]
+    fn pending_request_equal_to_the_latest_success_is_not_selected() {
+        let mut cache = SessionModelCache::default();
+        let order = Arc::new(SessionModelOrder::default());
+        cache.entries.insert(
+            "session".to_string(),
+            SessionModelEntry {
+                model: "successful-model".to_string(),
+                last_use: 0,
+                _order: order.clone(),
+            },
+        );
+        let update = cache.begin_update("session", "pending-model").unwrap();
+        order
+            .latest_successful_request
+            .store(update.request, Ordering::Relaxed);
+
+        assert_eq!(cache.get("session"), Some("successful-model".to_string()));
+    }
+
+    #[test]
+    fn beginning_an_update_discards_dropped_pending_keys() {
+        let mut cache = SessionModelCache::default();
+        let update = cache.begin_update("dropped", "model").unwrap();
+        drop(update);
+
+        let _update = cache.begin_update("active", "model").unwrap();
+        assert!(!cache.pending.contains_key("dropped"));
+    }
+
+    #[test]
+    fn completing_an_update_removes_only_its_pending_entry() {
+        let mut cache = SessionModelCache::default();
+        let first = cache.begin_update("session", "first").unwrap();
+        let second = cache.begin_update("session", "second").unwrap();
+
+        cache.complete_update(&first);
+
+        let pending = cache.pending.get("session").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request, second.request);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
