@@ -237,18 +237,34 @@ impl Sanitizer {
 /// Tracks Markdown contexts in which XML-like text must remain literal.
 /// Scanner integration is intentionally added by the next stack slice.
 #[allow(dead_code)]
-#[derive(Default)]
 struct MarkdownCodeState {
     fence: Option<(u8, usize)>,
     inline_ticks: Option<usize>,
     pending_marker: Option<(u8, usize)>,
+    line_start: bool,
+    leading_spaces: usize,
+    indented_line: bool,
     escaped: bool,
+}
+
+impl Default for MarkdownCodeState {
+    fn default() -> Self {
+        Self {
+            fence: None,
+            inline_ticks: None,
+            pending_marker: None,
+            line_start: true,
+            leading_spaces: 0,
+            indented_line: false,
+            escaped: false,
+        }
+    }
 }
 
 #[allow(dead_code)]
 impl MarkdownCodeState {
     fn permits_markup(&self) -> bool {
-        self.fence.is_none() && self.inline_ticks.is_none() && !self.escaped
+        self.fence.is_none() && self.inline_ticks.is_none() && !self.indented_line && !self.escaped
     }
 
     fn consume(&mut self, text: &str) {
@@ -270,9 +286,26 @@ impl MarkdownCodeState {
         while let Some(run) = runs.next() {
             let byte = run[0];
             if byte == b'\n' {
+                self.line_start = true;
+                self.leading_spaces = 0;
+                self.indented_line = false;
                 self.escaped = false;
                 continue;
             }
+            if self.line_start && byte == b' ' {
+                self.leading_spaces += 1;
+                self.indented_line = self.leading_spaces >= 4;
+                self.escaped = false;
+                index += 1;
+                continue;
+            }
+            if self.line_start && byte == b'\t' {
+                self.indented_line = true;
+                self.escaped = false;
+                index += 1;
+                continue;
+            }
+            self.line_start = false;
             if byte == b'\\' {
                 if !run.len().is_multiple_of(2) {
                     self.escaped = !self.escaped;
@@ -643,6 +676,19 @@ mod tests {
         output.push_str(&sanitizer.finish());
 
         assert!(output.contains("<function>literal</function>"));
+        assert!(!output.contains("duplicate"));
+        assert!(output.ends_with("After"));
+    }
+
+    #[test]
+    fn sanitizer_preserves_indented_code_and_resumes_after_newline() {
+        let mut sanitizer = Sanitizer::default();
+        let output = sanitizer.push(
+            "    <parameter>spaces</parameter>\n\t<function>tab</function>\n<invoke>duplicate</invoke>After",
+        ) + &sanitizer.finish();
+
+        assert!(output.contains("<parameter>spaces</parameter>"));
+        assert!(output.contains("<function>tab</function>"));
         assert!(!output.contains("duplicate"));
         assert!(output.ends_with("After"));
     }
