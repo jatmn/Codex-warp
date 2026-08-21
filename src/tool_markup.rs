@@ -241,6 +241,7 @@ mod tests {
     use super::TagToken;
     use super::next_tag;
     use super::opening_tag;
+    use super::possible_tag_start;
     use super::recognized_tag;
 
     #[test]
@@ -320,6 +321,24 @@ mod tests {
             "After"
         );
         assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_tracks_nested_openings_and_ignores_mismatched_closings() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool>outer <tool>inner</tool></function></tool>After"),
+            "After"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn possible_tag_start_retains_only_plausible_incomplete_tags() {
+        assert_eq!(possible_tag_start("Before <tool "), Some(7));
+        assert_eq!(possible_tag_start("Before </tool"), Some(7));
+        assert_eq!(possible_tag_start("Before <toolbox"), None);
+        assert_eq!(possible_tag_start("Before </toolbox"), None);
     }
 
     #[test]
