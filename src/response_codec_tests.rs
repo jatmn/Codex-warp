@@ -5456,3 +5456,35 @@ fn tool_markup_suppression_streams_plain_text_and_restores_deferred_content_on_f
             .any(|event| event.contains("<parameter>docs</parameter>"))
     );
 }
+
+#[test]
+fn tool_markup_suppression_applies_to_non_stream_strings_and_content_arrays() {
+    let response = json!({
+        "id": "chatcmpl_test",
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Before <para"},
+                    {"type": "text", "text": "meter>duplicate</parameter>After"}
+                ],
+                "tool_calls": [{"id": "call_1", "function": {"name": "exec_command", "arguments": "{}"}}]
+            }
+        }]
+    });
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        response,
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        true,
+    );
+    let text = converted["output"][0]["content"]
+        .as_array()
+        .expect("message content")
+        .iter()
+        .find_map(|part| part.get("text").and_then(Value::as_str))
+        .expect("sanitized output text");
+    assert_eq!(text, "Before After");
+}
