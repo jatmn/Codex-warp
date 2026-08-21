@@ -800,6 +800,7 @@ struct ToolMarkupSanitizer {
     active_closing_tag: Option<&'static str>,
     active_opening_tag: Option<&'static str>,
     active_depth: usize,
+    active_scan_from: usize,
     closing_prefix: String,
     unterminated_tool_body: String,
     treat_tool_as_marker: bool,
@@ -1297,13 +1298,13 @@ impl ToolMarkupSanitizer {
             let recognized_tag = self.pending_tag.or_else(|| recognized_opening_tag(&input));
             self.pending_tag = recognized_tag;
             if let Some(tag) = recognized_tag {
-                let search_from = self.pending_scan_from.min(input.len());
-                let Some(relative_end) = input[search_from..].find('>') else {
+                // Quote state can begin before the newest stream chunk, so the
+                // complete retained opening must be parsed as one token.
+                let Some(opening_end) = opening_tag_end(&input, 0) else {
                     self.pending_scan_from = input.len();
                     self.pending_start = input;
                     return String::new();
                 };
-                let opening_end = search_from + relative_end + '>'.len_utf8();
                 let opening = &input[..opening_end];
                 if !(opening
                     .strip_suffix('>')
@@ -1332,7 +1333,7 @@ impl ToolMarkupSanitizer {
                 let opening_tag = self
                     .active_opening_tag
                     .expect("active markup always records its opening tag");
-                let mut scan_from = 0;
+                let mut scan_from = self.active_scan_from.min(buffered.len());
                 let mut completed_at = None;
                 for _ in 0..=buffered.len() {
                     let Some((start, end, is_closing, self_closing)) =
@@ -1358,12 +1359,16 @@ impl ToolMarkupSanitizer {
                     self.active_closing_tag = None;
                     self.active_opening_tag = None;
                     self.active_depth = 0;
+                    self.active_scan_from = 0;
                     self.closing_prefix.clear();
                     self.unterminated_tool_body.clear();
                     continue;
                 }
                 self.closing_prefix =
                     trailing_markup_token_prefix(&buffered, &[opening_tag, closing_tag]);
+                // Every complete token before this retained suffix has already
+                // contributed to active_depth. Do not scan it again next time.
+                self.active_scan_from = 0;
                 break;
             }
 
@@ -1379,6 +1384,7 @@ impl ToolMarkupSanitizer {
                         self.active_closing_tag = Some(closing_tag(tag));
                         self.active_opening_tag = Some(opening_tag(tag));
                         self.active_depth = 1;
+                        self.active_scan_from = 0;
                     }
                     cursor = cursor
                         .checked_add(opening_end)
@@ -1410,6 +1416,7 @@ impl ToolMarkupSanitizer {
         self.active_closing_tag = None;
         self.active_opening_tag = None;
         self.active_depth = 0;
+        self.active_scan_from = 0;
         self.closing_prefix.clear();
         let unterminated_tool_body = std::mem::take(&mut self.unterminated_tool_body);
         if unterminated_tool_body.is_empty() {
@@ -1569,11 +1576,9 @@ fn tool_markup_at_start(text: &str) -> ToolMarkupStart {
         if !(boundary.is_ascii_whitespace() || matches!(boundary, b'>' | b'/')) {
             continue;
         }
-        let Some((opening_end, _)) = text.char_indices().find(|(_, character)| *character == '>')
-        else {
+        let Some(opening_end) = opening_tag_end(text, prefix.len()) else {
             return ToolMarkupStart::Possible { start: 0 };
         };
-        let opening_end = opening_end + '>'.len_utf8();
         let opening = &text[..opening_end];
         return ToolMarkupStart::Opening {
             start: 0,
@@ -1585,6 +1590,30 @@ fn tool_markup_at_start(text: &str) -> ToolMarkupStart {
         };
     }
     ToolMarkupStart::Plain
+}
+
+/// Returns the exclusive end offset of an opening tag, treating `>` inside a
+/// quoted attribute as ordinary data. `from` may skip a prefix already known
+/// not to contain the delimiter when an opening tag spans stream chunks.
+fn opening_tag_end(text: &str, from: usize) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, byte) in text.as_bytes().iter().copied().enumerate().skip(from) {
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+        } else if matches!(byte, b'\'' | b'\"') {
+            quote = Some(byte);
+        } else if byte == b'>' {
+            return Some(offset + 1);
+        }
+    }
+    None
 }
 
 fn recognized_opening_tag(text: &str) -> Option<&'static str> {

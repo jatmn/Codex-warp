@@ -5941,6 +5941,24 @@ fn same_tag_nesting_waits_for_the_outer_close() {
 }
 
 #[test]
+fn same_tag_nesting_across_content_boundaries_preserves_the_suffix() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<tool_calls><tool_calls>"), "");
+    assert_eq!(sanitizer.push("</tool_calls>After"), "");
+    assert_eq!(sanitizer.push("</tool_calls>Done"), "Done");
+}
+
+#[test]
+fn quoted_attribute_delimiters_do_not_consume_following_text() {
+    let mut sanitizer = ToolMarkupSanitizer::default();
+    assert_eq!(sanitizer.push("<parameter note=\"a > b\"/>After"), "After");
+
+    let mut split = ToolMarkupSanitizer::default();
+    assert_eq!(split.push("<parameter note=\"a >"), "");
+    assert_eq!(split.push(" b\"/>After"), "After");
+}
+
+#[test]
 fn escaped_markup_remains_literal_across_content_boundaries() {
     let mut sanitizer = ToolMarkupSanitizer::default();
     assert_eq!(sanitizer.push("Use \\"), "Use \\");
