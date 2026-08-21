@@ -681,7 +681,7 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     if target.is_empty() {
         return;
     }
-    if is_model_variant_id(id, &target) {
+    if target == "deepseek-v4-flash" && is_model_variant_id(id, &target) {
         info["auto_review_model_override"] = json!(id);
         return;
     }

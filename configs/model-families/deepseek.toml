@@ -64,6 +64,8 @@ patterns = [
   "deepseek_v4_flash_*",
   "deepseek-ai/deepseek-v4-flash",
   "deepseek-ai/deepseek-v4-flash-*",
+  "deepseek-ai/deepseek_v4_flash",
+  "deepseek-ai/deepseek_v4_flash_*",
 ]
 
 [model_families.deepseek_v4_flash.model_metadata]

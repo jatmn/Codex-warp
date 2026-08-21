@@ -389,6 +389,19 @@ fn live_catalog_variant_does_not_fall_back_to_a_static_base_review_target() {
 }
 
 #[test]
+fn namespaced_underscore_flash_variant_advertises_its_own_review_target() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"deepseek-ai/deepseek_v4_flash_0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-ai/deepseek_v4_flash_0731"
+    );
+}
+
+#[test]
 fn live_catalog_preserves_distinct_family_auto_review_target() {
     let body = Bytes::from_static(br#"{"data":[{"id":"deepseek-v4-pro"}]}"#);
     let config = load_config_layers(&[]).expect("default config loads");
