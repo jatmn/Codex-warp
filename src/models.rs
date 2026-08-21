@@ -697,11 +697,10 @@ fn localize_auto_review_model_override(
         return;
     }
     if provider.model_catalog.is_empty() {
-        if provider_auto_review_target == Some(target.as_str()) {
-            return;
-        }
         if is_versioned_model_id(id, &target) {
             info["auto_review_model_override"] = json!(id);
+        } else if provider_auto_review_target == Some(target.as_str()) {
+            return;
         }
         return;
     }
