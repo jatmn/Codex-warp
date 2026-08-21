@@ -119,15 +119,131 @@ fn closing_tag_end(rest: &str) -> Option<usize> {
         .starts_with('>')
         .then_some(rest.len() - delimiter.len() + 1)
 }
+/// Incrementally removes complete recognized markup elements while retaining
+/// ordinary content and enough trailing input to finish a split tag later.
+#[allow(dead_code)] // wired by the following response-adapter layer
+#[derive(Default)]
+pub(crate) struct Sanitizer {
+    pending: String,
+    active_tag: Option<&'static str>,
+    active_depth: usize,
+}
+
+#[allow(dead_code)] // wired by the following response-adapter layer
+impl Sanitizer {
+    /// Whether a fragment contains a complete recognized tag or a suffix that
+    /// could become one in the next stream fragment.
+    pub(crate) fn may_contain_markup(fragment: &str) -> bool {
+        next_tag(fragment).is_some() || possible_tag_start(fragment).is_some()
+    }
+
+    pub(crate) fn push(&mut self, fragment: &str) -> String {
+        let mut input = std::mem::take(&mut self.pending);
+        input.push_str(fragment);
+        let mut output = String::new();
+
+        while !input.is_empty() {
+            let Some(token) = next_tag(&input) else {
+                let split_at = possible_tag_start(&input).unwrap_or(input.len());
+                if self.active_tag.is_some() {
+                    self.pending = input;
+                } else {
+                    output.push_str(&input[..split_at]);
+                    self.pending = input[split_at..].to_string();
+                }
+                break;
+            };
+            let start = match token {
+                TagToken::Opening { start, .. } | TagToken::Closing { start, .. } => start,
+            };
+
+            if self.active_tag.is_none() {
+                output.push_str(&input[..start]);
+            }
+            let end = match token {
+                TagToken::Opening {
+                    tag,
+                    end,
+                    self_closing,
+                    ..
+                } => {
+                    if self.active_tag.is_none() && !self_closing {
+                        self.active_tag = Some(tag);
+                        self.active_depth = 1;
+                    } else if self.active_tag == Some(tag) && !self_closing {
+                        self.active_depth += 1;
+                    } else if self.active_tag.is_none() {
+                        // A complete self-closing recognized tag is itself a
+                        // duplicate element, so omit it without entering state.
+                    }
+                    end
+                }
+                TagToken::Closing { tag, end, .. } => {
+                    if self.active_tag == Some(tag) {
+                        self.active_depth = self.active_depth.saturating_sub(1);
+                        if self.active_depth == 0 {
+                            self.active_tag = None;
+                        }
+                    } else if self.active_tag.is_none() {
+                        output.push_str(&input[start..end]);
+                    }
+                    end
+                }
+            };
+            input = input[end..].to_string();
+        }
+        output
+    }
+
+    /// On a normal terminal, retain unclosed material rather than silently
+    /// deleting user text. Complete elements have already been omitted.
+    pub(crate) fn finish(&mut self) -> String {
+        self.active_tag = None;
+        self.active_depth = 0;
+        std::mem::take(&mut self.pending)
+    }
+}
+
+fn possible_tag_start(input: &str) -> Option<usize> {
+    let start = input.rfind('<')?;
+    let suffix = &input[start..];
+    TAGS.into_iter().find_map(|tag| {
+        let opening = format!("<{tag}");
+        let closing = format!("</{tag}");
+        let opening_prefix = opening
+            .get(..suffix.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+        let closing_prefix = closing
+            .get(..suffix.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+        let opening_continues = suffix
+            .get(..opening.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&opening))
+            && suffix
+                .as_bytes()
+                .get(opening.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+        let closing_continues = suffix
+            .get(..closing.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
+            && suffix
+                .as_bytes()
+                .get(closing.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>');
+        (opening_prefix || closing_prefix || opening_continues || closing_continues)
+            .then_some(start)
+    })
+}
 
 #[cfg(test)]
 mod tests {
+    use super::Sanitizer;
     use super::TagToken;
     use super::closing_tag_end;
     use super::next_tag;
     use super::opening_tag;
+    use super::possible_tag_start;
     use super::recognized_tag;
-
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
         let tag = opening_tag("<parameter note=\"a > b\"/>After").expect("complete tag");
@@ -139,7 +255,6 @@ mod tests {
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
     }
-
     #[test]
     fn backslash_before_quote_does_not_escape_xml_quote() {
         let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
@@ -181,7 +296,6 @@ mod tests {
         assert_eq!(next_tag("</function extra>"), None);
         assert_eq!(next_tag("<parameter note=\"unterminated"), None);
     }
-
     #[test]
     fn closing_tag_end_requires_the_delimiter_after_whitespace() {
         assert_eq!(closing_tag_end(">After"), Some(1));
@@ -189,5 +303,63 @@ mod tests {
         assert_eq!(closing_tag_end("\u{2003}>After"), Some(4));
         assert_eq!(closing_tag_end(" extra>"), None);
         assert_eq!(closing_tag_end(" <tool>"), None);
+    }
+
+    #[test]
+    fn sanitizer_removes_nested_elements_without_losing_quoted_self_closing_suffixes() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("Before <tool_calls><tool_calls note=\"a > b\"/></tool_calls>After"),
+            "Before After"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_reassembles_split_tags_and_retains_unclosed_content_at_finish() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before <para"), "Before ");
+        assert_eq!(sanitizer.push("meter>duplicate</parameter>After"), "After");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("<tool>working"), "");
+        assert_eq!(sanitizer.finish(), "working");
+    }
+
+    #[test]
+    fn sanitizer_reassembles_an_opening_tag_split_after_its_name() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before <tool "), "Before ");
+        assert_eq!(
+            sanitizer.push("name=\"run\">duplicate</tool>After"),
+            "After"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_tracks_nested_openings_and_ignores_mismatched_closings() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool>outer <tool>inner</tool></function></tool>After"),
+            "After"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn possible_tag_start_retains_only_plausible_incomplete_tags() {
+        assert_eq!(possible_tag_start("Before <tool "), Some(7));
+        assert_eq!(possible_tag_start("Before </tool"), Some(7));
+        assert_eq!(possible_tag_start("Before </tool>"), Some(7));
+        assert_eq!(possible_tag_start("Before <toolbox"), None);
+        assert_eq!(possible_tag_start("Before </toolbox"), None);
+    }
+
+    #[test]
+    fn markup_detection_keeps_complete_and_split_recognized_tags() {
+        assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
+        assert!(Sanitizer::may_contain_markup("before <parameter "));
+        assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
     }
 }
