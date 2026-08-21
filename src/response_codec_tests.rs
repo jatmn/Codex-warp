@@ -14,6 +14,7 @@ use crate::config::DebugConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
 use crate::namespace_helpers::NamespaceHelpers;
+use crate::provider::begin_session_model_update;
 use crate::provider::remember_session_model;
 use crate::provider::resolve_auto_review_model;
 use crate::state::AppState;
@@ -5047,6 +5048,9 @@ async fn failed_native_stream_does_not_replace_the_active_session_model() {
     let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
     remember_session_model(&state, &active).await;
     let failed = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &failed)
+        .await
+        .expect("valid session update");
     let events = native_stream_to_responses_with_session_model(
         upstream_response_with_body(
             b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n"
@@ -5059,7 +5063,7 @@ async fn failed_native_stream_does_not_replace_the_active_session_model() {
         "dbg_failed_session".to_string(),
         200,
         None,
-        Some((state.clone(), failed)),
+        Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
     .await;
@@ -5079,6 +5083,9 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
     let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
     remember_session_model(&state, &active).await;
     let failed = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &failed)
+        .await
+        .expect("valid session update");
     let events = chat_stream_to_responses_with_session_model(
         upstream_response_with_body(
             b"data: {\"error\":{\"message\":\"upstream failed\"}}\n\n".to_vec(),
@@ -5091,7 +5098,7 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         "dbg_failed_session".to_string(),
         ContinueGuardState::default(),
         None,
-        Some((state.clone(), failed)),
+        Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
     .await;

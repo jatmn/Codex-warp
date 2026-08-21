@@ -256,6 +256,51 @@ async fn rejected_request_does_not_replace_the_active_session_model() {
 }
 
 #[tokio::test]
+async fn later_started_session_request_wins_when_streams_complete_out_of_order() {
+    let state = test_state(AppConfig::default());
+    let first = json!({"model": "first-model", "prompt_cache_key": "session-1"});
+    let second = json!({"model": "second-model", "prompt_cache_key": "session-1"});
+    let first_update = begin_session_model_update(&state, &first)
+        .await
+        .expect("first request is cacheable");
+    let second_update = begin_session_model_update(&state, &second)
+        .await
+        .expect("second request is cacheable");
+
+    complete_session_model_update(&state, &second_update).await;
+    complete_session_model_update(&state, &first_update).await;
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "second-model");
+}
+
+#[tokio::test]
+async fn failed_later_session_request_does_not_block_an_earlier_success() {
+    let state = test_state(AppConfig::default());
+    let first = json!({"model": "first-model", "prompt_cache_key": "session-1"});
+    let failed_later = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let first_update = begin_session_model_update(&state, &first)
+        .await
+        .expect("first request is cacheable");
+    let _failed_later_update = begin_session_model_update(&state, &failed_later)
+        .await
+        .expect("later request is cacheable");
+
+    complete_session_model_update(&state, &first_update).await;
+
+    let mut review = json!({
+        "model": "codex-auto-review",
+        "prompt_cache_key": "guardian:session-1"
+    });
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "first-model");
+}
+
+#[tokio::test]
 async fn session_model_cache_rejects_oversized_identifiers() {
     let state = test_state(AppConfig::default());
     let oversized_key_request = json!({

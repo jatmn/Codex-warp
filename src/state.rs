@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
@@ -23,12 +25,27 @@ const MAX_SESSION_MODEL_ID_BYTES: usize = 512;
 #[derive(Default)]
 pub(crate) struct SessionModelCache {
     entries: BTreeMap<String, SessionModelEntry>,
+    orders: BTreeMap<String, Weak<SessionModelOrder>>,
     next_use: u64,
 }
 
 struct SessionModelEntry {
     model: String,
     last_use: u64,
+    _order: Arc<SessionModelOrder>,
+}
+
+#[derive(Default)]
+struct SessionModelOrder {
+    latest_successful_request: AtomicU64,
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionModelUpdate {
+    key: String,
+    model: String,
+    request: u64,
+    order: Arc<SessionModelOrder>,
 }
 
 impl SessionModelCache {
@@ -39,12 +56,52 @@ impl SessionModelCache {
         Some(entry.model.clone())
     }
 
-    pub(crate) fn remember(&mut self, key: &str, model: &str) {
+    /// Records the order in which a session's request was dispatched. A later
+    /// request for the same session must win even when an earlier stream happens
+    /// to finish last.
+    pub(crate) fn begin_update(&mut self, key: &str, model: &str) -> Option<SessionModelUpdate> {
         if key.len() > MAX_SESSION_MODEL_KEY_BYTES || model.len() > MAX_SESSION_MODEL_ID_BYTES {
+            return None;
+        }
+        let request = self.advance_use();
+        self.orders.retain(|_, order| order.strong_count() > 0);
+        let order = match self
+            .entries
+            .get(key)
+            .map(|entry| entry._order.clone())
+            .or_else(|| self.orders.get(key).and_then(Weak::upgrade))
+        {
+            Some(order) => order,
+            None if self.orders.len() < MAX_SESSION_MODELS => {
+                let order = Arc::new(SessionModelOrder::default());
+                self.orders.insert(key.to_string(), Arc::downgrade(&order));
+                order
+            }
+            None => return None,
+        };
+        Some(SessionModelUpdate {
+            key: key.to_string(),
+            model: model.to_string(),
+            request,
+            order,
+        })
+    }
+
+    pub(crate) fn complete_update(&mut self, update: &SessionModelUpdate) {
+        let last_use = self.advance_use();
+        if update
+            .order
+            .latest_successful_request
+            .load(Ordering::Relaxed)
+            > update.request
+        {
             return;
         }
-        let last_use = self.advance_use();
-        if !self.entries.contains_key(key)
+        update
+            .order
+            .latest_successful_request
+            .store(update.request, Ordering::Relaxed);
+        if !self.entries.contains_key(&update.key)
             && self.entries.len() == MAX_SESSION_MODELS
             && let Some(evicted_key) = self
                 .entries
@@ -52,13 +109,19 @@ impl SessionModelCache {
                 .min_by_key(|(_, entry)| entry.last_use)
                 .map(|(key, _)| key.clone())
         {
+            if let Some(entry) = self.entries.get(&evicted_key) {
+                self.orders
+                    .insert(evicted_key.clone(), Arc::downgrade(&entry._order));
+            }
             self.entries.remove(&evicted_key);
         }
+        self.orders.remove(&update.key);
         self.entries.insert(
-            key.to_string(),
+            update.key.clone(),
             SessionModelEntry {
-                model: model.to_string(),
+                model: update.model.clone(),
                 last_use,
+                _order: update.order.clone(),
             },
         );
     }

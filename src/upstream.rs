@@ -26,8 +26,9 @@ use crate::http::error_response;
 use crate::ids::generated_id;
 use crate::namespace_helpers::apply_subagent_helper_shim;
 use crate::namespace_helpers::subagent_helper_debug_event;
+use crate::provider::begin_session_model_update;
+use crate::provider::complete_session_model_update;
 use crate::provider::provider_display_name;
-use crate::provider::remember_session_model;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
 use crate::response_codec::chat_json_to_responses_with_policy;
@@ -79,7 +80,7 @@ pub(crate) async fn proxy_native_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    let session_model = Some((state.clone(), body.clone()));
+    let session_model = begin_session_model_update(&state, &body).await;
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
     rewrite_model_for_upstream(
         &state.read_config(),
@@ -128,8 +129,8 @@ pub(crate) async fn proxy_chat_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
-    let session_body = body.clone();
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
+    let session_model = begin_session_model_update(&state, &body).await;
     let (continue_guard_config, tool_policy) = {
         let config = state.read_config();
         rewrite_model_for_upstream(&config, &selected.id, &selected.provider, &mut body);
@@ -388,7 +389,7 @@ pub(crate) async fn proxy_chat_responses(
             request_log_id,
             continue_guard,
             usage_recorder,
-            Some((state.clone(), session_body.clone())),
+            session_model.clone().map(|update| (state.clone(), update)),
         ));
         let mut response = Response::new(body);
         response.headers_mut().insert(
@@ -458,7 +459,9 @@ pub(crate) async fn proxy_chat_responses(
                         (!normalized_usage.is_null()).then_some(&normalized_usage),
                     );
                 }
-                remember_session_model(&state, &session_body).await;
+                if let Some(update) = session_model.as_ref() {
+                    complete_session_model_update(&state, update).await;
+                }
                 Json(chat_json_to_responses_with_policy(
                     value,
                     &chat_transform.custom_tool_names,
@@ -652,7 +655,7 @@ async fn send_native_responses_with_session_model(
     namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
     request_log_id: String,
     usage_recorder: Option<UsageRecorder>,
-    session_model: Option<(AppState, Value)>,
+    session_model: Option<crate::state::SessionModelUpdate>,
 ) -> Response {
     let tool_policy = state.read_config().tool_policy.clone();
     let request = match build_upstream_json_request(
@@ -706,7 +709,7 @@ async fn send_native_responses_with_session_model(
             request_log_id,
             status.as_u16(),
             usage_recorder,
-            session_model,
+            session_model.map(|update| (state.clone(), update)),
         ));
         let mut response = Response::new(body);
         *response.status_mut() = status;
@@ -777,9 +780,9 @@ async fn send_native_responses_with_session_model(
     }
     if status.is_success()
         && semantic_body.is_some_and(response_reports_completed)
-        && let Some((state, body)) = session_model
+        && let Some(update) = session_model.as_ref()
     {
-        remember_session_model(&state, &body).await;
+        complete_session_model_update(&state, update).await;
     }
 
     let body = if status.is_success()

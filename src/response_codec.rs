@@ -19,7 +19,7 @@ use crate::ids::generated_id;
 use crate::namespace_helpers::NamespaceHelpers;
 use crate::namespace_helpers::is_custom_tool_call_type;
 use crate::namespace_helpers::is_function_call_type;
-use crate::provider::remember_session_model;
+use crate::provider::complete_session_model_update;
 use crate::state::AppState;
 use crate::store::UsageRecorder;
 use crate::tool_policy::apply_tool_policy_to_function_call;
@@ -205,7 +205,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
     request_log_id: String,
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
-    session_model: Option<(AppState, Value)>,
+    session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
@@ -378,8 +378,8 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
         if let Some(recorder) = &usage_recorder {
             recorder.record_completed(state.usage.as_ref());
         }
-        if let Some((session_state, session_body)) = session_model {
-            remember_session_model(&session_state, &session_body).await;
+        if let Some((session_state, update)) = session_model {
+            complete_session_model_update(&session_state, &update).await;
         }
 
         for event in state.finish(
@@ -449,7 +449,7 @@ pub(crate) fn native_stream_to_responses_with_session_model(
     request_log_id: String,
     status: u16,
     usage_recorder: Option<UsageRecorder>,
-    session_model: Option<(AppState, Value)>,
+    session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let mut pending = Vec::new();
@@ -521,9 +521,9 @@ pub(crate) fn native_stream_to_responses_with_session_model(
                     recorder.record_completed(pending_usage.as_ref());
                 }
                 if terminal == Some(NativeSseTerminal::Completed)
-                    && let Some((session_state, session_body)) = &session_model
+                    && let Some((session_state, update)) = &session_model
                 {
-                    remember_session_model(session_state, session_body).await;
+                    complete_session_model_update(session_state, update).await;
                 }
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
