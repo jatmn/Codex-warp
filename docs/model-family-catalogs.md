@@ -192,6 +192,7 @@ Transforms let a model entry override or adjust request translation.
 | `force_parallel_tool_calls` | Force `parallel_tool_calls` to a boolean value. |
 | `request_stream_options_include_usage` | Defaults to `false` for compatibility with gateways that reject `stream_options`. Enable it for providers that support `stream_options.include_usage`; when enabled, it is added if the caller did not supply `stream_options`. |
 | `preserve_reasoning_content_history` | Replay prior reasoning text into outbound assistant/tool-call `reasoning_content` fields for multi-turn tool use. |
+| `suppress_duplicate_tool_markup` | Suppress XML-like tool markup in chat-completion content only when the same response also contains native tool calls. Handles both streaming and non-streaming responses. |
 
 Supported morph kinds:
 

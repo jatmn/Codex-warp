@@ -29,8 +29,8 @@ use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
-use crate::response_codec::chat_json_to_responses_with_policy;
-use crate::response_codec::chat_stream_to_responses;
+use crate::response_codec::chat_json_to_responses_with_tool_markup_suppression;
+use crate::response_codec::chat_stream_to_responses_with_tool_markup_suppression;
 use crate::response_codec::chat_usage_to_responses_usage;
 use crate::response_codec::morph_native_response_value;
 use crate::response_codec::native_stream_to_responses;
@@ -374,7 +374,7 @@ pub(crate) async fn proxy_chat_responses(
     let upstream_is_sse = should_stream_upstream(stream_requested, status, upstream.headers());
     if upstream_is_sse {
         let response_id = generated_id("resp");
-        let body = Body::from_stream(chat_stream_to_responses(
+        let body = Body::from_stream(chat_stream_to_responses_with_tool_markup_suppression(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
@@ -384,6 +384,7 @@ pub(crate) async fn proxy_chat_responses(
             request_log_id,
             continue_guard,
             usage_recorder,
+            selected.transform.suppress_duplicate_tool_markup,
         ));
         let mut response = Response::new(body);
         response.headers_mut().insert(
@@ -453,12 +454,13 @@ pub(crate) async fn proxy_chat_responses(
                         (!normalized_usage.is_null()).then_some(&normalized_usage),
                     );
                 }
-                Json(chat_json_to_responses_with_policy(
+                Json(chat_json_to_responses_with_tool_markup_suppression(
                     value,
                     &chat_transform.custom_tool_names,
                     &chat_transform.namespace_helpers,
                     &tool_policy,
                     Some((&state.debug_log, &request_log_id, &continue_guard)),
+                    selected.transform.suppress_duplicate_tool_markup,
                 ))
                 .into_response()
             }
