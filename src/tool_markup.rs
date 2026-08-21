@@ -337,6 +337,7 @@ mod tests {
     fn possible_tag_start_retains_only_plausible_incomplete_tags() {
         assert_eq!(possible_tag_start("Before <tool "), Some(7));
         assert_eq!(possible_tag_start("Before </tool"), Some(7));
+        assert_eq!(possible_tag_start("Before </tool>"), Some(7));
         assert_eq!(possible_tag_start("Before <toolbox"), None);
         assert_eq!(possible_tag_start("Before </toolbox"), None);
     }
