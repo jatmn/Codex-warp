@@ -155,6 +155,8 @@ pub(crate) struct Sanitizer {
     replay_buffer: String,
     active_tag: Option<&'static str>,
     active_depth: usize,
+    unterminated_tool_body: String,
+    tool_is_marker: bool,
     markdown: MarkdownCodeState,
     markdown_disabled: bool,
 }
@@ -171,6 +173,9 @@ impl Sanitizer {
     }
 
     pub(crate) fn push(&mut self, fragment: &str) -> String {
+        if self.active_tag == Some("tool") {
+            self.unterminated_tool_body.push_str(fragment);
+        }
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(fragment);
         let mut output = String::new();
@@ -235,9 +240,15 @@ impl Sanitizer {
                     self_closing,
                     ..
                 } => {
-                    if self.active_tag.is_none() && !self_closing {
+                    if self.active_tag.is_none()
+                        && !self_closing
+                        && !(tag == "tool" && self.tool_is_marker)
+                    {
                         self.active_tag = Some(tag);
                         self.active_depth = 1;
+                        if tag == "tool" {
+                            self.unterminated_tool_body = input[end..].to_string();
+                        }
                     } else if self.active_tag == Some(tag) && !self_closing {
                         self.active_depth += 1;
                     } else if self.active_tag.is_none() {
@@ -251,6 +262,7 @@ impl Sanitizer {
                         self.active_depth = self.active_depth.saturating_sub(1);
                         if self.active_depth == 0 {
                             self.active_tag = None;
+                            self.unterminated_tool_body.clear();
                         }
                     } else if self.active_tag.is_none() {
                         output.push_str(&input[start..end]);
@@ -270,8 +282,23 @@ impl Sanitizer {
         let disposition = self.markdown.finish();
         let pending = std::mem::take(&mut self.pending);
         let replay_buffer = std::mem::take(&mut self.replay_buffer);
+        let unterminated_tool_body = if self.active_tag == Some("tool") {
+            std::mem::take(&mut self.unterminated_tool_body)
+        } else {
+            self.unterminated_tool_body.clear();
+            String::new()
+        };
         self.active_tag = None;
         self.active_depth = 0;
+        if !unterminated_tool_body.is_empty() {
+            let mut fallback = Self {
+                tool_is_marker: true,
+                ..Self::default()
+            };
+            let mut output = fallback.push(&unterminated_tool_body);
+            output.push_str(&fallback.finish());
+            return output;
+        }
         if disposition == MarkdownFinish::Complete {
             return replay_buffer + &pending;
         }
@@ -739,6 +766,30 @@ mod tests {
 
         assert_eq!(sanitizer.push("<tool>working"), "");
         assert_eq!(sanitizer.finish(), "working");
+    }
+
+    #[test]
+    fn sanitizer_drops_confirmed_incomplete_tag_prefixes_at_finish() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before <para"), "Before ");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("<parameter>duplicate"), "");
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_preserves_body_and_nested_tool_literal() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool>body <parameter>duplicate</parameter>"),
+            ""
+        );
+        assert_eq!(sanitizer.finish(), "body ");
+
+        let mut nested = Sanitizer::default();
+        assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
+        assert_eq!(nested.finish(), "body literal</tool>");
     }
 
     #[test]
