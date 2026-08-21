@@ -681,10 +681,8 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     if target.is_empty() {
         return;
     }
-    if provider.model_catalog.is_empty() {
-        if is_model_variant_id(id, &target) {
-            info["auto_review_model_override"] = json!(id);
-        }
+    if is_model_variant_id(id, &target) {
+        info["auto_review_model_override"] = json!(id);
         return;
     }
     info["auto_review_model_override"] =

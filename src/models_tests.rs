@@ -371,6 +371,24 @@ fn live_catalog_localizes_suffixed_flash_models_to_their_routable_ids() {
 }
 
 #[test]
+fn live_catalog_variant_does_not_fall_back_to_a_static_base_review_target() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"cline-pass/deepseek-v4-flash-0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.push(ModelCatalogEntry {
+        id: "cline-pass/deepseek-v4-flash".to_string(),
+        ..ModelCatalogEntry::default()
+    });
+
+    let models = normalize_models(&body, &provider, &config).expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "cline-pass/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
 fn live_catalog_preserves_distinct_family_auto_review_target() {
     let body = Bytes::from_static(br#"{"data":[{"id":"deepseek-v4-pro"}]}"#);
     let config = load_config_layers(&[]).expect("default config loads");
