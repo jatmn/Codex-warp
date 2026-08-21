@@ -334,6 +334,20 @@ fn derived_auto_review_aliases_require_one_enabled_match_across_alias_kinds() {
                 },
             ],
         ),
+        (
+            "canonical id and upstream id collision",
+            vec![
+                ModelCatalogEntry {
+                    id: "review_model".to_string(),
+                    ..ModelCatalogEntry::default()
+                },
+                ModelCatalogEntry {
+                    id: "gateway/other".to_string(),
+                    upstream_id: Some("review-model".to_string()),
+                    ..ModelCatalogEntry::default()
+                },
+            ],
+        ),
     ];
 
     for (name, model_catalog) in cases {

@@ -746,8 +746,8 @@ fn provider_local_model_id_for_targets<'a>(
     None
 }
 
-/// Resolve an authoritative catalog ID. Exact IDs are unique by catalog
-/// validation; canonical aliases still require a unique enabled entry.
+/// Resolve an authoritative catalog ID. Only an exact ID is authoritative;
+/// canonical spellings are aliases and must share the ambiguity check below.
 fn provider_catalog_id_for_catalog_id<'a>(
     provider: &'a ProviderConfig,
     target: &str,
@@ -759,25 +759,23 @@ fn provider_catalog_id_for_catalog_id<'a>(
     {
         return Some(entry.id.as_str());
     }
-    let target = canonical_model_family_id(target);
-    provider_catalog_id_for_unique_match(provider, |entry| {
-        canonical_model_family_id(&entry.id) == target
-    })
+    None
 }
 
-/// Resolve a suffix or upstream-ID alias only when it identifies one enabled
-/// catalog entry across *both* alias forms. Unlike a catalog ID, either alias
-/// can legitimately be shared by multiple routes.
+/// Resolve every non-exact catalog alias only when it identifies one enabled
+/// entry. Canonical IDs, suffixes, and upstream IDs can all denote a route,
+/// so they must share one cardinality decision.
 fn provider_catalog_id_for_derived_alias<'a>(
     provider: &'a ProviderConfig,
     target: &str,
 ) -> Option<&'a str> {
     let target = canonical_model_family_id(target);
     provider_catalog_id_for_unique_match(provider, |entry| {
-        entry
-            .id
-            .rsplit_once('/')
-            .is_some_and(|(_, suffix)| canonical_model_family_id(suffix) == target)
+        canonical_model_family_id(&entry.id) == target
+            || entry
+                .id
+                .rsplit_once('/')
+                .is_some_and(|(_, suffix)| canonical_model_family_id(suffix) == target)
             || entry
                 .upstream_id
                 .as_deref()
