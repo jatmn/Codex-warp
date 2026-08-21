@@ -1334,9 +1334,12 @@ impl ToolMarkupSanitizer {
                     .expect("active markup always records its opening tag");
                 let mut scan_from = 0;
                 let mut completed_at = None;
-                while let Some((start, end, is_closing, self_closing)) =
-                    next_same_tag_token(&buffered, scan_from, opening_tag, closing_tag)
-                {
+                for _ in 0..=buffered.len() {
+                    let Some((start, end, is_closing, self_closing)) =
+                        next_same_tag_token(&buffered, scan_from, opening_tag, closing_tag)
+                    else {
+                        break;
+                    };
                     scan_from = end;
                     if is_closing {
                         self.active_depth = self.active_depth.saturating_sub(1);
