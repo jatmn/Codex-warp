@@ -38,15 +38,13 @@ fn provider_targets_openrouter(provider: &ProviderConfig) -> bool {
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
         .is_some_and(|host| {
-            host.strip_suffix('.')
-                .unwrap_or(&host)
-                .eq_ignore_ascii_case("openrouter.ai")
+            let host = host.strip_suffix('.').unwrap_or(&host).to_ascii_lowercase();
+            host == "openrouter.ai" || host.ends_with(".openrouter.ai")
         })
 }
 
 fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
     if !provider_defines_header(provider, "HTTP-Referer")
-        && !provider_defines_header(provider, "Referer")
         && let (Ok(name), Ok(value)) = (
             HeaderName::try_from("HTTP-Referer"),
             HeaderValue::from_str(OPENROUTER_REFERER),

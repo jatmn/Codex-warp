@@ -182,11 +182,12 @@ tab. See the
 ## OpenRouter App Attribution
 
 Codex Warp automatically attaches [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution)
-headers to requests whose configured destination is `openrouter.ai`, across its
-API paths (`/chat/completions`, native `/responses`, `/models`, and other
-OpenRouter endpoints). This does not report traffic sent to another gateway:
-OpenRouter creates attribution from requests it receives, so only traffic routed
-through OpenRouter can appear in its app rankings and analytics.
+headers to requests whose configured destination host is `openrouter.ai` or a
+subdomain of it, including OpenRouter's regional API hosts. This applies across
+its API paths (`/chat/completions`, native `/responses`, `/models`, and other
+OpenRouter endpoints). It does not report traffic sent to another gateway:
+OpenRouter creates attribution from requests it receives, so only traffic
+routed through OpenRouter can appear in its app rankings and analytics.
 
 - `HTTP-Referer`: `https://github.com/jatmn/Codex-warp`
 - `X-OpenRouter-Title`: `Codex Warp`

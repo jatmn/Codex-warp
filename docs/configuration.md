@@ -112,8 +112,9 @@ Some providers require extra headers:
 
 Codex Warp attaches [OpenRouter app attribution](../README.md#openrouter-app-attribution)
 headers (`HTTP-Referer`, `X-OpenRouter-Title`, `X-Title`, and
-`X-OpenRouter-Categories`) only when the configured destination is
-`openrouter.ai`. Set any of those names under `[provider.headers]` or
+`X-OpenRouter-Categories`) only when the configured destination host is
+`openrouter.ai` or a subdomain of it, including OpenRouter's regional API
+hosts. Set any of those names under `[provider.headers]` or
 `[providers.<id>.headers]` to override the automatic values for an OpenRouter
 gateway. Traffic sent to another gateway is not reported to OpenRouter.
 
