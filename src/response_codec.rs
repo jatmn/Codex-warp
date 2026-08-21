@@ -179,6 +179,33 @@ pub(crate) fn chat_stream_to_responses(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    chat_stream_to_responses_with_tool_markup_suppression(
+        upstream,
+        response_id,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        debug_log,
+        request_log_id,
+        continue_guard,
+        usage_recorder,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
+    upstream: reqwest::Response,
+    response_id: String,
+    custom_tool_names: BTreeSet<String>,
+    namespace_helpers: NamespaceHelpers,
+    tool_policy: ToolPolicyConfig,
+    debug_log: DebugLog,
+    request_log_id: String,
+    continue_guard: ContinueGuardState,
+    usage_recorder: Option<UsageRecorder>,
+    suppress_duplicate_tool_markup: bool,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
             "type": "response.created",
@@ -187,7 +214,7 @@ pub(crate) fn chat_stream_to_responses(
         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &created_event);
         yield Ok(Bytes::from(created_event));
 
-        let mut state = ChatAccum::default();
+        let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
@@ -198,7 +225,7 @@ pub(crate) fn chat_stream_to_responses(
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -208,7 +235,7 @@ pub(crate) fn chat_stream_to_responses(
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -220,7 +247,7 @@ pub(crate) fn chat_stream_to_responses(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -242,7 +269,7 @@ pub(crate) fn chat_stream_to_responses(
                 let value = match serde_json::from_str::<Value>(&data) {
                     Ok(value) => value,
                     Err(_) => {
-                        if let Some(event) = state.take_reasoning_delta() {
+                        for event in state.failure_events() {
                             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                             yield Ok(Bytes::from(event));
                         }
@@ -255,7 +282,7 @@ pub(crate) fn chat_stream_to_responses(
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -309,7 +336,7 @@ pub(crate) fn chat_stream_to_responses(
                     "completion": "truncated_eof"
                 }));
                 let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -338,7 +365,7 @@ pub(crate) fn chat_stream_to_responses(
                 "completion": "truncated_eof"
             }));
             let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-            if let Some(event) = state.take_reasoning_delta() {
+            for event in state.failure_events() {
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                 yield Ok(Bytes::from(event));
             }
@@ -2162,6 +2189,24 @@ pub(crate) fn chat_json_to_responses_with_policy(
     tool_policy: &ToolPolicyConfig,
     continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
 ) -> Value {
+    chat_json_to_responses_with_tool_markup_suppression(
+        value,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        continue_guard,
+        false,
+    )
+}
+
+pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
+    value: Value,
+    custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
+    tool_policy: &ToolPolicyConfig,
+    continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
+    suppress_duplicate_tool_markup: bool,
+) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
         .get("id")
@@ -2177,7 +2222,23 @@ pub(crate) fn chat_json_to_responses_with_policy(
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
-        let content = chat_message_text(message);
+        let native_tool_call_seen = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty())
+                })
+            });
+        let mut content = chat_message_text(message);
+        let original_content_was_empty = content.is_empty();
+        if suppress_duplicate_tool_markup && native_tool_call_seen {
+            content = sanitized_chat_message_text(message);
+        }
+        let content_suppressed = !original_content_was_empty && content.is_empty();
         let mut message_parts = Vec::new();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
@@ -2193,7 +2254,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                 "role": "assistant",
                 "content": message_parts
             }));
-        } else if message.get("content").is_some() {
+        } else if message.get("content").is_some() && !content_suppressed {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -2246,6 +2307,33 @@ fn chat_finish_reason(choice: &Value) -> Option<&str> {
 
 fn chat_message_text(message: &Value) -> String {
     chat_content_text(message.get("content"))
+}
+
+fn sanitized_chat_message_text(message: &Value) -> String {
+    let mut sanitizer = Sanitizer::default();
+    match message.get("content") {
+        Some(Value::String(text)) => {
+            let mut content = sanitizer.push(text);
+            content.push_str(&sanitizer.finish());
+            content
+        }
+        Some(Value::Array(items)) => {
+            let mut parts = Vec::new();
+            for part in items.iter().filter_map(chat_content_part_text) {
+                let sanitized = sanitizer.push(part);
+                if !sanitized.is_empty() {
+                    parts.push(sanitized);
+                }
+            }
+            let tail = sanitizer.finish();
+            if !tail.is_empty() {
+                parts.push(tail);
+            }
+            let parts = parts.iter().map(String::as_str).collect::<Vec<_>>();
+            join_chat_content_parts(&parts)
+        }
+        _ => String::new(),
+    }
 }
 
 fn chat_content_text(content: Option<&Value>) -> String {
