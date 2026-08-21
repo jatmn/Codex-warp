@@ -6,6 +6,7 @@ pub(crate) struct OpeningTag {
     pub(crate) self_closing: bool,
 }
 
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) const TAGS: [&str; 7] = [
     "function_call",
     "tool_calls",
@@ -16,6 +17,7 @@ pub(crate) const TAGS: [&str; 7] = [
     "tool",
 ];
 
+#[allow(dead_code)] // wired when the state-machine layer lands
 pub(crate) fn recognized_tag(input: &str) -> Option<&'static str> {
     TAGS.into_iter().find(|tag| {
         let prefix = format!("<{tag}");
