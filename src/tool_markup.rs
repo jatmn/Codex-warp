@@ -79,7 +79,10 @@ mod tests {
 
     #[test]
     fn recognized_tags_are_case_insensitive_and_require_a_tag_boundary() {
-        assert_eq!(recognized_tag("<FUNCTION_CALL name=\"run\">"), Some("function_call"));
+        assert_eq!(
+            recognized_tag("<FUNCTION_CALL name=\"run\">"),
+            Some("function_call")
+        );
         assert_eq!(recognized_tag("<parameter/>"), Some("parameter"));
         assert_eq!(recognized_tag("<toolbox>"), None);
         assert_eq!(recognized_tag("<functionality>"), None);
