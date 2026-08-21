@@ -6,6 +6,29 @@ pub(crate) struct OpeningTag {
     pub(crate) self_closing: bool,
 }
 
+pub(crate) const TAGS: [&str; 7] = [
+    "function_call",
+    "tool_calls",
+    "parameter",
+    "function",
+    "invoke",
+    "think",
+    "tool",
+];
+
+pub(crate) fn recognized_tag(input: &str) -> Option<&'static str> {
+    TAGS.into_iter().find(|tag| {
+        let prefix = format!("<{tag}");
+        input
+            .get(..prefix.len())
+            .is_some_and(|value| value.eq_ignore_ascii_case(&prefix))
+            && input
+                .as_bytes()
+                .get(prefix.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+    })
+}
+
 /// Finds an opening tag delimiter without treating `>` in a quoted attribute
 /// as structural. This is deliberately independent of response conversion so
 /// stream and non-stream adapters share exactly the same token contract.
