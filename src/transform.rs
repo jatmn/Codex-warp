@@ -425,12 +425,10 @@ fn response_item_to_messages(
             let raw_arguments = if is_custom_tool_call_type(item_type) {
                 custom_tool_history_arguments(item.get("input"))
             } else {
-                item.get("arguments")
-                    .and_then(Value::as_str)
-                    .unwrap_or("{}")
-                    .to_string()
+                chat_function_arguments_string(item.get("arguments"))
             };
             let (name, arguments) = namespace_helpers.to_visible_call(raw_name, &raw_arguments);
+            let arguments = ensure_json_object_argument_string(&arguments);
             let mut message = json!({
                 "role": "assistant",
                 "content": null,
@@ -507,6 +505,27 @@ fn custom_tool_history_arguments(input: Option<&Value>) -> String {
         None => Value::String(String::new()),
     };
     json!({ "input": input }).to_string()
+}
+
+/// Chat Completions history requires `tool_calls[].function.arguments` to be a
+/// JSON *object* encoded as a string. Session history can contain truncated or
+/// non-object payloads (for example a cut-off `{"cmd": "gh`); replay those as
+/// `{}` so providers that validate history do not reject the whole request.
+fn chat_function_arguments_string(arguments: Option<&Value>) -> String {
+    match arguments {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Object(map)) => Value::Object(map.clone()).to_string(),
+        Some(other) => other.to_string(),
+        None => "{}".to_string(),
+    }
+}
+
+fn ensure_json_object_argument_string(arguments: &str) -> String {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(Value::Object(_)) => arguments.to_string(),
+        Ok(Value::Null) | Err(_) => "{}".to_string(),
+        Ok(other) => json!({ "value": other }).to_string(),
+    }
 }
 
 fn content_items_to_text(content: Option<&Value>) -> String {

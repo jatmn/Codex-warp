@@ -600,6 +600,55 @@ fn custom_tool_call_history_uses_json_arguments() {
 }
 
 #[test]
+fn truncated_function_call_history_arguments_are_replayed_as_empty_object() {
+    // Mirrors the live failure: a truncated function_call arguments string
+    // such as `{"cmd": "gh` is not valid JSON. Chat Completions providers
+    // (including Kimi) reject the whole request if history contains it.
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "exec_command",
+            "arguments": "{\"cmd\": \"gh"
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let arguments = transformed.body["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments are a string");
+    assert_eq!(arguments, "{}");
+    let parsed: Value = serde_json::from_str(arguments).expect("arguments are JSON");
+    assert!(
+        parsed.as_object().is_some(),
+        "arguments must be a JSON object"
+    );
+}
+
+#[test]
+fn non_object_function_call_history_arguments_are_wrapped_for_chat() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "exec_command",
+            "arguments": "\"just-a-string\""
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let arguments = transformed.body["messages"][0]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .expect("arguments are a string");
+    let parsed: Value = serde_json::from_str(arguments).expect("arguments are JSON");
+    assert_eq!(parsed, json!({"value": "just-a-string"}));
+}
+
+#[test]
 fn chat_transform_does_not_passthrough_nameless_responses_tools() {
     let request = json!({
         "model": "test-model",
