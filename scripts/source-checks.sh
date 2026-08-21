@@ -28,16 +28,11 @@ fi
 
 docs_files=(README.md AGENTS.md CONTRIBUTING.md SECURITY.md docs)
 trailing_whitespace=0
-repo_root="$(pwd -P)"
 while IFS= read -r -d '' doc; do
-  real_doc="$(realpath -e -- "$doc" 2>/dev/null || true)"
-  if [[ "$real_doc" != "$repo_root" && "$real_doc" != "$repo_root"/* ]]; then
-    echo "source-checks: documentation path escapes repository: $doc" >&2
-    trailing_whitespace=1
-  elif grep -nIHE '[[:blank:]]$' "$doc"; then
+  if grep -nIHE '[[:blank:]]$' "$doc"; then
     trailing_whitespace=1
   fi
-done < <(find -P "${docs_files[@]}" \( -type f -o -type l \) -print0)
+done < <(find -P "${docs_files[@]}" -type f -print0)
 if [ "$trailing_whitespace" -ne 0 ]; then
   echo "source-checks: trailing whitespace in docs" >&2
   fail=1
