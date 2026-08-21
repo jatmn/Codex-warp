@@ -6,7 +6,7 @@ const path = require("path");
 
 const CONTRACTION = /\b(i['’]ll|i['’]ve|i['’]m|i['’]d)\b/;
 const BASE_DIR = fs.realpathSync(path.resolve(__dirname, ".."));
-const SAFE_SEGMENT = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 function isWithinBase(target) {
   return target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`);
