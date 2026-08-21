@@ -769,9 +769,10 @@ fn provider_catalog_id_for_derived_alias<'a>(
     provider: &'a ProviderConfig,
     target: &str,
 ) -> Option<&'a str> {
+    let exact_target = target;
     let target = canonical_model_family_id(target);
     provider_catalog_id_for_unique_match(provider, |entry| {
-        canonical_model_family_id(&entry.id) == target
+        (entry.id != exact_target && canonical_model_family_id(&entry.id) == target)
             || entry
                 .id
                 .rsplit_once('/')
