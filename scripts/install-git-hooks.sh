@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enable the versioned local preflight hooks for this checkout.
+# Install durable hooks that dispatch to the versioned local preflight scripts.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
@@ -16,6 +16,12 @@ elif [ "$#" -ne 0 ]; then
 fi
 
 git -C "$root" config extensions.worktreeConfig true
-git -C "$root" config --worktree core.hooksPath .githooks
+git_dir="$(git -C "$root" rev-parse --absolute-git-dir)"
+hooks_dir="$git_dir/codex-warp-hooks"
+mkdir -p "$hooks_dir"
+cp "$root/.githooks/pre-commit" "$hooks_dir/pre-commit"
+cp "$root/.githooks/pre-push" "$hooks_dir/pre-push"
+chmod 755 "$hooks_dir/pre-commit" "$hooks_dir/pre-push"
+git -C "$root" config --worktree core.hooksPath "$hooks_dir"
 git -C "$root" config --worktree codex-warp.preflight-base "$base_ref"
-echo "Installed .githooks with preflight base $base_ref for this checkout."
+echo "Installed durable preflight hooks with base $base_ref for this checkout."

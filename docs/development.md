@@ -148,12 +148,18 @@ bash scripts/ci-preflight.sh
 For a PR with a non-`main` base, use
 `bash scripts/ci-preflight.sh --base origin/<base-branch>`. Do not use
 `git commit --no-verify` or `git push --no-verify` to bypass this requirement.
-Install the versioned hooks once per checkout to run the preflight automatically
-at commit and push time:
+Install the durable hook bootstrap once per checkout to run the versioned
+preflight automatically at commit and push time:
 
 ```bash
 bash scripts/install-git-hooks.sh
 ```
+
+The bootstrap remains installed when branches change, but always dispatches to
+the checked-out branch's versioned scripts. If that branch does not provide the
+preflight implementation, it fails closed rather than silently skipping the
+check. Re-run the installer once after updating from an earlier hook
+installation to migrate its hook path.
 
 For a non-`main` PR base, install the hooks with that base so automatic commit
 and push checks use the same target:

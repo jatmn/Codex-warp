@@ -12,7 +12,7 @@
 ## Validation
 
 - [ ] `bash scripts/ci-preflight.sh` (use `--base origin/<base-branch>` for a non-`main` base)
-- [ ] Versioned hooks are installed with `bash scripts/install-git-hooks.sh`
+- [ ] Durable preflight hooks are installed with `bash scripts/install-git-hooks.sh`
 
 ## Maintainer checklist
 

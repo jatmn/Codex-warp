@@ -80,8 +80,11 @@ bash scripts/ci-preflight.sh
 ```
 
 For a PR with a non-`main` base, pass `--base origin/<base-branch>`. Install
-the versioned hooks with `bash scripts/install-git-hooks.sh` so commits and
-pushes run the same check automatically. The preflight includes the mechanical
+the durable hook bootstrap with `bash scripts/install-git-hooks.sh` so commits
+and pushes run the same check automatically. It dispatches to the versioned
+preflight scripts in the current checkout and fails closed if a branch does not
+provide them. Re-run the installer once after updating from an earlier hook
+installation. The preflight includes the mechanical
 review gate, tests, build, docs, CLI smoke checks, mutation testing when Rust
 changes, and supply-chain checks; do not replace it with a partial checklist.
 

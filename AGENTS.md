@@ -162,11 +162,17 @@ bash scripts/ci-preflight.sh
 For a PR whose base is not `main`, run
 `bash scripts/ci-preflight.sh --base origin/<base-branch>` instead. This is
 required; do not bypass Git hooks with `--no-verify` or treat remote CI as the
-first execution of these checks. Install the versioned hooks once per checkout:
+first execution of these checks. Install the durable hook bootstrap once per
+checkout; it dispatches to this checkout's versioned preflight implementation:
 
 ```bash
 bash scripts/install-git-hooks.sh
 ```
+
+After updating from an earlier hook installation, run the installer once again
+to migrate the hook path. If a checkout moves to a branch that does not provide
+the preflight scripts, the installed hook fails closed instead of silently
+allowing the commit or push.
 
 For a non-`main` PR base, configure the hooks with the same base once:
 
