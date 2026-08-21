@@ -131,6 +131,12 @@ pub(crate) struct Sanitizer {
 
 #[allow(dead_code)] // wired by the following response-adapter layer
 impl Sanitizer {
+    /// Whether a fragment contains a complete recognized tag or a suffix that
+    /// could become one in the next stream fragment.
+    pub(crate) fn may_contain_markup(fragment: &str) -> bool {
+        next_tag(fragment).is_some() || possible_tag_start(fragment).is_some()
+    }
+
     pub(crate) fn push(&mut self, fragment: &str) -> String {
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(fragment);
@@ -314,5 +320,12 @@ mod tests {
             "After"
         );
         assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn markup_detection_keeps_complete_and_split_recognized_tags() {
+        assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
+        assert!(Sanitizer::may_contain_markup("before <parameter "));
+        assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
     }
 }
