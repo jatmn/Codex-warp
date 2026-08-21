@@ -243,11 +243,45 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
         &mut info,
         "concentrate.ai/deepseek-v4-flash-0731",
         &ProviderConfig::default(),
-        None,
     );
     assert_eq!(
         info["auto_review_model_override"],
         "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn versioned_model_ids_require_a_nonempty_numeric_version_suffix() {
+    assert!(is_versioned_model_id(
+        "deepseek-v4-flash-0731",
+        "deepseek-v4-flash"
+    ));
+    assert!(is_versioned_model_id(
+        "deepseek_v4_flash_2026_08",
+        "deepseek-v4-flash"
+    ));
+    assert!(!is_versioned_model_id(
+        "deepseek-v4-flash-",
+        "deepseek-v4-flash"
+    ));
+    assert!(!is_versioned_model_id(
+        "deepseek-v4-flash-preview",
+        "deepseek-v4-flash"
+    ));
+}
+
+#[test]
+fn empty_upstream_auto_review_override_does_not_suppress_family_localization() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"deepseek-v4-flash-0731","auto_review_model_override":""}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek-v4-flash-0731"
     );
 }
 

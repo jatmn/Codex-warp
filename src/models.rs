@@ -657,11 +657,6 @@ pub(crate) fn codex_model_info(
         synthetic_model_info(id)
     };
 
-    let provider_auto_review_target = model
-        .get("auto_review_model_override")
-        .and_then(Value::as_str)
-        .filter(|target| !target.is_empty())
-        .map(str::to_string);
     apply_provider_model_metadata(&mut info, model);
     for family in matching_model_families(config, id) {
         apply_model_metadata_config(&mut info, &family.model_metadata);
@@ -670,22 +665,12 @@ pub(crate) fn codex_model_info(
     if let Some(overrides) = provider.model_metadata.overrides.get(id) {
         apply_model_metadata_config(&mut info, overrides);
     }
-    localize_auto_review_model_override(
-        &mut info,
-        id,
-        provider,
-        provider_auto_review_target.as_deref(),
-    );
+    localize_auto_review_model_override(&mut info, id, provider);
 
     Some(info)
 }
 
-fn localize_auto_review_model_override(
-    info: &mut Value,
-    id: &str,
-    provider: &ProviderConfig,
-    provider_auto_review_target: Option<&str>,
-) {
+fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &ProviderConfig) {
     let Some(target) = info
         .get("auto_review_model_override")
         .and_then(Value::as_str)
@@ -699,8 +684,6 @@ fn localize_auto_review_model_override(
     if provider.model_catalog.is_empty() {
         if is_versioned_model_id(id, &target) {
             info["auto_review_model_override"] = json!(id);
-        } else if provider_auto_review_target == Some(target.as_str()) {
-            return;
         }
         return;
     }
