@@ -179,6 +179,33 @@ pub(crate) fn chat_stream_to_responses(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    chat_stream_to_responses_with_tool_markup_suppression(
+        upstream,
+        response_id,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        debug_log,
+        request_log_id,
+        continue_guard,
+        usage_recorder,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
+    upstream: reqwest::Response,
+    response_id: String,
+    custom_tool_names: BTreeSet<String>,
+    namespace_helpers: NamespaceHelpers,
+    tool_policy: ToolPolicyConfig,
+    debug_log: DebugLog,
+    request_log_id: String,
+    continue_guard: ContinueGuardState,
+    usage_recorder: Option<UsageRecorder>,
+    suppress_duplicate_tool_markup: bool,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({
             "type": "response.created",
@@ -187,7 +214,7 @@ pub(crate) fn chat_stream_to_responses(
         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &created_event);
         yield Ok(Bytes::from(created_event));
 
-        let mut state = ChatAccum::default();
+        let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
