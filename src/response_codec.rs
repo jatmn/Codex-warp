@@ -2327,6 +2327,24 @@ pub(crate) fn chat_json_to_responses_with_policy(
     tool_policy: &ToolPolicyConfig,
     continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
 ) -> Value {
+    chat_json_to_responses_with_tool_markup_suppression(
+        value,
+        custom_tool_names,
+        namespace_helpers,
+        tool_policy,
+        continue_guard,
+        false,
+    )
+}
+
+pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
+    value: Value,
+    custom_tool_names: &BTreeSet<String>,
+    namespace_helpers: &NamespaceHelpers,
+    tool_policy: &ToolPolicyConfig,
+    continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
+    suppress_duplicate_tool_markup: bool,
+) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
         .get("id")
@@ -2342,7 +2360,23 @@ pub(crate) fn chat_json_to_responses_with_policy(
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
-        let content = chat_message_text(message);
+        let native_tool_call_seen = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.get("function")
+                        .and_then(|function| function.get("name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| !name.is_empty())
+                })
+            });
+        let mut content = chat_message_text(message);
+        let original_content_was_empty = content.is_empty();
+        if suppress_duplicate_tool_markup && native_tool_call_seen {
+            content = sanitized_chat_message_text(message);
+        }
+        let content_suppressed = !original_content_was_empty && content.is_empty();
         let mut message_parts = Vec::new();
         if let Some(reasoning) = reasoning
             && !reasoning.is_empty()
@@ -2358,7 +2392,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
                 "role": "assistant",
                 "content": message_parts
             }));
-        } else if message.get("content").is_some() {
+        } else if message.get("content").is_some() && !content_suppressed {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -2411,6 +2445,33 @@ fn chat_finish_reason(choice: &Value) -> Option<&str> {
 
 fn chat_message_text(message: &Value) -> String {
     chat_content_text(message.get("content"))
+}
+
+fn sanitized_chat_message_text(message: &Value) -> String {
+    let mut sanitizer = Sanitizer::default();
+    match message.get("content") {
+        Some(Value::String(text)) => {
+            let mut content = sanitizer.push(text);
+            content.push_str(&sanitizer.finish());
+            content
+        }
+        Some(Value::Array(items)) => {
+            let mut parts = Vec::new();
+            for part in items.iter().filter_map(chat_content_part_text) {
+                let sanitized = sanitizer.push(part);
+                if !sanitized.is_empty() {
+                    parts.push(sanitized);
+                }
+            }
+            let tail = sanitizer.finish();
+            if !tail.is_empty() {
+                parts.push(tail);
+            }
+            let parts = parts.iter().map(String::as_str).collect::<Vec<_>>();
+            join_chat_content_parts(&parts)
+        }
+        _ => String::new(),
+    }
 }
 
 fn chat_content_text(content: Option<&Value>) -> String {
