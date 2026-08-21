@@ -202,8 +202,30 @@ fn possible_tag_start(input: &str) -> Option<usize> {
     let start = input.rfind('<')?;
     let suffix = &input[start..];
     TAGS.into_iter().find_map(|tag| {
-        let prefix = format!("<{tag}");
-        (prefix.starts_with(suffix) || format!("</{tag}").starts_with(suffix)).then_some(start)
+        let opening = format!("<{tag}");
+        let closing = format!("</{tag}");
+        let opening_prefix = opening
+            .get(..suffix.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+        let closing_prefix = closing
+            .get(..suffix.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+        let opening_continues = suffix
+            .get(..opening.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&opening))
+            && suffix
+                .as_bytes()
+                .get(opening.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
+        let closing_continues = suffix
+            .get(..closing.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
+            && suffix
+                .as_bytes()
+                .get(closing.len())
+                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>');
+        (opening_prefix || closing_prefix || opening_continues || closing_continues)
+            .then_some(start)
     })
 }
 
@@ -295,5 +317,16 @@ mod tests {
 
         assert_eq!(sanitizer.push("<tool>working"), "");
         assert_eq!(sanitizer.finish(), "working");
+    }
+
+    #[test]
+    fn sanitizer_reassembles_an_opening_tag_split_after_its_name() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before <tool "), "Before ");
+        assert_eq!(
+            sanitizer.push("name=\"run\">duplicate</tool>After"),
+            "After"
+        );
+        assert_eq!(sanitizer.finish(), "");
     }
 }
