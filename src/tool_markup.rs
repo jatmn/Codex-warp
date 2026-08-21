@@ -233,6 +233,7 @@ enum MarkdownFinish {
 #[derive(Debug, PartialEq, Eq)]
 struct MarkdownCodeState {
     fence: Option<Fence>,
+    opening_backtick_fence: bool,
     inline_ticks: Option<usize>,
     pending_marker: Option<PendingMarker>,
     closing_fence: bool,
@@ -244,6 +245,7 @@ impl Default for MarkdownCodeState {
     fn default() -> Self {
         Self {
             fence: None,
+            opening_backtick_fence: false,
             inline_ticks: None,
             pending_marker: None,
             closing_fence: false,
@@ -255,7 +257,10 @@ impl Default for MarkdownCodeState {
 
 #[allow(dead_code)]
 impl MarkdownCodeState {
-    fn permits_markup(&self) -> bool {
+    /// Resolve a marker run at the lexical boundary before a possible markup
+    /// tag, then report whether the tag is outside Markdown code.
+    fn permits_markup(&mut self) -> bool {
+        self.resolve_pending_marker();
         self.fence.is_none() && self.inline_ticks.is_none() && !self.escaped
     }
 
@@ -303,9 +308,16 @@ impl MarkdownCodeState {
 
         if matches!(byte, b'\n' | b'\r') {
             self.pending_marker = None;
+            self.opening_backtick_fence = false;
             self.escaped = false;
             self.start_line();
             return;
+        }
+
+        if self.opening_backtick_fence && byte == b'`' {
+            let opener = self.fence.take().expect("opening fence is present");
+            self.opening_backtick_fence = false;
+            self.inline_ticks = Some(opener.length);
         }
 
         if self.fence.is_none() && self.inline_ticks.is_none() && self.escaped {
@@ -367,6 +379,7 @@ impl MarkdownCodeState {
                 marker: pending.marker,
                 length: pending.length,
             });
+            self.opening_backtick_fence = pending.marker == b'`';
         } else if pending.marker == b'`' {
             self.inline_ticks = Some(pending.length);
         }
@@ -622,12 +635,35 @@ mod tests {
     }
 
     #[test]
+    fn markdown_state_reinterprets_invalid_backtick_fence_info_as_inline_code() {
+        let mut valid = MarkdownCodeState::default();
+        valid.consume("```lang\nbody with ` tick\n");
+        assert!(valid.fence.is_some());
+        assert_eq!(valid.inline_ticks, None);
+        valid.consume("```\nafter");
+        assert!(valid.permits_markup());
+
+        let mut unmatched = MarkdownCodeState::default();
+        unmatched.consume("```lang`oops\n<tool>outside</tool>");
+        assert_eq!(unmatched.fence, None);
+        assert_eq!(unmatched.inline_ticks, Some(3));
+        assert_eq!(unmatched.finish(), MarkdownFinish::ReplayUnmatchedInline);
+
+        let mut matched = MarkdownCodeState::default();
+        matched.consume("```lang`oops``` after");
+        assert_eq!(matched.fence, None);
+        assert!(matched.permits_markup());
+        assert_eq!(matched.finish(), MarkdownFinish::Complete);
+    }
+
+    #[test]
     fn markdown_state_is_invariant_to_fragment_boundaries() {
         for input in [
             "```xml\n<tool>literal</tool>\n```\nafter",
             "before `inline <tool>` after",
             "\\```two ticks`` after",
             "~~~\nbody\n~~~",
+            "```lang`oops\n<tool>outside</tool>",
         ] {
             let mut whole = MarkdownCodeState::default();
             whole.consume(input);
