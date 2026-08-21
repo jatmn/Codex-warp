@@ -63,17 +63,28 @@ pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
 #[cfg(test)]
 mod opening_tag_tests {
     use super::opening_tag;
+    use super::recognized_tag;
+    use super::recognized_tag;
 
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
         let tag = opening_tag("<parameter note=\"a > b\"/>After").expect("complete tag");
-        assert_eq!(tag.end, "<parameter note=\"a > b\"/>").len());
+        assert_eq!(tag.end, "<parameter note=\"a > b\"/>".len());
         assert!(tag.self_closing);
     }
 
     #[test]
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
+    }
+
+    #[test]
+    fn recognized_tags_are_case_insensitive_and_require_a_tag_boundary() {
+        assert_eq!(recognized_tag("<FUNCTION_CALL name=\"run\">"), Some("function_call"));
+        assert_eq!(recognized_tag("<parameter/>"), Some("parameter"));
+        assert_eq!(recognized_tag("<toolbox>"), None);
+        assert_eq!(recognized_tag("<functionality>"), None);
+        assert_eq!(recognized_tag("<invoke"), None);
     }
 }
 
@@ -479,6 +490,7 @@ mod tests {
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
     }
+<<<<<<< HEAD
     #[test]
     fn backslash_before_quote_does_not_escape_xml_quote() {
         let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
@@ -492,11 +504,18 @@ mod tests {
             recognized_tag("<FUNCTION_CALL name=\"run\">"),
             Some("function_call")
         );
+=======
+
+    #[test]
+    fn recognized_tags_are_case_insensitive_and_require_a_tag_boundary() {
+        assert_eq!(recognized_tag("<FUNCTION_CALL name=\"run\">"), Some("function_call"));
+>>>>>>> 6ff68eb (test(tool_markup): cover recognized tag classification)
         assert_eq!(recognized_tag("<parameter/>"), Some("parameter"));
         assert_eq!(recognized_tag("<toolbox>"), None);
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
     }
+<<<<<<< HEAD
 
     #[test]
     fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
@@ -722,4 +741,6 @@ mod tests {
         assert_eq!(terminal_fence.finish(), MarkdownFinish::Complete);
         assert!(terminal_fence.permits_markup());
     }
+=======
+>>>>>>> 6ff68eb (test(tool_markup): cover recognized tag classification)
 }
