@@ -55,8 +55,76 @@ pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     None
 }
 
+/// A complete recognized tool-markup tag found in a content fragment.
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TagToken {
+    Opening {
+        tag: &'static str,
+        start: usize,
+        end: usize,
+        self_closing: bool,
+    },
+    Closing {
+        tag: &'static str,
+        start: usize,
+        end: usize,
+    },
+}
+
+/// Finds the next complete recognized tag, preserving quoted `>` bytes inside
+/// opening-tag attributes. Incomplete tags intentionally return `None` so a
+/// streaming caller can retain them for the next content chunk.
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
+pub(crate) fn next_tag(input: &str) -> Option<TagToken> {
+    for (start, _) in input.match_indices('<') {
+        let candidate = &input[start..];
+        if let Some(tag) = recognized_tag(candidate) {
+            let opening = opening_tag(candidate)?;
+            return Some(TagToken::Opening {
+                tag,
+                start,
+                end: start + opening.end,
+                self_closing: opening.self_closing,
+            });
+        }
+
+        let Some(closing) = candidate.strip_prefix("</") else {
+            continue;
+        };
+        for tag in TAGS {
+            if !closing
+                .get(..tag.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(tag))
+            {
+                continue;
+            }
+            let rest = &closing[tag.len()..];
+            let Some(end) = closing_tag_end(rest) else {
+                continue;
+            };
+            return Some(TagToken::Closing {
+                tag,
+                start,
+                end: start + 2 + tag.len() + end,
+            });
+        }
+    }
+    None
+}
+
+fn closing_tag_end(rest: &str) -> Option<usize> {
+    let delimiter = rest.trim_start();
+    delimiter
+        .starts_with('>')
+        .then_some(rest.len() - delimiter.len() + 1)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::TagToken;
+    use super::closing_tag_end;
+    use super::next_tag;
     use super::opening_tag;
     use super::recognized_tag;
 
@@ -89,5 +157,37 @@ mod tests {
         assert_eq!(recognized_tag("<toolbox>"), None);
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
+    }
+
+    #[test]
+    fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
+        assert_eq!(
+            next_tag("before <parameter note=\"a > b\"/>After"),
+            Some(TagToken::Opening {
+                tag: "parameter",
+                start: 7,
+                end: 32,
+                self_closing: true,
+            })
+        );
+        assert_eq!(
+            next_tag("</FUNCTION >After"),
+            Some(TagToken::Closing {
+                tag: "function",
+                start: 0,
+                end: 12,
+            })
+        );
+        assert_eq!(next_tag("</function extra>"), None);
+        assert_eq!(next_tag("<parameter note=\"unterminated"), None);
+    }
+
+    #[test]
+    fn closing_tag_end_requires_the_delimiter_after_whitespace() {
+        assert_eq!(closing_tag_end(">After"), Some(1));
+        assert_eq!(closing_tag_end(" \t>After"), Some(3));
+        assert_eq!(closing_tag_end("\u{2003}>After"), Some(4));
+        assert_eq!(closing_tag_end(" extra>"), None);
+        assert_eq!(closing_tag_end(" <tool>"), None);
     }
 }
