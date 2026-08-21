@@ -147,20 +147,24 @@ impl Sanitizer {
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(fragment);
         let mut output = String::new();
+        let mut cursor = 0;
 
-        while !input.is_empty() {
+        while let Some(remaining) = input
+            .get(cursor..)
+            .filter(|remaining| !remaining.is_empty())
+        {
             let token = if self.active_tag.is_some() {
-                next_tag(&input)
+                next_tag(remaining)
             } else {
-                next_tag_outside_markdown(&input, &mut self.markdown)
+                next_tag_outside_markdown(remaining, &mut self.markdown)
             };
             let Some(token) = token else {
-                let split_at = possible_tag_start(&input).unwrap_or(input.len());
+                let split_at = possible_tag_start(remaining).unwrap_or(remaining.len());
                 if self.active_tag.is_some() {
-                    self.pending = input;
+                    self.pending = remaining.to_string();
                 } else {
-                    output.push_str(&input[..split_at]);
-                    self.pending = input[split_at..].to_string();
+                    output.push_str(&remaining[..split_at]);
+                    self.pending = remaining[split_at..].to_string();
                 }
                 break;
             };
@@ -169,7 +173,7 @@ impl Sanitizer {
             };
 
             if self.active_tag.is_none() {
-                output.push_str(&input[..start]);
+                output.push_str(&remaining[..start]);
             }
             let end = match token {
                 TagToken::Opening {
@@ -185,7 +189,7 @@ impl Sanitizer {
                         self.active_tag = Some(tag);
                         self.active_depth = 1;
                         if tag == "tool" {
-                            self.unterminated_tool_body = input[end..].to_string();
+                            self.unterminated_tool_body = remaining[end..].to_string();
                         }
                     } else if self.active_tag == Some(tag) && !self_closing {
                         self.active_depth += 1;
@@ -203,12 +207,14 @@ impl Sanitizer {
                             self.unterminated_tool_body.clear();
                         }
                     } else if self.active_tag.is_none() {
-                        output.push_str(&input[start..end]);
+                        output.push_str(&remaining[start..end]);
                     }
                     end
                 }
             };
-            input = input[end..].to_string();
+            cursor = cursor
+                .checked_add(end)
+                .expect("token end remains within the input buffer");
         }
         output
     }
@@ -709,5 +715,19 @@ mod tests {
             sanitizer.push("<parameter>duplicate</parameter>Done"),
             "Done"
         );
+    }
+
+    #[test]
+    fn sanitizer_handles_dense_and_incrementally_split_markup() {
+        let mut sanitizer = Sanitizer::default();
+        let dense = "<parameter/>".repeat(2_000) + "After";
+        assert_eq!(sanitizer.push(&dense), "After");
+
+        let mut split = Sanitizer::default();
+        assert_eq!(split.push("<parameter name=\""), "");
+        for _ in 0..2_000 {
+            assert_eq!(split.push("x"), "");
+        }
+        assert_eq!(split.push("\"/>After"), "After");
     }
 }
