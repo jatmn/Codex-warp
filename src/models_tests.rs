@@ -440,6 +440,20 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
 }
 
 #[test]
+fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
+    let mut info = json!({"auto_review_model_override": "deepseek_v4_flash"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/deepseek-v4-flash-0731",
+        &ProviderConfig::default(),
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
 fn model_variant_ids_require_a_nonempty_delimited_suffix() {
     assert!(is_model_variant_id(
         "deepseek-v4-flash-0731",
