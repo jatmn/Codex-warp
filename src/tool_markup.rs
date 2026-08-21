@@ -259,12 +259,8 @@ impl MarkdownCodeState {
 }
 
 fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> Option<TagToken> {
-    let mut start = 0;
-    while start < input.len() {
-        let character = input[start..]
-            .chars()
-            .next()
-            .expect("start remains on a UTF-8 boundary");
+    let mut characters = input.char_indices().peekable();
+    while let Some((start, character)) = characters.next() {
         if character == '<'
             && markdown.permits_markup()
             && let Some(token) = next_tag(&input[start..]).filter(|token| match token {
@@ -290,17 +286,19 @@ fn next_tag_outside_markdown(input: &str, markdown: &mut MarkdownCodeState) -> O
                 },
             });
         }
-        let end = if matches!(character, '`' | '~') {
-            start
-                + input[start..]
-                    .bytes()
-                    .take_while(|byte| *byte == character as u8)
-                    .count()
-        } else {
-            start + character.len_utf8()
-        };
+        if matches!(character, '`' | '~') {
+            while characters
+                .peek()
+                .is_some_and(|(_, candidate)| *candidate == character)
+            {
+                characters.next();
+            }
+        }
+        let end = characters
+            .peek()
+            .map(|(offset, _)| *offset)
+            .unwrap_or(input.len());
         markdown.consume(&input[start..end]);
-        start = end;
     }
     None
 }
