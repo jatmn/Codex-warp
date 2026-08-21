@@ -28,7 +28,7 @@ if [ -n "${HOOK_MARKER:-}" ]; then
   printf '%s\n' "$(git rev-parse HEAD)" >>"$HOOK_MARKER"
 fi
 case "$(cat validation-target.txt)" in
-  unborn|index) ;;
+  unborn|index|staged) ;;
   *) exit 1 ;;
 esac
 EOF
@@ -49,6 +49,34 @@ cp "$root/.githooks/pre-applypatch" "$repo/.githooks/"
 cp "$root/.githooks/pre-push" "$repo/.githooks/"
 git -C "$repo" add .githooks
 git -C "$repo" commit --quiet -m hooks
+
+# Migrate the PR's original installer, which used .githooks directly. The
+# durable dispatcher must not invoke that same versioned hook twice.
+git -C "$repo" config --worktree core.hooksPath .githooks
+git -C "$repo" config --worktree codex-warp.preflight-base HEAD
+(
+  cd "$repo"
+  bash scripts/install-git-hooks.sh --base HEAD
+)
+hooks_dir="$(git -C "$repo" config --worktree --get core.hooksPath)"
+test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/.githooks"
+legacy_calls="$repo/legacy-hook-calls"
+export HOOK_MARKER="$legacy_calls"
+printf 'index\n' >"$repo/validation-target.txt"
+git -C "$repo" add validation-target.txt
+git -C "$repo" commit --quiet -m legacy-hook-migration
+test "$(wc -l <"$legacy_calls")" -eq 1
+: >"$legacy_calls"
+legacy_sha="$(git -C "$repo" rev-parse HEAD)"
+printf 'refs/heads/protected %s refs/heads/protected 0000000000000000000000000000000000000000\n' "$legacy_sha" |
+  (cd "$repo" && bash "$hooks_dir/pre-push")
+test "$(wc -l <"$legacy_calls")" -eq 1
+unset HOOK_MARKER
+
+# Switch to an unrelated existing hook directory to verify that a fresh
+# installation chains users' hooks, not just the old Codex Warp path.
+git -C "$repo" config --worktree core.hooksPath "$repo/custom-hooks"
+git -C "$repo" config --worktree --unset codex-warp.previous-hooks-path
 cat >"$repo/custom-hooks/pre-commit" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -84,11 +112,11 @@ done
   bash scripts/install-git-hooks.sh --base HEAD
 )
 test "$(git -C "$repo" config --worktree --get codex-warp.previous-hooks-path)" = "$repo/custom-hooks"
-printf 'index\n' >"$repo/validation-target.txt"
+printf 'staged\n' >"$repo/validation-target.txt"
 git -C "$repo" add validation-target.txt
 printf 'worktree\n' >"$repo/validation-target.txt"
 git -C "$repo" commit --quiet -m index-branch
-test "$(git -C "$repo" show HEAD:validation-target.txt)" = index
+test "$(git -C "$repo" show HEAD:validation-target.txt)" = staged
 test "$(sed -n '1p' "$custom_calls")" = pre-commit
 test "$(sed -n '2p' "$custom_calls")" = commit-msg
 
