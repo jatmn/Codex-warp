@@ -657,10 +657,11 @@ pub(crate) fn codex_model_info(
         synthetic_model_info(id)
     };
 
-    let provider_supplied_auto_review_target = model
+    let provider_auto_review_target = model
         .get("auto_review_model_override")
         .and_then(Value::as_str)
-        .is_some_and(|target| !target.is_empty());
+        .filter(|target| !target.is_empty())
+        .map(str::to_string);
     apply_provider_model_metadata(&mut info, model);
     for family in matching_model_families(config, id) {
         apply_model_metadata_config(&mut info, &family.model_metadata);
@@ -673,7 +674,7 @@ pub(crate) fn codex_model_info(
         &mut info,
         id,
         provider,
-        provider_supplied_auto_review_target,
+        provider_auto_review_target.as_deref(),
     );
 
     Some(info)
@@ -683,7 +684,7 @@ fn localize_auto_review_model_override(
     info: &mut Value,
     id: &str,
     provider: &ProviderConfig,
-    provider_supplied_target: bool,
+    provider_auto_review_target: Option<&str>,
 ) {
     let Some(target) = info
         .get("auto_review_model_override")
@@ -692,10 +693,13 @@ fn localize_auto_review_model_override(
     else {
         return;
     };
-    if target.is_empty() || (provider.model_catalog.is_empty() && provider_supplied_target) {
+    if target.is_empty() {
         return;
     }
     if provider.model_catalog.is_empty() {
+        if provider_auto_review_target == Some(target.as_str()) {
+            return;
+        }
         if is_versioned_model_id(id, &target) {
             info["auto_review_model_override"] = json!(id);
         }
@@ -707,16 +711,16 @@ fn localize_auto_review_model_override(
 
 fn is_versioned_model_id(id: &str, target: &str) -> bool {
     let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
-    let Some(version) = id
-        .strip_prefix(target)
+    let target = target.replace('_', "-");
+    let id = id.replace('_', "-");
+    id.strip_prefix(&target)
         .and_then(|suffix| suffix.strip_prefix('-'))
-    else {
-        return false;
-    };
-    !version.is_empty()
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'_')
+        .is_some_and(|version| {
+            !version.is_empty()
+                && version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'-' || byte == b'_')
+        })
 }
 
 fn provider_local_model_id<'a>(

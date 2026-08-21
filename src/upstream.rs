@@ -27,13 +27,14 @@ use crate::ids::generated_id;
 use crate::namespace_helpers::apply_subagent_helper_shim;
 use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::provider_display_name;
+use crate::provider::remember_session_model;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
 use crate::response_codec::chat_json_to_responses_with_policy;
-use crate::response_codec::chat_stream_to_responses;
+use crate::response_codec::chat_stream_to_responses_with_session_model;
 use crate::response_codec::chat_usage_to_responses_usage;
 use crate::response_codec::morph_native_response_value;
-use crate::response_codec::native_stream_to_responses;
+use crate::response_codec::native_stream_to_responses_with_session_model;
 use crate::response_codec::response_usage_from_bytes;
 use crate::response_codec::upstream_error_message;
 use crate::state::AppState;
@@ -78,6 +79,7 @@ pub(crate) async fn proxy_native_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
+    let session_model = Some((state.clone(), body.clone()));
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
     rewrite_model_for_upstream(
         &state.read_config(),
@@ -104,7 +106,7 @@ pub(crate) async fn proxy_native_responses(
         }),
         &body,
     );
-    send_native_responses(
+    send_native_responses_with_session_model(
         state,
         &selected.provider,
         headers,
@@ -115,6 +117,7 @@ pub(crate) async fn proxy_native_responses(
         namespace_helpers,
         request_log_id,
         usage_recorder,
+        session_model,
     )
     .await
 }
@@ -125,6 +128,7 @@ pub(crate) async fn proxy_chat_responses(
     headers: HeaderMap,
     mut body: Value,
 ) -> Response {
+    let session_body = body.clone();
     let usage_recorder = UsageRecorder::from_request(state.store.as_ref(), &selected.id, &body);
     let (continue_guard_config, tool_policy) = {
         let config = state.read_config();
@@ -374,7 +378,7 @@ pub(crate) async fn proxy_chat_responses(
     let upstream_is_sse = should_stream_upstream(stream_requested, status, upstream.headers());
     if upstream_is_sse {
         let response_id = generated_id("resp");
-        let body = Body::from_stream(chat_stream_to_responses(
+        let body = Body::from_stream(chat_stream_to_responses_with_session_model(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
@@ -384,6 +388,7 @@ pub(crate) async fn proxy_chat_responses(
             request_log_id,
             continue_guard,
             usage_recorder,
+            Some((state.clone(), session_body.clone())),
         ));
         let mut response = Response::new(body);
         response.headers_mut().insert(
@@ -453,6 +458,7 @@ pub(crate) async fn proxy_chat_responses(
                         (!normalized_usage.is_null()).then_some(&normalized_usage),
                     );
                 }
+                remember_session_model(&state, &session_body).await;
                 Json(chat_json_to_responses_with_policy(
                     value,
                     &chat_transform.custom_tool_names,
@@ -605,6 +611,7 @@ pub(crate) fn rewrite_model_for_upstream(
 
 // Upstream send needs headers, body, and stream policy together.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn send_native_responses(
     state: AppState,
     provider: &ProviderConfig,
@@ -616,6 +623,36 @@ async fn send_native_responses(
     namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
     request_log_id: String,
     usage_recorder: Option<UsageRecorder>,
+) -> Response {
+    send_native_responses_with_session_model(
+        state,
+        provider,
+        headers,
+        url,
+        body,
+        stream_response,
+        custom_tool_names,
+        namespace_helpers,
+        request_log_id,
+        usage_recorder,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_native_responses_with_session_model(
+    state: AppState,
+    provider: &ProviderConfig,
+    headers: HeaderMap,
+    url: String,
+    body: Value,
+    stream_response: bool,
+    custom_tool_names: BTreeSet<String>,
+    namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
+    request_log_id: String,
+    usage_recorder: Option<UsageRecorder>,
+    session_model: Option<(AppState, Value)>,
 ) -> Response {
     let tool_policy = state.read_config().tool_policy.clone();
     let request = match build_upstream_json_request(
@@ -660,7 +697,7 @@ async fn send_native_responses(
     let upstream_headers = upstream.headers().clone();
     let upstream_is_sse = should_stream_upstream(stream_response, status, &upstream_headers);
     if upstream_is_sse {
-        let body = Body::from_stream(native_stream_to_responses(
+        let body = Body::from_stream(native_stream_to_responses_with_session_model(
             upstream,
             custom_tool_names,
             namespace_helpers,
@@ -669,6 +706,7 @@ async fn send_native_responses(
             request_log_id,
             status.as_u16(),
             usage_recorder,
+            session_model,
         ));
         let mut response = Response::new(body);
         *response.status_mut() = status;
@@ -736,6 +774,12 @@ async fn send_native_responses(
         // Successful non-stream responses must count as completed prompts/sessions
         // even when the upstream omits usage metadata.
         recorder.record_completed((!normalized_usage.is_null()).then_some(&normalized_usage));
+    }
+    if status.is_success()
+        && semantic_body.is_some_and(response_reports_completed)
+        && let Some((state, body)) = session_model
+    {
+        remember_session_model(&state, &body).await;
     }
 
     let body = if status.is_success()

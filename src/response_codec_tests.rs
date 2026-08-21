@@ -1,5 +1,9 @@
 use super::*;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
 
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -10,7 +14,26 @@ use crate::config::DebugConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
 use crate::namespace_helpers::NamespaceHelpers;
+use crate::provider::remember_session_model;
+use crate::provider::resolve_auto_review_model;
+use crate::state::AppState;
 use crate::store::Store;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::RwLock as AsyncRwLock;
+
+fn session_test_state() -> AppState {
+    AppState::from_parts(
+        Arc::new(RwLock::new(crate::config::AppConfig::default())),
+        reqwest::Client::new(),
+        Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AsyncMutex::new(())),
+        DebugLog::disabled(),
+        crate::process_log::ProcessLog::disabled(),
+        None,
+        None,
+    )
+}
 
 fn completed_end_turn(events: &[String]) -> bool {
     let completed = events
@@ -5016,6 +5039,70 @@ fn native_completed_requires_response_object() {
         native_sse_terminal("data: {\"type\":\"response.completed\"}\n\n"),
         None
     );
+}
+
+#[tokio::test]
+async fn failed_native_stream_does_not_replace_the_active_session_model() {
+    let state = session_test_state();
+    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
+    remember_session_model(&state, &active).await;
+    let failed = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let events = native_stream_to_responses_with_session_model(
+        upstream_response_with_body(
+            b"data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n"
+                .to_vec(),
+        ),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_session".to_string(),
+        200,
+        None,
+        Some((state.clone(), failed)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream event")).contains("response.failed")
+    }));
+
+    let mut review =
+        json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn failed_chat_stream_does_not_replace_the_active_session_model() {
+    let state = session_test_state();
+    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
+    remember_session_model(&state, &active).await;
+    let failed = json!({"model": "failed-model", "prompt_cache_key": "session-1"});
+    let events = chat_stream_to_responses_with_session_model(
+        upstream_response_with_body(
+            b"data: {\"error\":{\"message\":\"upstream failed\"}}\n\n".to_vec(),
+        ),
+        "resp_failed_session".to_string(),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_failed_session".to_string(),
+        ContinueGuardState::default(),
+        None,
+        Some((state.clone(), failed)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(events.iter().any(|event| {
+        String::from_utf8_lossy(event.as_ref().expect("stream event")).contains("response.failed")
+    }));
+
+    let mut review =
+        json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "active-model");
 }
 
 #[tokio::test]

@@ -256,42 +256,6 @@ async fn rejected_request_does_not_replace_the_active_session_model() {
 }
 
 #[tokio::test]
-async fn upstream_rejection_does_not_replace_the_active_session_model() {
-    let state = test_state(AppConfig::default());
-    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
-    remember_session_model(&state, &active).await;
-
-    let rejected = json!({"model": "rejected-model", "prompt_cache_key": "session-1"});
-    remember_session_model_on_upstream_success(
-        &state,
-        &rejected,
-        axum::http::StatusCode::BAD_REQUEST,
-    )
-    .await;
-
-    let mut review = json!({
-        "model": "codex-auto-review",
-        "prompt_cache_key": "guardian:session-1"
-    });
-    assert!(resolve_auto_review_model(&state, &mut review).await);
-    assert_eq!(review["model"], "active-model");
-}
-
-#[tokio::test]
-async fn upstream_success_remembers_the_active_session_model() {
-    let state = test_state(AppConfig::default());
-    let request = json!({"model": "active-model", "prompt_cache_key": "session-1"});
-    remember_session_model_on_upstream_success(&state, &request, axum::http::StatusCode::OK).await;
-
-    let mut review = json!({
-        "model": "codex-auto-review",
-        "prompt_cache_key": "guardian:session-1"
-    });
-    assert!(resolve_auto_review_model(&state, &mut review).await);
-    assert_eq!(review["model"], "active-model");
-}
-
-#[tokio::test]
 async fn session_model_cache_rejects_oversized_identifiers() {
     let state = test_state(AppConfig::default());
     let oversized_key_request = json!({

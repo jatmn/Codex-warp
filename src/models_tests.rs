@@ -243,7 +243,7 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
         &mut info,
         "concentrate.ai/deepseek-v4-flash-0731",
         &ProviderConfig::default(),
-        false,
+        None,
     );
     assert_eq!(
         info["auto_review_model_override"],
@@ -263,6 +263,34 @@ fn live_catalog_null_auto_review_target_does_not_block_family_localization() {
     assert_eq!(
         models[0]["auto_review_model_override"],
         "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_overridden_auto_review_target_does_not_block_family_localization() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"concentrate.ai/deepseek-v4-flash-0731","auto_review_model_override":"upstream-review"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "concentrate.ai/deepseek-v4-flash-0731"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_underscore_versioned_flash_model() {
+    let body = Bytes::from_static(br#"{"data":[{"id":"deepseek_v4_flash_0731"}]}"#);
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["auto_review_model_override"],
+        "deepseek_v4_flash_0731"
     );
 }
 
