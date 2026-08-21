@@ -64,7 +64,7 @@ impl SessionModelCache {
             return None;
         }
         let request = self.advance_use();
-        self.orders.retain(|_, order| order.strong_count() > 0);
+        self.orders.retain(|_, order| order.upgrade().is_some());
         let order = match self
             .entries
             .get(key)

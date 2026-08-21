@@ -385,6 +385,56 @@ async fn session_model_cache_evicts_the_least_recently_used_session() {
 }
 
 #[tokio::test]
+async fn completing_the_same_session_update_refreshes_its_lru_entry() {
+    let state = test_state(AppConfig::default());
+    let active = json!({"model": "active-model", "prompt_cache_key": "session-1"});
+    let update = begin_session_model_update(&state, &active)
+        .await
+        .expect("session update is cacheable");
+    complete_session_model_update(&state, &update).await;
+    for index in 0..1023 {
+        let request = json!({
+            "model": format!("model-{index}"),
+            "prompt_cache_key": format!("other-{index:04}")
+        });
+        remember_session_model(&state, &request).await;
+    }
+
+    complete_session_model_update(&state, &update).await;
+    let replacement = json!({"model": "replacement", "prompt_cache_key": "replacement"});
+    remember_session_model(&state, &replacement).await;
+
+    let mut review =
+        json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn pending_session_order_registry_stops_at_its_capacity() {
+    let state = test_state(AppConfig::default());
+    let mut updates = Vec::new();
+    for index in 0..1024 {
+        let request = json!({
+            "model": "pending-model",
+            "prompt_cache_key": format!("pending-{index:04}")
+        });
+        updates.push(
+            begin_session_model_update(&state, &request)
+                .await
+                .expect("capacity has not yet been reached"),
+        );
+    }
+    let overflow = json!({"model": "overflow", "prompt_cache_key": "pending-overflow"});
+    assert!(
+        begin_session_model_update(&state, &overflow)
+            .await
+            .is_none()
+    );
+    assert_eq!(updates.len(), 1024);
+}
+
+#[tokio::test]
 async fn codex_auto_review_stays_unresolved_without_a_configured_or_active_model() {
     let state = test_state(AppConfig::default());
     let mut body = json!({"model": "codex-auto-review", "input": "approve?"});
