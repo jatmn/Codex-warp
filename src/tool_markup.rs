@@ -72,6 +72,33 @@ pub(crate) enum TagToken {
     },
 }
 
+impl TagToken {
+    fn shifted(self, offset: usize) -> Self {
+        match self {
+            Self::Opening {
+                tag,
+                start,
+                end,
+                self_closing,
+            } => Self::Opening {
+                tag,
+                start: start
+                    .checked_add(offset)
+                    .expect("tag start remains in input"),
+                end: end.checked_add(offset).expect("tag end remains in input"),
+                self_closing,
+            },
+            Self::Closing { tag, start, end } => Self::Closing {
+                tag,
+                start: start
+                    .checked_add(offset)
+                    .expect("tag start remains in input"),
+                end: end.checked_add(offset).expect("tag end remains in input"),
+            },
+        }
+    }
+}
+
 /// Finds the next complete recognized tag, preserving quoted `>` bytes inside
 /// opening-tag attributes. Incomplete tags intentionally return `None` so a
 /// streaming caller can retain them for the next content chunk.
@@ -125,8 +152,11 @@ fn closing_tag_end(rest: &str) -> Option<usize> {
 #[derive(Default)]
 pub(crate) struct Sanitizer {
     pending: String,
+    replay_buffer: String,
     active_tag: Option<&'static str>,
     active_depth: usize,
+    markdown: MarkdownCodeState,
+    markdown_disabled: bool,
 }
 
 #[allow(dead_code)] // wired by the following response-adapter layer
@@ -143,15 +173,50 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let Some(token) = next_tag(&input) else {
-                let split_at = possible_tag_start(&input).unwrap_or(input.len());
-                if self.active_tag.is_some() {
-                    self.pending = input;
-                } else {
-                    output.push_str(&input[..split_at]);
-                    self.pending = input[split_at..].to_string();
+            let scan = if self.markdown_disabled {
+                next_tag_without_markdown(&input)
+            } else {
+                next_tag_outside_markdown(
+                    &input,
+                    &mut self.markdown,
+                    !self.replay_buffer.is_empty(),
+                )
+            };
+            let token = match scan {
+                ScanResult::Tag(token) => token,
+                ScanResult::Pending { start } => {
+                    if self.active_tag.is_some() {
+                        self.pending = input;
+                    } else {
+                        output.push_str(&input[..start]);
+                        self.pending = input[start..].to_string();
+                    }
+                    break;
                 }
-                break;
+                ScanResult::Defer { start } => {
+                    if self.active_tag.is_some() {
+                        self.pending = input;
+                    } else {
+                        output.push_str(&input[..start]);
+                        self.replay_buffer.push_str(&input[start..]);
+                    }
+                    break;
+                }
+                ScanResult::Release { end } => {
+                    debug_assert!(self.active_tag.is_none());
+                    output.push_str(&std::mem::take(&mut self.replay_buffer));
+                    output.push_str(&input[..end]);
+                    input = input[end..].to_string();
+                    continue;
+                }
+                ScanResult::Complete => {
+                    if self.active_tag.is_some() {
+                        self.pending = input;
+                    } else {
+                        output.push_str(&input);
+                    }
+                    break;
+                }
             };
             let start = match token {
                 TagToken::Opening { start, .. } | TagToken::Closing { start, .. } => start,
@@ -190,6 +255,7 @@ impl Sanitizer {
                     end
                 }
             };
+            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -198,14 +264,156 @@ impl Sanitizer {
     /// On a normal terminal, retain unclosed material rather than silently
     /// deleting user text. Complete elements have already been omitted.
     pub(crate) fn finish(&mut self) -> String {
+        let disposition = self.markdown.finish();
+        let pending = std::mem::take(&mut self.pending);
+        let replay_buffer = std::mem::take(&mut self.replay_buffer);
         self.active_tag = None;
         self.active_depth = 0;
-        std::mem::take(&mut self.pending)
+        if disposition == MarkdownFinish::Complete {
+            return replay_buffer + &pending;
+        }
+
+        let mut replay = Self {
+            markdown_disabled: true,
+            ..Self::default()
+        };
+        let mut output = replay.push(&replay_buffer);
+        output.push_str(&replay.pending);
+        output.push_str(&pending);
+        output
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagAt {
+    Complete(TagToken),
+    Incomplete,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanResult {
+    Tag(TagToken),
+    Pending { start: usize },
+    Defer { start: usize },
+    Release { end: usize },
+    Complete,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TAG_AT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn tag_at(input: &str) -> TagAt {
+    #[cfg(test)]
+    TAG_AT_CALLS.set(TAG_AT_CALLS.get() + 1);
+
+    if let Some(tag) = recognized_tag(input) {
+        return opening_tag(input).map_or(TagAt::Incomplete, |opening| {
+            TagAt::Complete(TagToken::Opening {
+                tag,
+                start: 0,
+                end: opening.end,
+                self_closing: opening.self_closing,
+            })
+        });
+    }
+
+    if let Some(closing) = input.strip_prefix("</") {
+        for tag in TAGS {
+            if !closing
+                .get(..tag.len())
+                .is_some_and(|value| value.eq_ignore_ascii_case(tag))
+            {
+                continue;
+            }
+            let rest = &closing[tag.len()..];
+            if let Some(end) = closing_tag_end(rest) {
+                return TagAt::Complete(TagToken::Closing {
+                    tag,
+                    start: 0,
+                    end: 2 + tag.len() + end,
+                });
+            }
+        }
+    }
+
+    if possible_tag_at_start(input) {
+        TagAt::Incomplete
+    } else {
+        TagAt::None
+    }
+}
+
+fn next_tag_without_markdown(input: &str) -> ScanResult {
+    for (start, _) in input.match_indices('<') {
+        match tag_at(&input[start..]) {
+            TagAt::Complete(token) => return ScanResult::Tag(token.shifted(start)),
+            TagAt::Incomplete => return ScanResult::Pending { start },
+            TagAt::None => {}
+        }
+    }
+    ScanResult::Complete
+}
+
+fn next_tag_outside_markdown(
+    input: &str,
+    markdown: &mut MarkdownCodeState,
+    buffering_replay: bool,
+) -> ScanResult {
+    let mut deferred_start = buffering_replay.then_some(0);
+    let mut characters = input.char_indices().peekable();
+    while let Some((start, character)) = characters.next() {
+        let needed_replay = markdown.needs_replay_buffer();
+        if character == '<' {
+            let permits_markup = markdown.permits_markup();
+            let needs_replay = markdown.needs_replay_buffer();
+            if needed_replay && !needs_replay {
+                if buffering_replay {
+                    return ScanResult::Release { end: start };
+                }
+                deferred_start = None;
+            }
+            if permits_markup {
+                match tag_at(&input[start..]) {
+                    TagAt::Complete(token) => {
+                        return ScanResult::Tag(token.shifted(start));
+                    }
+                    TagAt::Incomplete => return ScanResult::Pending { start },
+                    TagAt::None => {}
+                }
+            }
+        }
+        if matches!(character, '`' | '~') {
+            while characters
+                .peek()
+                .is_some_and(|(_, candidate)| *candidate == character)
+            {
+                characters.next();
+            }
+        }
+        let end = characters
+            .peek()
+            .map(|(offset, _)| *offset)
+            .unwrap_or(input.len());
+        markdown.consume(&input[start..end]);
+        let needs_replay = markdown.needs_replay_buffer();
+        if !needed_replay && needs_replay && deferred_start.is_none() {
+            deferred_start = Some(start);
+        } else if needed_replay && !needs_replay {
+            if buffering_replay {
+                return ScanResult::Release { end };
+            }
+            deferred_start = None;
+        }
+    }
+    deferred_start.map_or(ScanResult::Complete, |start| ScanResult::Defer { start })
+}
+
 /// Tracks Markdown contexts in which XML-like text must remain literal.
-/// Scanner integration is intentionally added by the next stack slice.
+/// The sanitizer retains provisional inline content until this state reports
+/// whether it is code or literal text at a lexical boundary or terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Fence {
     marker: u8,
@@ -230,7 +438,7 @@ enum MarkdownFinish {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct MarkdownCodeState {
     fence: Option<Fence>,
     opening_backtick_fence: bool,
@@ -257,6 +465,15 @@ impl Default for MarkdownCodeState {
 
 #[allow(dead_code)]
 impl MarkdownCodeState {
+    fn needs_replay_buffer(&self) -> bool {
+        self.inline_ticks.is_some()
+            || self.opening_backtick_fence
+            || (self.fence.is_none()
+                && self
+                    .pending_marker
+                    .is_some_and(|pending| pending.marker == b'`'))
+    }
+
     /// Resolve a marker run at the lexical boundary before a possible markup
     /// tag, then report whether the tag is outside Markdown code.
     fn permits_markup(&mut self) -> bool {
@@ -407,7 +624,11 @@ impl MarkdownCodeState {
 fn possible_tag_start(input: &str) -> Option<usize> {
     let start = input.rfind('<')?;
     let suffix = &input[start..];
-    TAGS.into_iter().find_map(|tag| {
+    possible_tag_at_start(suffix).then_some(start)
+}
+
+fn possible_tag_at_start(suffix: &str) -> bool {
+    TAGS.into_iter().any(|tag| {
         let opening = format!("<{tag}");
         let closing = format!("</{tag}");
         let opening_prefix = opening
@@ -430,8 +651,7 @@ fn possible_tag_start(input: &str) -> Option<usize> {
                 .as_bytes()
                 .get(closing.len())
                 .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>');
-        (opening_prefix || closing_prefix || opening_continues || closing_continues)
-            .then_some(start)
+        opening_prefix || closing_prefix || opening_continues || closing_continues
     })
 }
 
@@ -440,9 +660,12 @@ mod tests {
     use super::MarkdownCodeState;
     use super::MarkdownFinish;
     use super::Sanitizer;
+    use super::ScanResult;
+    use super::TAG_AT_CALLS;
     use super::TagToken;
     use super::closing_tag_end;
     use super::next_tag;
+    use super::next_tag_outside_markdown;
     use super::opening_tag;
     use super::possible_tag_start;
     use super::recognized_tag;
@@ -475,7 +698,6 @@ mod tests {
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
     }
-
     #[test]
     fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
         assert_eq!(
@@ -537,6 +759,86 @@ mod tests {
             "After"
         );
         assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_scans_markup_after_a_closed_single_backtick_run() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("before `literal` <tool>duplicate</tool> after"),
+            "before `literal`  after"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_preserves_an_escaped_tag_split_across_fragments() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push(r"\<tool"), r"\<tool");
+        assert_eq!(
+            sanitizer.push(">duplicate</tool> after"),
+            ">duplicate</tool> after"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_stops_at_the_first_incomplete_recognized_opening() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("before <tool note=\"unterminated <parameter>literal</parameter> after"),
+            "before "
+        );
+        assert_eq!(
+            sanitizer.finish(),
+            "<tool note=\"unterminated <parameter>literal</parameter> after"
+        );
+    }
+
+    #[test]
+    fn sanitizer_replays_unmatched_inline_content_and_resets_after_finish() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("before `literal <tool>duplicate</tool> tail"),
+            "before "
+        );
+        assert_eq!(sanitizer.finish(), "`literal  tail");
+
+        assert_eq!(
+            sanitizer.push("next <tool>duplicate</tool> response"),
+            "next  response"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn sanitizer_releases_a_fragmented_closed_inline_candidate_as_literal() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("before `literal <tool>duplicate"), "before ");
+        assert_eq!(
+            sanitizer.push("</tool>` after <tool>removed</tool>"),
+            "`literal <tool>duplicate</tool>` after "
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn markdown_scanner_checks_dense_candidates_once() {
+        let mut input = "<x".repeat(4_096);
+        input.push_str("<tool/>");
+        let mut markdown = MarkdownCodeState::default();
+        TAG_AT_CALLS.set(0);
+
+        assert!(matches!(
+            next_tag_outside_markdown(&input, &mut markdown, false),
+            ScanResult::Tag(TagToken::Opening {
+                tag: "tool",
+                start: 8_192,
+                self_closing: true,
+                ..
+            })
+        ));
+        assert_eq!(TAG_AT_CALLS.get(), 4_097);
     }
 
     #[test]
