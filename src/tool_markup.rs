@@ -204,6 +204,206 @@ impl Sanitizer {
     }
 }
 
+/// Tracks Markdown contexts in which XML-like text must remain literal.
+/// Scanner integration is intentionally added by the next stack slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Fence {
+    marker: u8,
+    length: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingMarker {
+    marker: u8,
+    length: usize,
+    leading_spaces: Option<usize>,
+}
+
+/// A caller that suppresses markup while an inline-code candidate is active
+/// must retain that candidate until the terminal disposition is known. An
+/// unmatched candidate is literal Markdown and therefore needs to be replayed.
+#[allow(dead_code)] // consumed by the following incremental sanitizer layer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkdownFinish {
+    Complete,
+    ReplayUnmatchedInline,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+struct MarkdownCodeState {
+    fence: Option<Fence>,
+    opening_backtick_fence: bool,
+    inline_ticks: Option<usize>,
+    pending_marker: Option<PendingMarker>,
+    closing_fence: bool,
+    leading_spaces: Option<usize>,
+    escaped: bool,
+}
+
+impl Default for MarkdownCodeState {
+    fn default() -> Self {
+        Self {
+            fence: None,
+            opening_backtick_fence: false,
+            inline_ticks: None,
+            pending_marker: None,
+            closing_fence: false,
+            leading_spaces: Some(0),
+            escaped: false,
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl MarkdownCodeState {
+    /// Resolve a marker run at the lexical boundary before a possible markup
+    /// tag, then report whether the tag is outside Markdown code.
+    fn permits_markup(&mut self) -> bool {
+        self.resolve_pending_marker();
+        self.fence.is_none() && self.inline_ticks.is_none() && !self.escaped
+    }
+
+    fn consume(&mut self, text: &str) {
+        for byte in text.bytes() {
+            self.consume_byte(byte);
+        }
+    }
+
+    fn finish(&mut self) -> MarkdownFinish {
+        self.resolve_pending_marker();
+        if self.closing_fence {
+            self.fence = None;
+            self.closing_fence = false;
+        }
+        let disposition = if self.inline_ticks.is_some() {
+            MarkdownFinish::ReplayUnmatchedInline
+        } else {
+            MarkdownFinish::Complete
+        };
+        *self = Self::default();
+        disposition
+    }
+
+    fn consume_byte(&mut self, byte: u8) {
+        if self
+            .pending_marker
+            .is_some_and(|pending| pending.marker != byte)
+        {
+            self.resolve_pending_marker();
+        }
+
+        if self.closing_fence {
+            match byte {
+                b' ' | b'\t' => return,
+                b'\n' | b'\r' => {
+                    self.fence = None;
+                    self.closing_fence = false;
+                    self.start_line();
+                    return;
+                }
+                _ => self.closing_fence = false,
+            }
+        }
+
+        if matches!(byte, b'\n' | b'\r') {
+            self.pending_marker = None;
+            self.opening_backtick_fence = false;
+            self.escaped = false;
+            self.start_line();
+            return;
+        }
+
+        if self.opening_backtick_fence && byte == b'`' {
+            let opener = self.fence.take().expect("opening fence is present");
+            self.opening_backtick_fence = false;
+            self.inline_ticks = Some(opener.length);
+        }
+
+        if self.fence.is_none() && self.inline_ticks.is_none() && self.escaped {
+            self.escaped = false;
+            if byte.is_ascii_punctuation() {
+                self.mark_nonspace();
+                return;
+            }
+        }
+
+        if self.fence.is_none() && self.inline_ticks.is_none() && byte == b'\\' {
+            self.escaped = true;
+            self.mark_nonspace();
+            return;
+        }
+
+        if matches!(byte, b'`' | b'~') {
+            if let Some(pending) = self.pending_marker.as_mut() {
+                pending.length += 1;
+            } else {
+                self.pending_marker = Some(PendingMarker {
+                    marker: byte,
+                    length: 1,
+                    leading_spaces: self.leading_spaces,
+                });
+            }
+            return;
+        }
+
+        self.track_line_byte(byte);
+    }
+
+    fn resolve_pending_marker(&mut self) {
+        let Some(pending) = self.pending_marker.take() else {
+            return;
+        };
+        self.mark_nonspace();
+
+        if let Some(fence) = self.fence {
+            if pending.marker == fence.marker
+                && pending.length >= fence.length
+                && pending.leading_spaces.is_some_and(|spaces| spaces <= 3)
+            {
+                self.closing_fence = true;
+            }
+            return;
+        }
+
+        if let Some(length) = self.inline_ticks {
+            if pending.marker == b'`' && pending.length == length {
+                self.inline_ticks = None;
+            }
+            return;
+        }
+
+        let fence_position = pending.leading_spaces.is_some_and(|spaces| spaces <= 3);
+        if fence_position && pending.length >= 3 {
+            self.fence = Some(Fence {
+                marker: pending.marker,
+                length: pending.length,
+            });
+            self.opening_backtick_fence = pending.marker == b'`';
+        } else if pending.marker == b'`' {
+            self.inline_ticks = Some(pending.length);
+        }
+    }
+
+    fn start_line(&mut self) {
+        self.leading_spaces = Some(0);
+    }
+
+    fn mark_nonspace(&mut self) {
+        self.leading_spaces = None;
+    }
+
+    fn track_line_byte(&mut self, byte: u8) {
+        if byte == b' ' {
+            if let Some(spaces) = self.leading_spaces.as_mut() {
+                *spaces += 1;
+            }
+        } else {
+            self.mark_nonspace();
+        }
+    }
+}
+
 fn possible_tag_start(input: &str) -> Option<usize> {
     let start = input.rfind('<')?;
     let suffix = &input[start..];
@@ -237,6 +437,8 @@ fn possible_tag_start(input: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use super::MarkdownCodeState;
+    use super::MarkdownFinish;
     use super::Sanitizer;
     use super::TagToken;
     use super::closing_tag_end;
@@ -361,5 +563,141 @@ mod tests {
         assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
         assert!(Sanitizer::may_contain_markup("before <parameter "));
         assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
+    }
+
+    #[test]
+    fn markdown_state_tracks_inline_code_and_escapes_byte_by_byte() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("`code");
+        assert!(!state.permits_markup());
+        state.consume("` after");
+        assert!(state.permits_markup());
+
+        state.consume("\\");
+        assert!(!state.permits_markup());
+        state.consume("\\");
+        assert!(state.permits_markup());
+        state.consume("\\\n");
+        assert!(state.permits_markup());
+
+        state.consume("\\```");
+        state.resolve_pending_marker();
+        assert!(!state.permits_markup());
+        assert_eq!(state.inline_ticks, Some(2));
+        state.consume("code`` after");
+        assert!(state.permits_markup());
+
+        let mut inline = MarkdownCodeState::default();
+        inline.consume("`foo\\` after");
+        assert!(inline.permits_markup());
+        assert_eq!(inline.inline_ticks, None);
+
+        inline.consume("`x");
+        assert!(!inline.permits_markup());
+        inline.consume("~x");
+        assert!(!inline.permits_markup());
+        inline.consume("` after");
+        assert!(inline.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_requires_matching_fence_marker_length_and_line_placement() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("````\n");
+        assert!(!state.permits_markup());
+        state.consume("~~~\n");
+        assert!(!state.permits_markup());
+        state.consume("```\n");
+        assert!(!state.permits_markup());
+        state.consume("text ```` still code\n");
+        assert!(!state.permits_markup());
+        state.consume("```` trailing text\n");
+        assert!(!state.permits_markup());
+        state.consume("   ````  \n");
+        assert!(state.permits_markup());
+
+        let mut midline = MarkdownCodeState::default();
+        midline.consume("text ``` code");
+        assert_eq!(midline.fence, None);
+        assert_eq!(midline.inline_ticks, Some(3));
+        midline.consume("``` after");
+        assert!(midline.permits_markup());
+
+        let mut midline_tildes = MarkdownCodeState::default();
+        midline_tildes.consume("text ~~~ code");
+        assert_eq!(midline_tildes.fence, None);
+        assert!(midline_tildes.permits_markup());
+
+        let mut indented = MarkdownCodeState::default();
+        indented.consume("    ~~~\n");
+        assert_eq!(indented.fence, None);
+        assert!(indented.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_reinterprets_invalid_backtick_fence_info_as_inline_code() {
+        let mut valid = MarkdownCodeState::default();
+        valid.consume("```lang\nbody with ` tick\n");
+        assert!(valid.fence.is_some());
+        assert_eq!(valid.inline_ticks, None);
+        valid.consume("```\nafter");
+        assert!(valid.permits_markup());
+
+        let mut unmatched = MarkdownCodeState::default();
+        unmatched.consume("```lang`oops\n<tool>outside</tool>");
+        assert_eq!(unmatched.fence, None);
+        assert_eq!(unmatched.inline_ticks, Some(3));
+        assert_eq!(unmatched.finish(), MarkdownFinish::ReplayUnmatchedInline);
+
+        let mut matched = MarkdownCodeState::default();
+        matched.consume("```lang`oops``` after");
+        assert_eq!(matched.fence, None);
+        assert!(matched.permits_markup());
+        assert_eq!(matched.finish(), MarkdownFinish::Complete);
+    }
+
+    #[test]
+    fn markdown_state_is_invariant_to_fragment_boundaries() {
+        for input in [
+            "```xml\n<tool>literal</tool>\n```\nafter",
+            "before `inline <tool>` after",
+            "\\```two ticks`` after",
+            "~~~\nbody\n~~~",
+            "```lang`oops\n<tool>outside</tool>",
+        ] {
+            let mut whole = MarkdownCodeState::default();
+            whole.consume(input);
+
+            let mut fragmented = MarkdownCodeState::default();
+            for byte in input.as_bytes() {
+                fragmented.consume(std::str::from_utf8(std::slice::from_ref(byte)).expect("ASCII"));
+            }
+            assert_eq!(fragmented, whole, "one-byte fragments for {input:?}");
+
+            for split in 0..=input.len() {
+                let mut split_state = MarkdownCodeState::default();
+                split_state.consume(&input[..split]);
+                split_state.consume(&input[split..]);
+                assert_eq!(split_state, whole, "split {split} for {input:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn markdown_state_reports_unmatched_inline_candidates_at_finish() {
+        let mut unmatched = MarkdownCodeState::default();
+        unmatched.consume("before `literal <tool> text");
+        assert!(!unmatched.permits_markup());
+        assert_eq!(unmatched.finish(), MarkdownFinish::ReplayUnmatchedInline);
+        assert!(unmatched.permits_markup());
+
+        let mut matched = MarkdownCodeState::default();
+        matched.consume("before `literal` after");
+        assert_eq!(matched.finish(), MarkdownFinish::Complete);
+
+        let mut terminal_fence = MarkdownCodeState::default();
+        terminal_fence.consume("~~~\nbody\n~~~");
+        assert_eq!(terminal_fence.finish(), MarkdownFinish::Complete);
+        assert!(terminal_fence.permits_markup());
     }
 }
