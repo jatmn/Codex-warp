@@ -155,6 +155,9 @@ pub(crate) struct Sanitizer {
     replay_buffer: String,
     active_tag: Option<&'static str>,
     active_depth: usize,
+    unterminated_tool_body: String,
+    unterminated_tool_markdown: Option<MarkdownCodeState>,
+    tool_is_marker: bool,
     markdown: MarkdownCodeState,
     markdown_disabled: bool,
 }
@@ -171,6 +174,9 @@ impl Sanitizer {
     }
 
     pub(crate) fn push(&mut self, fragment: &str) -> String {
+        if self.active_tag == Some("tool") {
+            self.unterminated_tool_body.push_str(fragment);
+        }
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(fragment);
         let mut output = String::new();
@@ -235,9 +241,16 @@ impl Sanitizer {
                     self_closing,
                     ..
                 } => {
-                    if self.active_tag.is_none() && !self_closing {
+                    if self.active_tag.is_none()
+                        && !self_closing
+                        && !(tag == "tool" && self.tool_is_marker)
+                    {
                         self.active_tag = Some(tag);
                         self.active_depth = 1;
+                        if tag == "tool" {
+                            self.unterminated_tool_body = input[end..].to_string();
+                            self.unterminated_tool_markdown = Some(self.markdown.clone());
+                        }
                     } else if self.active_tag == Some(tag) && !self_closing {
                         self.active_depth += 1;
                     } else if self.active_tag.is_none() {
@@ -251,8 +264,10 @@ impl Sanitizer {
                         self.active_depth = self.active_depth.saturating_sub(1);
                         if self.active_depth == 0 {
                             self.active_tag = None;
+                            self.unterminated_tool_body.clear();
+                            self.unterminated_tool_markdown = None;
                         }
-                    } else if self.active_tag.is_none() {
+                    } else if self.active_tag.is_none() && !(tag == "tool" && self.tool_is_marker) {
                         output.push_str(&input[start..end]);
                     }
                     end
@@ -270,19 +285,51 @@ impl Sanitizer {
         let disposition = self.markdown.finish();
         let pending = std::mem::take(&mut self.pending);
         let replay_buffer = std::mem::take(&mut self.replay_buffer);
+        let pending_is_recognized_tag = recognized_tag(&pending).is_some();
+        let pending_was_suppressed = self.active_tag.is_some();
+        let (unterminated_tool_body, unterminated_tool_markdown) =
+            if self.active_tag == Some("tool") {
+                (
+                    std::mem::take(&mut self.unterminated_tool_body),
+                    self.unterminated_tool_markdown
+                        .take()
+                        .expect("active tool records its output Markdown state"),
+                )
+            } else {
+                self.unterminated_tool_body.clear();
+                self.unterminated_tool_markdown = None;
+                (String::new(), MarkdownCodeState::default())
+            };
         self.active_tag = None;
         self.active_depth = 0;
+        if !unterminated_tool_body.is_empty() {
+            let mut fallback = Self {
+                tool_is_marker: true,
+                markdown: unterminated_tool_markdown,
+                ..Self::default()
+            };
+            let mut output = fallback.push(&unterminated_tool_body);
+            output.push_str(&fallback.finish());
+            return output;
+        }
         if disposition == MarkdownFinish::Complete {
-            return replay_buffer + &pending;
+            if pending_is_recognized_tag && !pending_was_suppressed && !self.tool_is_marker {
+                return replay_buffer + &pending;
+            }
+            return replay_buffer;
         }
 
+        let mut terminal_buffer = replay_buffer;
+        if !pending_was_suppressed {
+            terminal_buffer.push_str(&pending);
+        }
         let mut replay = Self {
+            tool_is_marker: self.tool_is_marker,
             markdown_disabled: true,
             ..Self::default()
         };
-        let mut output = replay.push(&replay_buffer);
-        output.push_str(&replay.pending);
-        output.push_str(&pending);
+        let mut output = replay.push(&terminal_buffer);
+        output.push_str(&replay.finish());
         output
     }
 }
@@ -739,6 +786,100 @@ mod tests {
 
         assert_eq!(sanitizer.push("<tool>working"), "");
         assert_eq!(sanitizer.finish(), "working");
+    }
+
+    #[test]
+    fn sanitizer_drops_confirmed_incomplete_tag_prefixes_at_finish() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before <para"), "Before ");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("<parameter>duplicate"), "");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("Before <parameter "), "Before ");
+        assert_eq!(sanitizer.finish(), "<parameter ");
+
+        assert_eq!(sanitizer.push("<parameter><tool "), "");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("<parameter>duplicate `"), "");
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_preserves_body_and_nested_tool_literal() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool>body <parameter>duplicate</parameter>"),
+            ""
+        );
+        assert_eq!(sanitizer.finish(), "body ");
+
+        let mut nested = Sanitizer::default();
+        assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
+        assert_eq!(nested.finish(), "body literal");
+
+        let mut fragmented = Sanitizer::default();
+        assert_eq!(fragmented.push("<tool>first"), "");
+        assert_eq!(fragmented.push(" second"), "");
+        assert_eq!(fragmented.finish(), "first second");
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_uses_the_recovered_output_markdown_position() {
+        let mut tilde = Sanitizer::default();
+        assert_eq!(
+            tilde.push("prefix <tool>~~~x <parameter>duplicate</parameter>"),
+            "prefix "
+        );
+        assert_eq!(tilde.finish(), "~~~x ");
+
+        let mut backtick = Sanitizer::default();
+        assert_eq!(backtick.push("prefix <tool>``"), "prefix ");
+        assert_eq!(backtick.push("`x <parameter>duplicate</parameter>"), "");
+        assert_eq!(backtick.finish(), "```x ");
+
+        let mut line_start = Sanitizer::default();
+        assert_eq!(
+            line_start.push("before\n<tool>```text\n<parameter>literal</parameter>"),
+            "before\n"
+        );
+        assert_eq!(
+            line_start.finish(),
+            "```text\n<parameter>literal</parameter>"
+        );
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_drops_incomplete_nested_openings() {
+        let mut plain = Sanitizer::default();
+        assert_eq!(plain.push("<tool>body <parameter "), "");
+        assert_eq!(plain.finish(), "body ");
+
+        let mut attributed = Sanitizer::default();
+        assert_eq!(
+            attributed.push("<tool>body <parameter note=\"unterminated"),
+            ""
+        );
+        assert_eq!(attributed.finish(), "body ");
+
+        let mut fragmented = Sanitizer::default();
+        assert_eq!(fragmented.push("<tool>body <para"), "");
+        assert_eq!(fragmented.push("meter "), "");
+        assert_eq!(fragmented.finish(), "body ");
+
+        let mut unmatched_inline = Sanitizer::default();
+        assert_eq!(
+            unmatched_inline.push("<tool>body `candidate <parameter "),
+            ""
+        );
+        assert_eq!(unmatched_inline.finish(), "body `candidate ");
+
+        let mut fragmented_inline = Sanitizer::default();
+        assert_eq!(fragmented_inline.push("<tool>body `candidate <para"), "");
+        assert_eq!(fragmented_inline.push("meter note=\"unterminated"), "");
+        assert_eq!(fragmented_inline.finish(), "body `candidate ");
     }
 
     #[test]
