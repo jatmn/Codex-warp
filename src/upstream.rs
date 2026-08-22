@@ -771,7 +771,7 @@ async fn send_native_responses_with_session_model(
     );
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
-        && semantic_body.is_some_and(response_reports_completed)
+        && semantic_body.is_some_and(response_reports_completed_or_incomplete)
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions
@@ -857,6 +857,17 @@ fn response_reports_completed(value: &Value) -> bool {
             .get("status")
             .and_then(Value::as_str)
             .is_none_or(|status| status == "completed")
+}
+
+/// Like [`response_reports_completed`], but also treats a `status` of
+/// `incomplete` as a terminal that produced (and therefore billed) tokens. A
+/// truncated native response still carries a `usage` block, so its token
+/// analytics must be recorded rather than dropped to 0. Session-model
+/// completion intentionally stays on [`response_reports_completed`] only,
+/// matching the streaming path's asymmetry.
+fn response_reports_completed_or_incomplete(value: &Value) -> bool {
+    response_reports_completed(value)
+        || value.get("status").and_then(Value::as_str) == Some("incomplete")
 }
 
 /// Stream only when both sides agreed on SSE. A gateway can accept a streaming

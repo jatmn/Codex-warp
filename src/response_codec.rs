@@ -622,11 +622,12 @@ enum NativeSseTerminal {
 /// of those outcomes make EOF expected, but a response that produced tokens
 /// (completed or incomplete) still records successful usage analytics.
 ///
-/// `response.incomplete` is a `response.completed` event whose `status` is
-/// `incomplete` (for example a max-output truncation). It still carries a
-/// `usage` block, so treating it as `NonSuccess` and skipping analytics would
-/// drop every token that led to the truncation — the same "used but shows 0"
-/// gap as a missing stream usage chunk.
+/// `response.incomplete` is a distinct terminal *event type* (not a
+/// `response.completed` whose `status` is `incomplete`, although that shape is
+/// also handled below). Both forms still carry a `usage` block — for example a
+/// max-output truncation — so treating either as `NonSuccess` and skipping
+/// analytics would drop every token that led to the truncation, which is the
+/// same "used but shows 0" gap as a missing stream usage chunk.
 fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
@@ -899,18 +900,32 @@ impl ChatAccum {
         // OpenAI-compatible gateways disagree on where the streaming usage
         // chunk lives. The canonical location is the top-level `usage` of the
         // terminal frame, but several providers (and some SDK-shaped proxies)
-        // nest it inside `choices[0].delta.usage` instead. Reading only the
-        // top-level field silently drops token analytics for those providers,
-        // which is exactly the "model was used but the graph shows 0 usage"
-        // symptom. Prefer the top-level field, then fall back to the delta.
-        let usage = chunk.get("usage").or_else(|| {
-            chunk
-                .get("choices")
-                .and_then(Value::as_array)
-                .and_then(|choices| choices.first())
-                .and_then(|choice| choice.get("delta"))
-                .and_then(|delta| delta.get("usage"))
-        });
+        // nest it inside `choices[0].delta.usage` or even `choices[0].usage`
+        // instead. Reading only the top-level field silently drops token
+        // analytics for those providers, which is exactly the "model was used
+        // but the graph shows 0 usage" symptom. Prefer the top-level field,
+        // then fall back to the delta, then to the choice level. An explicit
+        // `usage: null` at the top level must not defeat the fallback, so the
+        // top-level read is filtered to non-null before falling through.
+        let usage = chunk
+            .get("usage")
+            .filter(|u| !u.is_null())
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("delta"))
+                    .and_then(|delta| delta.get("usage"))
+            })
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("usage"))
+            })
+            .filter(|u| !u.is_null());
         if let Some(usage) = usage {
             self.usage = Some(chat_usage_to_responses_usage(Some(usage)));
         }

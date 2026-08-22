@@ -112,6 +112,27 @@ fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
 }
 
 #[test]
+fn semantic_completion_accepts_incomplete_for_usage() {
+    // A truncated (incomplete) native response still carries a usage block and
+    // must be recorded for analytics, even though it is not a fully completed
+    // response. Session-model completion stays on response_reports_completed.
+    assert!(response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "incomplete"
+    })));
+    assert!(response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "completed"
+    })));
+    assert!(!response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "failed"
+    })));
+    assert!(!response_reports_completed_or_incomplete(&json!({})));
+    assert!(!response_reports_completed_or_incomplete(&Value::Null));
+}
+
+#[test]
 fn chat_completion_requires_choices_array() {
     assert!(chat_response_reports_completed(&json!({
         "choices": [{"message": {"role": "assistant", "content": "ok"}}]

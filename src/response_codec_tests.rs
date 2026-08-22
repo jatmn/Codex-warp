@@ -624,6 +624,58 @@ fn chat_stream_usage_nested_in_delta_is_captured() {
     assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(33));
 }
 
+#[test]
+fn chat_stream_usage_null_top_level_falls_back_to_delta() {
+    let mut accum = ChatAccum::default();
+    // A gateway may send an explicit top-level `"usage": null` on the terminal
+    // chunk while nesting the real counts in choices[0].delta.usage. The null
+    // must not defeat the fallback, or the Web UI reports 0 usage.
+    accum.apply_chat_chunk(&json!({
+        "usage": null,
+        "choices": [{
+            "delta": {
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 5,
+                    "total_tokens": 9
+                }
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("null top-level usage must fall back to delta usage");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(4));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(5));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(9));
+}
+
+#[test]
+fn chat_stream_usage_choice_level_is_captured() {
+    let mut accum = ChatAccum::default();
+    // Some gateways place the streaming usage on the choice object itself
+    // (choices[0].usage) rather than inside choices[0].delta.usage. The proxy
+    // must capture that location too.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "finish_reason": "stop",
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 8,
+                "total_tokens": 15
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("usage at choices[0].usage must be captured");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(7));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(8));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(15));
+}
+
 #[tokio::test]
 async fn native_incomplete_status_records_usage() {
     let dir = std::env::temp_dir().join(format!(
