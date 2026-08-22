@@ -628,15 +628,36 @@ enum NativeSseTerminal {
 /// max-output truncation — so treating either as `NonSuccess` and skipping
 /// analytics would drop every token that led to the truncation, which is the
 /// same "used but shows 0" gap as a missing stream usage chunk.
+///
+/// Both incomplete forms are only treated as a successful analytics terminal
+/// when the payload is well-formed (a non-null `response` object) and carries
+/// no provider error envelope. A malformed or error-shaped incomplete event
+/// (for example `data: {"type":"response.incomplete"}` or one wrapping a
+/// provider error) must not reach `record_completed`, or it would inflate the
+/// prompt/session counters and record a provider failure as successful usage.
+/// This mirrors the buffered-path guard in
+/// `response_reports_completed_or_incomplete`.
 fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
     match value.get("type").and_then(Value::as_str)? {
         "response.completed" => {
-            let response = value.get("response")?.as_object()?;
+            let response_value = value.get("response")?;
+            let response = response_value.as_object()?;
             match response.get("status").and_then(Value::as_str) {
                 None | Some("completed") => Some(NativeSseTerminal::Completed),
-                Some("incomplete") => Some(NativeSseTerminal::Incomplete),
+                Some("incomplete") => {
+                    // A truncated response still carries a usage block and must
+                    // record analytics, but only when the payload is well-formed
+                    // and carries no provider error envelope.
+                    if upstream_error_message(&value).is_none()
+                        && upstream_error_message(response_value).is_none()
+                    {
+                        Some(NativeSseTerminal::Incomplete)
+                    } else {
+                        None
+                    }
+                }
                 _ => Some(NativeSseTerminal::NonSuccess),
             }
         }
@@ -648,7 +669,21 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
         // incomplete` is a terminal event emitted as the final frame, so the
         // proxy relies on that contract: it records usage and ends the stream
         // on the first such terminal.
-        "response.incomplete" => Some(NativeSseTerminal::Incomplete),
+        "response.incomplete" => {
+            // Require a well-formed response payload (a non-null `response`
+            // object) with no provider error envelope before counting this as a
+            // successful analytics terminal; otherwise record_completed would
+            // inflate prompt/session counters or record a failure as usage.
+            let response = value.get("response");
+            let well_formed = response.and_then(Value::as_object).is_some();
+            let has_error = upstream_error_message(&value).is_some()
+                || response.and_then(upstream_error_message).is_some();
+            if well_formed && !has_error {
+                Some(NativeSseTerminal::Incomplete)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }

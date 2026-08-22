@@ -747,6 +747,49 @@ async fn native_incomplete_status_records_usage() {
 }
 
 #[tokio::test]
+async fn native_incomplete_status_with_error_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-status-err-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.completed whose status is "incomplete" but that wraps a
+    // provider error envelope must not be recorded as successful usage.
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",",
+        "\"error\":{\"message\":\"boom\"}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_status_error".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(
+        summary.prompts, 0,
+        "error-shaped incomplete must not record"
+    );
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn native_incomplete_event_type_records_usage() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-native-incomplete-type-{}",
@@ -787,6 +830,84 @@ async fn native_incomplete_event_type_records_usage() {
         summary.total_tokens, 10,
         "a response.incomplete event must still record its token usage"
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_without_response_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-noresp-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event with no well-formed `response` payload must
+    // not be treated as a successful analytics terminal; otherwise it would
+    // inflate prompt/session counters despite carrying no usable usage.
+    let body = "data: {\"type\":\"response.incomplete\"}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_no_response".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0, "malformed incomplete must not record");
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_with_error_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-err-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event that wraps a provider error envelope must not
+    // be recorded as successful usage.
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_error".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(
+        summary.prompts, 0,
+        "error-shaped incomplete must not record"
+    );
+    assert_eq!(summary.total_tokens, 0);
     let _ = std::fs::remove_dir_all(dir);
 }
 
