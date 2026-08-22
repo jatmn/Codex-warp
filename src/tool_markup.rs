@@ -271,6 +271,7 @@ impl Sanitizer {
                         }
                     } else if self.active_tag.is_none() && !(tag == "tool" && self.tool_is_marker) {
                         output.push_str(&input[start..end]);
+                        self.markdown.consume(&input[start..end]);
                     }
                     end
                 }
@@ -934,6 +935,16 @@ mod tests {
             sanitizer.push("<parameter>duplicate</parameter>Done"),
             "Done"
         );
+    }
+
+    #[test]
+    fn emitted_unmatched_closing_tag_updates_markdown_position() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("</tool>~~~code\n<parameter>duplicate</parameter>\n~~~\nDone"),
+            "</tool>~~~code\n\n~~~\nDone"
+        );
+        assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
