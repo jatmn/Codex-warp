@@ -668,6 +668,10 @@ impl MarkdownCodeState {
     }
 
     fn track_line_byte(&mut self, byte: u8) {
+        if self.inline_ticks.is_some() {
+            self.mark_nonspace();
+            return;
+        }
         if byte == b'\t' && self.leading_spaces.is_some() {
             self.indented_line = true;
         }
@@ -1003,6 +1007,26 @@ mod tests {
     }
 
     #[test]
+    fn inline_code_closure_resumes_markup_on_the_same_indented_line() {
+        for indentation in ["    ", "\t"] {
+            for marker in ["`", "``"] {
+                let input = format!(
+                    "{marker}code\n{indentation}{marker} after <function>duplicate</function>"
+                );
+                let expected = format!("{marker}code\n{indentation}{marker} after ");
+
+                for split in 0..=input.len() {
+                    let mut sanitizer = Sanitizer::default();
+                    let output = sanitizer.push(&input[..split])
+                        + &sanitizer.push(&input[split..])
+                        + &sanitizer.finish();
+                    assert_eq!(output, expected, "split {split} for {input:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn markdown_scanner_checks_dense_candidates_once() {
         let mut input = "<x".repeat(4_096);
         input.push_str("<tool/>");
@@ -1102,6 +1126,7 @@ mod tests {
         let mut multiline_inline = MarkdownCodeState::default();
         multiline_inline.consume("`code\n    ` after");
         assert_eq!(multiline_inline.inline_ticks, None);
+        assert!(!multiline_inline.indented_line);
         multiline_inline.consume("\n");
         assert!(multiline_inline.permits_markup());
     }
