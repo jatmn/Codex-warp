@@ -164,7 +164,10 @@ impl Sanitizer {
     /// Whether a fragment contains a complete recognized tag or a suffix that
     /// could become one in the next stream fragment.
     pub(crate) fn may_contain_markup(fragment: &str) -> bool {
-        next_tag(fragment).is_some() || possible_tag_start(fragment).is_some()
+        matches!(
+            next_tag_without_markdown(fragment),
+            ScanResult::Tag(_) | ScanResult::Pending { .. }
+        )
     }
 
     pub(crate) fn push(&mut self, fragment: &str) -> String {
@@ -621,12 +624,6 @@ impl MarkdownCodeState {
     }
 }
 
-fn possible_tag_start(input: &str) -> Option<usize> {
-    let start = input.rfind('<')?;
-    let suffix = &input[start..];
-    possible_tag_at_start(suffix).then_some(start)
-}
-
 fn possible_tag_at_start(suffix: &str) -> bool {
     TAGS.into_iter().any(|tag| {
         let opening = format!("<{tag}");
@@ -637,21 +634,14 @@ fn possible_tag_at_start(suffix: &str) -> bool {
         let closing_prefix = closing
             .get(..suffix.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
-        let opening_continues = suffix
-            .get(..opening.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&opening))
-            && suffix
-                .as_bytes()
-                .get(opening.len())
-                .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'));
         let closing_continues = suffix
             .get(..closing.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
-            && suffix
-                .as_bytes()
-                .get(closing.len())
-                .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>');
-        opening_prefix || closing_prefix || opening_continues || closing_continues
+            && {
+                let rest = &suffix[closing.len()..];
+                closing_tag_end(rest).is_none() && rest.chars().all(char::is_whitespace)
+            };
+        opening_prefix || closing_prefix || closing_continues
     })
 }
 
@@ -662,13 +652,14 @@ mod tests {
     use super::Sanitizer;
     use super::ScanResult;
     use super::TAG_AT_CALLS;
+    use super::TagAt;
     use super::TagToken;
     use super::closing_tag_end;
     use super::next_tag;
     use super::next_tag_outside_markdown;
     use super::opening_tag;
-    use super::possible_tag_start;
     use super::recognized_tag;
+    use super::tag_at;
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
         let tag = opening_tag("<parameter note=\"a > b\"/>After").expect("complete tag");
@@ -852,19 +843,37 @@ mod tests {
     }
 
     #[test]
-    fn possible_tag_start_retains_only_plausible_incomplete_tags() {
-        assert_eq!(possible_tag_start("Before <tool "), Some(7));
-        assert_eq!(possible_tag_start("Before </tool"), Some(7));
-        assert_eq!(possible_tag_start("Before </tool>"), Some(7));
-        assert_eq!(possible_tag_start("Before <toolbox"), None);
-        assert_eq!(possible_tag_start("Before </toolbox"), None);
+    fn tag_classifier_retains_only_plausible_incomplete_tags() {
+        assert_eq!(tag_at("<tool "), TagAt::Incomplete);
+        assert_eq!(tag_at("<tool note=\"a >"), TagAt::Incomplete);
+        assert_eq!(tag_at("</tool"), TagAt::Incomplete);
+        assert_eq!(tag_at("</tool \u{2003}"), TagAt::Incomplete);
+        assert!(matches!(tag_at("</tool>"), TagAt::Complete(_)));
+        assert!(matches!(tag_at("</tool >"), TagAt::Complete(_)));
+        assert_eq!(tag_at("</tool extra"), TagAt::None);
+        assert_eq!(tag_at("<toolbox"), TagAt::None);
+        assert_eq!(tag_at("</toolbox"), TagAt::None);
     }
 
     #[test]
     fn markup_detection_keeps_complete_and_split_recognized_tags() {
         assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
         assert!(Sanitizer::may_contain_markup("before <parameter "));
+        assert!(Sanitizer::may_contain_markup(
+            "before <parameter note=\"a >"
+        ));
+        assert!(Sanitizer::may_contain_markup(
+            "before <tool note=\"unterminated <parameter>literal</parameter>"
+        ));
         assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
+    }
+
+    #[test]
+    fn sanitizer_releases_a_closing_tag_as_soon_as_its_tail_is_impossible() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(sanitizer.push("Before </tool "), "Before ");
+        assert_eq!(sanitizer.push("extra"), "</tool extra");
+        assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
