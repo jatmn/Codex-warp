@@ -598,6 +598,122 @@ async fn native_completed_without_usage_records_prompt_and_session() {
 }
 
 #[test]
+fn chat_stream_usage_nested_in_delta_is_captured() {
+    let mut accum = ChatAccum::default();
+    // Some OpenAI-compatible gateways nest the streaming usage inside
+    // choices[0].delta.usage instead of the top-level chunk.usage. The proxy
+    // must capture it there too, or the Web UI reports 0 usage for those
+    // providers even though tokens were consumed.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 22,
+                    "total_tokens": 33
+                }
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("usage nested in choices[0].delta must be captured");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(11));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(22));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(33));
+}
+
+#[tokio::test]
+async fn native_incomplete_status_records_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.completed whose status is "incomplete" (for example a
+    // max_output_tokens truncation) still carries a usage block and must be
+    // recorded, otherwise the Web UI shows 0 usage for a response that clearly
+    // consumed tokens.
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_status_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(
+        summary.total_tokens, 12,
+        "an incomplete response must still record its token usage"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_records_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // `response.incomplete` is its own terminal event type (distinct from a
+    // response.completed with status "incomplete"). It also carries usage and
+    // must be recorded.
+    let body = concat!(
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
+        "\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(
+        summary.total_tokens, 10,
+        "a response.incomplete event must still record its token usage"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn continue_guard_forces_followup_for_mid_plan_stop() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
