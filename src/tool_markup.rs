@@ -182,7 +182,9 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let scan = if self.markdown_disabled {
+            let scan = if self.markdown_disabled || self.active_tag.is_some() {
+                // Inside suppressed markup, Markdown delimiters are payload,
+                // so scan without mutating the Markdown literal state.
                 next_tag_without_markdown(&input)
             } else {
                 next_tag_outside_markdown(
@@ -273,7 +275,6 @@ impl Sanitizer {
                     end
                 }
             };
-            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -920,6 +921,19 @@ mod tests {
             "before `literal`  after"
         );
         assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn markdown_delimiters_inside_suppressed_markup_do_not_change_state() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool note=\"```\">```<function>x</function>```</tool>After"),
+            "After"
+        );
+        assert_eq!(
+            sanitizer.push("<parameter>duplicate</parameter>Done"),
+            "Done"
+        );
     }
 
     #[test]
