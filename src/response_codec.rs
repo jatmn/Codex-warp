@@ -644,7 +644,10 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
         // `response.incomplete` is its own terminal event type (distinct from a
         // `response.completed` whose `status` is `incomplete`). Both still carry
         // a `usage` block and must record analytics rather than be treated as
-        // an unrecognized frame.
+        // an unrecognized frame. Per the OpenAI Responses API, `response.
+        // incomplete` is a terminal event emitted as the final frame, so the
+        // proxy relies on that contract: it records usage and ends the stream
+        // on the first such terminal.
         "response.incomplete" => Some(NativeSseTerminal::Incomplete),
         _ => None,
     }
@@ -905,8 +908,9 @@ impl ChatAccum {
         // analytics for those providers, which is exactly the "model was used
         // but the graph shows 0 usage" symptom. Prefer the top-level field,
         // then fall back to the delta, then to the choice level. An explicit
-        // `usage: null` at the top level must not defeat the fallback, so the
-        // top-level read is filtered to non-null before falling through.
+        // `usage: null` at any of those locations must not defeat the fallback
+        // to the next location, so every candidate read is filtered to
+        // non-null before `or_else` falls through to the next one.
         let usage = chunk
             .get("usage")
             .filter(|u| !u.is_null())
@@ -917,6 +921,7 @@ impl ChatAccum {
                     .and_then(|choices| choices.first())
                     .and_then(|choice| choice.get("delta"))
                     .and_then(|delta| delta.get("usage"))
+                    .filter(|u| !u.is_null())
             })
             .or_else(|| {
                 chunk
@@ -924,8 +929,8 @@ impl ChatAccum {
                     .and_then(Value::as_array)
                     .and_then(|choices| choices.first())
                     .and_then(|choice| choice.get("usage"))
-            })
-            .filter(|u| !u.is_null());
+                    .filter(|u| !u.is_null())
+            });
         if let Some(usage) = usage {
             self.usage = Some(chat_usage_to_responses_usage(Some(usage)));
         }

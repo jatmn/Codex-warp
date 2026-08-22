@@ -676,6 +676,31 @@ fn chat_stream_usage_choice_level_is_captured() {
     assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(15));
 }
 
+#[test]
+fn chat_stream_usage_delta_null_falls_back_to_choice() {
+    let mut accum = ChatAccum::default();
+    // An explicit choices[0].delta.usage: null must not defeat the
+    // choice-level fallback; the real counts at choices[0].usage must win.
+    // This is the delta-branch analogue of the top-level null case.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": { "usage": null },
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("delta usage:null must fall back to choice usage");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(1));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(2));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(3));
+}
+
 #[tokio::test]
 async fn native_incomplete_status_records_usage() {
     let dir = std::env::temp_dir().join(format!(

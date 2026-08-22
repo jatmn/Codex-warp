@@ -843,16 +843,24 @@ fn chat_response_reports_completed(value: &Value) -> bool {
 /// A 2xx response can still contain a provider-declared failure. Missing
 /// `status` is accepted for minimal successful Responses payloads, but never
 /// for an OpenAI-style error envelope.
-fn response_reports_completed(value: &Value) -> bool {
-    let valid_shape = value.as_object().is_some()
+/// A native Responses payload is well-formed for completion accounting only
+/// when it has a recognizable shape (id/object/output) and carries no
+/// provider-declared error. Both completion predicates share this guard so a
+/// malformed or error-envelope payload is never counted as a completed (or
+/// incomplete) response.
+fn native_response_is_well_formed(value: &Value) -> bool {
+    value.as_object().is_some()
         && (value
             .get("id")
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty())
             || value.get("object").and_then(Value::as_str) == Some("response")
-            || value.get("output").and_then(Value::as_array).is_some());
-    valid_shape
+            || value.get("output").and_then(Value::as_array).is_some())
         && upstream_error_message(value).is_none()
+}
+
+fn response_reports_completed(value: &Value) -> bool {
+    native_response_is_well_formed(value)
         && value
             .get("status")
             .and_then(Value::as_str)
@@ -862,12 +870,17 @@ fn response_reports_completed(value: &Value) -> bool {
 /// Like [`response_reports_completed`], but also treats a `status` of
 /// `incomplete` as a terminal that produced (and therefore billed) tokens. A
 /// truncated native response still carries a `usage` block, so its token
-/// analytics must be recorded rather than dropped to 0. Session-model
-/// completion intentionally stays on [`response_reports_completed`] only,
-/// matching the streaming path's asymmetry.
+/// analytics must be recorded rather than dropped to 0. The same well-formed
+/// shape/error guard applies, so an invalid or error-envelope `incomplete`
+/// payload is not counted. Session-model completion intentionally stays on
+/// [`response_reports_completed`] only, matching the streaming path's
+/// asymmetry.
 fn response_reports_completed_or_incomplete(value: &Value) -> bool {
-    response_reports_completed(value)
-        || value.get("status").and_then(Value::as_str) == Some("incomplete")
+    native_response_is_well_formed(value)
+        && value
+            .get("status")
+            .and_then(Value::as_str)
+            .is_none_or(|status| status == "completed" || status == "incomplete")
 }
 
 /// Stream only when both sides agreed on SSE. A gateway can accept a streaming
