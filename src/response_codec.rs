@@ -515,7 +515,11 @@ pub(crate) fn native_stream_to_responses_with_session_model(
                 );
                 let terminal = native_sse_terminal(&frame);
                 terminal_received |= terminal.is_some();
-                if terminal == Some(NativeSseTerminal::Completed)
+                // A completed or incomplete response both consumed tokens and
+                // carry a `usage` block; record analytics for either so a
+                // truncated (incomplete) response is not reported as 0 usage.
+                if (terminal == Some(NativeSseTerminal::Completed)
+                    || terminal == Some(NativeSseTerminal::Incomplete))
                     && let Some(recorder) = usage_recorder.take()
                 {
                     recorder.record_completed(pending_usage.as_ref());
@@ -609,13 +613,21 @@ fn native_sse_response_id(frame: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSseTerminal {
     Completed,
+    Incomplete,
     NonSuccess,
 }
 
 /// Classify response-level terminal events independently from success. Native
 /// streams can finish successfully, fail, be cancelled, or be incomplete; all
-/// of those outcomes make EOF expected, but only a completed response records
-/// successful usage analytics.
+/// of those outcomes make EOF expected, but a response that produced tokens
+/// (completed or incomplete) still records successful usage analytics.
+///
+/// `response.incomplete` is a distinct terminal *event type* (not a
+/// `response.completed` whose `status` is `incomplete`, although that shape is
+/// also handled below). Both forms still carry a `usage` block — for example a
+/// max-output truncation — so treating either as `NonSuccess` and skipping
+/// analytics would drop every token that led to the truncation, which is the
+/// same "used but shows 0" gap as a missing stream usage chunk.
 fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
@@ -624,12 +636,19 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
             let response = value.get("response")?.as_object()?;
             match response.get("status").and_then(Value::as_str) {
                 None | Some("completed") => Some(NativeSseTerminal::Completed),
+                Some("incomplete") => Some(NativeSseTerminal::Incomplete),
                 _ => Some(NativeSseTerminal::NonSuccess),
             }
         }
-        "response.failed" | "response.cancelled" | "response.incomplete" => {
-            Some(NativeSseTerminal::NonSuccess)
-        }
+        "response.failed" | "response.cancelled" => Some(NativeSseTerminal::NonSuccess),
+        // `response.incomplete` is its own terminal event type (distinct from a
+        // `response.completed` whose `status` is `incomplete`). Both still carry
+        // a `usage` block and must record analytics rather than be treated as
+        // an unrecognized frame. Per the OpenAI Responses API, `response.
+        // incomplete` is a terminal event emitted as the final frame, so the
+        // proxy relies on that contract: it records usage and ends the stream
+        // on the first such terminal.
+        "response.incomplete" => Some(NativeSseTerminal::Incomplete),
         _ => None,
     }
 }
@@ -881,7 +900,38 @@ impl ChatAccum {
 
     pub(crate) fn apply_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
-        if let Some(usage) = chunk.get("usage") {
+        // OpenAI-compatible gateways disagree on where the streaming usage
+        // chunk lives. The canonical location is the top-level `usage` of the
+        // terminal frame, but several providers (and some SDK-shaped proxies)
+        // nest it inside `choices[0].delta.usage` or even `choices[0].usage`
+        // instead. Reading only the top-level field silently drops token
+        // analytics for those providers, which is exactly the "model was used
+        // but the graph shows 0 usage" symptom. Prefer the top-level field,
+        // then fall back to the delta, then to the choice level. An explicit
+        // `usage: null` at any of those locations must not defeat the fallback
+        // to the next location, so every candidate read is filtered to
+        // non-null before `or_else` falls through to the next one.
+        let usage = chunk
+            .get("usage")
+            .filter(|u| !u.is_null())
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("delta"))
+                    .and_then(|delta| delta.get("usage"))
+                    .filter(|u| !u.is_null())
+            })
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("usage"))
+                    .filter(|u| !u.is_null())
+            });
+        if let Some(usage) = usage {
             self.usage = Some(chat_usage_to_responses_usage(Some(usage)));
         }
         let choices = chunk
