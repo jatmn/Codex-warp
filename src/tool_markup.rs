@@ -267,7 +267,7 @@ impl Sanitizer {
                             self.unterminated_tool_body.clear();
                             self.unterminated_tool_markdown = None;
                         }
-                    } else if self.active_tag.is_none() {
+                    } else if self.active_tag.is_none() && !(tag == "tool" && self.tool_is_marker) {
                         output.push_str(&input[start..end]);
                     }
                     end
@@ -286,6 +286,7 @@ impl Sanitizer {
         let pending = std::mem::take(&mut self.pending);
         let replay_buffer = std::mem::take(&mut self.replay_buffer);
         let pending_is_recognized_tag = recognized_tag(&pending).is_some();
+        let pending_was_suppressed = self.active_tag.is_some();
         let (unterminated_tool_body, unterminated_tool_markdown) =
             if self.active_tag == Some("tool") {
                 (
@@ -312,19 +313,23 @@ impl Sanitizer {
             return output;
         }
         if disposition == MarkdownFinish::Complete {
-            if pending_is_recognized_tag && !self.tool_is_marker {
+            if pending_is_recognized_tag && !pending_was_suppressed && !self.tool_is_marker {
                 return replay_buffer + &pending;
             }
             return replay_buffer;
         }
 
+        let mut terminal_buffer = replay_buffer;
+        if !pending_was_suppressed {
+            terminal_buffer.push_str(&pending);
+        }
         let mut replay = Self {
+            tool_is_marker: self.tool_is_marker,
             markdown_disabled: true,
             ..Self::default()
         };
-        let mut output = replay.push(&replay_buffer);
-        output.push_str(&replay.pending);
-        output.push_str(&pending);
+        let mut output = replay.push(&terminal_buffer);
+        output.push_str(&replay.finish());
         output
     }
 }
@@ -791,6 +796,15 @@ mod tests {
 
         assert_eq!(sanitizer.push("<parameter>duplicate"), "");
         assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("Before <parameter "), "Before ");
+        assert_eq!(sanitizer.finish(), "<parameter ");
+
+        assert_eq!(sanitizer.push("<parameter><tool "), "");
+        assert_eq!(sanitizer.finish(), "");
+
+        assert_eq!(sanitizer.push("<parameter>duplicate `"), "");
+        assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
@@ -804,7 +818,7 @@ mod tests {
 
         let mut nested = Sanitizer::default();
         assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
-        assert_eq!(nested.finish(), "body literal</tool>");
+        assert_eq!(nested.finish(), "body literal");
 
         let mut fragmented = Sanitizer::default();
         assert_eq!(fragmented.push("<tool>first"), "");
@@ -854,6 +868,18 @@ mod tests {
         assert_eq!(fragmented.push("<tool>body <para"), "");
         assert_eq!(fragmented.push("meter "), "");
         assert_eq!(fragmented.finish(), "body ");
+
+        let mut unmatched_inline = Sanitizer::default();
+        assert_eq!(
+            unmatched_inline.push("<tool>body `candidate <parameter "),
+            ""
+        );
+        assert_eq!(unmatched_inline.finish(), "body `candidate ");
+
+        let mut fragmented_inline = Sanitizer::default();
+        assert_eq!(fragmented_inline.push("<tool>body `candidate <para"), "");
+        assert_eq!(fragmented_inline.push("meter note=\"unterminated"), "");
+        assert_eq!(fragmented_inline.finish(), "body `candidate ");
     }
 
     #[test]
