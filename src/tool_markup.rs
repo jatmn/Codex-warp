@@ -182,7 +182,9 @@ impl Sanitizer {
         let mut output = String::new();
 
         while !input.is_empty() {
-            let scan = if self.markdown_disabled {
+            let scan = if self.markdown_disabled || self.active_tag.is_some() {
+                // Inside suppressed markup, Markdown delimiters are payload,
+                // so scan without mutating the Markdown literal state.
                 next_tag_without_markdown(&input)
             } else {
                 next_tag_outside_markdown(
@@ -269,11 +271,11 @@ impl Sanitizer {
                         }
                     } else if self.active_tag.is_none() && !(tag == "tool" && self.tool_is_marker) {
                         output.push_str(&input[start..end]);
+                        self.markdown.consume(&input[start..end]);
                     }
                     end
                 }
             };
-            self.markdown.consume(&input[start..end]);
             input = input[end..].to_string();
         }
         output
@@ -918,6 +920,29 @@ mod tests {
         assert_eq!(
             sanitizer.push("before `literal` <tool>duplicate</tool> after"),
             "before `literal`  after"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
+    fn markdown_delimiters_inside_suppressed_markup_do_not_change_state() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool note=\"```\">```<function>x</function>```</tool>After"),
+            "After"
+        );
+        assert_eq!(
+            sanitizer.push("<parameter>duplicate</parameter>Done"),
+            "Done"
+        );
+    }
+
+    #[test]
+    fn emitted_unmatched_closing_tag_updates_markdown_position() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("</tool>~~~code\n<parameter>duplicate</parameter>\n~~~\nDone"),
+            "</tool>~~~code\n\n~~~\nDone"
         );
         assert_eq!(sanitizer.finish(), "");
     }
