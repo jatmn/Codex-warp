@@ -645,6 +645,16 @@ mod tests {
     }
 
     #[test]
+    fn sanitizer_scans_markup_after_a_closed_single_backtick_run() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("before `literal` <tool>duplicate</tool> after"),
+            "before `literal`  after"
+        );
+        assert_eq!(sanitizer.finish(), "");
+    }
+
+    #[test]
     fn sanitizer_tracks_nested_openings_and_ignores_mismatched_closings() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(
