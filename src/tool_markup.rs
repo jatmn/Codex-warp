@@ -156,6 +156,7 @@ pub(crate) struct Sanitizer {
     active_tag: Option<&'static str>,
     active_depth: usize,
     unterminated_tool_body: String,
+    unterminated_tool_markdown: Option<MarkdownCodeState>,
     tool_is_marker: bool,
     markdown: MarkdownCodeState,
     markdown_disabled: bool,
@@ -248,6 +249,7 @@ impl Sanitizer {
                         self.active_depth = 1;
                         if tag == "tool" {
                             self.unterminated_tool_body = input[end..].to_string();
+                            self.unterminated_tool_markdown = Some(self.markdown.clone());
                         }
                     } else if self.active_tag == Some(tag) && !self_closing {
                         self.active_depth += 1;
@@ -263,6 +265,7 @@ impl Sanitizer {
                         if self.active_depth == 0 {
                             self.active_tag = None;
                             self.unterminated_tool_body.clear();
+                            self.unterminated_tool_markdown = None;
                         }
                     } else if self.active_tag.is_none() {
                         output.push_str(&input[start..end]);
@@ -283,17 +286,25 @@ impl Sanitizer {
         let pending = std::mem::take(&mut self.pending);
         let replay_buffer = std::mem::take(&mut self.replay_buffer);
         let pending_is_recognized_tag = recognized_tag(&pending).is_some();
-        let unterminated_tool_body = if self.active_tag == Some("tool") {
-            std::mem::take(&mut self.unterminated_tool_body)
-        } else {
-            self.unterminated_tool_body.clear();
-            String::new()
-        };
+        let (unterminated_tool_body, unterminated_tool_markdown) =
+            if self.active_tag == Some("tool") {
+                (
+                    std::mem::take(&mut self.unterminated_tool_body),
+                    self.unterminated_tool_markdown
+                        .take()
+                        .expect("active tool records its output Markdown state"),
+                )
+            } else {
+                self.unterminated_tool_body.clear();
+                self.unterminated_tool_markdown = None;
+                (String::new(), MarkdownCodeState::default())
+            };
         self.active_tag = None;
         self.active_depth = 0;
         if !unterminated_tool_body.is_empty() {
             let mut fallback = Self {
                 tool_is_marker: true,
+                markdown: unterminated_tool_markdown,
                 ..Self::default()
             };
             let mut output = fallback.push(&unterminated_tool_body);
@@ -301,7 +312,7 @@ impl Sanitizer {
             return output;
         }
         if disposition == MarkdownFinish::Complete {
-            if pending_is_recognized_tag {
+            if pending_is_recognized_tag && !self.tool_is_marker {
                 return replay_buffer + &pending;
             }
             return replay_buffer;
@@ -799,6 +810,50 @@ mod tests {
         assert_eq!(fragmented.push("<tool>first"), "");
         assert_eq!(fragmented.push(" second"), "");
         assert_eq!(fragmented.finish(), "first second");
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_uses_the_recovered_output_markdown_position() {
+        let mut tilde = Sanitizer::default();
+        assert_eq!(
+            tilde.push("prefix <tool>~~~x <parameter>duplicate</parameter>"),
+            "prefix "
+        );
+        assert_eq!(tilde.finish(), "~~~x ");
+
+        let mut backtick = Sanitizer::default();
+        assert_eq!(backtick.push("prefix <tool>``"), "prefix ");
+        assert_eq!(backtick.push("`x <parameter>duplicate</parameter>"), "");
+        assert_eq!(backtick.finish(), "```x ");
+
+        let mut line_start = Sanitizer::default();
+        assert_eq!(
+            line_start.push("before\n<tool>```text\n<parameter>literal</parameter>"),
+            "before\n"
+        );
+        assert_eq!(
+            line_start.finish(),
+            "```text\n<parameter>literal</parameter>"
+        );
+    }
+
+    #[test]
+    fn unterminated_tool_fallback_drops_incomplete_nested_openings() {
+        let mut plain = Sanitizer::default();
+        assert_eq!(plain.push("<tool>body <parameter "), "");
+        assert_eq!(plain.finish(), "body ");
+
+        let mut attributed = Sanitizer::default();
+        assert_eq!(
+            attributed.push("<tool>body <parameter note=\"unterminated"),
+            ""
+        );
+        assert_eq!(attributed.finish(), "body ");
+
+        let mut fragmented = Sanitizer::default();
+        assert_eq!(fragmented.push("<tool>body <para"), "");
+        assert_eq!(fragmented.push("meter "), "");
+        assert_eq!(fragmented.finish(), "body ");
     }
 
     #[test]
