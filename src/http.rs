@@ -13,17 +13,15 @@ use crate::config::ProviderConfig;
 use crate::version::user_agent;
 
 // OpenRouter app attribution (https://openrouter.ai/docs/app-attribution).
-// Codex Warp identifies itself on every upstream request so OpenRouter can
-// attribute usage across all of its API routes and models (chat completions,
-// native /responses, /models, and any other outbound call) regardless of which
-// gateway profile or model is selected. These are the project's own identity
-// values; they can be overridden per provider via [provider.headers] or
-// [providers.<id>.headers].
+// Codex Warp identifies itself on requests sent to OpenRouter so OpenRouter can
+// attribute usage across its API routes and models (chat completions, native
+// /responses, /models, and any other OpenRouter outbound call). These are the
+// project's own identity values; they can be overridden per provider via
+// [provider.headers] or [providers.<id>.headers].
 //
 // The values are hardcoded in Rust (rather than in configs/openrouter.toml) on
 // purpose: attribution must not depend on loading the shipped `openrouter`
-// profile or on which gateway happens to be the default in a multi-provider
-// setup.
+// profile when the configured destination is OpenRouter.
 const OPENROUTER_REFERER: &str = "https://github.com/jatmn/Codex-warp";
 const OPENROUTER_TITLE: &str = "Codex Warp";
 const OPENROUTER_CATEGORIES: &str = "cli-agent,programming-app";
@@ -35,9 +33,18 @@ fn provider_defines_header(provider: &ProviderConfig, name: &str) -> bool {
         .any(|key| key.eq_ignore_ascii_case(name))
 }
 
+fn provider_targets_openrouter(provider: &ProviderConfig) -> bool {
+    reqwest::Url::parse(&provider.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            let host = host.strip_suffix('.').unwrap_or(&host).to_ascii_lowercase();
+            host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+        })
+}
+
 fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
     if !provider_defines_header(provider, "HTTP-Referer")
-        && !provider_defines_header(provider, "Referer")
         && let (Ok(name), Ok(value)) = (
             HeaderName::try_from("HTTP-Referer"),
             HeaderValue::from_str(OPENROUTER_REFERER),
@@ -132,7 +139,9 @@ pub(crate) fn upstream_headers(
         }
     }
 
-    insert_openrouter_attribution(&mut headers, provider);
+    if provider_targets_openrouter(provider) {
+        insert_openrouter_attribution(&mut headers, provider);
+    }
 
     headers.insert(
         axum::http::header::USER_AGENT,

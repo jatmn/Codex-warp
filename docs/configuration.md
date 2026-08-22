@@ -110,10 +110,13 @@ Some providers require extra headers:
 "X-Title" = "Codex Warp"
 ```
 
-Codex Warp also attaches [OpenRouter app attribution](../README.md#openrouter-app-attribution)
-headers on every upstream request (`HTTP-Referer`, `X-OpenRouter-Title`, `X-Title`,
-and `X-OpenRouter-Categories`). Set any of those names under `[provider.headers]`
-or `[providers.<id>.headers]` to override the automatic values for that gateway.
+Codex Warp attaches [OpenRouter app attribution](../README.md#openrouter-app-attribution)
+headers (`HTTP-Referer`, `X-OpenRouter-Title`, `X-Title`, and
+`X-OpenRouter-Categories`) only when the configured destination host is
+`openrouter.ai` or a subdomain of it, including OpenRouter's regional API
+hosts. Set any of those names under `[provider.headers]` or
+`[providers.<id>.headers]` to override the automatic values for an OpenRouter
+gateway. Traffic sent to another gateway is not reported to OpenRouter.
 
 Codex Warp always sends its own `User-Agent` as `codex-warp/<version>` to
 upstream providers. Configured `User-Agent` values are ignored so provider logs

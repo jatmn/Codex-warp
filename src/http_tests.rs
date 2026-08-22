@@ -36,7 +36,7 @@ fn upstream_requests_report_codex_warp_user_agent() {
 }
 
 #[test]
-fn all_providers_get_attribution_headers() {
+fn non_openrouter_providers_do_not_get_openrouter_attribution_headers() {
     let provider = ProviderConfig {
         base_url: "https://api.example.com/v1".to_string(),
         ..ProviderConfig::default()
@@ -48,29 +48,65 @@ fn all_providers_get_attribution_headers() {
         .expect("request builds");
     let headers = request.headers();
 
-    assert_eq!(
-        headers.get("HTTP-Referer").and_then(|v| v.to_str().ok()),
-        Some("https://github.com/jatmn/Codex-warp")
+    assert!(headers.get("HTTP-Referer").is_none());
+    assert!(headers.get("X-OpenRouter-Title").is_none());
+    assert!(headers.get("X-Title").is_none());
+    assert!(headers.get("X-OpenRouter-Categories").is_none());
+}
+
+#[test]
+fn non_openrouter_providers_preserve_explicit_headers_without_auto_attribution() {
+    let mut provider = ProviderConfig {
+        base_url: "https://api.example.com/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+    provider.headers.insert(
+        "HTTP-Referer".to_string(),
+        "https://customer.example/app".to_string(),
     );
+
+    let request = Client::new().post("https://api.example.com/v1/chat/completions");
+    let request = apply_headers(request, &provider, &HeaderMap::new())
+        .build()
+        .expect("request builds");
+    let headers = request.headers();
+
     assert_eq!(
         headers
-            .get("X-OpenRouter-Title")
-            .and_then(|v| v.to_str().ok()),
-        Some("Codex Warp")
+            .get("HTTP-Referer")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://customer.example/app")
     );
-    assert_eq!(
-        headers.get("X-Title").and_then(|v| v.to_str().ok()),
-        Some("Codex Warp")
-    );
-    assert_eq!(
-        headers
-            .get("X-OpenRouter-Categories")
-            .and_then(|v| v.to_str().ok()),
-        Some("cli-agent,programming-app")
-    );
-    assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 1);
-    assert_eq!(headers.get_all("X-OpenRouter-Title").iter().count(), 1);
-    assert_eq!(headers.get_all("X-OpenRouter-Categories").iter().count(), 1);
+    assert!(headers.get("X-OpenRouter-Title").is_none());
+    assert!(headers.get("X-Title").is_none());
+    assert!(headers.get("X-OpenRouter-Categories").is_none());
+}
+
+#[test]
+fn lookalike_openrouter_hostname_does_not_get_attribution_headers() {
+    for base_url in [
+        "https://openrouter.ai.example/v1",
+        "https://notopenrouter.ai/v1",
+    ] {
+        let provider = ProviderConfig {
+            base_url: base_url.to_string(),
+            ..ProviderConfig::default()
+        };
+
+        let request = Client::new().post(format!("{base_url}/chat/completions"));
+        let request = apply_headers(request, &provider, &HeaderMap::new())
+            .build()
+            .expect("request builds");
+        let headers = request.headers();
+
+        assert!(
+            headers.get("HTTP-Referer").is_none(),
+            "unexpected attribution on {base_url}"
+        );
+        assert!(headers.get("X-OpenRouter-Title").is_none());
+        assert!(headers.get("X-Title").is_none());
+        assert!(headers.get("X-OpenRouter-Categories").is_none());
+    }
 }
 
 #[test]
@@ -113,6 +149,81 @@ fn openrouter_provider_gets_attribution_headers() {
 }
 
 #[test]
+fn trailing_dot_openrouter_hostname_gets_attribution_headers() {
+    let provider = ProviderConfig {
+        base_url: "https://openrouter.ai./api/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+
+    let request = Client::new().post("https://openrouter.ai./api/v1/chat/completions");
+    let request = apply_headers(request, &provider, &HeaderMap::new())
+        .build()
+        .expect("request builds");
+    let headers = request.headers();
+
+    assert_eq!(
+        headers
+            .get("HTTP-Referer")
+            .and_then(|value| value.to_str().ok()),
+        Some("https://github.com/jatmn/Codex-warp")
+    );
+    assert_eq!(
+        headers
+            .get("X-OpenRouter-Title")
+            .and_then(|value| value.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers.get("X-Title").and_then(|value| value.to_str().ok()),
+        Some("Codex Warp")
+    );
+    assert_eq!(
+        headers
+            .get("X-OpenRouter-Categories")
+            .and_then(|value| value.to_str().ok()),
+        Some("cli-agent,programming-app")
+    );
+}
+
+#[test]
+fn regional_openrouter_hostnames_get_attribution_headers() {
+    for base_url in [
+        "https://eu.openrouter.ai/api/v1",
+        "https://us.openrouter.ai/api/v1",
+        "https://EU.OPENROUTER.AI./api/v1",
+    ] {
+        let provider = ProviderConfig {
+            base_url: base_url.to_string(),
+            ..ProviderConfig::default()
+        };
+
+        let headers = upstream_headers(&provider, &HeaderMap::new(), "text/event-stream");
+
+        assert_eq!(
+            headers
+                .get("HTTP-Referer")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://github.com/jatmn/Codex-warp"),
+            "missing attribution on {base_url}"
+        );
+        assert_eq!(
+            headers
+                .get("X-OpenRouter-Title")
+                .and_then(|value| value.to_str().ok()),
+            Some("Codex Warp"),
+            "missing title on {base_url}"
+        );
+        assert_eq!(
+            headers
+                .get("X-OpenRouter-Categories")
+                .and_then(|value| value.to_str().ok()),
+            Some("cli-agent,programming-app"),
+            "missing categories on {base_url}"
+        );
+    }
+}
+
+#[test]
 fn user_headers_override_openrouter_attribution() {
     let mut provider = ProviderConfig {
         base_url: "https://openrouter.ai/api/v1".to_string(),
@@ -149,7 +260,7 @@ fn user_headers_override_openrouter_attribution() {
 }
 
 #[test]
-fn referer_alias_suppresses_http_referer() {
+fn standard_referer_does_not_suppress_openrouter_attribution() {
     let mut provider = ProviderConfig {
         base_url: "https://openrouter.ai/api/v1".to_string(),
         ..ProviderConfig::default()
@@ -170,9 +281,12 @@ fn referer_alias_suppresses_http_referer() {
         headers.get("Referer").and_then(|v| v.to_str().ok()),
         Some("https://my-custom-app.example")
     );
-    assert!(headers.get("HTTP-Referer").is_none());
+    assert_eq!(
+        headers.get("HTTP-Referer").and_then(|v| v.to_str().ok()),
+        Some("https://github.com/jatmn/Codex-warp")
+    );
     assert_eq!(headers.get_all("Referer").iter().count(), 1);
-    assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 0);
+    assert_eq!(headers.get_all("HTTP-Referer").iter().count(), 1);
 }
 
 #[test]

@@ -69,10 +69,12 @@ model_catalog_only = false
 "X-Title" = "Codex Warp"
 ```
 
-Codex Warp also auto-attaches [OpenRouter app attribution](../README.md#openrouter-app-attribution)
-headers on every upstream request. Set any of those header names under
+Codex Warp auto-attaches [OpenRouter app attribution](../README.md#openrouter-app-attribution)
+headers only when the destination host is `openrouter.ai` or a subdomain of it,
+including OpenRouter's regional API hosts. Set any of those header names under
 `[provider.headers]` or `[providers.<id>.headers]` to override the defaults for
-that gateway.
+an OpenRouter gateway. Traffic sent to another gateway is not reported to
+OpenRouter.
 
 Use named providers when you want Codex Warp to merge more than one upstream
 model catalog. Codex Warp groups the merged `/v1/models` response by gateway
@@ -88,7 +90,7 @@ and prefixes display names with `[name]`, for example `[Provider A] Model`.
 | `api_key` | Inline upstream key. Useful for local experiments, but avoid committing it. |
 | `auth_header` | Header used for auth. Defaults to `authorization`. |
 | `auth_scheme` | Prefix for the key. Defaults to `Bearer`; set to `""` for raw keys. |
-| `headers` | Static extra headers required by the gateway. `User-Agent` is ignored here because Codex Warp always reports itself as `codex-warp/<version>`. OpenRouter attribution headers are also auto-attached on every upstream request; set them here to override. See [OpenRouter App Attribution](../README.md#openrouter-app-attribution). |
+| `headers` | Static extra headers required by the gateway. `User-Agent` is ignored here because Codex Warp always reports itself as `codex-warp/<version>`. Requests to hosts in the `openrouter.ai` domain also receive OpenRouter attribution headers; set them here to override. See [OpenRouter App Attribution](../README.md#openrouter-app-attribution). |
 | `responses_path` | Upstream Responses endpoint path. |
 | `chat_completions_path` | Upstream chat completions endpoint path. |
 | `models_path` | Upstream model catalog endpoint path. |
@@ -129,7 +131,8 @@ models_path = "/models"
 model_catalog_only = true
 
 [providers.acme_ai.headers]
-# Optional: override auto OpenRouter attribution headers for this gateway.
+# Optional: override automatic OpenRouter attribution headers when this gateway
+# targets a host in the openrouter.ai domain.
 "X-Title" = "Codex Warp"
 
 [[providers.acme_ai.model_catalog]]
