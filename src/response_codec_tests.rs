@@ -5461,6 +5461,7 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         "dbg_failed_session".to_string(),
         ContinueGuardState::default(),
         None,
+        false,
         Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
@@ -5473,6 +5474,42 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
     assert!(resolve_auto_review_model(&state, &mut review).await);
     assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn failed_chat_stream_restores_deferred_markup_content() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"before <tool>duplicate\"}}]}\n\n",
+        "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n"
+    );
+    let events = chat_stream_to_responses_with_session_model(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_deferred_failure".to_string(),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_deferred_failure".to_string(),
+        ContinueGuardState::default(),
+        None,
+        true,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let events = events
+        .into_iter()
+        .map(|event| String::from_utf8(event.expect("stream item succeeds").to_vec()).unwrap())
+        .collect::<Vec<_>>();
+    let content_index = events
+        .iter()
+        .position(|event| event.contains("before <tool>duplicate"))
+        .expect("deferred content is restored before failure");
+    let failure_index = events
+        .iter()
+        .position(|event| event.contains("response.failed"))
+        .expect("stream failure");
+    assert!(content_index < failure_index);
 }
 
 #[tokio::test]

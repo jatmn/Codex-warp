@@ -389,6 +389,7 @@ pub(crate) async fn proxy_chat_responses(
             request_log_id,
             continue_guard,
             usage_recorder,
+            selected.transform.suppress_duplicate_tool_markup,
             session_model.clone().map(|update| (state.clone(), update)),
         ));
         let mut response = Response::new(body);

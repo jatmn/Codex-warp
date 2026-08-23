@@ -191,6 +191,7 @@ pub(crate) fn chat_stream_to_responses(
         request_log_id,
         continue_guard,
         usage_recorder,
+        false,
         None,
     )
 }
@@ -206,6 +207,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
     request_log_id: String,
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
+    suppress_duplicate_tool_markup: bool,
     session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
@@ -216,7 +218,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &created_event);
         yield Ok(Bytes::from(created_event));
 
-        let mut state = ChatAccum::default();
+        let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
@@ -227,7 +229,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(err) => {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -237,7 +239,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
             };
             pending.extend_from_slice(&chunk);
             if pending.len() > SSE_FRAME_BUFFER_MAX_BYTES {
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -249,7 +251,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
                 let frame = pending[..frame_end].to_vec();
                 pending.drain(..frame_end + delimiter_len);
                 let Ok(frame) = String::from_utf8(frame) else {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -271,7 +273,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
                 let value = match serde_json::from_str::<Value>(&data) {
                     Ok(value) => value,
                     Err(_) => {
-                        if let Some(event) = state.take_reasoning_delta() {
+                        for event in state.failure_events() {
                             log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                             yield Ok(Bytes::from(event));
                         }
@@ -284,7 +286,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
                 };
                 let payload = chat_completion_payload(&value);
                 if let Some(message) = upstream_error_message(payload) {
-                    if let Some(event) = state.take_reasoning_delta() {
+                    for event in state.failure_events() {
                         log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                         yield Ok(Bytes::from(event));
                     }
@@ -338,7 +340,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
                     "completion": "truncated_eof"
                 }));
                 let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-                if let Some(event) = state.take_reasoning_delta() {
+                for event in state.failure_events() {
                     log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                     yield Ok(Bytes::from(event));
                 }
@@ -367,7 +369,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
                 "completion": "truncated_eof"
             }));
             let failed = chat_failed_event(&response_id, "upstream chat stream ended before [DONE]");
-            if let Some(event) = state.take_reasoning_delta() {
+            for event in state.failure_events() {
                 log_downstream_sse_frame(&debug_log, &request_log_id, "open_ai_chat", &event);
                 yield Ok(Bytes::from(event));
             }
