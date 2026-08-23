@@ -1652,7 +1652,8 @@ fn validate_model_reasoning(
     let mut inherited = entry.clone();
     inherited.supported_reasoning_levels = None;
     inherited.default_reasoning_level = None;
-    let inherited_info = models::catalog_model_info(&inherited, _provider, config, Some(discovered));
+    let inherited_info =
+        models::catalog_model_info(&inherited, _provider, config, Some(discovered));
     let (inherited_levels, inherited_default) = models::reasoning_metadata(&inherited_info);
     let effective_levels = entry
         .supported_reasoning_levels
@@ -1672,7 +1673,9 @@ fn validate_model_reasoning(
     if entry.supported_reasoning_levels.is_some()
         && entry.default_reasoning_level.is_none()
         && !inherited_levels.is_empty()
-        && !effective_levels.iter().any(|level| level == &inherited_default)
+        && !effective_levels
+            .iter()
+            .any(|level| level == &inherited_default)
     {
         entry.default_reasoning_level = Some(effective_levels[0].clone());
     }

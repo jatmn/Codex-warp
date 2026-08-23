@@ -281,7 +281,11 @@ async fn models_for_revision(
             let discovered_models = discovered_models_by_slug(&provider_models);
             let config = state.read_config().clone();
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(&provider, &config, Some(&discovered_models)));
+                provider_models.extend(manual_catalog_models(
+                    &provider,
+                    &config,
+                    Some(&discovered_models),
+                ));
             }
             (
                 provider_id,
@@ -460,9 +464,7 @@ fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {
     models
         .iter()
         .filter_map(|model| {
-            let slug = model
-                .get("slug")
-                .and_then(Value::as_str)?;
+            let slug = model.get("slug").and_then(Value::as_str)?;
             if seen.insert(slug.to_string()) {
                 Some((slug.to_string(), model.clone()))
             } else {
