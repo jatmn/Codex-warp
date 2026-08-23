@@ -412,7 +412,7 @@ fn upstream_headers_supports_custom_api_key_header() {
     };
     provider
         .headers
-        .insert("x-hicap-tag".to_string(), "codex-warp-jatmn".to_string());
+        .insert("x-hicap-tag".to_string(), "codex-warp".to_string());
 
     let headers = upstream_headers(&provider, &HeaderMap::new(), "text/event-stream");
 
@@ -424,7 +424,7 @@ fn upstream_headers_supports_custom_api_key_header() {
         headers
             .get("x-hicap-tag")
             .and_then(|value| value.to_str().ok()),
-        Some("codex-warp-jatmn")
+        Some("codex-warp")
     );
 }
 

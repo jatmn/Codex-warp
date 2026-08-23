@@ -173,6 +173,7 @@ tab. See the
 | --- | --- | --- | --- |
 | OpenAI-compatible template | [`configs/openai-compatible.toml`](configs/openai-compatible.toml) | Copy or edit for any provider with OpenAI-style auth and endpoints. | No |
 | ClinePass | [`configs/clinepass.toml`](configs/clinepass.toml) | Ready profile for ClinePass with a local documented model catalog. | No |
+| Hicap | [`configs/hicap.toml`](configs/hicap.toml) | Ready profile for Hicap with live model discovery, a local catalog fallback, and the required integration tag. | No |
 | Moonshot KimiCode | [`configs/moonshot-kimicode.toml`](configs/moonshot-kimicode.toml) | Ready profile for Moonshot KimiCode subscription keys with a local Kimi model catalog fallback. | No |
 | OpenCode Go | [`configs/opencode-go.toml`](configs/opencode-go.toml) | Ready profile for OpenCode Go subscription keys, limited to its OpenAI-compatible chat-completions models. | No |
 | Xiaomi Token Plan | [`configs/xiaomi-token-plan.toml`](configs/xiaomi-token-plan.toml) | Ready profile for `https://token-plan-sgp.xiaomimimo.com/v1`. | No |

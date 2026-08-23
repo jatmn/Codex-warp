@@ -683,6 +683,19 @@ fn javascript_credential_state_machine_locks_inline_keys() {
         "named-template env prefills must count as loaded names for truncation checks"
     );
     assert!(
+        app.contains("auth_scheme: String(fd.get(\"auth_scheme\") ?? \"Bearer\").trim()"),
+        "an intentionally empty raw-key auth scheme must survive submit"
+    );
+    assert!(
+        app.contains("template.auth_scheme ?? \"Bearer\"")
+            && app.contains("p.auth_scheme ?? \"Bearer\""),
+        "template create and provider edit must preserve empty auth schemes"
+    );
+    assert!(
+        app.contains("applyProviderHeaders(template.headers ?? null);"),
+        "named templates must prefill required static headers before custom edits"
+    );
+    assert!(
         app.contains("p.managed ? (p.api_key_preview || \"\") : \"\",\n        true,"),
         "only edit-form load of an existing provider marks credentials as saved"
     );
