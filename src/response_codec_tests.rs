@@ -806,7 +806,7 @@ async fn native_incomplete_event_type_records_usage() {
     // response.completed with status "incomplete"). It also carries usage and
     // must be recorded.
     let body = concat!(
-        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
+        "data: {\"type\":\"response.incomplete\",\"usage\":null,\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
         "\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
     );
     native_stream_to_responses(
@@ -828,7 +828,7 @@ async fn native_incomplete_event_type_records_usage() {
     assert_eq!(summary.prompts, 1);
     assert_eq!(
         summary.total_tokens, 10,
-        "a response.incomplete event must still record its token usage"
+        "a null envelope usage must fall back to the nested token usage"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -4792,6 +4792,17 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     assert!(pending.is_empty());
     assert!(pending_usage.is_some());
+}
+
+#[test]
+fn native_response_usage_null_envelope_falls_back_to_nested_response() {
+    let bytes = Bytes::from_static(
+        br#"{"usage":null,"response":{"id":"resp_1","status":"incomplete","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}"#,
+    );
+
+    let usage = response_usage_from_bytes(&bytes);
+
+    assert_eq!(usage["total_tokens"], 12);
 }
 
 #[test]

@@ -732,17 +732,23 @@ fn native_failed_event(response_id: Option<&str>, message: impl Into<String>) ->
 pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
     serde_json::from_slice::<Value>(bytes)
         .ok()
-        .and_then(|value| {
-            value
-                .get("usage")
-                .or_else(|| {
-                    value
-                        .get("response")
-                        .and_then(|response| response.get("usage"))
-                })
-                .cloned()
-        })
+        .and_then(|value| native_response_usage(&value).cloned())
         .unwrap_or(Value::Null)
+}
+
+/// Native Responses gateways may include a null envelope `usage` alongside the
+/// actual counters in `response.usage`. A null envelope is absence, not a value
+/// that should shadow the nested response usage.
+fn native_response_usage(value: &Value) -> Option<&Value> {
+    value
+        .get("usage")
+        .filter(|usage| !usage.is_null())
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+                .filter(|usage| !usage.is_null())
+        })
 }
 
 #[cfg(test)]
@@ -798,14 +804,8 @@ pub(crate) fn log_native_usage_from_sse_frame(
             "summary": summary
         }));
     }
-    let usage = value.get("usage").or_else(|| {
-        value
-            .get("response")
-            .and_then(|response| response.get("usage"))
-    });
-    if let Some(usage) = usage
-        && !usage.is_null()
-    {
+    let usage = native_response_usage(&value);
+    if let Some(usage) = usage {
         debug_log.log(json!({
             "event": "upstream_response",
             "id": request_log_id,

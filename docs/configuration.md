@@ -508,9 +508,12 @@ features, including SQLite overlays and usage recording.
 
 Usage events are recorded from successful proxied responses when the store is
 open, including completed chat and native streams and successful non-stream
-responses even when the upstream omits token usage metadata. Incomplete or
-failed streams are not recorded as successful completions. Session grouping
-prefers `prompt_cache_key`, then `conversation_id`, then Responses
+responses even when the upstream omits token usage metadata. Well-formed native
+Responses terminals with `status: "incomplete"` (including
+`response.incomplete` stream events) are also recorded when they carry usage,
+because they consumed tokens before stopping. Failed, malformed, and
+provider-error-envelope streams are not recorded as successful completions.
+Session grouping prefers `prompt_cache_key`, then `conversation_id`, then Responses
 `conversation` (string or `{ "id": ... }`).
 Events without a session key count as distinct sessions per prompt.
 
