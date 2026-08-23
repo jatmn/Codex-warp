@@ -413,6 +413,23 @@ pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     }
 }
 
+/// A native Responses response payload is well-formed for completion accounting
+/// only when it has a recognizable shape (`id` / `object` / `output`) and carries
+/// no provider-declared error. Shared by the streaming (`native_sse_terminal`)
+/// and buffered (`response_reports_completed_or_incomplete`) completion
+/// predicates so a malformed incomplete response (for example `response: {}`) is
+/// rejected identically on both paths.
+pub(crate) fn native_response_is_well_formed_response(response: &Value) -> bool {
+    response.as_object().is_some()
+        && (response
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+            || response.get("object").and_then(Value::as_str) == Some("response")
+            || response.get("output").and_then(Value::as_array).is_some())
+        && upstream_error_message(response).is_none()
+}
+
 // Native SSE conversion carries the same request context.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
@@ -515,7 +532,11 @@ pub(crate) fn native_stream_to_responses_with_session_model(
                 );
                 let terminal = native_sse_terminal(&frame);
                 terminal_received |= terminal.is_some();
-                if terminal == Some(NativeSseTerminal::Completed)
+                // A completed or incomplete response both consumed tokens and
+                // carry a `usage` block; record analytics for either so a
+                // truncated (incomplete) response is not reported as 0 usage.
+                if (terminal == Some(NativeSseTerminal::Completed)
+                    || terminal == Some(NativeSseTerminal::Incomplete))
                     && let Some(recorder) = usage_recorder.take()
                 {
                     recorder.record_completed(pending_usage.as_ref());
@@ -609,26 +630,76 @@ fn native_sse_response_id(frame: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeSseTerminal {
     Completed,
+    Incomplete,
     NonSuccess,
 }
 
 /// Classify response-level terminal events independently from success. Native
 /// streams can finish successfully, fail, be cancelled, or be incomplete; all
-/// of those outcomes make EOF expected, but only a completed response records
-/// successful usage analytics.
+/// of those outcomes make EOF expected, but a response that produced tokens
+/// (completed or incomplete) still records successful usage analytics.
+///
+/// `response.incomplete` is a distinct terminal *event type* (not a
+/// `response.completed` whose `status` is `incomplete`, although that shape is
+/// also handled below). Both forms still carry a `usage` block — for example a
+/// max-output truncation — so treating either as `NonSuccess` and skipping
+/// analytics would drop every token that led to the truncation, which is the
+/// same "used but shows 0" gap as a missing stream usage chunk.
+///
+/// Both incomplete forms are only treated as a successful analytics terminal
+/// when the response payload is well-formed (a recognizable shape: `id` /
+/// `object` / `output`) and carries no provider error envelope. A malformed or
+/// error-shaped incomplete event (for example `data: {"type":"response.
+/// incomplete"}`, `response: {}`, or one wrapping a provider error) must not
+/// reach `record_completed`, or it would inflate the prompt/session counters
+/// and record a provider failure as successful usage. Both streaming arms use
+/// the same `native_response_is_well_formed_response` predicate as the buffered
+/// path (`response_reports_completed_or_incomplete`) so malformed incomplete
+/// responses are rejected identically.
 fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
     match value.get("type").and_then(Value::as_str)? {
         "response.completed" => {
-            let response = value.get("response")?.as_object()?;
+            let response_value = value.get("response")?;
+            let response = response_value.as_object()?;
             match response.get("status").and_then(Value::as_str) {
                 None | Some("completed") => Some(NativeSseTerminal::Completed),
+                Some("incomplete") => {
+                    // A truncated response still carries a usage block and must
+                    // record analytics, but only when the response payload is
+                    // well-formed (recognizable shape, no provider error). This
+                    // mirrors the buffered-path guard so a malformed incomplete
+                    // response is rejected identically on both paths.
+                    if native_response_is_well_formed_response(response_value) {
+                        Some(NativeSseTerminal::Incomplete)
+                    } else {
+                        None
+                    }
+                }
                 _ => Some(NativeSseTerminal::NonSuccess),
             }
         }
-        "response.failed" | "response.cancelled" | "response.incomplete" => {
-            Some(NativeSseTerminal::NonSuccess)
+        "response.failed" | "response.cancelled" => Some(NativeSseTerminal::NonSuccess),
+        // `response.incomplete` is its own terminal event type (distinct from a
+        // `response.completed` whose `status` is `incomplete`). Both still carry
+        // a `usage` block and must record analytics rather than be treated as
+        // an unrecognized frame. Per the OpenAI Responses API, `response.
+        // incomplete` is a terminal event emitted as the final frame, so the
+        // proxy relies on that contract: it records usage and ends the stream
+        // on the first such terminal.
+        "response.incomplete" => {
+            // Require a well-formed response payload (recognizable shape, no
+            // provider error envelope) before counting this as a successful
+            // analytics terminal; otherwise record_completed would inflate
+            // prompt/session counters or record a failure as usage. Uses the
+            // same predicate as the buffered path.
+            let response = value.get("response");
+            if response.is_some_and(native_response_is_well_formed_response) {
+                Some(NativeSseTerminal::Incomplete)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -661,17 +732,23 @@ fn native_failed_event(response_id: Option<&str>, message: impl Into<String>) ->
 pub(crate) fn response_usage_from_bytes(bytes: &Bytes) -> Value {
     serde_json::from_slice::<Value>(bytes)
         .ok()
-        .and_then(|value| {
-            value
-                .get("usage")
-                .or_else(|| {
-                    value
-                        .get("response")
-                        .and_then(|response| response.get("usage"))
-                })
-                .cloned()
-        })
+        .and_then(|value| native_response_usage(&value).cloned())
         .unwrap_or(Value::Null)
+}
+
+/// Native Responses gateways may include a null envelope `usage` alongside the
+/// actual counters in `response.usage`. A null envelope is absence, not a value
+/// that should shadow the nested response usage.
+fn native_response_usage(value: &Value) -> Option<&Value> {
+    value
+        .get("usage")
+        .filter(|usage| !usage.is_null())
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+                .filter(|usage| !usage.is_null())
+        })
 }
 
 #[cfg(test)]
@@ -727,14 +804,8 @@ pub(crate) fn log_native_usage_from_sse_frame(
             "summary": summary
         }));
     }
-    let usage = value.get("usage").or_else(|| {
-        value
-            .get("response")
-            .and_then(|response| response.get("usage"))
-    });
-    if let Some(usage) = usage
-        && !usage.is_null()
-    {
+    let usage = native_response_usage(&value);
+    if let Some(usage) = usage {
         debug_log.log(json!({
             "event": "upstream_response",
             "id": request_log_id,
@@ -881,7 +952,38 @@ impl ChatAccum {
 
     pub(crate) fn apply_chat_chunk(&mut self, chunk: &Value) -> Vec<String> {
         let mut events = Vec::new();
-        if let Some(usage) = chunk.get("usage") {
+        // OpenAI-compatible gateways disagree on where the streaming usage
+        // chunk lives. The canonical location is the top-level `usage` of the
+        // terminal frame, but several providers (and some SDK-shaped proxies)
+        // nest it inside `choices[0].delta.usage` or even `choices[0].usage`
+        // instead. Reading only the top-level field silently drops token
+        // analytics for those providers, which is exactly the "model was used
+        // but the graph shows 0 usage" symptom. Prefer the top-level field,
+        // then fall back to the delta, then to the choice level. An explicit
+        // `usage: null` at any of those locations must not defeat the fallback
+        // to the next location, so every candidate read is filtered to
+        // non-null before `or_else` falls through to the next one.
+        let usage = chunk
+            .get("usage")
+            .filter(|u| !u.is_null())
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("delta"))
+                    .and_then(|delta| delta.get("usage"))
+                    .filter(|u| !u.is_null())
+            })
+            .or_else(|| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| choices.first())
+                    .and_then(|choice| choice.get("usage"))
+                    .filter(|u| !u.is_null())
+            });
+        if let Some(usage) = usage {
             self.usage = Some(chat_usage_to_responses_usage(Some(usage)));
         }
         let choices = chunk

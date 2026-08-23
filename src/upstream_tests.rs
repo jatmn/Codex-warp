@@ -107,8 +107,45 @@ fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
         "id": "resp_123",
         "status": "completed"
     })));
+    // The well-formed shape is a disjunction (id OR object OR output); each
+    // alternative must independently satisfy the predicate so a `||`->`&&`
+    // mutation is caught.
+    assert!(response_reports_completed(&json!({"object": "response"})));
+    assert!(response_reports_completed(&json!({"output": []})));
     assert!(!response_reports_completed(&json!({})));
     assert!(!response_reports_completed(&Value::Null));
+}
+
+#[test]
+fn semantic_completion_accepts_incomplete_for_usage() {
+    // A truncated (incomplete) native response still carries a usage block and
+    // must be recorded for analytics, even though it is not a fully completed
+    // response. Session-model completion stays on response_reports_completed.
+    assert!(response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "incomplete"
+    })));
+    assert!(response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "completed"
+    })));
+    assert!(!response_reports_completed_or_incomplete(&json!({
+        "id": "resp_123",
+        "status": "failed"
+    })));
+    // The incomplete arm must reuse the sibling's well-formed shape/error
+    // guards: a status:incomplete payload that is malformed or carries an
+    // error envelope must NOT be counted (otherwise it would inflate the
+    // prompts/sessions counters via record_completed).
+    assert!(!response_reports_completed_or_incomplete(
+        &json!({"status": "incomplete"})
+    ));
+    assert!(!response_reports_completed_or_incomplete(&json!({
+        "status": "incomplete",
+        "error": {"message": "boom"}
+    })));
+    assert!(!response_reports_completed_or_incomplete(&json!({})));
+    assert!(!response_reports_completed_or_incomplete(&Value::Null));
 }
 
 #[test]

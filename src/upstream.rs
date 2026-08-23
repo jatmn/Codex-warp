@@ -771,7 +771,7 @@ async fn send_native_responses_with_session_model(
     );
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
     if status.is_success()
-        && semantic_body.is_some_and(response_reports_completed)
+        && semantic_body.is_some_and(response_reports_completed_or_incomplete)
         && let Some(recorder) = &usage_recorder
     {
         // Successful non-stream responses must count as completed prompts/sessions
@@ -843,20 +843,38 @@ fn chat_response_reports_completed(value: &Value) -> bool {
 /// A 2xx response can still contain a provider-declared failure. Missing
 /// `status` is accepted for minimal successful Responses payloads, but never
 /// for an OpenAI-style error envelope.
+/// A native Responses payload is well-formed for completion accounting only
+/// when it has a recognizable shape (id/object/output) and carries no
+/// provider-declared error. Both completion predicates share this guard so a
+/// malformed or error-envelope payload is never counted as a completed (or
+/// incomplete) response. Delegates to the shared streaming/buffered predicate so
+/// the two paths reject malformed incomplete responses identically.
+fn native_response_is_well_formed(value: &Value) -> bool {
+    crate::response_codec::native_response_is_well_formed_response(value)
+}
+
 fn response_reports_completed(value: &Value) -> bool {
-    let valid_shape = value.as_object().is_some()
-        && (value
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
-            || value.get("object").and_then(Value::as_str) == Some("response")
-            || value.get("output").and_then(Value::as_array).is_some());
-    valid_shape
-        && upstream_error_message(value).is_none()
+    native_response_is_well_formed(value)
         && value
             .get("status")
             .and_then(Value::as_str)
             .is_none_or(|status| status == "completed")
+}
+
+/// Like [`response_reports_completed`], but also treats a `status` of
+/// `incomplete` as a terminal that produced (and therefore billed) tokens. A
+/// truncated native response still carries a `usage` block, so its token
+/// analytics must be recorded rather than dropped to 0. The same well-formed
+/// shape/error guard applies, so an invalid or error-envelope `incomplete`
+/// payload is not counted. Session-model completion intentionally stays on
+/// [`response_reports_completed`] only, matching the streaming path's
+/// asymmetry.
+fn response_reports_completed_or_incomplete(value: &Value) -> bool {
+    native_response_is_well_formed(value)
+        && value
+            .get("status")
+            .and_then(Value::as_str)
+            .is_none_or(|status| status == "completed" || status == "incomplete")
 }
 
 /// Stream only when both sides agreed on SSE. A gateway can accept a streaming

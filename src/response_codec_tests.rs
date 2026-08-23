@@ -598,6 +598,358 @@ async fn native_completed_without_usage_records_prompt_and_session() {
 }
 
 #[test]
+fn chat_stream_usage_nested_in_delta_is_captured() {
+    let mut accum = ChatAccum::default();
+    // Some OpenAI-compatible gateways nest the streaming usage inside
+    // choices[0].delta.usage instead of the top-level chunk.usage. The proxy
+    // must capture it there too, or the Web UI reports 0 usage for those
+    // providers even though tokens were consumed.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 22,
+                    "total_tokens": 33
+                }
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("usage nested in choices[0].delta must be captured");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(11));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(22));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(33));
+}
+
+#[test]
+fn chat_stream_usage_null_top_level_falls_back_to_delta() {
+    let mut accum = ChatAccum::default();
+    // A gateway may send an explicit top-level `"usage": null` on the terminal
+    // chunk while nesting the real counts in choices[0].delta.usage. The null
+    // must not defeat the fallback, or the Web UI reports 0 usage.
+    accum.apply_chat_chunk(&json!({
+        "usage": null,
+        "choices": [{
+            "delta": {
+                "usage": {
+                    "prompt_tokens": 4,
+                    "completion_tokens": 5,
+                    "total_tokens": 9
+                }
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("null top-level usage must fall back to delta usage");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(4));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(5));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(9));
+}
+
+#[test]
+fn chat_stream_usage_choice_level_is_captured() {
+    let mut accum = ChatAccum::default();
+    // Some gateways place the streaming usage on the choice object itself
+    // (choices[0].usage) rather than inside choices[0].delta.usage. The proxy
+    // must capture that location too.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "finish_reason": "stop",
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 8,
+                "total_tokens": 15
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("usage at choices[0].usage must be captured");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(7));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(8));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(15));
+}
+
+#[test]
+fn chat_stream_usage_delta_null_falls_back_to_choice() {
+    let mut accum = ChatAccum::default();
+    // An explicit choices[0].delta.usage: null must not defeat the
+    // choice-level fallback; the real counts at choices[0].usage must win.
+    // This is the delta-branch analogue of the top-level null case.
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": { "usage": null },
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "total_tokens": 3
+            }
+        }]
+    }));
+    let usage = accum
+        .usage
+        .as_ref()
+        .expect("delta usage:null must fall back to choice usage");
+    assert_eq!(usage.get("input_tokens").and_then(Value::as_i64), Some(1));
+    assert_eq!(usage.get("output_tokens").and_then(Value::as_i64), Some(2));
+    assert_eq!(usage.get("total_tokens").and_then(Value::as_i64), Some(3));
+}
+
+#[tokio::test]
+async fn native_incomplete_status_records_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-status-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.completed whose status is "incomplete" (for example a
+    // max_output_tokens truncation) still carries a usage block and must be
+    // recorded, otherwise the Web UI shows 0 usage for a response that clearly
+    // consumed tokens.
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_status_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(
+        summary.total_tokens, 12,
+        "an incomplete response must still record its token usage"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_status_with_error_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-status-err-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.completed whose status is "incomplete" but that wraps a
+    // provider error envelope must not be recorded as successful usage.
+    let body = concat!(
+        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",",
+        "\"error\":{\"message\":\"boom\"}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_status_error".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(
+        summary.prompts, 0,
+        "error-shaped incomplete must not record"
+    );
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_records_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // `response.incomplete` is its own terminal event type (distinct from a
+    // response.completed with status "incomplete"). It also carries usage and
+    // must be recorded.
+    let body = concat!(
+        "data: {\"type\":\"response.incomplete\",\"usage\":null,\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
+        "\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
+    );
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_usage".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 1);
+    assert_eq!(
+        summary.total_tokens, 10,
+        "a null envelope usage must fall back to the nested token usage"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_without_response_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-noresp-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event with no well-formed `response` payload must
+    // not be treated as a successful analytics terminal; otherwise it would
+    // inflate prompt/session counters despite carrying no usable usage.
+    let body = "data: {\"type\":\"response.incomplete\"}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_no_response".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0, "malformed incomplete must not record");
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_with_error_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-err-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event that wraps a provider error envelope must not
+    // be recorded as successful usage.
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_error".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(
+        summary.prompts, 0,
+        "error-shaped incomplete must not record"
+    );
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_with_empty_response_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-empty-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event whose `response` object is empty `{}` has no
+    // recognizable shape, so it must not be treated as a successful analytics
+    // terminal (the buffered path rejects the same malformed shape).
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_empty_response".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0, "empty response object must not record");
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn continue_guard_forces_followup_for_mid_plan_stop() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
@@ -4440,6 +4792,17 @@ fn native_usage_logging_buffers_split_sse_frames() {
     );
     assert!(pending.is_empty());
     assert!(pending_usage.is_some());
+}
+
+#[test]
+fn native_response_usage_null_envelope_falls_back_to_nested_response() {
+    let bytes = Bytes::from_static(
+        br#"{"usage":null,"response":{"id":"resp_1","status":"incomplete","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}"#,
+    );
+
+    let usage = response_usage_from_bytes(&bytes);
+
+    assert_eq!(usage["total_tokens"], 12);
 }
 
 #[test]
