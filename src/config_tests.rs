@@ -60,6 +60,7 @@ fn example_configs_parse_request_morphs() {
     assert!(default_config.model_families.contains_key("x_ai_grok"));
     assert!(default_config.model_families.contains_key("x_ai_grok_4_3"));
     assert!(default_config.model_families.contains_key("x_ai_grok_4_5"));
+    assert!(default_config.model_families.contains_key("x_ai_grok_4_6"));
     assert!(
         default_config
             .model_families
@@ -1032,6 +1033,49 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .iter()
             .any(|family| family.priority == 10)
     );
+
+    // grok-4.6: xhigh reasoning, multimodal input, and concrete self-review.
+    let grok46 = config
+        .model_families
+        .get("x_ai_grok_4_6")
+        .expect("grok-4.6 family exists");
+    assert_eq!(grok46.model_metadata.context_window, Some(500_000));
+    assert_eq!(
+        grok46.model_metadata.default_reasoning_level.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        grok46.model_metadata.supported_reasoning_levels,
+        Some(vec![
+            "low".to_string(),
+            "medium".to_string(),
+            "high".to_string(),
+            "xhigh".to_string()
+        ])
+    );
+    assert_eq!(
+        grok46.model_metadata.auto_review_model_override.as_deref(),
+        Some("grok-4.6")
+    );
+    assert_eq!(
+        grok46.transform.reasoning_effort_none_value.as_deref(),
+        Some("low")
+    );
+    assert!(
+        grok46
+            .transform
+            .append_chat_request_morphs
+            .iter()
+            .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
+    );
+    for model in ["grok-4.6", "grok4.6", "concentrate.ai/grok-4.6"] {
+        assert!(
+            matching_model_families(&config, model)
+                .iter()
+                .any(|family| family.priority == 10),
+            "{model} should match the exact grok-4.6 family"
+        );
+    }
 
     // DeepSeek V4: 1M context + reasoning-history preservation + effort forwarding.
     let ds_flash = config

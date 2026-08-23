@@ -440,6 +440,20 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
 }
 
 #[test]
+fn live_catalog_localizes_exact_auto_review_target_to_provider_model_id() {
+    let mut info = json!({"auto_review_model_override": "grok-4.6"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/grok-4.6",
+        &ProviderConfig::default(),
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/grok-4.6"
+    );
+}
+
+#[test]
 fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
     let mut info = json!({"auto_review_model_override": "deepseek_v4_flash"});
     localize_auto_review_model_override(
@@ -978,7 +992,7 @@ fn qwen_family_metadata_applies_to_documented_qwen3_6_variant() {
 #[test]
 fn x_ai_grok_family_metadata_is_variant_specific() {
     let body = Bytes::from_static(
-            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-4.5","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
+            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-4.5","object":"model"},{"id":"concentrate.ai/grok-4.6","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
         );
     let provider = ProviderConfig::default();
     let config = load_config_layers(&[]).expect("default config loads");
@@ -994,9 +1008,22 @@ fn x_ai_grok_family_metadata_is_variant_specific() {
     assert_eq!(models[1]["input_modalities"], json!(["text", "image"]));
     assert_eq!(models[1]["supports_search_tool"], true);
     assert_eq!(models[1]["supports_parallel_tool_calls"], true);
-    assert_eq!(models[2]["context_window"], 256_000);
-    assert_eq!(models[2]["input_modalities"], json!(["text"]));
+    assert_eq!(models[2]["context_window"], 500_000);
+    assert_eq!(models[2]["default_reasoning_level"], "high");
+    assert_eq!(models[2]["input_modalities"], json!(["text", "image"]));
+    assert_eq!(models[2]["supports_search_tool"], true);
     assert_eq!(models[2]["supports_parallel_tool_calls"], true);
+    assert_eq!(
+        models[2]["supported_reasoning_levels"][3]["effort"],
+        "xhigh"
+    );
+    assert_eq!(
+        models[2]["auto_review_model_override"],
+        "concentrate.ai/grok-4.6"
+    );
+    assert_eq!(models[3]["context_window"], 256_000);
+    assert_eq!(models[3]["input_modalities"], json!(["text"]));
+    assert_eq!(models[3]["supports_parallel_tool_calls"], true);
 }
 
 #[test]

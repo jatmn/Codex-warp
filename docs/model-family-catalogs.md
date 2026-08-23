@@ -29,7 +29,7 @@ Provider/gateway behavior belongs in
 | MiniMax | [`minimax.toml`](../configs/model-families/minimax.toml) | `minimax-m2.5`, `minimax-m2.7`, `minimax-m3` |
 | Moonshot AI | [`moonshot-ai.toml`](../configs/model-families/moonshot-ai.toml) | `kimi-k2`, `kimi-k2-0905`, `kimi-k2.5`, `kimi-k2.6`, `kimi-k2.6-code`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-for-coding` |
 | Alibaba Cloud | [`qwen.toml`](../configs/model-families/qwen.toml) | `qwen3.6-35b-a3b`; conservative broad defaults for `qwen3.6*` and `qwen3.7*` |
-| xAI | [`x-ai.toml`](../configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-build-0.1` |
+| xAI | [`x-ai.toml`](../configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-build-0.1` |
 | Xiaomi | [`xiaomi.toml`](../configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
 | Z.ai | [`z-ai.toml`](../configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2`, `glm-5.3` |
 | Tencent Hunyuan 3 (Hy3) | [`hy3.toml`](../configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
@@ -63,6 +63,7 @@ transform behavior.
 | Alibaba Cloud | `qwen3.6-35b-a3b` | 262k, max 1,010k | text, image, video | high | false | Removes inherited OpenAI `reasoning_effort`; broad `qwen3.6*` and `qwen3.7*` entries also drop it until a gateway documents support. |
 | xAI | `grok-4.3` | 1,000k | text, image | low, medium, high; default medium | true | Uses `web_search`; parallel tool metadata is true, but requests force `parallel_tool_calls = false`. |
 | xAI | `grok-4.5` | 500k | text, image | low, medium, high; default high | true | Uses `web_search`; reasoning cannot be disabled (`none` mapped to `low` via `reasoning_effort_none_value`); parallel tool metadata is true, but requests force `parallel_tool_calls = false`. |
+| xAI | `grok-4.6` | 500k | text, image | low, medium, high, xhigh; default high | true | Uses standard function tools and `web_search`; reasoning cannot be disabled (`none` mapped to `low`); self-routes automatic approval review to the provider-local Grok 4.6 model; parallel tool metadata is true, but requests force `parallel_tool_calls = false`. |
 | xAI | `grok-build-0.1` | 256k | text | low, medium, high; default medium | true | Uses `web_search`; parallel tool metadata is true, but requests force `parallel_tool_calls = false`. |
 | Xiaomi | `mimo-v2.5` | 1,000k | text, image | low, medium, high; default medium | provider/default | Gateway profile does not carry model-specific overrides. |
 | Xiaomi | `mimo-v2.5-pro` | 1,000k | text | low, medium, high; default medium | provider/default | Gateway profile does not carry model-specific overrides. |
@@ -142,7 +143,7 @@ Supported model metadata fields include:
 | `supports_search_tool` | Whether a search tool is supported. |
 | `supports_reasoning_summaries` | Whether reasoning summaries are available. |
 | `support_verbosity` | Whether verbosity controls are supported. |
-| `supported_reasoning_levels` | Reasoning efforts such as `none`, `low`, `medium`, `high`. |
+| `supported_reasoning_levels` | Reasoning efforts such as `none`, `low`, `medium`, `high`, `xhigh`. |
 | `default_reasoning_level` | Default effort Codex should show/use. |
 | `default_reasoning_summary` | Default reasoning summary mode. |
 | `include_skills_usage_instructions` | Whether Codex should include skill usage instructions in model context. |

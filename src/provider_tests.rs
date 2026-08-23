@@ -797,6 +797,35 @@ fn first_class_model_reasoning_transforms_handle_disable_and_alias_paths() {
     );
     assert_eq!(grok_alias_none.body["reasoning_effort"], "low");
 
+    let grok46 = selected_provider(
+        &config,
+        PRIMARY_PROVIDER_ID,
+        &config.provider,
+        Some("concentrate.ai/grok-4.6"),
+    );
+    let grok46_none = responses_to_chat(
+        json!({
+            "model": "concentrate.ai/grok-4.6",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "none"},
+            "stream": true
+        }),
+        &grok46.transform,
+    );
+    assert_eq!(grok46_none.body["reasoning_effort"], "low");
+    assert_eq!(grok46_none.body["parallel_tool_calls"], false);
+
+    let grok46_xhigh = responses_to_chat(
+        json!({
+            "model": "concentrate.ai/grok-4.6",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            "reasoning": {"effort": "xhigh"},
+            "stream": true
+        }),
+        &grok46.transform,
+    );
+    assert_eq!(grok46_xhigh.body["reasoning_effort"], "xhigh");
+
     let grok43 = selected_provider(
         &config,
         PRIMARY_PROVIDER_ID,
