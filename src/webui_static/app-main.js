@@ -439,6 +439,7 @@
         try {
           await api(`/providers/${encodeURIComponent(provider.id)}/models/refresh`, {
             method: "POST",
+            body: JSON.stringify({}),
           });
           await loadProviders({ refreshRoutes: false, updateStatus: false });
           status(`Refreshed models for ${provider.id}`);

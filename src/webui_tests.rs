@@ -2300,6 +2300,19 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
     let address = listener.local_addr().unwrap();
     let upstream_server =
         tokio::spawn(async move { axum::serve(listener, upstream_app).await.unwrap() });
+    let sibling_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "shared-model", "object": "model"}]
+            }))
+        }),
+    );
+    let sibling_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sibling_address = sibling_listener.local_addr().unwrap();
+    let sibling_server =
+        tokio::spawn(async move { axum::serve(sibling_listener, sibling_app).await.unwrap() });
 
     let state = test_state();
     {
@@ -2308,6 +2321,15 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
             "dynamic".into(),
             ProviderConfig {
                 base_url: format!("http://{address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "sibling".into(),
+            ProviderConfig {
+                base_url: format!("http://{sibling_address}"),
                 enabled: true,
                 model_catalog_only: false,
                 ..ProviderConfig::default()
@@ -2330,6 +2352,7 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
     {
         let mut routes = state.model_routes.write().await;
         routes.insert("removed-model".into(), "dynamic".into());
+        routes.insert("shared-model".into(), "dynamic".into());
         routes.insert("static-model".into(), "static".into());
     }
     let revision_before = state
@@ -2344,10 +2367,29 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
             .await
             .unwrap()
     });
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::new();
+    let form_response = client
         .post(format!(
             "http://{management_address}/api/providers/dynamic/models/refresh"
         ))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body("refresh=true")
+        .send()
+        .await
+        .expect("submit cross-site-compatible form request");
+    assert_eq!(
+        form_response.status(),
+        reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "refresh mutations must require JSON so a cross-site HTML form cannot submit them"
+    );
+    let response = client
+        .post(format!(
+            "http://{management_address}/api/providers/dynamic/models/refresh"
+        ))
+        .json(&serde_json::json!({}))
         .send()
         .await
         .expect("call provider refresh route");
@@ -2361,18 +2403,24 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
         state
             .config_revision
             .load(std::sync::atomic::Ordering::Acquire),
-        revision_before + 1,
-        "manual refresh must invalidate older in-flight catalog discovery"
+        revision_before + 2,
+        "manual refresh must invalidate discovery started before or during its fetch"
     );
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("new-model").map(String::as_str), Some("dynamic"));
     assert!(!routes.contains_key("removed-model"));
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        Some("sibling"),
+        "a healthy sibling must reclaim a colliding live-only route"
+    );
     assert_eq!(
         routes.get("static-model").map(String::as_str),
         Some("static"),
         "refreshing one provider must retain sibling provider routes"
     );
     management_server.abort();
+    sibling_server.abort();
     upstream_server.abort();
 }
 
@@ -2401,15 +2449,23 @@ async fn provider_model_refresh_rejects_static_and_disabled_providers() {
         );
     }
 
-    let static_error = refresh_provider_models(State(state.clone()), Path("static".to_string()))
-        .await
-        .expect_err("static catalogs cannot refresh");
+    let static_error = refresh_provider_models(
+        State(state.clone()),
+        Path("static".to_string()),
+        Json(serde_json::json!({})),
+    )
+    .await
+    .expect_err("static catalogs cannot refresh");
     assert_eq!(static_error.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(static_error.message.contains("static model catalog"));
 
-    let disabled_error = refresh_provider_models(State(state), Path("disabled".to_string()))
-        .await
-        .expect_err("disabled providers cannot refresh");
+    let disabled_error = refresh_provider_models(
+        State(state),
+        Path("disabled".to_string()),
+        Json(serde_json::json!({})),
+    )
+    .await
+    .expect_err("disabled providers cannot refresh");
     assert_eq!(disabled_error.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(disabled_error.message.contains("must be enabled"));
 }
@@ -2435,9 +2491,13 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
         .await
         .insert("last-known-model".into(), "dynamic".into());
 
-    let error = refresh_provider_models(State(state.clone()), Path("dynamic".to_string()))
-        .await
-        .expect_err("unreachable upstream must fail the refresh request");
+    let error = refresh_provider_models(
+        State(state.clone()),
+        Path("dynamic".to_string()),
+        Json(serde_json::json!({})),
+    )
+    .await
+    .expect_err("unreachable upstream must fail the refresh request");
 
     assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
     assert!(error.message.contains("model refresh failed"));

@@ -461,9 +461,11 @@ replaces a full catalog entry (with `enabled` defaulting to true when omitted).
 `POST /api/providers/{id}/models/refresh` re-fetches one enabled provider's
 upstream `/models` catalog and immediately updates its live model view and route
 map. A successful response adds newly reported models and removes live-only
-models no longer returned by that provider. Static (`model_catalog_only = true`)
-and disabled providers cannot be refreshed; a failed upstream request keeps the
-last successfully discovered routes and returns an error to the UI.
+models no longer returned by that provider; configured catalog entries and
+persisted operator overlays remain authoritative. Static
+(`model_catalog_only = true`) and disabled providers cannot be refreshed; a
+failed request to the selected provider keeps the last successfully discovered
+routes and returns an error to the UI.
 
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`

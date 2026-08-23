@@ -1569,6 +1569,7 @@ async fn list_providers(
 async fn refresh_provider_models(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Json(_request): Json<serde_json::Value>,
 ) -> Result<Json<ProviderView>, ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
@@ -1595,13 +1596,18 @@ async fn refresh_provider_models(
     // Advance the generation before the focused fetch so that older discovery
     // cannot publish after this explicit refresh and restore removed models.
     invalidate_model_discovery(&state);
-    models::refresh_model_routes_while_mutation_locked(
+    let refresh_result = models::refresh_model_routes_while_mutation_locked(
         &state,
-        models::MutationRouteRefresh::RefetchOne,
+        models::MutationRouteRefresh::RefetchAllForOne,
         Some(&id),
     )
-    .await
-    .map_err(|error| ApiError::bad_gateway(format!("model refresh failed: {error}")))?;
+    .await;
+    // A global discovery can start after the first generation advance while
+    // this request is awaiting upstream. Fence that work out before releasing
+    // the mutation lock so it cannot overwrite this refresh afterward.
+    invalidate_model_discovery(&state);
+    refresh_result
+        .map_err(|error| ApiError::bad_gateway(format!("model refresh failed: {error}")))?;
 
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);

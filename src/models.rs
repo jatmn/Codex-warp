@@ -65,6 +65,10 @@ pub(crate) enum MutationRouteRefresh {
     /// Fetch upstream models for one provider; retain prior discovery for every
     /// other enabled provider.
     RefetchOne,
+    /// Rebuild discovery for every enabled provider so hidden colliding owners
+    /// can be recovered, but report a fetch warning only for the selected
+    /// provider. Failed siblings retain their prior routes.
+    RefetchAllForOne,
     /// Fetch upstream models for every enabled provider. This is needed after
     /// removing a single route owner because the route map only retains the
     /// winner for a colliding live-only slug.
@@ -148,7 +152,7 @@ async fn discover_routes_for_mutation(
         MutationRouteRefresh::RefetchOne => {
             focus_provider_id.map(str::to_string).into_iter().collect()
         }
-        MutationRouteRefresh::RefetchAll => {
+        MutationRouteRefresh::RefetchAll | MutationRouteRefresh::RefetchAllForOne => {
             provider_list.iter().map(|(id, _)| id.clone()).collect()
         }
     };
@@ -185,7 +189,9 @@ async fn discover_routes_for_mutation(
             // Successful refetch (including empty catalogs) replaces retained
             // ownership for this provider; seeds already carry catalog routes.
             retain_owners.remove(&provider_id);
-        } else {
+        } else if mode != MutationRouteRefresh::RefetchAllForOne
+            || focus_provider_id == Some(provider_id.as_str())
+        {
             fetch_warning = Some(provider_failures.join("; "));
         }
     }
