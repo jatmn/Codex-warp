@@ -797,7 +797,7 @@
           ? { api_key_env: null, api_key: null }
           : { api_key_env: credential.value }),
       auth_header: String(fd.get("auth_header") || "").trim() || "authorization",
-      auth_scheme: String(fd.get("auth_scheme") || "").trim() || "Bearer",
+      auth_scheme: String(fd.get("auth_scheme") ?? "Bearer").trim(),
       responses_path: String(fd.get("responses_path") || "").trim() || "/responses",
       chat_completions_path:
         String(fd.get("chat_completions_path") || "").trim() || "/chat/completions",
@@ -1035,7 +1035,7 @@
     );
     providerForm.querySelector("[name=auth_header]").value =
       template.auth_header || "authorization";
-    providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme || "Bearer";
+    providerForm.querySelector("[name=auth_scheme]").value = template.auth_scheme ?? "Bearer";
     providerForm.querySelector("[name=responses_path]").value =
       template.responses_path || "/responses";
     providerForm.querySelector("[name=chat_completions_path]").value =
@@ -1043,6 +1043,7 @@
     providerForm.querySelector("[name=models_path]").value = template.models_path || "/models";
     providerForm.querySelector("[name=model_catalog_only]").checked = !!template.model_catalog_only;
     providerForm.querySelector("[name=enabled]").checked = true;
+    applyProviderHeaders(template.headers ?? null);
     setNamedTemplateMode(isNamed);
     setCustomHeadersMode(true);
     renderCatalogPreview(selectedTemplateCatalog);
@@ -1114,7 +1115,7 @@
         !!(p.managed && p.has_inline_api_key && !p.api_key_env),
       );
       providerForm.querySelector("[name=auth_header]").value = p.auth_header || "authorization";
-      providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme || "Bearer";
+      providerForm.querySelector("[name=auth_scheme]").value = p.auth_scheme ?? "Bearer";
       providerForm.querySelector("[name=responses_path]").value = p.responses_path || "/responses";
       providerForm.querySelector("[name=chat_completions_path]").value =
         p.chat_completions_path || "/chat/completions";
