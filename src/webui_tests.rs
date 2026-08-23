@@ -2472,6 +2472,20 @@ async fn provider_model_refresh_rejects_static_and_disabled_providers() {
 
 #[tokio::test]
 async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
+    let sibling_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "new-sibling-model", "object": "model"}]
+            }))
+        }),
+    );
+    let sibling_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let sibling_address = sibling_listener.local_addr().unwrap();
+    let sibling_server =
+        tokio::spawn(async move { axum::serve(sibling_listener, sibling_app).await.unwrap() });
+
     let state = test_state();
     {
         let mut config = state.config.write().expect("config lock");
@@ -2484,12 +2498,21 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
                 ..ProviderConfig::default()
             },
         );
+        config.providers.insert(
+            "sibling".into(),
+            ProviderConfig {
+                base_url: format!("http://{sibling_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
     }
-    state
-        .model_routes
-        .write()
-        .await
-        .insert("last-known-model".into(), "dynamic".into());
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("last-known-model".into(), "dynamic".into());
+        routes.insert("last-sibling-model".into(), "sibling".into());
+    }
 
     let error = refresh_provider_models(
         State(state.clone()),
@@ -2501,15 +2524,21 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
 
     assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
     assert!(error.message.contains("model refresh failed"));
+    let routes = state.model_routes.read().await;
     assert_eq!(
-        state
-            .model_routes
-            .read()
-            .await
-            .get("last-known-model")
-            .map(String::as_str),
+        routes.get("last-known-model").map(String::as_str),
         Some("dynamic")
     );
+    assert_eq!(
+        routes.get("last-sibling-model").map(String::as_str),
+        Some("sibling"),
+        "a failed selected refresh must retain sibling routes"
+    );
+    assert!(
+        !routes.contains_key("new-sibling-model"),
+        "a failed selected refresh must not publish successful sibling discovery"
+    );
+    sibling_server.abort();
 }
 
 #[tokio::test]

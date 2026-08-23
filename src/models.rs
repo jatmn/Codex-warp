@@ -94,6 +94,14 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
+    if mode == MutationRouteRefresh::RefetchAllForOne
+        && let Some(warning) = fetch_warning
+    {
+        // The focused refresh is provider-scoped from the operator's point of
+        // view. If that provider failed, do not publish successful sibling
+        // discovery and then report an error for a partially applied action.
+        return Err(warning);
+    }
     publish_model_routes(state, routes, &retain_owners).await;
     match fetch_warning {
         Some(warning) => Err(warning),
