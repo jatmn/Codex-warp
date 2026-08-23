@@ -932,6 +932,15 @@ fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>
     (objects.len() > 1).then_some(objects)
 }
 
+fn recovered_tool_call_id(upstream_id: Option<&str>, recovered_index: usize) -> String {
+    if recovered_index == 0
+        && let Some(upstream_id) = upstream_id.filter(|id| !id.is_empty())
+    {
+        return upstream_id.to_string();
+    }
+    generated_id("call")
+}
+
 impl ChatAccum {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_tool_markup_suppression(suppress_duplicate_tool_markup: bool) -> Self {
@@ -1211,11 +1220,7 @@ impl ChatAccum {
                 |items| items.iter().map(String::as_str).collect(),
             );
             for (index, arguments) in arguments.into_iter().enumerate() {
-                let call_id = if index == 0 && !call.id.is_empty() {
-                    call.id.clone()
-                } else {
-                    generated_id("call")
-                };
+                let call_id = recovered_tool_call_id(Some(&call.id), index);
                 let item = tool_call_item(
                     &call.name,
                     arguments,
@@ -2450,7 +2455,7 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
-                let call_id = call.get("id").and_then(Value::as_str).unwrap_or("call");
+                let upstream_call_id = call.get("id").and_then(Value::as_str);
                 let repaired_arguments = split_concatenated_tool_call_arguments_enabled
                     .then(|| split_concatenated_tool_call_arguments(arguments))
                     .flatten();
@@ -2459,11 +2464,7 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
                     |items| items.iter().map(String::as_str).collect(),
                 );
                 for (index, arguments) in arguments.into_iter().enumerate() {
-                    let call_id = if index == 0 {
-                        call_id.to_string()
-                    } else {
-                        generated_id("call")
-                    };
+                    let call_id = recovered_tool_call_id(upstream_call_id, index);
                     output.push(tool_call_item(
                         name,
                         arguments,

@@ -211,6 +211,58 @@ fn non_stream_chat_repair_splits_concatenated_tool_calls() {
     assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
 }
 
+#[test]
+fn non_stream_chat_generates_unique_ids_for_missing_and_empty_upstream_ids() {
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [
+                    {
+                        "function": {
+                            "name": "exec_command",
+                            "arguments": "{\"cmd\":\"one\"}{\"cmd\":\"two\"}"
+                        }
+                    },
+                    {
+                        "id": "",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\":\"three\"}"}
+                    },
+                    {
+                        "id": "call_explicit",
+                        "function": {"name": "exec_command", "arguments": "{\"cmd\":\"four\"}"}
+                    }
+                ]}
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        false,
+        true,
+    );
+    let calls = converted["output"]
+        .as_array()
+        .expect("output array")
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 4);
+
+    let call_ids = calls
+        .iter()
+        .map(|call| {
+            call.get("call_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .expect("every emitted call has a nonempty call_id")
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(call_ids.len(), calls.len());
+    assert_eq!(calls[3]["call_id"], "call_explicit");
+}
+
 fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
