@@ -144,6 +144,12 @@ pub(crate) fn bundled_provider_templates() -> Vec<ProviderTemplate> {
             "ClinePass",
             "ClinePass OpenAI-compatible gateway with documented local model catalog.",
         ),
+        named_provider_template(
+            include_str!("../configs/hicap.toml"),
+            "hicap",
+            "Hicap",
+            "Hicap gateway with live model discovery and a local catalog fallback.",
+        ),
         primary_provider_template(
             include_str!("../configs/xiaomi-token-plan.toml"),
             "xiaomi_token_plan",

@@ -33,6 +33,13 @@ export KIMICODE_API_KEY="..."
 target/debug/codex-warp --config configs/moonshot-kimicode.toml
 ```
 
+With Hicap:
+
+```bash
+export HICAP_API_KEY="..."
+target/debug/codex-warp --config configs/hicap.toml
+```
+
 With a quick destination override:
 
 ```bash

@@ -405,8 +405,9 @@ proxy is running (the startup log prints the exact URL). With the default
 
 The UI can:
 
-- add providers from bundled example templates (OpenRouter, Kimi Code, OpenCode Go,
-  ClinePass, Xiaomi Token Plan, or a blank OpenAI-compatible profile)
+- add providers from bundled example templates (OpenRouter, Hicap, Kimi Code,
+  OpenCode Go, ClinePass, Xiaomi Token Plan, or a blank OpenAI-compatible
+  profile)
 - edit and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider

@@ -12,6 +12,7 @@ fn bundled_templates_include_example_profiles() {
     assert!(keys.contains(&"moonshot_kimicode"));
     assert!(keys.contains(&"opencode_go"));
     assert!(keys.contains(&"cline_pass"));
+    assert!(keys.contains(&"hicap"));
     assert!(keys.contains(&"xiaomi_token_plan"));
     assert!(keys.contains(&"custom"));
     assert_eq!(
@@ -45,5 +46,29 @@ fn bundled_templates_include_example_profiles() {
         go.model_catalog
             .iter()
             .any(|entry| entry.upstream_id.as_deref() == Some("glm-5.2"))
+    );
+
+    let hicap = find_provider_template("hicap").expect("hicap template");
+    assert_eq!(hicap.api_key_env.as_deref(), Some("HICAP_API_KEY"));
+    assert_eq!(hicap.auth_header, "api-key");
+    assert!(hicap.auth_scheme.is_empty());
+    assert!(!hicap.model_catalog_only);
+    assert!(
+        !hicap.model_catalog.is_empty(),
+        "hybrid template must keep a local catalog fallback"
+    );
+    assert_eq!(
+        hicap
+            .provider
+            .headers
+            .get("x-hicap-tag")
+            .map(String::as_str),
+        Some("codex-warp-jatmn")
+    );
+    assert!(
+        hicap
+            .model_catalog
+            .iter()
+            .any(|entry| entry.upstream_id.as_deref() == Some("hy3:free"))
     );
 }
