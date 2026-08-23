@@ -1070,9 +1070,14 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
     );
     for model in [
         "grok-4.6",
+        "grok_4.6",
         "grok4.6",
         "grok-4.6-latest",
+        "grok4.6-latest",
         "concentrate.ai/grok-4.6",
+        "xai/grok4.6",
+        "x-ai/grok_4.6-latest",
+        "concentrate.ai/grok4.6-latest",
     ] {
         assert!(
             matching_model_families(&config, model)

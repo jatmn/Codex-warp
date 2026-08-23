@@ -102,6 +102,7 @@ patterns = [
   "grok_4.6",
   "grok4.6",
   "grok-4.6-latest",
+  "grok4.6-latest",
   "xai/grok-4.6",
   "x-ai/grok-4.6",
 ]

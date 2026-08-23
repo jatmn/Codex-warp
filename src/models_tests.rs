@@ -456,7 +456,7 @@ fn live_catalog_localizes_exact_auto_review_target_to_provider_model_id() {
 #[test]
 fn live_catalog_localizes_grok_4_6_aliases_to_discovered_ids() {
     let body = Bytes::from_static(
-        br#"{"data":[{"id":"grok4.6"},{"id":"grok-4.6-latest"},{"id":"concentrate.ai/grok4.6"},{"id":"concentrate.ai/grok-4.6-latest"}]}"#,
+        br#"{"data":[{"id":"grok4.6"},{"id":"grok-4.6-latest"},{"id":"grok4.6-latest"},{"id":"xai/grok4.6"},{"id":"x-ai/grok_4.6-latest"},{"id":"concentrate.ai/grok4.6-latest"}]}"#,
     );
     let config = load_config_layers(&[]).expect("default config loads");
     let models = normalize_models(&body, &ProviderConfig::default(), &config)
@@ -483,7 +483,10 @@ fn grok_4_6_alias_detection_excludes_other_models() {
         "grok_4.6",
         "grok4.6",
         "grok-4.6-latest",
+        "grok4.6-latest",
+        "x-ai/grok_4.6-latest",
         "concentrate.ai/grok4.6",
+        "concentrate.ai/grok4.6-latest",
     ] {
         assert!(is_grok_4_6_alias_id(id), "{id} should be a 4.6 alias");
     }

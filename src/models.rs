@@ -708,7 +708,10 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
 fn is_grok_4_6_alias_id(id: &str) -> bool {
     let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
     let id = canonical_model_family_id(id);
-    matches!(id.as_str(), "grok-4.6" | "grok4.6" | "grok-4.6-latest")
+    matches!(
+        id.as_str(),
+        "grok-4.6" | "grok4.6" | "grok-4.6-latest" | "grok4.6-latest"
+    )
 }
 
 /// Whether `id` is a nonempty dash/underscore suffix variant of `target`.
