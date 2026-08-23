@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde::Serialize;
 
+use std::collections::BTreeMap;
+
 use crate::config::ModelCatalogEntry;
 use crate::config::ProviderConfig;
 
@@ -17,6 +19,7 @@ pub(crate) struct ProviderTemplate {
     pub api_key_env: Option<String>,
     pub auth_header: String,
     pub auth_scheme: String,
+    pub headers: BTreeMap<String, String>,
     pub responses_path: String,
     pub chat_completions_path: String,
     pub models_path: String,
@@ -57,6 +60,7 @@ fn template_from_provider(
         api_key_env: provider.api_key_env.clone(),
         auth_header: provider.auth_header.clone(),
         auth_scheme: provider.auth_scheme.clone(),
+        headers: provider.headers.clone(),
         responses_path: provider.responses_path.clone(),
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),

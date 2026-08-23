@@ -25,6 +25,7 @@ load model-family catalogs and bundled tool-policy rules:
 # Optional provider profiles:
 # include = [
 #   "configs/clinepass.toml",
+#   "configs/hicap.toml",
 #   "configs/moonshot-kimicode.toml",
 #   "configs/opencode-go.toml",
 #   "configs/xiaomi-token-plan.toml",

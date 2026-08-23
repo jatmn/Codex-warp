@@ -52,6 +52,10 @@ fn bundled_templates_include_example_profiles() {
     assert_eq!(hicap.api_key_env.as_deref(), Some("HICAP_API_KEY"));
     assert_eq!(hicap.auth_header, "api-key");
     assert!(hicap.auth_scheme.is_empty());
+    assert_eq!(
+        hicap.headers.get("x-hicap-tag").map(String::as_str),
+        Some("codex-warp-jatmn")
+    );
     assert!(!hicap.model_catalog_only);
     assert!(
         !hicap.model_catalog.is_empty(),

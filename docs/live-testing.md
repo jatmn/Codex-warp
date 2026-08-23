@@ -40,6 +40,9 @@ export HICAP_API_KEY="..."
 target/debug/codex-warp --config configs/hicap.toml
 ```
 
+For the Codex smoke test below, use the bundled Hicap fallback model by
+replacing `-m mimo-v2.5` with `-m hicap/glm-5.2`.
+
 With a quick destination override:
 
 ```bash
