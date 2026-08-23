@@ -440,6 +440,62 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
 }
 
 #[test]
+fn live_catalog_localizes_exact_auto_review_target_to_provider_model_id() {
+    let mut info = json!({"auto_review_model_override": "grok-4.6"});
+    localize_auto_review_model_override(
+        &mut info,
+        "concentrate.ai/grok-4.6",
+        &ProviderConfig::default(),
+    );
+    assert_eq!(
+        info["auto_review_model_override"],
+        "concentrate.ai/grok-4.6"
+    );
+}
+
+#[test]
+fn live_catalog_localizes_grok_4_6_aliases_to_discovered_ids() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"grok4.6"},{"id":"grok-4.6-latest"},{"id":"grok4.6-latest"},{"id":"xai/grok4.6"},{"id":"x-ai/grok_4.6-latest"},{"id":"concentrate.ai/grok4.6-latest"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    for model in models {
+        let id = model["slug"].as_str().expect("model has slug");
+        assert_eq!(model["auto_review_model_override"], id);
+        assert_eq!(model["context_window"], 500_000);
+    }
+}
+
+#[test]
+fn grok_4_6_alias_localization_preserves_distinct_review_targets() {
+    let mut info = json!({"auto_review_model_override": "upstream-review"});
+    localize_auto_review_model_override(&mut info, "grok4.6", &ProviderConfig::default());
+    assert_eq!(info["auto_review_model_override"], "upstream-review");
+}
+
+#[test]
+fn grok_4_6_alias_detection_excludes_other_models() {
+    for id in [
+        "grok-4.6",
+        "grok_4.6",
+        "grok4.6",
+        "grok-4.6-latest",
+        "grok4.6-latest",
+        "x-ai/grok_4.6-latest",
+        "concentrate.ai/grok4.6",
+        "concentrate.ai/grok4.6-latest",
+    ] {
+        assert!(is_grok_4_6_alias_id(id), "{id} should be a 4.6 alias");
+    }
+    for id in ["grok-4.5", "grok-4.60", "grok-4.6-preview"] {
+        assert!(!is_grok_4_6_alias_id(id), "{id} is not a 4.6 alias");
+    }
+}
+
+#[test]
 fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
     let mut info = json!({"auto_review_model_override": "deepseek_v4_flash"});
     localize_auto_review_model_override(
@@ -978,7 +1034,7 @@ fn qwen_family_metadata_applies_to_documented_qwen3_6_variant() {
 #[test]
 fn x_ai_grok_family_metadata_is_variant_specific() {
     let body = Bytes::from_static(
-            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-4.5","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
+            br#"{"object":"list","data":[{"id":"grok-4.3","object":"model"},{"id":"grok-4.5","object":"model"},{"id":"concentrate.ai/grok-4.6","object":"model"},{"id":"grok-build-0.1","object":"model"}]}"#,
         );
     let provider = ProviderConfig::default();
     let config = load_config_layers(&[]).expect("default config loads");
@@ -994,9 +1050,22 @@ fn x_ai_grok_family_metadata_is_variant_specific() {
     assert_eq!(models[1]["input_modalities"], json!(["text", "image"]));
     assert_eq!(models[1]["supports_search_tool"], true);
     assert_eq!(models[1]["supports_parallel_tool_calls"], true);
-    assert_eq!(models[2]["context_window"], 256_000);
-    assert_eq!(models[2]["input_modalities"], json!(["text"]));
+    assert_eq!(models[2]["context_window"], 500_000);
+    assert_eq!(models[2]["default_reasoning_level"], "high");
+    assert_eq!(models[2]["input_modalities"], json!(["text", "image"]));
+    assert_eq!(models[2]["supports_search_tool"], true);
     assert_eq!(models[2]["supports_parallel_tool_calls"], true);
+    assert_eq!(
+        models[2]["supported_reasoning_levels"][3]["effort"],
+        "xhigh"
+    );
+    assert_eq!(
+        models[2]["auto_review_model_override"],
+        "concentrate.ai/grok-4.6"
+    );
+    assert_eq!(models[3]["context_window"], 256_000);
+    assert_eq!(models[3]["input_modalities"], json!(["text"]));
+    assert_eq!(models[3]["supports_parallel_tool_calls"], true);
 }
 
 #[test]

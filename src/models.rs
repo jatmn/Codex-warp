@@ -683,8 +683,15 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     if target.is_empty() {
         return;
     }
-    if canonical_model_family_id(&target) == "deepseek-v4-flash" && is_model_variant_id(id, &target)
+    let target_family = canonical_model_family_id(&target);
+    let id_suffix = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    if canonical_model_family_id(id_suffix) == target_family
+        || (target_family == "grok-4.6" && is_grok_4_6_alias_id(id))
     {
+        info["auto_review_model_override"] = json!(id);
+        return;
+    }
+    if target_family == "deepseek-v4-flash" && is_model_variant_id(id, &target) {
         info["auto_review_model_override"] = json!(id);
         return;
     }
@@ -693,6 +700,18 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     }
     info["auto_review_model_override"] =
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
+}
+
+/// Whether `id` is one of the exact Grok 4.6 spellings advertised by the
+/// bundled family catalog. Live discovery must preserve the provider's original
+/// spelling so Guardian requests use a route that discovery actually published.
+fn is_grok_4_6_alias_id(id: &str) -> bool {
+    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    let id = canonical_model_family_id(id);
+    matches!(
+        id.as_str(),
+        "grok-4.6" | "grok4.6" | "grok-4.6-latest" | "grok4.6-latest"
+    )
 }
 
 /// Whether `id` is a nonempty dash/underscore suffix variant of `target`.
