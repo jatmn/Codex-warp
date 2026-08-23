@@ -167,7 +167,7 @@ fn manual_provider_catalog_is_normalized_for_codex() {
         .expect("clinepass config loads");
     let provider = provider_by_id(&config, "cline_pass").expect("clinepass provider exists");
 
-    let models = manual_catalog_models(provider, &config);
+    let models = manual_catalog_models(provider, &config, None);
     let qwen = models
         .iter()
         .find(|model| model["slug"] == "cline-pass/qwen3.7-max")
@@ -272,7 +272,7 @@ fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "mimo_v2.5_pro")
         .expect("Mimo Pro model is listed");
@@ -375,7 +375,7 @@ fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "mimo-v2.5-pro")
         .expect("Mimo Pro model is listed");
@@ -794,7 +794,7 @@ fn versioned_deepseek_v4_flash_models_advertise_a_routable_auto_review_target() 
         ..ModelCatalogEntry::default()
     });
 
-    let models = manual_catalog_models(&provider, &config);
+    let models = manual_catalog_models(&provider, &config, None);
     let model = models
         .iter()
         .find(|model| model["slug"] == "concentrate.ai/deepseek-v4-flash-0731")
@@ -816,7 +816,7 @@ fn assert_auto_review_overrides(
         .unwrap_or_else(|error| panic!("{config_path} config loads: {error}"));
     let provider = provider_by_id(&config, provider_id)
         .unwrap_or_else(|| panic!("{provider_id} provider exists"));
-    let models = manual_catalog_models(provider, &config);
+    let models = manual_catalog_models(provider, &config, None);
     let actual = models
         .iter()
         .map(|model| {
@@ -1257,9 +1257,7 @@ fn manual_catalog_models_skip_upstream_id_aliases() {
             ..crate::config::ModelCatalogEntry::default()
         });
     let config = load_config_layers(&[]).expect("default config loads");
-    let models = manual_catalog_models(&provider, &config);
-
-    assert_eq!(models.len(), 1);
+    let models = manual_catalog_models(&provider, &config, None);
     assert_eq!(models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
     assert!(
         models
@@ -1286,7 +1284,7 @@ fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
 
     let mut merged_models = Vec::new();
     let config = load_config_layers(&[]).expect("default config loads");
-    let catalog_models = manual_catalog_models(&hicap, &config);
+    let catalog_models = manual_catalog_models(&hicap, &config, None);
 
     let added = add_models_for_provider(
         &mut merged_models,

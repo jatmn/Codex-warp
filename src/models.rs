@@ -281,7 +281,7 @@ async fn models_for_revision(
             let discovered_models = discovered_models_by_slug(&provider_models);
             let config = state.read_config().clone();
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(&provider, &config));
+                provider_models.extend(manual_catalog_models(&provider, &config, Some(&discovered_models)));
             }
             (
                 provider_id,
@@ -456,13 +456,18 @@ async fn publish_model_discovery(
 }
 
 fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {
+    let mut seen = BTreeSet::new();
     models
         .iter()
         .filter_map(|model| {
-            model
+            let slug = model
                 .get("slug")
-                .and_then(Value::as_str)
-                .map(|slug| (slug.to_string(), model.clone()))
+                .and_then(Value::as_str)?;
+            if seen.insert(slug.to_string()) {
+                Some((slug.to_string(), model.clone()))
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -694,13 +699,17 @@ pub(crate) fn normalize_models(
     Some(models)
 }
 
-pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
+pub(crate) fn manual_catalog_models(
+    provider: &ProviderConfig,
+    config: &AppConfig,
+    discovered: Option<&BTreeMap<String, Value>>,
+) -> Vec<Value> {
     let mut models = Vec::new();
     for entry in &provider.model_catalog {
         if !provider.model_is_enabled(&entry.id) {
             continue;
         }
-        models.push(catalog_model_info(entry, provider, config, None));
+        models.push(catalog_model_info(entry, provider, config, discovered));
     }
     models
 }

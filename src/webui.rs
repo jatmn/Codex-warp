@@ -1610,7 +1610,7 @@ fn apply_model_persist(entry: &mut ModelCatalogEntry, fields: &ModelPersist) {
 
 fn validate_model_reasoning(
     entry: &mut ModelCatalogEntry,
-    provider: &ProviderConfig,
+    _provider: &ProviderConfig,
     config: &AppConfig,
     discovered: &BTreeMap<String, Value>,
 ) -> Result<(), ApiError> {
@@ -1642,11 +1642,18 @@ fn validate_model_reasoning(
         }
     }
 
+    // When discovery metadata is unavailable and the edit does not touch
+    // reasoning fields, trust the persisted data rather than rejecting an
+    // unrelated partial edit against synthetic inherited levels.
+    if discovered.is_empty() && entry.supported_reasoning_levels.is_none() {
+        return Ok(());
+    }
+
     let mut inherited = entry.clone();
     inherited.supported_reasoning_levels = None;
     inherited.default_reasoning_level = None;
-    let inherited_info = models::catalog_model_info(&inherited, provider, config, Some(discovered));
-    let (inherited_levels, _) = models::reasoning_metadata(&inherited_info);
+    let inherited_info = models::catalog_model_info(&inherited, _provider, config, Some(discovered));
+    let (inherited_levels, inherited_default) = models::reasoning_metadata(&inherited_info);
     let effective_levels = entry
         .supported_reasoning_levels
         .as_ref()
@@ -1657,6 +1664,17 @@ fn validate_model_reasoning(
         return Err(ApiError::bad_request(format!(
             "default reasoning level `{default}` is not in supported_reasoning_levels"
         )));
+    }
+    // When the user sets explicit levels without a new default, and the
+    // inherited default is excluded by the new list, auto-set the default to
+    // the first level so the persisted data is self-consistent instead of
+    // silently inheriting an out-of-list default.
+    if entry.supported_reasoning_levels.is_some()
+        && entry.default_reasoning_level.is_none()
+        && !inherited_levels.is_empty()
+        && !effective_levels.iter().any(|level| level == &inherited_default)
+    {
+        entry.default_reasoning_level = Some(effective_levels[0].clone());
     }
     Ok(())
 }
