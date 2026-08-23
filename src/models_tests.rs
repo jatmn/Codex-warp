@@ -262,6 +262,25 @@ fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
 }
 
 #[test]
+fn manual_catalog_localizes_hy3_auto_review_to_provider_model() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "concentrate.ai/hy3".to_string(),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "concentrate.ai/hy3")
+        .expect("Hy3 model is listed");
+
+    assert_eq!(model["auto_review_model_override"], "concentrate.ai/hy3");
+}
+
+#[test]
 fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
     let config = load_config_layers(&[]).expect("default config loads");
     let provider = ProviderConfig {

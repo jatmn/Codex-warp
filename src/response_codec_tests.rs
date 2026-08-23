@@ -48,6 +48,142 @@ fn completed_end_turn(events: &[String]) -> bool {
         .expect("end_turn is a bool")
 }
 
+fn completed_function_calls(events: &[String]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|event| event.contains("response.output_item.done"))
+        .filter_map(|event| sse_data(event))
+        .filter_map(|data| serde_json::from_str::<Value>(&data).ok())
+        .filter_map(|event| event.get("item").cloned())
+        .filter(|item| item["type"] == "function_call")
+        .collect()
+}
+
+#[test]
+fn concatenated_tool_call_repair_requires_multiple_complete_objects() {
+    assert_eq!(
+        split_concatenated_tool_call_arguments("{\"cmd\":\"one\"}{\"cmd\":\"two\"}"),
+        Some(vec![
+            "{\"cmd\":\"one\"}".to_string(),
+            "{\"cmd\":\"two\"}".to_string()
+        ])
+    );
+    for unchanged in [
+        "{\"cmd\":\"one\"}",
+        "{\"cmd\":\"one\"}{\"cmd\":",
+        "{\"cmd\":\"one\"} trailing",
+        "[1][2]",
+        "{\"cmd\":\"literal }{ text\"}",
+    ] {
+        assert_eq!(split_concatenated_tool_call_arguments(unchanged), None);
+    }
+}
+
+#[test]
+fn streaming_chat_repair_splits_concatenated_tool_calls_and_assigns_unique_ids() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_original",
+            "function": {
+                "name": "exec_command",
+                "arguments": "{\"cmd\":\"git status\"}"
+            }
+        }]}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "function": {"arguments": "{\"cmd\":\"git diff\"}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"git status\"}");
+    assert_eq!(calls[1]["arguments"], "{\"cmd\":\"git diff\"}");
+    assert_eq!(calls[0]["call_id"], "call_original");
+    assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+}
+
+#[test]
+fn streaming_chat_preserves_concatenated_arguments_without_opt_in() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_original",
+                "function": {
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"one\"}{\"cmd\":\"two\"}"
+                }
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
+}
+
+#[test]
+fn non_stream_chat_repair_splits_concatenated_tool_calls() {
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [{
+                    "id": "call_original",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"git status\"}{\"cmd\":\"git diff\"}"
+                    }
+                }]}
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        false,
+        true,
+    );
+    let calls = converted["output"]
+        .as_array()
+        .expect("output array")
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"git status\"}");
+    assert_eq!(calls[1]["arguments"], "{\"cmd\":\"git diff\"}");
+    assert_eq!(calls[0]["call_id"], "call_original");
+    assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+}
+
 fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({
@@ -5462,6 +5598,7 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         ContinueGuardState::default(),
         None,
         false,
+        false,
         Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
@@ -5493,6 +5630,7 @@ async fn failed_chat_stream_restores_deferred_markup_content() {
         ContinueGuardState::default(),
         None,
         true,
+        false,
         None,
     )
     .collect::<Vec<_>>()
@@ -5973,6 +6111,7 @@ fn tool_markup_suppression_applies_to_non_stream_strings_and_content_arrays() {
         &crate::config::ToolPolicyConfig::default(),
         None,
         true,
+        false,
     );
     let text = converted["output"][0]["content"]
         .as_array()
@@ -5998,6 +6137,7 @@ fn non_stream_tool_markup_suppression_requires_both_opt_in_and_a_named_call() {
             &crate::config::ToolPolicyConfig::default(),
             None,
             enabled,
+            false,
         )
     };
     let named_call = json!([{"function": {"name": "exec_command"}}]);
@@ -6030,6 +6170,7 @@ fn non_stream_tool_markup_suppression_handles_string_and_empty_content() {
             &crate::config::ToolPolicyConfig::default(),
             None,
             true,
+            false,
         )
     };
 
@@ -6063,6 +6204,7 @@ fn non_stream_content_array_preserves_unterminated_sanitizer_tail() {
         &crate::config::ToolPolicyConfig::default(),
         None,
         true,
+        false,
     );
     assert_eq!(converted["output"][0]["content"][0]["text"], "working");
 }

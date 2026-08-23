@@ -390,6 +390,7 @@ pub(crate) async fn proxy_chat_responses(
             continue_guard,
             usage_recorder,
             selected.transform.suppress_duplicate_tool_markup,
+            selected.transform.split_concatenated_tool_call_arguments,
             session_model.clone().map(|update| (state.clone(), update)),
         ));
         let mut response = Response::new(body);
@@ -470,6 +471,7 @@ pub(crate) async fn proxy_chat_responses(
                     &tool_policy,
                     Some((&state.debug_log, &request_log_id, &continue_guard)),
                     selected.transform.suppress_duplicate_tool_markup,
+                    selected.transform.split_concatenated_tool_call_arguments,
                 ))
                 .into_response()
             }

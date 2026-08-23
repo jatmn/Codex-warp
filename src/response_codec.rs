@@ -192,6 +192,7 @@ pub(crate) fn chat_stream_to_responses(
         continue_guard,
         usage_recorder,
         false,
+        false,
         None,
     )
 }
@@ -208,6 +209,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments: bool,
     session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
@@ -219,6 +221,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
         yield Ok(Bytes::from(created_event));
 
         let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
+        state.split_concatenated_tool_call_arguments = split_concatenated_tool_call_arguments;
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
@@ -893,6 +896,7 @@ pub(crate) struct ChatAccum {
     reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments: bool,
     native_tool_call_seen: bool,
     deferred_content: Vec<String>,
     tool_markup_sanitizer: Sanitizer,
@@ -905,6 +909,19 @@ pub(crate) struct ToolCallAccum {
     id: String,
     name: String,
     arguments: String,
+}
+
+fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>> {
+    let stream = serde_json::Deserializer::from_str(arguments).into_iter::<Value>();
+    let mut objects = Vec::new();
+    for value in stream {
+        let value = value.ok()?;
+        if !value.is_object() {
+            return None;
+        }
+        objects.push(serde_json::to_string(&value).ok()?);
+    }
+    (objects.len() > 1).then_some(objects)
 }
 
 impl ChatAccum {
@@ -1177,26 +1194,36 @@ impl ChatAccum {
             if call.name.is_empty() {
                 continue;
             }
-            let call_id = if call.id.is_empty() {
-                generated_id("call")
-            } else {
-                call.id.clone()
-            };
-            let item = tool_call_item(
-                &call.name,
-                &call.arguments,
-                &call_id,
-                custom_tool_names,
-                namespace_helpers,
-                tool_policy,
+            let repaired_arguments = self
+                .split_concatenated_tool_call_arguments
+                .then(|| split_concatenated_tool_call_arguments(&call.arguments))
+                .flatten();
+            let arguments = repaired_arguments.as_ref().map_or_else(
+                || vec![call.arguments.as_str()],
+                |items| items.iter().map(String::as_str).collect(),
             );
-            events.push(sse(
-                "response.output_item.done",
-                json!({
-                    "type": "response.output_item.done",
-                    "item": item
-                }),
-            ));
+            for (index, arguments) in arguments.into_iter().enumerate() {
+                let call_id = if index == 0 && !call.id.is_empty() {
+                    call.id.clone()
+                } else {
+                    generated_id("call")
+                };
+                let item = tool_call_item(
+                    &call.name,
+                    arguments,
+                    &call_id,
+                    custom_tool_names,
+                    namespace_helpers,
+                    tool_policy,
+                );
+                events.push(sse(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "item": item
+                    }),
+                ));
+            }
         }
 
         let end_turn = self.end_turn(continue_guard);
@@ -2336,6 +2363,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
         tool_policy,
         continue_guard,
         false,
+        false,
     )
 }
 
@@ -2346,6 +2374,7 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
     tool_policy: &ToolPolicyConfig,
     continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments_enabled: bool,
 ) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
@@ -2414,14 +2443,28 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
                 let call_id = call.get("id").and_then(Value::as_str).unwrap_or("call");
-                output.push(tool_call_item(
-                    name,
-                    arguments,
-                    call_id,
-                    custom_tool_names,
-                    namespace_helpers,
-                    tool_policy,
-                ));
+                let repaired_arguments = split_concatenated_tool_call_arguments_enabled
+                    .then(|| split_concatenated_tool_call_arguments(arguments))
+                    .flatten();
+                let arguments = repaired_arguments.as_ref().map_or_else(
+                    || vec![arguments],
+                    |items| items.iter().map(String::as_str).collect(),
+                );
+                for (index, arguments) in arguments.into_iter().enumerate() {
+                    let call_id = if index == 0 {
+                        call_id.to_string()
+                    } else {
+                        generated_id("call")
+                    };
+                    output.push(tool_call_item(
+                        name,
+                        arguments,
+                        &call_id,
+                        custom_tool_names,
+                        namespace_helpers,
+                        tool_policy,
+                    ));
+                }
             }
         }
     }

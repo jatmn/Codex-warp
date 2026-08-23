@@ -514,6 +514,9 @@ pub struct TransformConfig {
     /// Enables model-specific removal of duplicate XML-like tool markup only
     /// after a matching native tool call has been observed.
     pub suppress_duplicate_tool_markup: bool,
+    /// Repairs gateways that concatenate multiple JSON objects into one
+    /// function-call argument stream instead of assigning distinct call indexes.
+    pub split_concatenated_tool_call_arguments: bool,
 }
 
 impl Default for TransformConfig {
@@ -533,6 +536,7 @@ impl Default for TransformConfig {
             request_stream_options_include_usage: false,
             preserve_reasoning_content_history: false,
             suppress_duplicate_tool_markup: false,
+            split_concatenated_tool_call_arguments: false,
         }
     }
 }
@@ -556,6 +560,7 @@ pub struct TransformConfigPatch {
     pub request_stream_options_include_usage: Option<bool>,
     pub preserve_reasoning_content_history: Option<bool>,
     pub suppress_duplicate_tool_markup: Option<bool>,
+    pub split_concatenated_tool_call_arguments: Option<bool>,
 }
 
 impl TransformConfigPatch {
@@ -611,6 +616,12 @@ impl TransformConfigPatch {
         }
         if let Some(suppress_duplicate_tool_markup) = self.suppress_duplicate_tool_markup {
             transform.suppress_duplicate_tool_markup = suppress_duplicate_tool_markup;
+        }
+        if let Some(split_concatenated_tool_call_arguments) =
+            self.split_concatenated_tool_call_arguments
+        {
+            transform.split_concatenated_tool_call_arguments =
+                split_concatenated_tool_call_arguments;
         }
     }
 }

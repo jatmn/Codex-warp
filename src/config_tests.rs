@@ -1192,6 +1192,20 @@ fn transform_patch_can_enable_duplicate_tool_markup_suppression() {
 }
 
 #[test]
+fn transform_patch_can_enable_concatenated_tool_call_repair() {
+    let mut transform = TransformConfig::default();
+    assert!(!transform.split_concatenated_tool_call_arguments);
+
+    TransformConfigPatch {
+        split_concatenated_tool_call_arguments: Some(true),
+        ..TransformConfigPatch::default()
+    }
+    .apply_to(&mut transform);
+
+    assert!(transform.split_concatenated_tool_call_arguments);
+}
+
+#[test]
 fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
     let config = load_config_layers(&[]).expect("default parses");
     // These should NOT match the hy3 family, which would otherwise inherit the
@@ -1247,6 +1261,19 @@ fn hy3_exact_ids_inherit_broad_family_transform() {
             transform.unsupported_tool_strategy,
             UnsupportedToolStrategy::AsFunction,
             "exact id {id} should inherit the as_function coercion"
+        );
+        assert!(
+            transform.split_concatenated_tool_call_arguments,
+            "exact id {id} should inherit concatenated tool-call repair"
+        );
+        assert!(
+            matching_model_families(&config, id)
+                .iter()
+                .any(
+                    |family| family.model_metadata.auto_review_model_override.as_deref()
+                        == Some("hy3")
+                ),
+            "exact id {id} should advertise the Hy3 auto-review model"
         );
     }
 }
