@@ -1387,6 +1387,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1454,6 +1455,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1501,6 +1503,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1517,7 +1520,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
     refreshed.insert("shared".to_string(), "beta".to_string());
     let failed_providers = BTreeSet::from(["alpha".to_string()]);
 
-    publish_model_routes(&state, refreshed, &failed_providers).await;
+    publish_model_discovery(&state, refreshed, BTreeMap::new(), &failed_providers).await;
 
     assert_eq!(
         state
@@ -1644,6 +1647,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1713,6 +1717,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1787,6 +1792,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1939,4 +1945,217 @@ fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
     assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn incomplete_upstream_reasoning_metadata_is_reconciled() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"default-only","default_reasoning_level":"high"},{"id":"levels-only","supported_reasoning_levels":["low","high"]}]}"#,
+    );
+    let models = normalize_models(&body, &ProviderConfig::default(), &AppConfig::default())
+        .expect("models are normalized");
+
+    assert_eq!(models[0]["default_reasoning_level"], "high");
+    assert_eq!(models[0]["supported_reasoning_levels"][0]["effort"], "high");
+    assert_eq!(models[1]["default_reasoning_level"], "low");
+    assert_eq!(models[1]["supported_reasoning_levels"][1]["effort"], "high");
+}
+
+#[test]
+fn upstream_reasoning_level_descriptions_are_preserved() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"described","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"low","description":"Quick analysis"},{"effort":"high","description":"Deep analysis","custom":true}]}]}"#,
+    );
+    let models = normalize_models(&body, &ProviderConfig::default(), &AppConfig::default())
+        .expect("models are normalized");
+
+    assert_eq!(
+        models[0]["supported_reasoning_levels"][0]["description"],
+        "Quick analysis"
+    );
+    assert_eq!(models[0]["supported_reasoning_levels"][1]["custom"], true);
+}
+
+#[test]
+fn reasoning_reconciliation_removes_empty_duplicates_and_repairs_default() {
+    let mut info = json!({
+        "supported_reasoning_levels": [
+            {"effort":" low "},
+            {"effort":""},
+            {"effort":"low"},
+            {"effort":"high"}
+        ],
+        "default_reasoning_level": "max"
+    });
+
+    reconcile_reasoning_metadata(&mut info);
+
+    assert_eq!(
+        info["supported_reasoning_levels"],
+        json!([
+            {"effort":"low","description":"low"},
+            {"effort":"high","description":"high"}
+        ])
+    );
+    assert_eq!(info["default_reasoning_level"], "low");
+}
+
+#[test]
+fn reasoning_reconciliation_rebuilds_noncanonical_objects() {
+    let mut duplicated = json!({
+        "supported_reasoning_levels": [
+            {"effort":"low","description":"first"},
+            {"effort":"low","description":"duplicate"}
+        ],
+        "default_reasoning_level": "low"
+    });
+    reconcile_reasoning_metadata(&mut duplicated);
+    assert_eq!(
+        duplicated["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut padded = json!({
+        "supported_reasoning_levels": [{"effort":" low ","description":"padded"}],
+        "default_reasoning_level": "low"
+    });
+    reconcile_reasoning_metadata(&mut padded);
+    assert_eq!(padded["supported_reasoning_levels"][0]["effort"], "low");
+}
+
+#[test]
+fn discovered_models_are_indexed_by_their_exact_slug() {
+    let models = vec![
+        json!({"slug":"shared","default_reasoning_level":"low"}),
+        json!({"slug":"vendor/nested","default_reasoning_level":"high"}),
+        json!({"id":"missing-slug"}),
+    ];
+
+    let indexed = discovered_models_by_slug(&models);
+
+    assert_eq!(indexed.len(), 2);
+    assert_eq!(indexed["shared"]["default_reasoning_level"], "low");
+    assert_eq!(indexed["vendor/nested"]["default_reasoning_level"], "high");
+    assert!(!indexed.contains_key("missing-slug"));
+}
+
+#[test]
+fn catalog_reasoning_override_applies_to_live_upstream_alias_before_dedupe() {
+    let mut provider = ProviderConfig::default();
+    provider.model_catalog.extend([
+        ModelCatalogEntry {
+            id: "provider/unrelated".into(),
+            upstream_id: Some("other-model".into()),
+            supported_reasoning_levels: Some(vec!["low".into()]),
+            default_reasoning_level: Some("low".into()),
+            ..ModelCatalogEntry::default()
+        },
+        ModelCatalogEntry {
+            id: "provider/custom".into(),
+            upstream_id: Some("live-model".into()),
+            supported_reasoning_levels: Some(vec!["high".into(), "max".into()]),
+            default_reasoning_level: Some("max".into()),
+            ..ModelCatalogEntry::default()
+        },
+    ]);
+    let mut merged = Vec::new();
+    let mut routes = BTreeMap::new();
+    add_models_for_provider(
+        &mut merged,
+        &mut routes,
+        &AppConfig::default(),
+        "provider",
+        &provider,
+        vec![synthetic_model_info("live-model")],
+    );
+
+    let live = merged
+        .iter()
+        .find(|model| model["slug"] == "live-model")
+        .expect("live model remains advertised");
+    assert_eq!(live["default_reasoning_level"], "max");
+    assert_eq!(live["supported_reasoning_levels"][0]["effort"], "high");
+    assert_eq!(live["supported_reasoning_levels"][1]["effort"], "max");
+}
+
+#[test]
+fn exact_catalog_reasoning_override_wins_over_an_earlier_unrelated_entry() {
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "unrelated".into(),
+                supported_reasoning_levels: Some(vec!["low".into()]),
+                default_reasoning_level: Some("low".into()),
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "live-model".into(),
+                supported_reasoning_levels: Some(vec!["high".into()]),
+                default_reasoning_level: Some("high".into()),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+    let mut merged = Vec::new();
+    add_models_for_provider(
+        &mut merged,
+        &mut BTreeMap::new(),
+        &AppConfig::default(),
+        "provider",
+        &provider,
+        vec![synthetic_model_info("live-model")],
+    );
+
+    let live = merged
+        .iter()
+        .find(|model| model["slug"] == "live-model")
+        .expect("live model remains advertised");
+    assert_eq!(live["default_reasoning_level"], "high");
+    assert_eq!(live["supported_reasoning_levels"][0]["effort"], "high");
+}
+
+#[tokio::test]
+async fn discovery_publication_keeps_provider_scoped_collision_metadata() {
+    let mut config = AppConfig::default();
+    for id in ["alpha", "beta"] {
+        config.providers.insert(
+            id.into(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let state = test_state(config);
+    state.discovered_models.write().await.insert(
+        "beta".into(),
+        BTreeMap::from([(
+            "shared".into(),
+            json!({"slug":"shared","default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"high"}]}),
+        )]),
+    );
+    let discovered = BTreeMap::from([(
+        "alpha".into(),
+        BTreeMap::from([(
+            "shared".into(),
+            json!({"slug":"shared","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"}]}),
+        )]),
+    )]);
+    let retain = BTreeSet::from(["beta".into()]);
+
+    publish_model_discovery(&state, BTreeMap::new(), discovered, &retain).await;
+
+    let snapshots = state.discovered_models.read().await;
+    assert_eq!(
+        snapshots["alpha"]["shared"]["default_reasoning_level"],
+        "low"
+    );
+    assert_eq!(
+        snapshots["beta"]["shared"]["default_reasoning_level"],
+        "high"
+    );
 }

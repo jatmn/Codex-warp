@@ -72,10 +72,11 @@ pub(crate) enum MutationRouteRefresh {
     RefetchAll,
 }
 
-struct MutationRouteDiscovery {
+struct MutationDiscovery {
     routes: BTreeMap<String, String>,
-    retain_owners: BTreeSet<String>,
-    fetch_warning: Option<String>,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
+    retain_providers: BTreeSet<String>,
+    warning: Option<String>,
 }
 
 /// Mutation-oriented route refresh. Always publishes a best-effort route map
@@ -96,8 +97,14 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
-    publish_model_routes(state, discovery.routes, &discovery.retain_owners).await;
-    match discovery.fetch_warning {
+    publish_model_discovery(
+        state,
+        discovery.routes,
+        discovery.discovered,
+        &discovery.retain_providers,
+    )
+    .await;
+    match discovery.warning {
         Some(warning) => Err(warning),
         None => Ok(()),
     }
@@ -127,7 +134,7 @@ async fn discover_routes_for_mutation(
     headers: &HeaderMap,
     mode: MutationRouteRefresh,
     focus_provider_id: Option<&str>,
-) -> MutationRouteDiscovery {
+) -> MutationDiscovery {
     let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
@@ -148,6 +155,7 @@ async fn discover_routes_for_mutation(
     let mut retain_owners: BTreeSet<String> =
         provider_list.iter().map(|(id, _)| id.clone()).collect();
     let mut fetch_warning = None;
+    let mut discovered = BTreeMap::new();
 
     let fetch_ids: BTreeSet<String> = match mode {
         MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
@@ -178,6 +186,12 @@ async fn discover_routes_for_mutation(
         let Some(current) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
             continue;
         };
+        if provider_failures.is_empty() {
+            discovered.insert(
+                provider_id.clone(),
+                discovered_models_by_slug(&provider_models),
+            );
+        }
         let mut merged_models = Vec::new();
         let _added = add_models_for_provider(
             &mut merged_models,
@@ -196,10 +210,11 @@ async fn discover_routes_for_mutation(
         }
     }
 
-    MutationRouteDiscovery {
+    MutationDiscovery {
         routes,
-        retain_owners,
-        fetch_warning,
+        discovered,
+        retain_providers: retain_owners,
+        warning: fetch_warning,
     }
 }
 
@@ -263,11 +278,18 @@ async fn models_for_revision(
         async move {
             let (mut provider_models, provider_failures) =
                 fetch_provider_upstream_models(&state, &headers, &provider_id, &provider).await;
+            let discovered_models = discovered_models_by_slug(&provider_models);
             let config = state.read_config().clone();
             if !provider.model_catalog.is_empty() {
                 provider_models.extend(manual_catalog_models(&provider, &config));
             }
-            (provider_id, provider, provider_models, provider_failures)
+            (
+                provider_id,
+                provider,
+                provider_models,
+                discovered_models,
+                provider_failures,
+            )
         }
     }))
     .await;
@@ -280,6 +302,7 @@ async fn models_for_revision(
         .unwrap_or_default();
     let mut failures = Vec::new();
     let mut failed_providers = BTreeSet::new();
+    let mut discovered = BTreeMap::new();
 
     if state.store.is_none() {
         let config = state.read_config();
@@ -288,9 +311,13 @@ async fn models_for_revision(
         }
     }
 
-    for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+    for (provider_id, _stale_provider, provider_models, discovered_models, provider_failures) in
+        fetch_results
+    {
         if !provider_failures.is_empty() {
             failed_providers.insert(provider_id.clone());
+        } else {
+            discovered.insert(provider_id.clone(), discovered_models);
         }
         let config = state.read_config().clone();
         let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
@@ -317,6 +344,7 @@ async fn models_for_revision(
                 &state,
                 revision,
                 routes,
+                discovered,
                 &failed_providers,
                 Json(json!({ "models": [] })).into_response(),
                 mutation_locked,
@@ -344,6 +372,7 @@ async fn models_for_revision(
         &state,
         revision,
         routes,
+        discovered,
         &failed_providers,
         Json(json!({ "models": merged_models })).into_response(),
         mutation_locked,
@@ -355,6 +384,7 @@ async fn publish_models_if_current(
     state: &AppState,
     revision: u64,
     routes: BTreeMap<String, String>,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
     failed_providers: &BTreeSet<String>,
     response: Response,
     mutation_locked: bool,
@@ -363,7 +393,7 @@ async fn publish_models_if_current(
         if state.config_revision.load(Ordering::Acquire) != revision {
             return None;
         }
-        publish_model_routes(state, routes, failed_providers).await;
+        publish_model_discovery(state, routes, discovered, failed_providers).await;
         return Some(response);
     }
 
@@ -371,7 +401,7 @@ async fn publish_models_if_current(
     if state.config_revision.load(Ordering::Acquire) != revision {
         return None;
     }
-    publish_model_routes(state, routes, failed_providers).await;
+    publish_model_discovery(state, routes, discovered, failed_providers).await;
     Some(response)
 }
 
@@ -381,16 +411,17 @@ async fn publish_models_if_current(
 /// persisted UI overlays. Prior discovered ownership is restored only when the
 /// owning provider's upstream catalog fetch failed, so a successful response can
 /// remove stale routes while transient failures remain usable.
-async fn publish_model_routes(
+async fn publish_model_discovery(
     state: &AppState,
     mut routes: BTreeMap<String, String>,
-    failed_providers: &BTreeSet<String>,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
+    retain_providers: &BTreeSet<String>,
 ) {
     let prior = state.model_routes.read().await.clone();
     {
         let config = state.read_config();
         for (model_id, owner) in prior {
-            if !failed_providers.contains(&owner) {
+            if !retain_providers.contains(&owner) {
                 continue;
             }
             let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
@@ -407,6 +438,33 @@ async fn publish_model_routes(
         }
     }
     *state.model_routes.write().await = routes;
+    let mut next_discovered = discovered;
+    let prior_discovered = state.discovered_models.read().await.clone();
+    for provider_id in retain_providers {
+        if let Some(models) = prior_discovered.get(provider_id) {
+            next_discovered
+                .entry(provider_id.clone())
+                .or_insert_with(|| models.clone());
+        }
+    }
+    // Keep disabled providers' snapshots available for the management view;
+    // removed providers are harmless because no view can reference them.
+    for (provider_id, models) in prior_discovered {
+        next_discovered.entry(provider_id).or_insert(models);
+    }
+    *state.discovered_models.write().await = next_discovered;
+}
+
+fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {
+    models
+        .iter()
+        .filter_map(|model| {
+            model
+                .get("slug")
+                .and_then(Value::as_str)
+                .map(|slug| (slug.to_string(), model.clone()))
+        })
+        .collect()
 }
 
 pub(crate) fn register_catalog_routes_for_provider(
@@ -517,6 +575,9 @@ pub(crate) fn add_models_for_provider(
 ) -> usize {
     let mut added = 0;
     let gateway_name = provider_display_name(provider_id, provider);
+    for model in &mut models {
+        apply_matching_catalog_overrides(model, provider);
+    }
     models = dedupe_models_by_slug(models);
     models.sort_by_key(|model| model_sort_key(config, model));
     for model in models {
@@ -639,19 +700,7 @@ pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfi
         if !provider.model_is_enabled(&entry.id) {
             continue;
         }
-        let mut model = json!({
-            "id": entry.id,
-            "object": "model"
-        });
-        if let Some(display_name) = &entry.display_name {
-            model["display_name"] = json!(display_name);
-        }
-        if let Some(description) = &entry.description {
-            model["description"] = json!(description);
-        }
-        if let Some(info) = codex_model_info(&model, provider, config) {
-            models.push(info);
-        }
+        models.push(catalog_model_info(entry, provider, config, None));
     }
     models
 }
@@ -688,8 +737,156 @@ pub(crate) fn codex_model_info(
     // metadata; a second ID-shape parser can drift from configured patterns.
     let matches_hy3_family = model_matches_family(config, "hy3", id);
     localize_auto_review_model_override(&mut info, id, provider, matches_hy3_family);
+    reconcile_reasoning_metadata(&mut info);
 
     Some(info)
+}
+
+pub(crate) fn catalog_model_info(
+    entry: &ModelCatalogEntry,
+    provider: &ProviderConfig,
+    config: &AppConfig,
+    discovered: Option<&BTreeMap<String, Value>>,
+) -> Value {
+    let discovered_model = discovered.and_then(|models| {
+        entry
+            .upstream_id
+            .as_deref()
+            .and_then(|id| models.get(id))
+            .or_else(|| models.get(&entry.id))
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|(slug, _)| config::catalog_entry_matches_model(entry, slug))
+                    .map(|(_, model)| model)
+            })
+    });
+    let mut info = discovered_model.cloned().unwrap_or_else(|| {
+        let model = json!({"id": entry.id, "object": "model"});
+        codex_model_info(&model, provider, config)
+            .unwrap_or_else(|| synthetic_model_info(&entry.id))
+    });
+    apply_catalog_entry_overrides(&mut info, entry);
+    info
+}
+
+fn apply_matching_catalog_overrides(info: &mut Value, provider: &ProviderConfig) {
+    let Some(slug) = info.get("slug").and_then(Value::as_str).map(str::to_string) else {
+        return;
+    };
+    if let Some(entry) = provider
+        .model_catalog
+        .iter()
+        .find(|entry| entry.id == slug)
+        .or_else(|| {
+            provider
+                .model_catalog
+                .iter()
+                .find(|entry| entry.upstream_id.as_deref() == Some(slug.as_str()))
+        })
+        .or_else(|| {
+            provider
+                .model_catalog
+                .iter()
+                .find(|entry| config::catalog_entry_matches_model(entry, &slug))
+        })
+    {
+        apply_catalog_reasoning_overrides(info, entry);
+    }
+}
+
+fn apply_catalog_entry_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
+    if let Some(display_name) = &entry.display_name {
+        info["display_name"] = json!(display_name);
+    }
+    if let Some(description) = &entry.description {
+        info["description"] = json!(description);
+    }
+    apply_catalog_reasoning_overrides(info, entry);
+}
+
+fn apply_catalog_reasoning_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
+    if let Some(levels) = &entry.supported_reasoning_levels {
+        info["supported_reasoning_levels"] = json!(
+            levels
+                .iter()
+                .map(|level| json!({"effort": level, "description": level}))
+                .collect::<Vec<_>>()
+        );
+    }
+    if let Some(default) = &entry.default_reasoning_level {
+        info["default_reasoning_level"] = json!(default);
+    }
+    reconcile_reasoning_metadata(info);
+}
+
+pub(crate) fn reasoning_metadata(info: &Value) -> (Vec<String>, String) {
+    let levels = info
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|level| {
+            level
+                .get("effort")
+                .and_then(Value::as_str)
+                .or_else(|| level.as_str())
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let default = info
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_string();
+    (levels, default)
+}
+
+fn reconcile_reasoning_metadata(info: &mut Value) {
+    let (raw_levels, raw_default) = reasoning_metadata(info);
+    let mut levels = Vec::new();
+    for level in raw_levels {
+        let level = level.trim();
+        if !level.is_empty() && !levels.iter().any(|existing| existing == level) {
+            levels.push(level.to_string());
+        }
+    }
+    if levels.is_empty() {
+        let fallback = raw_default.trim();
+        levels.push(if fallback.is_empty() {
+            "none".to_string()
+        } else {
+            fallback.to_string()
+        });
+    }
+    let default = raw_default.trim();
+    let default = if levels.iter().any(|level| level == default) {
+        default.to_string()
+    } else {
+        levels[0].clone()
+    };
+    let canonical_objects = info
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.len() == levels.len()
+                && items.iter().zip(&levels).all(|(item, level)| {
+                    item.as_object().is_some()
+                        && item.get("effort").and_then(Value::as_str) == Some(level.as_str())
+                })
+        });
+    if canonical_objects {
+        // Preserve upstream descriptions and any future per-level metadata.
+        info["default_reasoning_level"] = json!(default);
+        return;
+    }
+    info["supported_reasoning_levels"] = json!(
+        levels
+            .iter()
+            .map(|level| json!({"effort": level, "description": level}))
+            .collect::<Vec<_>>()
+    );
+    info["default_reasoning_level"] = json!(default);
 }
 
 fn localize_auto_review_model_override(
@@ -911,7 +1108,6 @@ pub(crate) fn apply_provider_model_metadata(info: &mut Value, model: &Value) {
     copy_field(info, model, "supports_search_tool");
     copy_field(info, model, "supports_reasoning_summaries");
     copy_field(info, model, "support_verbosity");
-    copy_field(info, model, "default_reasoning_level");
     copy_field(info, model, "default_reasoning_summary");
     copy_field(info, model, "include_skills_usage_instructions");
     copy_field(info, model, "apply_patch_tool_type");
@@ -939,11 +1135,29 @@ pub(crate) fn apply_provider_model_metadata(info: &mut Value, model: &Value) {
     {
         add_input_modality(info, "image");
     }
-    if let Some(levels) = model
+    let upstream_default = model
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let upstream_levels = model
         .get("supported_reasoning_levels")
-        .and_then(Value::as_array)
-    {
+        .and_then(Value::as_array);
+    if let Some(levels) = upstream_levels {
         info["supported_reasoning_levels"] = reasoning_levels_json(levels);
+    }
+    if let Some(default) = upstream_default {
+        info["default_reasoning_level"] = json!(default);
+        // Some gateways report only a default. Treat that as a one-mode model
+        // instead of leaving the synthetic `none` list paired with it.
+        if upstream_levels.is_none() {
+            info["supported_reasoning_levels"] =
+                json!([{"effort": default, "description": default}]);
+        }
+    } else if upstream_levels.is_some()
+        && let Some(first) = reasoning_metadata(info).0.first()
+    {
+        info["default_reasoning_level"] = json!(first);
     }
 }
 

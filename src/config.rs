@@ -438,6 +438,8 @@ pub struct ModelCatalogEntry {
     pub upstream_id: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    pub supported_reasoning_levels: Option<Vec<String>>,
+    pub default_reasoning_level: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -449,6 +451,8 @@ impl Default for ModelCatalogEntry {
             upstream_id: None,
             display_name: None,
             description: None,
+            supported_reasoning_levels: None,
+            default_reasoning_level: None,
             enabled: true,
         }
     }

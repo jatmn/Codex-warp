@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use reqwest::Client;
+use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
@@ -237,6 +238,9 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Last successful normalized upstream catalog, kept per provider so the
+    /// Web UI can edit live models without confusing colliding slugs.
+    pub(crate) discovered_models: Arc<AsyncRwLock<BTreeMap<String, BTreeMap<String, Value>>>>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -280,6 +284,7 @@ impl AppState {
             config,
             client,
             model_routes,
+            discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
             mutation_lock,

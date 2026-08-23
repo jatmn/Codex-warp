@@ -117,6 +117,25 @@ fn invalidating_model_discovery_advances_the_revision_before_route_refresh() {
     );
 }
 
+#[tokio::test]
+async fn list_providers_returns_configured_provider_views() {
+    let state = test_state();
+    state.write_config().providers.insert(
+        "listed-provider".into(),
+        ProviderConfig {
+            name: Some("Listed Provider".into()),
+            base_url: "https://example.test/v1".into(),
+            ..ProviderConfig::default()
+        },
+    );
+
+    let Json(views) = list_providers(State(state)).await.expect("list providers");
+
+    assert!(views.iter().any(|view| {
+        view.id == "listed-provider" && view.name.as_deref() == Some("Listed Provider")
+    }));
+}
+
 #[test]
 fn provider_persist_apply_to_preserves_api_key_when_not_set() {
     let mut provider = ProviderConfig {
@@ -252,6 +271,8 @@ fn model_persist_omitted_enabled_preserves_existing_value() {
         upstream_id: OptionalPatch::Absent,
         display_name: OptionalPatch::Set("Renamed".into()),
         description: OptionalPatch::Absent,
+        supported_reasoning_levels: OptionalPatch::Absent,
+        default_reasoning_level: OptionalPatch::Absent,
         enabled: None,
     };
     fields.apply_to(&mut entry);
@@ -267,11 +288,14 @@ fn model_persist_clear_optional_fields() {
         display_name: Some("Shared".into()),
         description: Some("desc".into()),
         enabled: true,
+        ..ModelCatalogEntry::default()
     };
     let fields = ModelPersist {
         upstream_id: OptionalPatch::Clear,
         display_name: OptionalPatch::Clear,
         description: OptionalPatch::Clear,
+        supported_reasoning_levels: OptionalPatch::Absent,
+        default_reasoning_level: OptionalPatch::Absent,
         enabled: Some(false),
     };
     fields.apply_to(&mut entry);
@@ -499,7 +523,7 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
         base_url: "https://example.test/v1".into(),
         ..ProviderConfig::default()
     };
-    let dual_view = build_provider_view(&state, "dual", &dual, &[]);
+    let dual_view = build_provider_view(&state, "dual", &dual, &[], &BTreeMap::new());
     assert!(dual_view.has_inline_api_key);
     assert!(dual_view.has_api_key);
     assert!(
@@ -529,7 +553,7 @@ fn build_provider_view_separates_inline_secret_from_resolved_auth() {
         base_url: "https://example.test/v1".into(),
         ..ProviderConfig::default()
     };
-    let env_view = build_provider_view(&state, "env", &env_only, &[]);
+    let env_view = build_provider_view(&state, "env", &env_only, &[], &BTreeMap::new());
     assert!(!env_view.has_inline_api_key);
     assert!(!env_view.has_api_key);
     assert!(env_view.api_key_preview.is_none());
@@ -780,7 +804,7 @@ fn managed_provider_view_exposes_only_masked_api_key() {
         Some(store),
     );
 
-    let view = build_provider_view(&state, "managed", &provider, &[]);
+    let view = build_provider_view(&state, "managed", &provider, &[], &BTreeMap::new());
     assert!(view.managed);
     assert!(!view.named_template);
     assert!(view.has_inline_api_key);
@@ -807,9 +831,9 @@ fn managed_provider_view_exposes_only_masked_api_key() {
 fn bundled_named_provider_view_sets_named_template() {
     let state = test_state();
     let provider = ProviderConfig::default();
-    let named = build_provider_view(&state, "opencode_go", &provider, &[]);
+    let named = build_provider_view(&state, "opencode_go", &provider, &[], &BTreeMap::new());
     assert!(named.named_template);
-    let custom = build_provider_view(&state, "my-custom", &provider, &[]);
+    let custom = build_provider_view(&state, "my-custom", &provider, &[], &BTreeMap::new());
     assert!(!custom.named_template);
 }
 
@@ -1210,7 +1234,7 @@ fn build_model_views_includes_routed_upstream_models() {
         ..ProviderConfig::default()
     };
     let routed = vec!["upstream/discovered".into()];
-    let models = build_model_views(&state, "alpha", &provider, &routed);
+    let models = build_model_views(&state, "alpha", &provider, &routed, &BTreeMap::new());
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "upstream/discovered");
     assert!(!models[0].catalog);
@@ -1236,7 +1260,7 @@ fn build_model_views_skips_routed_upstream_alias_for_catalog_entry() {
         "opencode-go/deepseek-v4-flash".into(),
         "deepseek-v4-flash".into(),
     ];
-    let models = build_model_views(&state, "opencode_go", &provider, &routed);
+    let models = build_model_views(&state, "opencode_go", &provider, &routed, &BTreeMap::new());
     assert_eq!(models.len(), 1);
     assert_eq!(models[0].id, "opencode-go/deepseek-v4-flash");
     assert_eq!(models[0].display_name.as_deref(), Some("DeepSeek V4 Flash"));
@@ -1256,7 +1280,13 @@ fn build_model_views_keeps_intrinsic_model_enablement_when_provider_disabled() {
         enabled: true,
         ..ModelCatalogEntry::default()
     });
-    let models = build_model_views(&state, "alpha", &provider, &["routed".into()]);
+    let models = build_model_views(
+        &state,
+        "alpha",
+        &provider,
+        &["routed".into()],
+        &BTreeMap::new(),
+    );
     let catalog = models
         .iter()
         .find(|model| model.id == "catalog-model")
@@ -1273,6 +1303,131 @@ fn build_model_views_keeps_intrinsic_model_enablement_when_provider_disabled() {
         routed.enabled,
         "provider state must not overwrite model state"
     );
+}
+
+#[test]
+fn discovered_model_view_uses_provider_scoped_reasoning_metadata_when_disabled() {
+    let state = test_state();
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        disabled_models: vec!["shared".into()],
+        ..ProviderConfig::default()
+    };
+    let discovered = BTreeMap::from([(
+        "shared".into(),
+        json!({
+            "slug": "shared",
+            "display_name": "Provider Alpha Shared",
+            "supported_reasoning_levels": [{"effort":"low"},{"effort":"high"}],
+            "default_reasoning_level": "high"
+        }),
+    )]);
+
+    let models = build_model_views(&state, "alpha", &provider, &[], &discovered);
+
+    assert_eq!(models.len(), 1);
+    assert!(!models[0].enabled);
+    assert_eq!(models[0].supported_reasoning_levels, ["low", "high"]);
+    assert_eq!(models[0].default_reasoning_level, "high");
+}
+
+#[test]
+fn catalog_model_view_composes_explicit_modes_over_discovery() {
+    let state = test_state();
+    let entry = ModelCatalogEntry {
+        id: "provider/custom".into(),
+        upstream_id: Some("shared".into()),
+        supported_reasoning_levels: Some(vec!["high".into(), "max".into()]),
+        default_reasoning_level: Some("max".into()),
+        ..ModelCatalogEntry::default()
+    };
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog: vec![entry],
+        ..ProviderConfig::default()
+    };
+    let discovered = BTreeMap::from([(
+        "shared".into(),
+        json!({
+            "slug":"shared",
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+            "default_reasoning_level":"low"
+        }),
+    )]);
+
+    let models = build_model_views(&state, "provider", &provider, &[], &discovered);
+
+    assert_eq!(models[0].supported_reasoning_levels, ["high", "max"]);
+    assert_eq!(models[0].default_reasoning_level, "max");
+    assert_eq!(
+        models[0].configured_supported_reasoning_levels,
+        Some(vec!["high".into(), "max".into()])
+    );
+}
+
+#[test]
+fn model_reasoning_validation_resolves_default_only_against_discovery() {
+    let provider = ProviderConfig::default();
+    let discovered = BTreeMap::from([(
+        "shared".into(),
+        json!({
+            "slug":"shared",
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+            "default_reasoning_level":"low"
+        }),
+    )]);
+    let mut valid = ModelCatalogEntry {
+        id: "shared".into(),
+        default_reasoning_level: Some(" high ".into()),
+        ..ModelCatalogEntry::default()
+    };
+    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
+        .expect("inherited supported modes validate the default-only patch");
+    assert_eq!(valid.default_reasoning_level.as_deref(), Some("high"));
+
+    valid.supported_reasoning_levels = Some(vec!["low".into(), "high".into()]);
+    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
+        .expect("distinct explicit modes are accepted");
+
+    valid.default_reasoning_level = Some("max".into());
+    let error = validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
+        .expect_err("unsupported default is rejected");
+    assert!(error.message.contains("not in supported_reasoning_levels"));
+
+    let mut duplicate = ModelCatalogEntry {
+        id: "shared".into(),
+        supported_reasoning_levels: Some(vec!["low".into(), " low ".into()]),
+        ..ModelCatalogEntry::default()
+    };
+    let error = validate_model_reasoning(
+        &mut duplicate,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+    )
+    .expect_err("duplicate supported modes are rejected");
+    assert!(error.message.contains("duplicate reasoning level `low`"));
+
+    duplicate.supported_reasoning_levels = Some(Vec::new());
+    let error = validate_model_reasoning(
+        &mut duplicate,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+    )
+    .expect_err("an empty explicit supported list is rejected");
+    assert!(error.message.contains("cannot be empty"));
+}
+
+#[test]
+fn model_editor_promotes_discovered_rows_without_freezing_unchanged_modes() {
+    let app = webui_js_source();
+
+    assert!(app.contains("modelForm.dataset.mode = m.catalog ? \"edit\" : \"promote\""));
+    assert!(app.contains("if (mode === \"create\" || mode === \"promote\")"));
+    assert!(app.contains("if (levelsChanged) body.supported_reasoning_levels"));
+    assert!(!app.contains("if (defaultChanged && !levelsChanged && defaultLevel)"));
+    assert!(app.contains("if (displayName !== (editingModel.display_name || \"\"))"));
 }
 
 #[tokio::test]
@@ -2012,6 +2167,10 @@ async fn delete_provider_returns_no_content_and_drops_managed_overlay() {
         let mut config = state.config.write().expect("config lock");
         config.providers.insert("managed".into(), provider);
     }
+    state.discovered_models.write().await.insert(
+        "managed".into(),
+        BTreeMap::from([("old-model".into(), json!({"slug":"old-model"}))]),
+    );
 
     let status = delete_provider(State(state.clone()), Path("managed".to_string()))
         .await
@@ -2021,7 +2180,130 @@ async fn delete_provider_returns_no_content_and_drops_managed_overlay() {
     assert!(!store.provider_overlay_exists("managed").unwrap());
     assert!(!store.provider_is_managed("managed").unwrap());
     assert!(!state.read_config().providers.contains_key("managed"));
+    assert!(!state.discovered_models.read().await.contains_key("managed"));
 
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn create_provider_rejects_invalid_reasoning_catalog() {
+    let dir = unique_temp_dir("codex-warp-create-provider-reasoning-validation");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    let body = CreateProviderBody {
+        id: Some("invalid-reasoning".into()),
+        template: None,
+        fields: ProviderPersist {
+            name: OptionalPatch::Absent,
+            base_url: Some("https://example.test/v1".into()),
+            enabled: Some(false),
+            api_key_env: OptionalPatch::Absent,
+            api_key: OptionalPatch::Absent,
+            headers: OptionalPatch::Absent,
+            auth_header: None,
+            auth_scheme: None,
+            responses_path: None,
+            chat_completions_path: None,
+            models_path: None,
+            model_catalog_only: Some(true),
+        },
+        model_catalog: vec![ModelCatalogEntry {
+            id: "bad-model".into(),
+            supported_reasoning_levels: Some(vec!["low".into()]),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }],
+    };
+
+    let error = create_provider(State(state), Json(body))
+        .await
+        .expect_err("invalid catalog reasoning must be rejected");
+    assert!(error.message.contains("not in supported_reasoning_levels"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn create_provider_honors_nonempty_custom_template() {
+    let dir = unique_temp_dir("codex-warp-create-custom-template");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    let body = CreateProviderBody {
+        id: None,
+        template: Some("custom".into()),
+        fields: ProviderPersist {
+            name: OptionalPatch::Absent,
+            base_url: Some("https://generated.example/v1".into()),
+            enabled: Some(false),
+            api_key_env: OptionalPatch::Absent,
+            api_key: OptionalPatch::Absent,
+            headers: OptionalPatch::Absent,
+            auth_header: None,
+            auth_scheme: None,
+            responses_path: None,
+            chat_completions_path: None,
+            models_path: None,
+            model_catalog_only: Some(true),
+        },
+        model_catalog: Vec::new(),
+    };
+
+    let (status, Json(view)) = create_provider(State(state), Json(body))
+        .await
+        .expect("custom template generates an id");
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(view.base_url, "https://generated.example/v1");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn provider_identity_edit_clears_prior_discovery_snapshot() {
+    let dir = unique_temp_dir("codex-warp-provider-identity-discovery");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let provider = ProviderConfig {
+        base_url: "https://old.example/v1".into(),
+        enabled: false,
+        ..ProviderConfig::default()
+    };
+    store
+        .create_provider_with_catalog("managed", &provider, &[])
+        .unwrap();
+    let state = state_with_store(store);
+    state
+        .write_config()
+        .providers
+        .insert("managed".into(), provider);
+    state.discovered_models.write().await.insert(
+        "managed".into(),
+        BTreeMap::from([("old-model".into(), json!({"slug":"old-model"}))]),
+    );
+
+    let Json(_) = update_provider(
+        State(state.clone()),
+        Path("managed".into()),
+        Json(ProviderPersist {
+            name: OptionalPatch::Absent,
+            base_url: Some("https://new.example/v1".into()),
+            enabled: None,
+            api_key_env: OptionalPatch::Absent,
+            api_key: OptionalPatch::Absent,
+            headers: OptionalPatch::Absent,
+            auth_header: None,
+            auth_scheme: None,
+            responses_path: None,
+            chat_completions_path: None,
+            models_path: None,
+            model_catalog_only: None,
+        }),
+    )
+    .await
+    .expect("update provider identity");
+
+    assert!(!state.discovered_models.read().await.contains_key("managed"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -3370,6 +3652,59 @@ async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
 }
 
 #[tokio::test]
+async fn add_model_promotes_exact_discovered_slug_without_persisting_inherited_modes() {
+    let dir = unique_temp_dir("codex-warp-promote-discovered-model");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "manual".into(),
+            ProviderConfig {
+                base_url: "http://127.0.0.1:9/v1".into(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state.discovered_models.write().await.insert(
+        "manual".into(),
+        BTreeMap::from([(
+            "live-model".into(),
+            json!({
+                "slug":"live-model",
+                "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+                "default_reasoning_level":"high"
+            }),
+        )]),
+    );
+
+    let (status, Json(view)) = add_model(
+        State(state.clone()),
+        Path("manual".to_string()),
+        Json(ModelCatalogEntry {
+            id: "live-model".into(),
+            upstream_id: Some("live-model".into()),
+            description: Some("edited without changing modes".into()),
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect("promote discovered model");
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(view.id, "live-model");
+    assert_eq!(view.supported_reasoning_levels, ["low", "high"]);
+    assert_eq!(view.default_reasoning_level, "high");
+    let config = state.config.read().expect("config lock");
+    let entry = &config.providers["manual"].model_catalog[0];
+    assert!(entry.supported_reasoning_levels.is_none());
+    assert!(entry.default_reasoning_level.is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
 async fn delete_model_soft_removes_toml_catalog_after_an_edit() {
     let dir = unique_temp_dir("codex-warp-delete-edited-toml-model");
     std::fs::create_dir_all(&dir).unwrap();
@@ -3399,6 +3734,8 @@ async fn delete_model_soft_removes_toml_catalog_after_an_edit() {
             upstream_id: OptionalPatch::Absent,
             display_name: OptionalPatch::Set("Friendly".into()),
             description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
             enabled: None,
         }),
     )
