@@ -2339,6 +2339,20 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
             },
         );
         config.providers.insert(
+            "catalog".into(),
+            ProviderConfig {
+                base_url: "https://catalog.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "overlay-model".into(),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
             "sibling".into(),
             ProviderConfig {
                 base_url: "http://127.0.0.1:1/v1".into(),
@@ -2806,24 +2820,15 @@ async fn provider_model_refresh_preserves_overlay_routes_when_seed_read_fails() 
 
     let (state, store_dir) = temporary_store_state("provider-model-refresh-overlay-seed-fail");
 
-    // Record an overlay-enabled route seed, then corrupt the overlay table so
-    // the next seed read fails (simulating a transient SQLite error). The
-    // refresh must fall back to the prior route map and preserve overlay
-    // ownership instead of publishing a map without it (blocker 3).
+    // Record a genuine overlay seed and a separate live-only route. Corrupting
+    // the table simulates a transient SQLite error after the seed cache was
+    // successfully populated.
     state
         .store
         .as_ref()
         .expect("store present")
         .set_model_enabled("dynamic", "overlay-model", true)
         .expect("seed overlay route");
-
-    {
-        let corrupt =
-            Connection::open(store_dir.join("overlay.db")).expect("open corrupting connection");
-        corrupt
-            .execute("DROP TABLE model_overlays", [])
-            .expect("drop overlay table to force a seed read failure");
-    }
 
     let upstream_app = axum::Router::new().route(
         "/models",
@@ -2854,6 +2859,25 @@ async fn provider_model_refresh_preserves_overlay_routes_when_seed_read_fails() 
     {
         let mut routes = state.model_routes.write().await;
         routes.insert("overlay-model".into(), "dynamic".into());
+        routes.insert("old-live-model".into(), "dynamic".into());
+    }
+    {
+        let seeds = {
+            let config = state.read_config();
+            crate::models::seed_model_routes_from_config_and_store(
+                &config,
+                state.store.as_ref().expect("store present"),
+            )
+            .expect("seed cache read")
+        };
+        *state.model_route_seeds.write().await = seeds;
+    }
+    {
+        let corrupt =
+            Connection::open(store_dir.join("overlay.db")).expect("open corrupting connection");
+        corrupt
+            .execute("DROP TABLE model_overlays", [])
+            .expect("drop overlay table to force a seed read failure");
     }
 
     let management_app = router(None, false).with_state(state.clone());
@@ -2886,12 +2910,108 @@ async fn provider_model_refresh_preserves_overlay_routes_when_seed_read_fails() 
         Some("dynamic"),
         "the refreshed provider's reported model must still be added"
     );
+    assert!(
+        !routes.contains_key("old-live-model"),
+        "a successful focused refresh must remove a stale live-only route"
+    );
+    drop(routes);
+
+    // The global GET path must use the same seed-only fallback rather than
+    // reclassifying a prior live route as a seed.
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-model".into(), "dynamic".into());
+    let response = crate::models::models(
+        axum::extract::State(state.clone()),
+        axum::http::HeaderMap::new(),
+    )
+    .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-model").map(String::as_str),
+        Some("dynamic"),
+        "cached overlay ownership must take precedence over catalog claims"
+    );
+    assert!(
+        !routes.contains_key("old-live-model"),
+        "a successful global refresh must remove a stale live-only route"
+    );
 
     drop(routes);
     management_server.abort();
     let _ = management_server.await;
     upstream_server.abort();
     let _ = upstream_server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn enabling_provider_primes_overlay_seed_cache_before_seed_read_failure() {
+    use crate::models::MutationRouteRefresh;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("enable-provider-overlay-seed-fail");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "catalog-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-only-model", true)
+        .expect("seed overlay route");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider.clone());
+    }
+
+    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    let seeds = state.model_route_seeds.read().await;
+    assert_eq!(
+        seeds.get("overlay-only-model").map(String::as_str),
+        Some("dynamic"),
+        "enabling must cache persistent overlay-only ownership before refresh"
+    );
+    assert_eq!(
+        seeds.get("catalog-model").map(String::as_str),
+        Some("dynamic"),
+        "enabling must cache configured catalog ownership before refresh"
+    );
+    drop(seeds);
+
+    let corrupt =
+        Connection::open(store_dir.join("overlay.db")).expect("open corrupting connection");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("drop overlay table to force a seed read failure");
+    crate::models::refresh_model_routes_while_mutation_locked(
+        &state,
+        MutationRouteRefresh::SeedsAndRetain,
+        None,
+    )
+    .await
+    .expect("seed-only refresh");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-only-model").map(String::as_str),
+        Some("dynamic"),
+        "a seed read failure immediately after enabling must retain overlay-only routes"
+    );
+
+    drop(routes);
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }

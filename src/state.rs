@@ -237,6 +237,9 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Last successfully read catalog/SQLite route seeds. Unlike `model_routes`,
+    /// this never contains upstream-only discovery results.
+    pub(crate) model_route_seeds: Arc<AsyncRwLock<BTreeMap<String, String>>>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -276,9 +279,14 @@ impl AppState {
         tracing_reload: Option<TracingReload>,
         store: Option<Store>,
     ) -> Self {
+        let model_route_seeds = model_routes
+            .try_read()
+            .expect("new model route lock must be available")
+            .clone();
         Self {
             config,
             client,
+            model_route_seeds: Arc::new(AsyncRwLock::new(model_route_seeds)),
             model_routes,
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
