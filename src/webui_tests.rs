@@ -36,6 +36,20 @@ fn test_state() -> AppState {
     )
 }
 
+fn temporary_store_state(label: &str) -> (AppState, std::path::PathBuf) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("codex-warp-{label}-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temporary store directory");
+    let store = crate::store::Store::open(&dir.join("overlay.db")).expect("open temporary store");
+    (state_with_store(store), dir)
+}
+
 fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
     ProviderPersist {
         name: OptionalPatch::Absent,
@@ -2280,9 +2294,10 @@ fn discovery_settings_changed_detects_endpoint_and_catalog_mode() {
 fn webui_offers_provider_scoped_refresh_for_discovered_catalogs() {
     let js = webui_js_source();
     assert!(js.contains("if (!provider.model_catalog_only)"));
-    assert!(js.contains("/models/refresh`"));
+    assert!(js.contains("/refresh-models`"));
     assert!(js.contains("Refresh models from the provider API"));
     assert!(js.contains("refreshBtn.disabled = !provider.enabled"));
+    assert!(js.contains("but could not reload providers"));
 }
 
 #[tokio::test]
@@ -2300,21 +2315,7 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
     let address = listener.local_addr().unwrap();
     let upstream_server =
         tokio::spawn(async move { axum::serve(listener, upstream_app).await.unwrap() });
-    let sibling_app = axum::Router::new().route(
-        "/models",
-        axum::routing::get(|| async {
-            axum::Json(serde_json::json!({
-                "object": "list",
-                "data": [{"id": "shared-model", "object": "model"}]
-            }))
-        }),
-    );
-    let sibling_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let sibling_address = sibling_listener.local_addr().unwrap();
-    let sibling_server =
-        tokio::spawn(async move { axum::serve(sibling_listener, sibling_app).await.unwrap() });
-
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("provider-model-refresh-success");
     {
         let mut config = state.config.write().expect("config lock");
         config.providers.insert(
@@ -2329,7 +2330,7 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
         config.providers.insert(
             "sibling".into(),
             ProviderConfig {
-                base_url: format!("http://{sibling_address}"),
+                base_url: "http://127.0.0.1:1/v1".into(),
                 enabled: true,
                 model_catalog_only: false,
                 ..ProviderConfig::default()
@@ -2353,6 +2354,7 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
         let mut routes = state.model_routes.write().await;
         routes.insert("removed-model".into(), "dynamic".into());
         routes.insert("shared-model".into(), "dynamic".into());
+        routes.insert("last-sibling-model".into(), "sibling".into());
         routes.insert("static-model".into(), "static".into());
     }
     let revision_before = state
@@ -2368,9 +2370,22 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
             .unwrap()
     });
     let client = reqwest::Client::new();
+    let model_named_refresh = client
+        .put(format!(
+            "http://{management_address}/api/providers/dynamic/models/refresh"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("edit model named refresh");
+    assert_eq!(
+        model_named_refresh.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "the refresh action route must not shadow the existing model-id wildcard"
+    );
     let form_response = client
         .post(format!(
-            "http://{management_address}/api/providers/dynamic/models/refresh"
+            "http://{management_address}/api/providers/dynamic/refresh-models"
         ))
         .header(
             reqwest::header::CONTENT_TYPE,
@@ -2387,7 +2402,7 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
     );
     let response = client
         .post(format!(
-            "http://{management_address}/api/providers/dynamic/models/refresh"
+            "http://{management_address}/api/providers/dynamic/refresh-models"
         ))
         .json(&serde_json::json!({}))
         .send()
@@ -2409,19 +2424,24 @@ async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("new-model").map(String::as_str), Some("dynamic"));
     assert!(!routes.contains_key("removed-model"));
+    assert!(!routes.contains_key("shared-model"));
     assert_eq!(
-        routes.get("shared-model").map(String::as_str),
+        routes.get("last-sibling-model").map(String::as_str),
         Some("sibling"),
-        "a healthy sibling must reclaim a colliding live-only route"
+        "refreshing one provider must not fetch or replace sibling discovery"
     );
     assert_eq!(
         routes.get("static-model").map(String::as_str),
         Some("static"),
         "refreshing one provider must retain sibling provider routes"
     );
+    drop(routes);
     management_server.abort();
-    sibling_server.abort();
+    let _ = management_server.await;
     upstream_server.abort();
+    let _ = upstream_server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }
 
 #[tokio::test]
@@ -2447,6 +2467,15 @@ async fn provider_model_refresh_rejects_static_and_disabled_providers() {
                 ..ProviderConfig::default()
             },
         );
+        config.providers.insert(
+            "dynamic".into(),
+            ProviderConfig {
+                base_url: "http://127.0.0.1:1/v1".into(),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
     }
 
     let static_error = refresh_provider_models(
@@ -2460,7 +2489,7 @@ async fn provider_model_refresh_rejects_static_and_disabled_providers() {
     assert!(static_error.message.contains("static model catalog"));
 
     let disabled_error = refresh_provider_models(
-        State(state),
+        State(state.clone()),
         Path("disabled".to_string()),
         Json(serde_json::json!({})),
     )
@@ -2468,25 +2497,23 @@ async fn provider_model_refresh_rejects_static_and_disabled_providers() {
     .expect_err("disabled providers cannot refresh");
     assert_eq!(disabled_error.status, axum::http::StatusCode::BAD_REQUEST);
     assert!(disabled_error.message.contains("must be enabled"));
+
+    let no_store_error = refresh_provider_models(
+        State(state),
+        Path("dynamic".to_string()),
+        Json(serde_json::json!({})),
+    )
+    .await
+    .expect_err("stateless management must reject model refresh mutations");
+    assert_eq!(
+        no_store_error.status,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[tokio::test]
 async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
-    let sibling_app = axum::Router::new().route(
-        "/models",
-        axum::routing::get(|| async {
-            axum::Json(serde_json::json!({
-                "object": "list",
-                "data": [{"id": "new-sibling-model", "object": "model"}]
-            }))
-        }),
-    );
-    let sibling_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let sibling_address = sibling_listener.local_addr().unwrap();
-    let sibling_server =
-        tokio::spawn(async move { axum::serve(sibling_listener, sibling_app).await.unwrap() });
-
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("provider-model-refresh-failure");
     {
         let mut config = state.config.write().expect("config lock");
         config.providers.insert(
@@ -2501,7 +2528,7 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
         config.providers.insert(
             "sibling".into(),
             ProviderConfig {
-                base_url: format!("http://{sibling_address}"),
+                base_url: "http://127.0.0.1:1/v1".into(),
                 enabled: true,
                 model_catalog_only: false,
                 ..ProviderConfig::default()
@@ -2534,11 +2561,9 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
         Some("sibling"),
         "a failed selected refresh must retain sibling routes"
     );
-    assert!(
-        !routes.contains_key("new-sibling-model"),
-        "a failed selected refresh must not publish successful sibling discovery"
-    );
-    sibling_server.abort();
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }
 
 #[tokio::test]

@@ -437,16 +437,25 @@
         refreshBtn.textContent = "Refreshing…";
         status(`Refreshing models for ${provider.id}…`);
         try {
-          await api(`/providers/${encodeURIComponent(provider.id)}/models/refresh`, {
+          await api(`/providers/${encodeURIComponent(provider.id)}/refresh-models`, {
             method: "POST",
             body: JSON.stringify({}),
           });
+        } catch (e) {
+          refreshBtn.disabled = !provider.enabled;
+          refreshBtn.textContent = "Refresh";
+          status(`Error: ${formatErrorMessage(e)}`);
+          return;
+        }
+        try {
           await loadProviders({ refreshRoutes: false, updateStatus: false });
           status(`Refreshed models for ${provider.id}`);
         } catch (e) {
           refreshBtn.disabled = !provider.enabled;
           refreshBtn.textContent = "Refresh";
-          status(`Error: ${formatErrorMessage(e)}`);
+          status(
+            `Refreshed models for ${provider.id}, but could not reload providers: ${formatErrorMessage(e)}`,
+          );
         }
       });
       head.append(refreshBtn);

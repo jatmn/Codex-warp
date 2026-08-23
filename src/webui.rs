@@ -84,7 +84,7 @@ fn api_router(management_token: Option<String>, require_local_host: bool) -> Rou
         .route("/providers/{id}/enabled", post(set_provider_enabled))
         .route("/providers/{id}/models", post(add_model))
         .route(
-            "/providers/{id}/models/refresh",
+            "/providers/{id}/refresh-models",
             post(refresh_provider_models),
         )
         .route(
@@ -1591,6 +1591,7 @@ async fn refresh_provider_models(
             "provider `{id}` uses a static model catalog"
         )));
     }
+    require_store(&state)?;
 
     // An ordinary `/v1/models` request can already be fetching this provider.
     // Advance the generation before the focused fetch so that older discovery
@@ -1598,7 +1599,7 @@ async fn refresh_provider_models(
     invalidate_model_discovery(&state);
     let refresh_result = models::refresh_model_routes_while_mutation_locked(
         &state,
-        models::MutationRouteRefresh::RefetchAllForOne,
+        models::MutationRouteRefresh::RefetchOneAtomic,
         Some(&id),
     )
     .await;

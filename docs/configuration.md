@@ -458,14 +458,15 @@ keep their current values, and JSON `null` clears optional string fields
 (`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
 re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
-`POST /api/providers/{id}/models/refresh` re-fetches one enabled provider's
+`POST /api/providers/{id}/refresh-models` re-fetches one enabled provider's
 upstream `/models` catalog and immediately updates its live model view and route
 map. A successful response adds newly reported models and removes live-only
 models no longer returned by that provider; configured catalog entries and
 persisted operator overlays remain authoritative. Static
 (`model_catalog_only = true`) and disabled providers cannot be refreshed; a
 failed request to the selected provider keeps the last successfully discovered
-routes and returns an error to the UI.
+routes and returns an error to the UI. Like other provider/model mutations, the
+refresh action is unavailable with `--no-webui-store`.
 
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`

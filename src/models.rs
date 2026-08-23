@@ -65,10 +65,9 @@ pub(crate) enum MutationRouteRefresh {
     /// Fetch upstream models for one provider; retain prior discovery for every
     /// other enabled provider.
     RefetchOne,
-    /// Rebuild discovery for every enabled provider so hidden colliding owners
-    /// can be recovered, but report a fetch warning only for the selected
-    /// provider. Failed siblings retain their prior routes.
-    RefetchAllForOne,
+    /// Fetch one provider atomically for an explicit operator refresh. Unlike
+    /// `RefetchOne`, a failed fetch does not publish even a seed-only rebuild.
+    RefetchOneAtomic,
     /// Fetch upstream models for every enabled provider. This is needed after
     /// removing a single route owner because the route map only retains the
     /// winner for a colliding live-only slug.
@@ -94,7 +93,7 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
-    if mode == MutationRouteRefresh::RefetchAllForOne
+    if mode == MutationRouteRefresh::RefetchOneAtomic
         && let Some(warning) = fetch_warning
     {
         // The focused refresh is provider-scoped from the operator's point of
@@ -157,10 +156,10 @@ async fn discover_routes_for_mutation(
 
     let fetch_ids: BTreeSet<String> = match mode {
         MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
-        MutationRouteRefresh::RefetchOne => {
+        MutationRouteRefresh::RefetchOne | MutationRouteRefresh::RefetchOneAtomic => {
             focus_provider_id.map(str::to_string).into_iter().collect()
         }
-        MutationRouteRefresh::RefetchAll | MutationRouteRefresh::RefetchAllForOne => {
+        MutationRouteRefresh::RefetchAll => {
             provider_list.iter().map(|(id, _)| id.clone()).collect()
         }
     };
@@ -197,9 +196,7 @@ async fn discover_routes_for_mutation(
             // Successful refetch (including empty catalogs) replaces retained
             // ownership for this provider; seeds already carry catalog routes.
             retain_owners.remove(&provider_id);
-        } else if mode != MutationRouteRefresh::RefetchAllForOne
-            || focus_provider_id == Some(provider_id.as_str())
-        {
+        } else {
             fetch_warning = Some(provider_failures.join("; "));
         }
     }
