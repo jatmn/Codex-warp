@@ -847,16 +847,10 @@ fn chat_response_reports_completed(value: &Value) -> bool {
 /// when it has a recognizable shape (id/object/output) and carries no
 /// provider-declared error. Both completion predicates share this guard so a
 /// malformed or error-envelope payload is never counted as a completed (or
-/// incomplete) response.
+/// incomplete) response. Delegates to the shared streaming/buffered predicate so
+/// the two paths reject malformed incomplete responses identically.
 fn native_response_is_well_formed(value: &Value) -> bool {
-    value.as_object().is_some()
-        && (value
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
-            || value.get("object").and_then(Value::as_str) == Some("response")
-            || value.get("output").and_then(Value::as_array).is_some())
-        && upstream_error_message(value).is_none()
+    crate::response_codec::native_response_is_well_formed_response(value)
 }
 
 fn response_reports_completed(value: &Value) -> bool {

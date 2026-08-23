@@ -719,7 +719,7 @@ async fn native_incomplete_status_records_usage() {
     // recorded, otherwise the Web UI shows 0 usage for a response that clearly
     // consumed tokens.
     let body = concat!(
-        "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
         "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
     );
     native_stream_to_responses(
@@ -806,7 +806,7 @@ async fn native_incomplete_event_type_records_usage() {
     // response.completed with status "incomplete"). It also carries usage and
     // must be recorded.
     let body = concat!(
-        "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",",
+        "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
         "\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10}}}\n\n"
     );
     native_stream_to_responses(
@@ -907,6 +907,44 @@ async fn native_incomplete_event_type_with_error_is_not_recorded() {
         summary.prompts, 0,
         "error-shaped incomplete must not record"
     );
+    assert_eq!(summary.total_tokens, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_incomplete_event_type_with_empty_response_is_not_recorded() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-native-incomplete-type-empty-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("usage.db")).unwrap();
+    let request = json!({"model": "test-model"});
+    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    // A response.incomplete event whose `response` object is empty `{}` has no
+    // recognizable shape, so it must not be treated as a successful analytics
+    // terminal (the buffered path rejects the same malformed shape).
+    let body = "data: {\"type\":\"response.incomplete\",\"response\":{}}\n\n";
+    native_stream_to_responses(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_incomplete_type_empty_response".to_string(),
+        200,
+        recorder,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    let summary = store
+        .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
+        .unwrap();
+    assert_eq!(summary.prompts, 0, "empty response object must not record");
     assert_eq!(summary.total_tokens, 0);
     let _ = std::fs::remove_dir_all(dir);
 }

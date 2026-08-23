@@ -413,6 +413,23 @@ pub(crate) fn upstream_error_message(value: &Value) -> Option<String> {
     }
 }
 
+/// A native Responses response payload is well-formed for completion accounting
+/// only when it has a recognizable shape (`id` / `object` / `output`) and carries
+/// no provider-declared error. Shared by the streaming (`native_sse_terminal`)
+/// and buffered (`response_reports_completed_or_incomplete`) completion
+/// predicates so a malformed incomplete response (for example `response: {}`) is
+/// rejected identically on both paths.
+pub(crate) fn native_response_is_well_formed_response(response: &Value) -> bool {
+    response.as_object().is_some()
+        && (response
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+            || response.get("object").and_then(Value::as_str) == Some("response")
+            || response.get("output").and_then(Value::as_array).is_some())
+        && upstream_error_message(response).is_none()
+}
+
 // Native SSE conversion carries the same request context.
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
@@ -630,13 +647,15 @@ enum NativeSseTerminal {
 /// same "used but shows 0" gap as a missing stream usage chunk.
 ///
 /// Both incomplete forms are only treated as a successful analytics terminal
-/// when the payload is well-formed (a non-null `response` object) and carries
-/// no provider error envelope. A malformed or error-shaped incomplete event
-/// (for example `data: {"type":"response.incomplete"}` or one wrapping a
-/// provider error) must not reach `record_completed`, or it would inflate the
-/// prompt/session counters and record a provider failure as successful usage.
-/// This mirrors the buffered-path guard in
-/// `response_reports_completed_or_incomplete`.
+/// when the response payload is well-formed (a recognizable shape: `id` /
+/// `object` / `output`) and carries no provider error envelope. A malformed or
+/// error-shaped incomplete event (for example `data: {"type":"response.
+/// incomplete"}`, `response: {}`, or one wrapping a provider error) must not
+/// reach `record_completed`, or it would inflate the prompt/session counters
+/// and record a provider failure as successful usage. Both streaming arms use
+/// the same `native_response_is_well_formed_response` predicate as the buffered
+/// path (`response_reports_completed_or_incomplete`) so malformed incomplete
+/// responses are rejected identically.
 fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
@@ -648,11 +667,11 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
                 None | Some("completed") => Some(NativeSseTerminal::Completed),
                 Some("incomplete") => {
                     // A truncated response still carries a usage block and must
-                    // record analytics, but only when the payload is well-formed
-                    // and carries no provider error envelope.
-                    if upstream_error_message(&value).is_none()
-                        && upstream_error_message(response_value).is_none()
-                    {
+                    // record analytics, but only when the response payload is
+                    // well-formed (recognizable shape, no provider error). This
+                    // mirrors the buffered-path guard so a malformed incomplete
+                    // response is rejected identically on both paths.
+                    if native_response_is_well_formed_response(response_value) {
                         Some(NativeSseTerminal::Incomplete)
                     } else {
                         None
@@ -670,15 +689,13 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
         // proxy relies on that contract: it records usage and ends the stream
         // on the first such terminal.
         "response.incomplete" => {
-            // Require a well-formed response payload (a non-null `response`
-            // object) with no provider error envelope before counting this as a
-            // successful analytics terminal; otherwise record_completed would
-            // inflate prompt/session counters or record a failure as usage.
+            // Require a well-formed response payload (recognizable shape, no
+            // provider error envelope) before counting this as a successful
+            // analytics terminal; otherwise record_completed would inflate
+            // prompt/session counters or record a failure as usage. Uses the
+            // same predicate as the buffered path.
             let response = value.get("response");
-            let well_formed = response.and_then(Value::as_object).is_some();
-            let has_error = upstream_error_message(&value).is_some()
-                || response.and_then(upstream_error_message).is_some();
-            if well_formed && !has_error {
+            if response.is_some_and(native_response_is_well_formed_response) {
                 Some(NativeSseTerminal::Incomplete)
             } else {
                 None
