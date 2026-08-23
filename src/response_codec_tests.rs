@@ -80,6 +80,33 @@ fn concatenated_tool_call_repair_requires_multiple_complete_objects() {
 }
 
 #[test]
+fn concatenated_tool_call_repair_preserves_exact_argument_text() {
+    assert_eq!(
+        split_concatenated_tool_call_arguments(
+            " {\"id\":18446744073709551616,\"id\":1} \n {\"amount\":1.2300e+40} ",
+        ),
+        Some(vec![
+            "{\"id\":18446744073709551616,\"id\":1}".to_string(),
+            "{\"amount\":1.2300e+40}".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn concatenated_tool_call_repair_bounds_recovered_call_count() {
+    let at_limit = "{}".repeat(MAX_REPAIRED_CONCATENATED_TOOL_CALLS);
+    assert_eq!(
+        split_concatenated_tool_call_arguments(&at_limit)
+            .expect("the configured maximum remains repairable")
+            .len(),
+        MAX_REPAIRED_CONCATENATED_TOOL_CALLS
+    );
+
+    let over_limit = "{}".repeat(MAX_REPAIRED_CONCATENATED_TOOL_CALLS + 1);
+    assert_eq!(split_concatenated_tool_call_arguments(&over_limit), None);
+}
+
+#[test]
 fn streaming_chat_repair_splits_concatenated_tool_calls_and_assigns_unique_ids() {
     let mut accum = ChatAccum {
         split_concatenated_tool_call_arguments: true,

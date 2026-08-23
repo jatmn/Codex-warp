@@ -689,10 +689,23 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
         return;
     }
     if provider.model_catalog.is_empty() {
+        if canonical_model_family_id(&target) == "hy3" && is_hy3_model_id(id) {
+            info["auto_review_model_override"] = json!(id);
+        }
         return;
     }
     info["auto_review_model_override"] =
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
+}
+
+/// Whether a live-catalog model ID is covered by the broad Hy3 family.
+///
+/// Live discovery has no static catalog from which to derive a provider-local
+/// review alias, so the exact discovered ID is the only guaranteed route.
+fn is_hy3_model_id(id: &str) -> bool {
+    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    let id = canonical_model_family_id(id);
+    id.starts_with("hy3") || matches!(id.as_str(), "hunyuan-3" | "hunyuan3")
 }
 
 /// Whether `id` is a nonempty dash/underscore suffix variant of `target`.

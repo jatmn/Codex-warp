@@ -165,6 +165,7 @@ const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
 /// Maximum number of bytes allowed in the SSE frame buffer before treating the
 /// upstream as misbehaving and returning an error.
 const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REPAIRED_CONCATENATED_TOOL_CALLS: usize = 64;
 const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
 
 // Stream conversion carries request context rather than a new struct.
@@ -912,14 +913,21 @@ pub(crate) struct ToolCallAccum {
 }
 
 fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>> {
-    let stream = serde_json::Deserializer::from_str(arguments).into_iter::<Value>();
+    let mut stream = serde_json::Deserializer::from_str(arguments).into_iter::<Value>();
     let mut objects = Vec::new();
-    for value in stream {
+    let mut object_start = 0;
+    while let Some(value) = stream.next() {
         let value = value.ok()?;
         if !value.is_object() {
             return None;
         }
-        objects.push(serde_json::to_string(&value).ok()?);
+        if objects.len() == MAX_REPAIRED_CONCATENATED_TOOL_CALLS {
+            return None;
+        }
+        let object_end = stream.byte_offset();
+        let object = arguments.get(object_start..object_end)?.trim();
+        objects.push(object.to_string());
+        object_start = object_end;
     }
     (objects.len() > 1).then_some(objects)
 }

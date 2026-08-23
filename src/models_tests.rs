@@ -281,6 +281,28 @@ fn manual_catalog_localizes_hy3_auto_review_to_provider_model() {
 }
 
 #[test]
+fn live_catalog_localizes_hy3_review_target_to_each_discovered_alias() {
+    for id in [
+        "concentrate.ai/hy3",
+        "hicap/hy3:free",
+        "tencent/hy3",
+        "hunyuan-3",
+        "hunyuan3",
+    ] {
+        let mut info = json!({"auto_review_model_override": "hy3"});
+        localize_auto_review_model_override(&mut info, id, &ProviderConfig::default());
+        assert_eq!(
+            info["auto_review_model_override"], id,
+            "live alias {id} must remain provider-routable"
+        );
+    }
+
+    let mut unrelated = json!({"auto_review_model_override": "hy3"});
+    localize_auto_review_model_override(&mut unrelated, "other/model", &ProviderConfig::default());
+    assert_eq!(unrelated["auto_review_model_override"], "hy3");
+}
+
+#[test]
 fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
     let config = load_config_layers(&[]).expect("default config loads");
     let provider = ProviderConfig {
