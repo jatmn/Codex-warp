@@ -1381,17 +1381,33 @@ fn model_reasoning_validation_resolves_default_only_against_discovery() {
         default_reasoning_level: Some(" high ".into()),
         ..ModelCatalogEntry::default()
     };
-    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered, true)
-        .expect("inherited supported modes validate the default-only patch");
+    validate_model_reasoning(
+        &mut valid,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+        true,
+    )
+    .expect("inherited supported modes validate the default-only patch");
     assert_eq!(valid.default_reasoning_level.as_deref(), Some("high"));
 
     valid.supported_reasoning_levels = Some(vec!["low".into(), "high".into()]);
-    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered, true)
-        .expect("distinct explicit modes are accepted");
+    validate_model_reasoning(
+        &mut valid,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+        true,
+    )
+    .expect("distinct explicit modes are accepted");
 
     valid.default_reasoning_level = Some("max".into());
     let error = validate_model_reasoning(
-        &mut valid, &provider, &AppConfig::default(), &discovered, true,
+        &mut valid,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+        true,
     )
     .expect_err("unsupported default is rejected");
     assert!(error.message.contains("not in supported_reasoning_levels"));
