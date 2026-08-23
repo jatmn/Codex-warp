@@ -5461,6 +5461,7 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         "dbg_failed_session".to_string(),
         ContinueGuardState::default(),
         None,
+        false,
         Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
@@ -5473,6 +5474,42 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
     assert!(resolve_auto_review_model(&state, &mut review).await);
     assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn failed_chat_stream_restores_deferred_markup_content() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"before <tool>duplicate\"}}]}\n\n",
+        "data: {\"error\":{\"message\":\"upstream failed\"}}\n\n"
+    );
+    let events = chat_stream_to_responses_with_session_model(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_deferred_failure".to_string(),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_deferred_failure".to_string(),
+        ContinueGuardState::default(),
+        None,
+        true,
+        None,
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let events = events
+        .into_iter()
+        .map(|event| String::from_utf8(event.expect("stream item succeeds").to_vec()).unwrap())
+        .collect::<Vec<_>>();
+    let content_index = events
+        .iter()
+        .position(|event| event.contains("before <tool>duplicate"))
+        .expect("deferred content is restored before failure");
+    let failure_index = events
+        .iter()
+        .position(|event| event.contains("response.failed"))
+        .expect("stream failure");
+    assert!(content_index < failure_index);
 }
 
 #[tokio::test]
@@ -5848,5 +5885,68 @@ async fn chat_stream_transport_error_still_fails() {
         !events
             .iter()
             .any(|event| event.contains("response.completed"))
+    );
+}
+
+#[test]
+fn tool_markup_suppression_waits_for_a_named_native_call() {
+    let mut confirmed = ChatAccum::with_tool_markup_suppression(true);
+    assert!(
+        confirmed
+            .apply_chat_chunk(
+                &json!({"choices":[{"delta":{"content":"<parameter>duplicate</parameter>"}}]})
+            )
+            .is_empty()
+    );
+    let events = confirmed.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": "{}"}
+        }]}}
+    ]}));
+    assert!(!events.iter().any(|event| event.contains("duplicate")));
+    let events = confirmed.apply_chat_chunk(&json!({"choices":[{"delta":{"content":"After"}}]}));
+    assert!(events.iter().any(|event| event.contains("After")));
+
+    let mut ordinary = ChatAccum::with_tool_markup_suppression(true);
+    ordinary.apply_chat_chunk(
+        &json!({"choices":[{"delta":{"content":"<parameter>docs</parameter>"}}]}),
+    );
+    let events = ordinary.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<parameter>docs</parameter>"))
+    );
+}
+
+#[test]
+fn tool_markup_suppression_streams_plain_text_and_restores_deferred_content_on_failure() {
+    let mut accum = ChatAccum::with_tool_markup_suppression(true);
+    let events = accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "Before "}}]
+    }));
+    assert!(events.iter().any(|event| event.contains("Before ")));
+
+    assert!(
+        accum
+            .apply_chat_chunk(
+                &json!({"choices": [{"delta": {"content": "<parameter>docs</parameter>"}}]})
+            )
+            .is_empty()
+    );
+    let events = accum.failure_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("<parameter>docs</parameter>"))
     );
 }
