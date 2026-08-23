@@ -454,6 +454,45 @@ fn live_catalog_localizes_exact_auto_review_target_to_provider_model_id() {
 }
 
 #[test]
+fn live_catalog_localizes_grok_4_6_aliases_to_discovered_ids() {
+    let body = Bytes::from_static(
+        br#"{"data":[{"id":"grok4.6"},{"id":"grok-4.6-latest"},{"id":"concentrate.ai/grok4.6"},{"id":"concentrate.ai/grok-4.6-latest"}]}"#,
+    );
+    let config = load_config_layers(&[]).expect("default config loads");
+    let models = normalize_models(&body, &ProviderConfig::default(), &config)
+        .expect("models are normalized");
+
+    for model in models {
+        let id = model["slug"].as_str().expect("model has slug");
+        assert_eq!(model["auto_review_model_override"], id);
+        assert_eq!(model["context_window"], 500_000);
+    }
+}
+
+#[test]
+fn grok_4_6_alias_localization_preserves_distinct_review_targets() {
+    let mut info = json!({"auto_review_model_override": "upstream-review"});
+    localize_auto_review_model_override(&mut info, "grok4.6", &ProviderConfig::default());
+    assert_eq!(info["auto_review_model_override"], "upstream-review");
+}
+
+#[test]
+fn grok_4_6_alias_detection_excludes_other_models() {
+    for id in [
+        "grok-4.6",
+        "grok_4.6",
+        "grok4.6",
+        "grok-4.6-latest",
+        "concentrate.ai/grok4.6",
+    ] {
+        assert!(is_grok_4_6_alias_id(id), "{id} should be a 4.6 alias");
+    }
+    for id in ["grok-4.5", "grok-4.60", "grok-4.6-preview"] {
+        assert!(!is_grok_4_6_alias_id(id), "{id} is not a 4.6 alias");
+    }
+}
+
+#[test]
 fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
     let mut info = json!({"auto_review_model_override": "deepseek_v4_flash"});
     localize_auto_review_model_override(

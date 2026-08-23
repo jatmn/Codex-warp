@@ -1068,7 +1068,12 @@ fn first_class_reasoning_and_tool_translation_for_target_models() {
             .iter()
             .any(|m| m.from == "reasoning.effort" && m.to.as_deref() == Some("reasoning_effort"))
     );
-    for model in ["grok-4.6", "grok4.6", "concentrate.ai/grok-4.6"] {
+    for model in [
+        "grok-4.6",
+        "grok4.6",
+        "grok-4.6-latest",
+        "concentrate.ai/grok-4.6",
+    ] {
         assert!(
             matching_model_families(&config, model)
                 .iter()

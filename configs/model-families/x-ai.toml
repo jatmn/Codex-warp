@@ -116,7 +116,6 @@ supports_search_tool = true
 auto_review_model_override = "grok-4.6"
 
 [model_families.x_ai_grok_4_6.transform]
-force_parallel_tool_calls = false
 reasoning_effort_none_value = "low"
 
 [[model_families.x_ai_grok_4_6.transform.append_chat_request_morphs]]
