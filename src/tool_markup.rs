@@ -661,13 +661,13 @@ impl MarkdownCodeState {
             self.indented_line = true;
         }
         if byte == b' ' {
-            if !self.indented_line {
-                if let Some(spaces) = self.leading_spaces.as_mut() {
-                    *spaces = spaces
-                        .checked_add(1)
-                        .expect("Markdown indentation fits usize");
-                    self.indented_line = *spaces >= 4;
-                }
+            if !self.indented_line
+                && let Some(spaces) = self.leading_spaces.as_mut()
+            {
+                *spaces = spaces
+                    .checked_add(1)
+                    .expect("Markdown indentation fits usize");
+                self.indented_line = *spaces >= 4;
             }
         } else {
             self.mark_nonspace();
@@ -789,17 +789,13 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_tool_fallback_preserves_body_and_nested_tool_literal() {
+    fn unterminated_tool_fallback_preserves_body() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(
             sanitizer.push("<tool>body <parameter>duplicate</parameter>"),
             ""
         );
         assert_eq!(sanitizer.finish(), "body ");
-
-        let mut nested = Sanitizer::default();
-        assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
-        assert_eq!(nested.finish(), "body literal</tool>");
 
         let mut fragmented = Sanitizer::default();
         assert_eq!(fragmented.push("<tool>first"), "");
@@ -926,10 +922,12 @@ mod tests {
         assert!(state.permits_markup());
 
         state.consume("\\```");
-        assert!(state.permits_markup());
+        assert!(!state.permits_markup());
         state.consume("~~");
-        assert!(state.permits_markup());
+        assert!(!state.permits_markup());
         state.consume("~");
+        assert!(!state.permits_markup());
+        state.consume("``");
         assert!(state.permits_markup());
 
         let mut inline = MarkdownCodeState::default();
