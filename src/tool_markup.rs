@@ -698,6 +698,7 @@ fn possible_tag_at_start(suffix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::Fence;
     use super::MarkdownCodeState;
     use super::Sanitizer;
     use super::ScanResult;
@@ -815,6 +816,10 @@ mod tests {
         let mut marker = Sanitizer::default();
         assert_eq!(marker.push("<tool>body <tool>literal</tool>"), "");
         assert_eq!(marker.finish(), "body literal");
+
+        let mut unmatched_closing = Sanitizer::default();
+        assert_eq!(unmatched_closing.push("<tool>body </function>"), "");
+        assert_eq!(unmatched_closing.finish(), "body </function>");
     }
 
     #[test]
@@ -883,6 +888,7 @@ mod tests {
         assert_eq!(tag_at("<tool "), TagAt::Incomplete);
         assert_eq!(tag_at("<tool note=\"a >"), TagAt::Incomplete);
         assert_eq!(tag_at("</tool"), TagAt::Incomplete);
+        assert_eq!(tag_at("</to"), TagAt::Incomplete);
         assert_eq!(tag_at("</tool extra"), TagAt::None);
         assert_eq!(tag_at("<toolbox"), TagAt::None);
 
@@ -978,6 +984,18 @@ mod tests {
         let mut short_tilde = MarkdownCodeState::default();
         short_tilde.consume("~~x");
         assert!(short_tilde.permits_markup());
+
+        let mut info_string = MarkdownCodeState::default();
+        info_string.consume("```xml");
+        assert_eq!(
+            info_string.fence,
+            Some(Fence {
+                marker: b'`',
+                length: 3,
+            })
+        );
+        assert!(info_string.opening_backtick_fence);
+        assert_eq!(info_string.inline_ticks, None);
     }
 
     #[test]
