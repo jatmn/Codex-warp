@@ -777,6 +777,9 @@ pub(crate) fn catalog_model_info(
         codex_model_info(&model, provider, config)
             .unwrap_or_else(|| synthetic_model_info(&entry.id))
     });
+    // Catalog ids are the public model identity; upstream_id only selects the
+    // discovery record and remains available for request routing.
+    info["slug"] = json!(entry.id);
     apply_catalog_entry_overrides(&mut info, entry);
     info
 }

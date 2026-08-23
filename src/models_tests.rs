@@ -1268,6 +1268,65 @@ fn manual_catalog_models_skip_upstream_id_aliases() {
 }
 
 #[test]
+fn discovered_catalog_alias_uses_public_id_without_suppressing_upstream_model() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "provider/public-model".to_string(),
+            upstream_id: Some("upstream-model".to_string()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    let discovered = BTreeMap::from([(
+        "upstream-model".to_string(),
+        synthetic_model_info("upstream-model"),
+    )]);
+    let catalog = manual_catalog_models(&provider, &AppConfig::default(), Some(&discovered));
+
+    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog[0]["slug"], "provider/public-model");
+
+    let mut merged = Vec::new();
+    let mut routes = BTreeMap::new();
+    register_catalog_routes_for_provider(&mut routes, "provider", &provider);
+    let mut models = discovered.into_values().collect::<Vec<_>>();
+    models.extend(catalog);
+    add_models_for_provider(
+        &mut merged,
+        &mut routes,
+        &AppConfig::default(),
+        "provider",
+        &provider,
+        models,
+    );
+
+    assert_eq!(
+        merged
+            .iter()
+            .filter(|model| model["slug"] == "provider/public-model")
+            .count(),
+        1,
+        "the catalog alias must be advertised exactly once"
+    );
+    assert_eq!(
+        merged
+            .iter()
+            .filter(|model| model["slug"] == "upstream-model")
+            .count(),
+        1,
+        "the discovered upstream model must not be duplicated or suppressed"
+    );
+    assert_eq!(
+        routes.get("provider/public-model").map(String::as_str),
+        Some("provider")
+    );
+    assert_eq!(
+        routes.get("upstream-model").map(String::as_str),
+        Some("provider")
+    );
+}
+
+#[test]
 fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
     let mut routes = BTreeMap::new();
     let mut hicap = ProviderConfig::default();

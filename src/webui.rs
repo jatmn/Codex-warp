@@ -1613,6 +1613,7 @@ fn validate_model_reasoning(
     _provider: &ProviderConfig,
     config: &AppConfig,
     discovered: &BTreeMap<String, Value>,
+    reasoning_fields_changed: bool,
 ) -> Result<(), ApiError> {
     if let Some(levels) = &mut entry.supported_reasoning_levels {
         if levels.is_empty() {
@@ -1645,7 +1646,7 @@ fn validate_model_reasoning(
     // When discovery metadata is unavailable and the edit does not touch
     // reasoning fields, trust the persisted data rather than rejecting an
     // unrelated partial edit against synthetic inherited levels.
-    if discovered.is_empty() && entry.supported_reasoning_levels.is_none() {
+    if discovered.is_empty() && !reasoning_fields_changed {
         return Ok(());
     }
 
@@ -1855,6 +1856,7 @@ async fn create_provider(
             &provider_snapshot,
             &config_snapshot,
             &BTreeMap::new(),
+            true,
         )?;
     }
 
@@ -2134,6 +2136,7 @@ async fn add_model(
         &provider_snapshot,
         &config_snapshot,
         &provider_discovered,
+        true,
     )?;
 
     let store = require_store(&state)?;
@@ -2212,6 +2215,9 @@ async fn update_model(
     }
     let store = require_store(&state)?;
     let managed = lookup_provider_managed(&state, &id)?;
+    let reasoning_fields_changed =
+        !matches!(fields.supported_reasoning_levels, OptionalPatch::Absent)
+            || !matches!(fields.default_reasoning_level, OptionalPatch::Absent);
 
     let (mut updated, previous_upstream_id, config_snapshot, provider_snapshot) = {
         let config = state.read_config();
@@ -2248,6 +2254,7 @@ async fn update_model(
         &provider_snapshot,
         &config_snapshot,
         &provider_discovered,
+        reasoning_fields_changed,
     )?;
 
     store

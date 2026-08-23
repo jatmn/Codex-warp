@@ -1381,17 +1381,19 @@ fn model_reasoning_validation_resolves_default_only_against_discovery() {
         default_reasoning_level: Some(" high ".into()),
         ..ModelCatalogEntry::default()
     };
-    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
+    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered, true)
         .expect("inherited supported modes validate the default-only patch");
     assert_eq!(valid.default_reasoning_level.as_deref(), Some("high"));
 
     valid.supported_reasoning_levels = Some(vec!["low".into(), "high".into()]);
-    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
+    validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered, true)
         .expect("distinct explicit modes are accepted");
 
     valid.default_reasoning_level = Some("max".into());
-    let error = validate_model_reasoning(&mut valid, &provider, &AppConfig::default(), &discovered)
-        .expect_err("unsupported default is rejected");
+    let error = validate_model_reasoning(
+        &mut valid, &provider, &AppConfig::default(), &discovered, true,
+    )
+    .expect_err("unsupported default is rejected");
     assert!(error.message.contains("not in supported_reasoning_levels"));
 
     let mut duplicate = ModelCatalogEntry {
@@ -1404,6 +1406,7 @@ fn model_reasoning_validation_resolves_default_only_against_discovery() {
         &provider,
         &AppConfig::default(),
         &discovered,
+        true,
     )
     .expect_err("duplicate supported modes are rejected");
     assert!(error.message.contains("duplicate reasoning level `low`"));
@@ -1414,6 +1417,7 @@ fn model_reasoning_validation_resolves_default_only_against_discovery() {
         &provider,
         &AppConfig::default(),
         &discovered,
+        true,
     )
     .expect_err("an empty explicit supported list is rejected");
     assert!(error.message.contains("cannot be empty"));
@@ -1438,8 +1442,14 @@ fn levels_only_edit_auto_defaults_when_inherited_default_excluded() {
         default_reasoning_level: None,
         ..ModelCatalogEntry::default()
     };
-    validate_model_reasoning(&mut entry, &provider, &AppConfig::default(), &discovered)
-        .expect("auto-default should not reject");
+    validate_model_reasoning(
+        &mut entry,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+        true,
+    )
+    .expect("auto-default should not reject");
     assert_eq!(
         entry.default_reasoning_level.as_deref(),
         Some("low"),
@@ -1458,12 +1468,33 @@ fn levels_only_edit_auto_defaults_when_inherited_default_excluded() {
         &provider,
         &AppConfig::default(),
         &discovered,
+        true,
     )
     .expect("explicit levels with valid inherited default should pass");
     assert!(
         keep_default.default_reasoning_level.is_none(),
         "inherited default should remain None when it is still valid"
     );
+}
+
+#[test]
+fn default_only_reasoning_is_validated_without_discovery() {
+    let mut entry = ModelCatalogEntry {
+        id: "unknown-model".into(),
+        default_reasoning_level: Some("high".into()),
+        ..ModelCatalogEntry::default()
+    };
+
+    let error = validate_model_reasoning(
+        &mut entry,
+        &ProviderConfig::default(),
+        &AppConfig::default(),
+        &BTreeMap::new(),
+        true,
+    )
+    .expect_err("a submitted default must validate against synthetic inherited levels");
+
+    assert!(error.message.contains("not in supported_reasoning_levels"));
 }
 
 #[test]
@@ -2257,7 +2288,6 @@ async fn create_provider_rejects_invalid_reasoning_catalog() {
         },
         model_catalog: vec![ModelCatalogEntry {
             id: "bad-model".into(),
-            supported_reasoning_levels: Some(vec!["low".into()]),
             default_reasoning_level: Some("high".into()),
             ..ModelCatalogEntry::default()
         }],
@@ -3694,6 +3724,101 @@ async fn delete_model_removes_ui_added_model_for_non_managed_provider() {
             .all(|disabled| disabled != "manual/gpt-4o" && disabled != "gpt-4o"),
         "deleted UI-added model must not become a disabled entry"
     );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn add_model_rejects_invalid_default_only_reasoning_without_discovery() {
+    let dir = unique_temp_dir("codex-warp-add-model-default-reasoning-validation");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "manual".into(),
+            ProviderConfig {
+                base_url: "https://example.test/v1".into(),
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let error = add_model(
+        State(state.clone()),
+        Path("manual".to_string()),
+        Json(ModelCatalogEntry {
+            id: "manual/unknown".into(),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect_err("invalid submitted default must not bypass validation without discovery");
+    assert!(error.message.contains("not in supported_reasoning_levels"));
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn update_model_allows_unrelated_edit_with_persisted_default_only_without_discovery() {
+    let dir = unique_temp_dir("codex-warp-update-model-default-reasoning-preserve");
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = crate::store::Store::open(&dir.join("overlay.db")).unwrap();
+    let state = state_with_store(store);
+    let provider = ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "manual/persisted".into(),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("manual".into(), provider);
+    }
+
+    let _ = update_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/persisted".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Set("Persisted".into()),
+            description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
+            enabled: None,
+        }),
+    )
+    .await
+    .expect("unrelated updates retain persisted reasoning overrides without discovery");
+
+    {
+        let entry = &state.read_config().providers["manual"].model_catalog[0];
+        assert_eq!(entry.default_reasoning_level.as_deref(), Some("high"));
+        assert_eq!(entry.display_name.as_deref(), Some("Persisted"));
+    }
+
+    let error = update_model(
+        State(state.clone()),
+        Path(("manual".to_string(), "manual/persisted".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Absent,
+            description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Set("max".into()),
+            enabled: None,
+        }),
+    )
+    .await
+    .expect_err("a submitted default must not bypass validation without discovery");
+    assert!(error.message.contains("not in supported_reasoning_levels"));
 
     let _ = std::fs::remove_dir_all(dir);
 }
