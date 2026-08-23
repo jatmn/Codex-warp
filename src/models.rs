@@ -138,17 +138,37 @@ async fn discover_routes_for_mutation(
         .map(|(id, p)| (id.to_string(), p.clone()))
         .collect();
 
-    let mut routes = state
-        .store
-        .as_ref()
-        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
-        .unwrap_or_default();
-    if state.store.is_none() {
-        let config = state.read_config();
-        for (provider_id, provider) in provider_entries(&config) {
-            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    // Capture the last-known route map before any seed/read so a transient
+    // SQLite overlay-seed failure can fall back to it instead of wiping
+    // persisted overlay ownership (blocker 3).
+    let prior_routes = state.model_routes.read().await.clone();
+
+    // Baseline route map. Prefer catalog + overlay seeds, but if the overlay
+    // seed read fails, fall back to the last-known route map so persisted
+    // overlay ownership is not wiped by a transient SQLite error (blocker 3).
+    let mut routes = match state.store.as_ref() {
+        Some(store) => match seed_model_routes_from_config_and_store(&state.read_config(), store) {
+            Ok(routes) => routes,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to read enabled model route seeds; falling back to prior route map to preserve overlay ownership"
+                );
+                prior_routes.clone()
+            }
+        },
+        None => {
+            let mut seeded = BTreeMap::new();
+            for (provider_id, provider) in provider_entries(&state.read_config()) {
+                register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+            }
+            seeded
         }
-    }
+    };
+    // Snapshot the seed-derived routes (catalog + overlay, before upstream
+    // discovery) so live-only slugs can be distinguished from catalog routes
+    // when re-seeding prior ownership below (blocker 2).
+    let seed_routes = routes.clone();
 
     let mut retain_owners: BTreeSet<String> =
         provider_list.iter().map(|(id, _)| id.clone()).collect();
@@ -199,6 +219,29 @@ async fn discover_routes_for_mutation(
         } else {
             fetch_warning = Some(provider_failures.join("; "));
         }
+    }
+
+    // Blocker 2: retain prior ownership for live-only slugs (those absent from
+    // the catalog/overlay seed map) whose prior owner was not part of this
+    // refresh. The refreshed provider's own discovery is authoritative, so its
+    // dropped live-only slugs must be removed rather than resurrected from the
+    // prior map. This prevents a focused refresh from dropping another
+    // provider's live-only slug or letting one provider steal a slug another
+    // already owns.
+    for (slug, owner) in &prior_routes {
+        if seed_routes.contains_key(slug) {
+            continue;
+        }
+        if fetch_ids.contains(owner) {
+            continue;
+        }
+        let Some((found_id, provider)) = provider_list.iter().find(|(id, _)| id == owner) else {
+            continue;
+        };
+        if !provider.model_is_enabled(slug) {
+            continue;
+        }
+        routes.insert(slug.clone(), found_id.clone());
     }
 
     (routes, retain_owners, fetch_warning)
@@ -256,6 +299,11 @@ async fn models_for_revision(
         .map(|(id, p)| (id.to_string(), p.clone()))
         .collect();
 
+    // Capture the last-known route map before any seed/read so a transient
+    // SQLite overlay-seed failure can fall back to it instead of wiping
+    // persisted overlay ownership (B3, GET-path class fix).
+    let prior_routes = state.model_routes.read().await.clone();
+
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
     let fetch_results = join_all(provider_list.into_iter().map(|(provider_id, provider)| {
@@ -274,11 +322,29 @@ async fn models_for_revision(
     .await;
 
     let mut merged_models = Vec::new();
-    let mut routes = state
-        .store
-        .as_ref()
-        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
-        .unwrap_or_default();
+    let mut routes = match state.store.as_ref() {
+        Some(store) => match seed_model_routes_from_config_and_store(&state.read_config(), store) {
+            Ok(routes) => routes,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to read enabled model route seeds; falling back to current route map to preserve overlay ownership"
+                );
+                // Mirror the mutation-path B3 fix: a transient SQLite overlay-seed
+                // read failure must not wipe persisted overlay ownership. The
+                // current published map already includes overlay routes; upstream
+                // discovery below re-adds live models.
+                prior_routes.clone()
+            }
+        },
+        None => {
+            let mut seeded = BTreeMap::new();
+            for (provider_id, provider) in provider_entries(&state.read_config()) {
+                register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+            }
+            seeded
+        }
+    };
     let mut failures = Vec::new();
     let mut failed_providers = BTreeSet::new();
 
@@ -441,21 +507,12 @@ pub(crate) fn register_catalog_routes_for_provider(
 pub(crate) fn seed_model_routes_from_config_and_store(
     config: &AppConfig,
     store: &crate::store::Store,
-) -> BTreeMap<String, String> {
+) -> anyhow::Result<BTreeMap<String, String>> {
     let mut routes = BTreeMap::new();
     for (provider_id, provider) in provider_entries(config) {
         register_catalog_routes_for_provider(&mut routes, provider_id, provider);
     }
-    let seeds = match store.enabled_model_route_seeds() {
-        Ok(seeds) => seeds,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "failed to read enabled model route seeds; overlay routes omitted at startup"
-            );
-            return routes;
-        }
-    };
+    let seeds = store.enabled_model_route_seeds()?;
     for (provider_id, model_id, upstream_id) in seeds {
         let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
             continue;
@@ -471,7 +528,7 @@ pub(crate) fn seed_model_routes_from_config_and_store(
             routes.insert(upstream_id, provider_id);
         }
     }
-    routes
+    Ok(routes)
 }
 
 /// Replay overlay-enabled route seeds for one provider (e.g. after Web UI re-enable).
@@ -627,6 +684,13 @@ pub(crate) fn normalize_models(
         .filter_map(|model| codex_model_info(model, provider, config))
         .collect::<Vec<_>>();
 
+    // A non-empty catalog payload that yields no usable models is malformed,
+    // not an authoritative empty catalog. Treat it as a fetch failure so prior
+    // routes are retained instead of being wiped by a bad upstream response.
+    if !data.is_empty() && models.is_empty() {
+        return None;
+    }
+
     Some(models)
 }
 
@@ -663,6 +727,12 @@ pub(crate) fn codex_model_info(
         .or_else(|| model.get("id"))
         .or_else(|| model.get("model"))
         .and_then(Value::as_str)?;
+    // An empty identifier is not a usable model, so it must not count as a
+    // successful catalog entry when deciding whether a non-empty payload was
+    // malformed (blocker 1).
+    if id.trim().is_empty() {
+        return None;
+    }
 
     let mut info = if model.get("slug").is_some() {
         model.clone()

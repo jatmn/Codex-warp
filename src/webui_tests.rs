@@ -1787,6 +1787,17 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn webui_app_main_js_suppresses_duplicate_refreshes_across_rerenders() {
+    let app = include_str!("webui_static/app-main.js");
+    // A module-level set must track in-flight refreshes so an unrelated
+    // provider-card rerender cannot spawn a duplicate refresh request (blocker 4).
+    assert!(app.contains("const refreshingProviderIds = new Set();"));
+    assert!(app.contains("refreshingProviderIds.add(provider.id)"));
+    assert!(app.contains("refreshingProviderIds.delete(provider.id)"));
+    assert!(app.contains("refreshingProviderIds.has(provider.id)"));
+}
+
+#[test]
 fn webui_app_includes_model_and_pie_chart_renderers() {
     let app = include_str!("webui_static/app-main.js");
     assert!(app.contains("function drawModelUsageChart("));
@@ -2562,6 +2573,325 @@ async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
         "a failed selected refresh must retain sibling routes"
     );
     drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_model_refresh_does_not_steal_shared_live_only_slug() {
+    // Two dynamic providers both report a live-only slug `shared-model`.
+    // Refreshing one must not steal the other's ownership of that slug
+    // (blocker 2).
+    let a_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "shared-model", "object": "model"},
+                    {"id": "a-only", "object": "model"},
+                ]
+            }))
+        }),
+    );
+    let a_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a_address = a_listener.local_addr().unwrap();
+    let a_server = tokio::spawn(async move { axum::serve(a_listener, a_app).await.unwrap() });
+
+    let b_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "shared-model", "object": "model"},
+                    {"id": "b-only", "object": "model"},
+                ]
+            }))
+        }),
+    );
+    let b_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b_address = b_listener.local_addr().unwrap();
+    let b_server = tokio::spawn(async move { axum::serve(b_listener, b_app).await.unwrap() });
+
+    let (state, store_dir) = temporary_store_state("provider-model-refresh-shared-slug");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "a".into(),
+            ProviderConfig {
+                base_url: format!("http://{a_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "b".into(),
+            ProviderConfig {
+                base_url: format!("http://{b_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("shared-model".into(), "a".into());
+        routes.insert("a-only".into(), "a".into());
+        routes.insert("b-only".into(), "b".into());
+    }
+
+    let management_app = router(None, false).with_state(state.clone());
+    let management_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let management_address = management_listener.local_addr().unwrap();
+    let management_server = tokio::spawn(async move {
+        axum::serve(management_listener, management_app)
+            .await
+            .unwrap()
+    });
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "http://{management_address}/api/providers/b/refresh-models"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("call provider refresh route");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        Some("a"),
+        "refreshing b must not steal the shared live-only slug from a"
+    );
+    assert_eq!(
+        routes.get("a-only").map(String::as_str),
+        Some("a"),
+        "a's own live-only slug must be retained while refreshing b"
+    );
+    assert_eq!(
+        routes.get("b-only").map(String::as_str),
+        Some("b"),
+        "b's newly reported model must be added"
+    );
+
+    drop(routes);
+    management_server.abort();
+    let _ = management_server.await;
+    a_server.abort();
+    let _ = a_server.await;
+    b_server.abort();
+    let _ = b_server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_model_refresh_does_not_drop_other_providers_shared_slug() {
+    // `shared-model` is owned by provider b in the prior map, and b still
+    // reports it. Refreshing a (which no longer reports `shared-model`) must
+    // not drop b's ownership of that shared live-only slug (blocker 2).
+    let a_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "a-only", "object": "model"}]
+            }))
+        }),
+    );
+    let a_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a_address = a_listener.local_addr().unwrap();
+    let a_server = tokio::spawn(async move { axum::serve(a_listener, a_app).await.unwrap() });
+
+    let b_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [
+                    {"id": "shared-model", "object": "model"},
+                    {"id": "b-only", "object": "model"},
+                ]
+            }))
+        }),
+    );
+    let b_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let b_address = b_listener.local_addr().unwrap();
+    let b_server = tokio::spawn(async move { axum::serve(b_listener, b_app).await.unwrap() });
+
+    let (state, store_dir) = temporary_store_state("provider-model-refresh-other-shared-slug");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "a".into(),
+            ProviderConfig {
+                base_url: format!("http://{a_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "b".into(),
+            ProviderConfig {
+                base_url: format!("http://{b_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("shared-model".into(), "b".into());
+        routes.insert("a-only".into(), "a".into());
+        routes.insert("b-only".into(), "b".into());
+    }
+
+    let management_app = router(None, false).with_state(state.clone());
+    let management_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let management_address = management_listener.local_addr().unwrap();
+    let management_server = tokio::spawn(async move {
+        axum::serve(management_listener, management_app)
+            .await
+            .unwrap()
+    });
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "http://{management_address}/api/providers/a/refresh-models"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("call provider refresh route");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        Some("b"),
+        "refreshing a must not drop b's ownership of the shared live-only slug"
+    );
+    assert_eq!(
+        routes.get("a-only").map(String::as_str),
+        Some("a"),
+        "a's own live-only slug must be retained"
+    );
+    assert_eq!(
+        routes.get("b-only").map(String::as_str),
+        Some("b"),
+        "b's live-only slug must be retained without being refreshed"
+    );
+
+    drop(routes);
+    management_server.abort();
+    let _ = management_server.await;
+    a_server.abort();
+    let _ = a_server.await;
+    b_server.abort();
+    let _ = b_server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_model_refresh_preserves_overlay_routes_when_seed_read_fails() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("provider-model-refresh-overlay-seed-fail");
+
+    // Record an overlay-enabled route seed, then corrupt the overlay table so
+    // the next seed read fails (simulating a transient SQLite error). The
+    // refresh must fall back to the prior route map and preserve overlay
+    // ownership instead of publishing a map without it (blocker 3).
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-model", true)
+        .expect("seed overlay route");
+
+    {
+        let corrupt =
+            Connection::open(store_dir.join("overlay.db")).expect("open corrupting connection");
+        corrupt
+            .execute("DROP TABLE model_overlays", [])
+            .expect("drop overlay table to force a seed read failure");
+    }
+
+    let upstream_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "dynamic-model", "object": "model"}]
+            }))
+        }),
+    );
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_address = upstream_listener.local_addr().unwrap();
+    let upstream_server =
+        tokio::spawn(async move { axum::serve(upstream_listener, upstream_app).await.unwrap() });
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "dynamic".into(),
+            ProviderConfig {
+                base_url: format!("http://{upstream_address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("overlay-model".into(), "dynamic".into());
+    }
+
+    let management_app = router(None, false).with_state(state.clone());
+    let management_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let management_address = management_listener.local_addr().unwrap();
+    let management_server = tokio::spawn(async move {
+        axum::serve(management_listener, management_app)
+            .await
+            .unwrap()
+    });
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "http://{management_address}/api/providers/dynamic/refresh-models"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("call provider refresh route");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-model").map(String::as_str),
+        Some("dynamic"),
+        "overlay ownership must survive an overlay-seed read failure"
+    );
+    assert_eq!(
+        routes.get("dynamic-model").map(String::as_str),
+        Some("dynamic"),
+        "the refreshed provider's reported model must still be added"
+    );
+
+    drop(routes);
+    management_server.abort();
+    let _ = management_server.await;
+    upstream_server.abort();
+    let _ = upstream_server.await;
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }

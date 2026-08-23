@@ -37,6 +37,9 @@
   let bootFooterHold = false;
   let tabEpoch = 0;
   const expandedProviderIds = new Set();
+  // Providers with an in-flight model refresh. Derived button state survives
+  // unrelated card rerenders so a refresh cannot be submitted twice (blocker 4).
+  const refreshingProviderIds = new Set();
   const VALID_TABS = new Set(["analytics", "providers", "logs"]);
   function tabFromLocation() {
     const hash = location.hash.replace(/^#/, "");
@@ -423,8 +426,9 @@
       const refreshBtn = document.createElement("button");
       refreshBtn.type = "button";
       refreshBtn.className = "btn small";
-      refreshBtn.textContent = "Refresh";
-      refreshBtn.disabled = !provider.enabled;
+      const isRefreshing = refreshingProviderIds.has(provider.id);
+      refreshBtn.textContent = isRefreshing ? "Refreshing…" : "Refresh";
+      refreshBtn.disabled = !provider.enabled || isRefreshing;
       refreshBtn.title = provider.enabled
         ? "Refresh models from the provider API"
         : "Enable the provider before refreshing models";
@@ -433,23 +437,31 @@
         `Refresh models for ${provider.display_name || provider.id}`,
       );
       refreshBtn.addEventListener("click", async () => {
+        if (refreshingProviderIds.has(provider.id)) {
+          return;
+        }
+        refreshingProviderIds.add(provider.id);
         refreshBtn.disabled = true;
         refreshBtn.textContent = "Refreshing…";
         status(`Refreshing models for ${provider.id}…`);
+        let apiError = null;
         try {
           await api(`/providers/${encodeURIComponent(provider.id)}/refresh-models`, {
             method: "POST",
             body: JSON.stringify({}),
           });
         } catch (e) {
-          refreshBtn.disabled = !provider.enabled;
-          refreshBtn.textContent = "Refresh";
-          status(`Error: ${formatErrorMessage(e)}`);
-          return;
+          apiError = e;
+        } finally {
+          refreshingProviderIds.delete(provider.id);
         }
         try {
           await loadProviders({ refreshRoutes: false, updateStatus: false });
-          status(`Refreshed models for ${provider.id}`);
+          if (apiError) {
+            status(`Error: ${formatErrorMessage(apiError)}`);
+          } else {
+            status(`Refreshed models for ${provider.id}`);
+          }
         } catch (e) {
           refreshBtn.disabled = !provider.enabled;
           refreshBtn.textContent = "Refresh";

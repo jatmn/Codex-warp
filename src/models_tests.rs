@@ -56,6 +56,33 @@ fn openai_models_list_is_normalized_for_codex() {
 }
 
 #[test]
+fn normalize_models_rejects_nonempty_payload_with_no_usable_models() {
+    // A non-empty 200 catalog whose entries are all malformed must be treated
+    // as a fetch failure, not an authoritative empty catalog (blocker 1).
+    let provider = ProviderConfig::default();
+    let config = AppConfig::default();
+    let malformed = Bytes::from_static(br#"{"data":[{"foo":"bar"},{"id":""},{"slug":null}]}"#);
+    assert!(
+        normalize_models(&malformed, &provider, &config).is_none(),
+        "malformed non-empty catalog must be rejected"
+    );
+
+    // A genuinely empty catalog is still a valid (authoritative) empty result.
+    let empty = Bytes::from_static(br#"{"data":[]}"#);
+    assert!(
+        normalize_models(&empty, &provider, &config).is_some(),
+        "empty catalog must be accepted as authoritative empty"
+    );
+
+    // A valid non-empty catalog is accepted.
+    let ok = Bytes::from_static(br#"{"data":[{"id":"good-model"}]}"#);
+    assert!(
+        normalize_models(&ok, &provider, &config).is_some(),
+        "valid catalog must be accepted"
+    );
+}
+
+#[test]
 fn model_metadata_config_overrides_openai_models_list() {
     let body =
         Bytes::from_static(br#"{"object":"list","data":[{"id":"mimo-v2.5","object":"model"}]}"#);
@@ -1744,7 +1771,7 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
     config.providers.insert("alpha".into(), alpha);
     config.providers.insert("beta".into(), beta);
 
-    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    let routes = seed_model_routes_from_config_and_store(&config, &store).expect("seed read");
     assert_eq!(
         routes.get("upstream-only").map(String::as_str),
         Some("beta")
@@ -1795,7 +1822,7 @@ fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
         },
     );
 
-    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    let routes = seed_model_routes_from_config_and_store(&config, &store).expect("seed read");
     assert_eq!(routes.get("shared").map(String::as_str), Some("enabled"));
 
     let _ = std::fs::remove_dir_all(dir);
@@ -1836,7 +1863,7 @@ fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
         );
     }
 
-    let routes = seed_model_routes_from_config_and_store(&config, &store);
+    let routes = seed_model_routes_from_config_and_store(&config, &store).expect("seed read");
     assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
 
     let _ = std::fs::remove_dir_all(dir);
