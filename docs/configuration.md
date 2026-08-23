@@ -412,6 +412,8 @@ The UI can:
 - edit and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider
+- manually refresh an enabled provider's upstream models when its catalog mode
+  is dynamic or hybrid
 - chart token usage, prompts, and sessions over time with a line chart, plus
   token usage over time with a bar chart (global, per provider, and per model)
 - chart model usage over time with per-model lines for both sessions and
@@ -456,6 +458,12 @@ keep their current values, and JSON `null` clears optional string fields
 (`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
 re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
+`POST /api/providers/{id}/models/refresh` re-fetches one enabled provider's
+upstream `/models` catalog and immediately updates its live model view and route
+map. A successful response adds newly reported models and removes live-only
+models no longer returned by that provider. Static (`model_catalog_only = true`)
+and disabled providers cannot be refreshed; a failed upstream request keeps the
+last successfully discovered routes and returns an error to the UI.
 
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`

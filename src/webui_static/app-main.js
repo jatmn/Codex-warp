@@ -411,16 +411,53 @@
   }
 
   function renderModels(provider, container) {
-    container.innerHTML = "";
+    container.replaceChildren();
     const models = provider.models || [];
-    if (!models.length) {
-      container.innerHTML = "<p class='models-label'>Models</p><p class='muted'>No models.</p>";
-      return;
-    }
+    const head = document.createElement("div");
+    head.className = "models-head";
     const label = document.createElement("p");
     label.className = "models-label";
     label.textContent = "Models";
-    container.append(label);
+    head.append(label);
+    if (!provider.model_catalog_only) {
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.className = "btn small";
+      refreshBtn.textContent = "Refresh";
+      refreshBtn.disabled = !provider.enabled;
+      refreshBtn.title = provider.enabled
+        ? "Refresh models from the provider API"
+        : "Enable the provider before refreshing models";
+      refreshBtn.setAttribute(
+        "aria-label",
+        `Refresh models for ${provider.display_name || provider.id}`,
+      );
+      refreshBtn.addEventListener("click", async () => {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "Refreshing…";
+        status(`Refreshing models for ${provider.id}…`);
+        try {
+          await api(`/providers/${encodeURIComponent(provider.id)}/models/refresh`, {
+            method: "POST",
+          });
+          await loadProviders({ refreshRoutes: false, updateStatus: false });
+          status(`Refreshed models for ${provider.id}`);
+        } catch (e) {
+          refreshBtn.disabled = !provider.enabled;
+          refreshBtn.textContent = "Refresh";
+          status(`Error: ${formatErrorMessage(e)}`);
+        }
+      });
+      head.append(refreshBtn);
+    }
+    container.append(head);
+    if (!models.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No models.";
+      container.append(empty);
+      return;
+    }
     for (const m of models) {
       const row = document.createElement("div");
       row.className = "model-row";

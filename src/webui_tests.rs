@@ -2276,6 +2276,182 @@ fn discovery_settings_changed_detects_endpoint_and_catalog_mode() {
     assert!(discovery_settings_changed(&before, &mode_changed));
 }
 
+#[test]
+fn webui_offers_provider_scoped_refresh_for_discovered_catalogs() {
+    let js = webui_js_source();
+    assert!(js.contains("if (!provider.model_catalog_only)"));
+    assert!(js.contains("/models/refresh`"));
+    assert!(js.contains("Refresh models from the provider API"));
+    assert!(js.contains("refreshBtn.disabled = !provider.enabled"));
+}
+
+#[tokio::test]
+async fn provider_model_refresh_replaces_removed_models_and_adds_new_models() {
+    let upstream_app = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "object": "list",
+                "data": [{"id": "new-model", "object": "model"}]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream_server =
+        tokio::spawn(async move { axum::serve(listener, upstream_app).await.unwrap() });
+
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "dynamic".into(),
+            ProviderConfig {
+                base_url: format!("http://{address}"),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "static".into(),
+            ProviderConfig {
+                base_url: "https://static.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "static-model".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("removed-model".into(), "dynamic".into());
+        routes.insert("static-model".into(), "static".into());
+    }
+    let revision_before = state
+        .config_revision
+        .load(std::sync::atomic::Ordering::Acquire);
+
+    let management_app = router(None, false).with_state(state.clone());
+    let management_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let management_address = management_listener.local_addr().unwrap();
+    let management_server = tokio::spawn(async move {
+        axum::serve(management_listener, management_app)
+            .await
+            .unwrap()
+    });
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{management_address}/api/providers/dynamic/models/refresh"
+        ))
+        .send()
+        .await
+        .expect("call provider refresh route");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let view: serde_json::Value = response.json().await.expect("provider refresh view");
+
+    let models = view["models"].as_array().expect("models array");
+    assert!(models.iter().any(|model| model["id"] == "new-model"));
+    assert!(models.iter().all(|model| model["id"] != "removed-model"));
+    assert_eq!(
+        state
+            .config_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        revision_before + 1,
+        "manual refresh must invalidate older in-flight catalog discovery"
+    );
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("new-model").map(String::as_str), Some("dynamic"));
+    assert!(!routes.contains_key("removed-model"));
+    assert_eq!(
+        routes.get("static-model").map(String::as_str),
+        Some("static"),
+        "refreshing one provider must retain sibling provider routes"
+    );
+    management_server.abort();
+    upstream_server.abort();
+}
+
+#[tokio::test]
+async fn provider_model_refresh_rejects_static_and_disabled_providers() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "static".into(),
+            ProviderConfig {
+                base_url: "https://static.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "disabled".into(),
+            ProviderConfig {
+                base_url: "https://disabled.example/v1".into(),
+                enabled: false,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let static_error = refresh_provider_models(State(state.clone()), Path("static".to_string()))
+        .await
+        .expect_err("static catalogs cannot refresh");
+    assert_eq!(static_error.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(static_error.message.contains("static model catalog"));
+
+    let disabled_error = refresh_provider_models(State(state), Path("disabled".to_string()))
+        .await
+        .expect_err("disabled providers cannot refresh");
+    assert_eq!(disabled_error.status, axum::http::StatusCode::BAD_REQUEST);
+    assert!(disabled_error.message.contains("must be enabled"));
+}
+
+#[tokio::test]
+async fn provider_model_refresh_reports_failure_and_preserves_last_discovery() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "dynamic".into(),
+            ProviderConfig {
+                base_url: "http://127.0.0.1:1/v1".into(),
+                enabled: true,
+                model_catalog_only: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("last-known-model".into(), "dynamic".into());
+
+    let error = refresh_provider_models(State(state.clone()), Path("dynamic".to_string()))
+        .await
+        .expect_err("unreachable upstream must fail the refresh request");
+
+    assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
+    assert!(error.message.contains("model refresh failed"));
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("last-known-model")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+}
+
 #[tokio::test]
 async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
     use crate::models::MutationRouteRefresh;
