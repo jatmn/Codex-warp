@@ -195,7 +195,7 @@ Transforms let a model entry override or adjust request translation.
 | `request_stream_options_include_usage` | Defaults to `false` for compatibility with gateways that reject `stream_options`. Enable it for providers that support `stream_options.include_usage`; when enabled, it is added if the caller did not supply `stream_options`. |
 | `preserve_reasoning_content_history` | Replay prior reasoning text into outbound assistant/tool-call `reasoning_content` fields for multi-turn tool use. |
 | `suppress_duplicate_tool_markup` | Suppress duplicate tool markup in streaming chat-completion content when native tool calls are present. |
-| `split_concatenated_tool_call_arguments` | Split a malformed single tool call into distinct calls when its arguments consist entirely of two or more adjacent JSON objects. |
+| `split_concatenated_tool_call_arguments` | For Chat Completions backends, split a malformed single tool call into distinct calls when its arguments consist entirely of two or more adjacent JSON objects. |
 
 Supported morph kinds:
 

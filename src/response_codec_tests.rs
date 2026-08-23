@@ -107,6 +107,20 @@ fn concatenated_tool_call_repair_bounds_recovered_call_count() {
 }
 
 #[test]
+fn concatenated_tool_call_repair_bounds_parser_work_by_argument_bytes() {
+    assert_eq!(MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES, 1_048_576);
+    let at_limit = format!(
+        "{{\"payload\":\"{}\"}}{{}}",
+        "x".repeat(MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES - 16)
+    );
+    assert_eq!(at_limit.len(), MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES);
+    assert!(split_concatenated_tool_call_arguments(&at_limit).is_some());
+
+    let over_limit = format!("{at_limit} ");
+    assert_eq!(split_concatenated_tool_call_arguments(&over_limit), None);
+}
+
+#[test]
 fn streaming_chat_repair_splits_concatenated_tool_calls_and_assigns_unique_ids() {
     let mut accum = ChatAccum {
         split_concatenated_tool_call_arguments: true,

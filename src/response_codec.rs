@@ -7,6 +7,7 @@ use async_stream::stream;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::Serialize;
+use serde::de::IgnoredAny;
 use serde_json::Value;
 use serde_json::json;
 
@@ -166,6 +167,7 @@ const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
 /// upstream as misbehaving and returning an error.
 const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPAIRED_CONCATENATED_TOOL_CALLS: usize = 64;
+const MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES: usize = 1024 * 1024;
 const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
 
 // Stream conversion carries request context rather than a new struct.
@@ -913,23 +915,36 @@ pub(crate) struct ToolCallAccum {
 }
 
 fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>> {
-    let mut stream = serde_json::Deserializer::from_str(arguments).into_iter::<Value>();
-    let mut objects = Vec::new();
+    if arguments.len() > MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES {
+        return None;
+    }
+
+    let mut stream = serde_json::Deserializer::from_str(arguments).into_iter::<IgnoredAny>();
+    let mut object_ranges = Vec::new();
     let mut object_start = 0;
-    while let Some(value) = stream.next() {
-        let value = value.ok()?;
-        if !value.is_object() {
+    loop {
+        let remaining = arguments.get(object_start..)?;
+        if remaining.trim().is_empty() {
+            break;
+        }
+        if object_ranges.len() == MAX_REPAIRED_CONCATENATED_TOOL_CALLS {
             return None;
         }
-        if objects.len() == MAX_REPAIRED_CONCATENATED_TOOL_CALLS {
+        if !remaining.trim_start().starts_with('{') {
             return None;
         }
+        stream.next()?.ok()?;
         let object_end = stream.byte_offset();
-        let object = arguments.get(object_start..object_end)?.trim();
-        objects.push(object.to_string());
+        object_ranges.push(object_start..object_end);
         object_start = object_end;
     }
-    (objects.len() > 1).then_some(objects)
+
+    (object_ranges.len() > 1).then(|| {
+        object_ranges
+            .into_iter()
+            .map(|range| arguments[range].trim().to_string())
+            .collect()
+    })
 }
 
 fn recovered_tool_call_id(upstream_id: Option<&str>, recovered_index: usize) -> String {
