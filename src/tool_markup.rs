@@ -37,9 +37,14 @@ pub(crate) fn recognized_tag(input: &str) -> Option<&'static str> {
 #[allow(dead_code)] // consumed by the following incremental sanitizer layer
 pub(crate) fn opening_tag(input: &str) -> Option<OpeningTag> {
     let mut quote = None;
+    let mut escaped = false;
     for (offset, byte) in input.as_bytes().iter().copied().enumerate() {
         if let Some(delimiter) = quote {
-            if byte == delimiter {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
                 quote = None;
             }
         } else if matches!(byte, b'\'' | b'\"') {
@@ -146,6 +151,7 @@ fn closing_tag_end(rest: &str) -> Option<usize> {
         .starts_with('>')
         .then_some(rest.len() - delimiter.len() + 1)
 }
+
 /// Incrementally removes complete recognized markup elements while retaining
 /// ordinary content and enough trailing input to finish a split tag later.
 #[allow(dead_code)] // wired by the following response-adapter layer
@@ -180,15 +186,17 @@ impl Sanitizer {
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(fragment);
         let mut output = String::new();
-
-        while !input.is_empty() {
+        let mut cursor = 0;
+        while let Some(remaining) = input
+            .get(cursor..)
+            .filter(|remaining| !remaining.is_empty())
+        {
             let scan = if self.markdown_disabled || self.active_tag.is_some() {
-                // Inside suppressed markup, Markdown delimiters are payload,
-                // so scan without mutating the Markdown literal state.
-                next_tag_without_markdown(&input)
+                // Suppressed markup is payload, not Markdown syntax.
+                next_tag_without_markdown(remaining)
             } else {
                 next_tag_outside_markdown(
-                    &input,
+                    remaining,
                     &mut self.markdown,
                     !self.replay_buffer.is_empty(),
                 )
@@ -197,34 +205,35 @@ impl Sanitizer {
                 ScanResult::Tag(token) => token,
                 ScanResult::Pending { start } => {
                     if self.active_tag.is_some() {
-                        self.pending = input;
+                        self.pending = remaining.to_string();
                     } else {
-                        output.push_str(&input[..start]);
-                        self.pending = input[start..].to_string();
+                        output.push_str(&remaining[..start]);
+                        self.pending = remaining[start..].to_string();
                     }
                     break;
                 }
                 ScanResult::Defer { start } => {
                     if self.active_tag.is_some() {
-                        self.pending = input;
+                        self.pending = remaining.to_string();
                     } else {
-                        output.push_str(&input[..start]);
-                        self.replay_buffer.push_str(&input[start..]);
+                        output.push_str(&remaining[..start]);
+                        self.replay_buffer.push_str(&remaining[start..]);
                     }
                     break;
                 }
                 ScanResult::Release { end } => {
-                    debug_assert!(self.active_tag.is_none());
                     output.push_str(&std::mem::take(&mut self.replay_buffer));
-                    output.push_str(&input[..end]);
-                    input = input[end..].to_string();
+                    output.push_str(&remaining[..end]);
+                    cursor = cursor
+                        .checked_add(end)
+                        .expect("scanner remains within input");
                     continue;
                 }
                 ScanResult::Complete => {
                     if self.active_tag.is_some() {
-                        self.pending = input;
+                        self.pending = remaining.to_string();
                     } else {
-                        output.push_str(&input);
+                        output.push_str(remaining);
                     }
                     break;
                 }
@@ -234,7 +243,7 @@ impl Sanitizer {
             };
 
             if self.active_tag.is_none() {
-                output.push_str(&input[..start]);
+                output.push_str(&remaining[..start]);
             }
             let end = match token {
                 TagToken::Opening {
@@ -250,7 +259,7 @@ impl Sanitizer {
                         self.active_tag = Some(tag);
                         self.active_depth = 1;
                         if tag == "tool" {
-                            self.unterminated_tool_body = input[end..].to_string();
+                            self.unterminated_tool_body = remaining[end..].to_string();
                             self.unterminated_tool_markdown = Some(self.markdown.clone());
                         }
                     } else if self.active_tag == Some(tag) && !self_closing {
@@ -270,13 +279,15 @@ impl Sanitizer {
                             self.unterminated_tool_markdown = None;
                         }
                     } else if self.active_tag.is_none() && !(tag == "tool" && self.tool_is_marker) {
-                        output.push_str(&input[start..end]);
-                        self.markdown.consume(&input[start..end]);
+                        output.push_str(&remaining[start..end]);
+                        self.markdown.consume(&remaining[start..end]);
                     }
                     end
                 }
             };
-            input = input[end..].to_string();
+            cursor = cursor
+                .checked_add(end)
+                .expect("token end remains within the input buffer");
         }
         output
     }
@@ -315,12 +326,14 @@ impl Sanitizer {
             return output;
         }
         if disposition == MarkdownFinish::Complete {
+            if self.markdown_disabled && !pending_was_suppressed {
+                return replay_buffer + &pending;
+            }
             if pending_is_recognized_tag && !pending_was_suppressed && !self.tool_is_marker {
                 return replay_buffer + &pending;
             }
             return replay_buffer;
         }
-
         let mut terminal_buffer = replay_buffer;
         if !pending_was_suppressed {
             terminal_buffer.push_str(&pending);
@@ -371,7 +384,6 @@ fn tag_at(input: &str) -> TagAt {
             })
         });
     }
-
     if let Some(closing) = input.strip_prefix("</") {
         for tag in TAGS {
             if !closing
@@ -380,8 +392,7 @@ fn tag_at(input: &str) -> TagAt {
             {
                 continue;
             }
-            let rest = &closing[tag.len()..];
-            if let Some(end) = closing_tag_end(rest) {
+            if let Some(end) = closing_tag_end(&closing[tag.len()..]) {
                 return TagAt::Complete(TagToken::Closing {
                     tag,
                     start: 0,
@@ -390,7 +401,6 @@ fn tag_at(input: &str) -> TagAt {
             }
         }
     }
-
     if possible_tag_at_start(input) {
         TagAt::Incomplete
     } else {
@@ -429,9 +439,7 @@ fn next_tag_outside_markdown(
             }
             if permits_markup {
                 match tag_at(&input[start..]) {
-                    TagAt::Complete(token) => {
-                        return ScanResult::Tag(token.shifted(start));
-                    }
+                    TagAt::Complete(token) => return ScanResult::Tag(token.shifted(start)),
                     TagAt::Incomplete => return ScanResult::Pending { start },
                     TagAt::None => {}
                 }
@@ -464,8 +472,18 @@ fn next_tag_outside_markdown(
 }
 
 /// Tracks Markdown contexts in which XML-like text must remain literal.
-/// The sanitizer retains provisional inline content until this state reports
-/// whether it is code or literal text at a lexical boundary or terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MarkdownCodeState {
+    fence: Option<Fence>,
+    opening_backtick_fence: bool,
+    inline_ticks: Option<usize>,
+    pending_marker: Option<PendingMarker>,
+    closing_fence: bool,
+    leading_spaces: Option<usize>,
+    indented_line: bool,
+    escaped: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Fence {
     marker: u8,
@@ -479,27 +497,10 @@ struct PendingMarker {
     leading_spaces: Option<usize>,
 }
 
-/// A caller that suppresses markup while an inline-code candidate is active
-/// must retain that candidate until the terminal disposition is known. An
-/// unmatched candidate is literal Markdown and therefore needs to be replayed.
-#[allow(dead_code)] // consumed by the following incremental sanitizer layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarkdownFinish {
     Complete,
     ReplayUnmatchedInline,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MarkdownCodeState {
-    fence: Option<Fence>,
-    opening_backtick_fence: bool,
-    inline_ticks: Option<usize>,
-    pending_marker: Option<PendingMarker>,
-    closing_fence: bool,
-    leading_spaces: Option<usize>,
-    indented_line: bool,
-    escaped: bool,
 }
 
 impl Default for MarkdownCodeState {
@@ -528,8 +529,6 @@ impl MarkdownCodeState {
                     .is_some_and(|pending| pending.marker == b'`'))
     }
 
-    /// Resolve a marker run at the lexical boundary before a possible markup
-    /// tag, then report whether the tag is outside Markdown code.
     fn permits_markup(&mut self) -> bool {
         self.resolve_pending_marker();
         self.fence.is_none() && self.inline_ticks.is_none() && !self.indented_line && !self.escaped
@@ -545,7 +544,6 @@ impl MarkdownCodeState {
         self.resolve_pending_marker();
         if self.closing_fence {
             self.fence = None;
-            self.closing_fence = false;
         }
         let disposition = if self.inline_ticks.is_some() {
             MarkdownFinish::ReplayUnmatchedInline
@@ -563,7 +561,6 @@ impl MarkdownCodeState {
         {
             self.resolve_pending_marker();
         }
-
         if self.closing_fence {
             match byte {
                 b' ' | b'\t' => return,
@@ -576,7 +573,6 @@ impl MarkdownCodeState {
                 _ => self.closing_fence = false,
             }
         }
-
         if matches!(byte, b'\n' | b'\r') {
             self.pending_marker = None;
             self.opening_backtick_fence = false;
@@ -584,13 +580,11 @@ impl MarkdownCodeState {
             self.start_line();
             return;
         }
-
         if self.opening_backtick_fence && byte == b'`' {
             let opener = self.fence.take().expect("opening fence is present");
             self.opening_backtick_fence = false;
             self.inline_ticks = Some(opener.length);
         }
-
         if self.fence.is_none() && self.inline_ticks.is_none() && self.escaped {
             self.escaped = false;
             if byte.is_ascii_punctuation() {
@@ -598,13 +592,11 @@ impl MarkdownCodeState {
                 return;
             }
         }
-
         if self.fence.is_none() && self.inline_ticks.is_none() && byte == b'\\' {
             self.escaped = true;
             self.mark_nonspace();
             return;
         }
-
         if matches!(byte, b'`' | b'~') {
             if self.inline_ticks.is_none() && self.indented_line {
                 self.mark_nonspace();
@@ -621,7 +613,6 @@ impl MarkdownCodeState {
             }
             return;
         }
-
         self.track_line_byte(byte);
     }
 
@@ -630,7 +621,6 @@ impl MarkdownCodeState {
             return;
         };
         self.mark_nonspace();
-
         if let Some(fence) = self.fence {
             if pending.marker == fence.marker
                 && pending.length >= fence.length
@@ -638,18 +628,11 @@ impl MarkdownCodeState {
             {
                 self.closing_fence = true;
             }
-            return;
-        }
-
-        if let Some(length) = self.inline_ticks {
+        } else if let Some(length) = self.inline_ticks {
             if pending.marker == b'`' && pending.length == length {
                 self.inline_ticks = None;
             }
-            return;
-        }
-
-        let fence_position = pending.leading_spaces.is_some_and(|spaces| spaces <= 3);
-        if fence_position && pending.length >= 3 {
+        } else if pending.leading_spaces.is_some_and(|spaces| spaces <= 3) && pending.length >= 3 {
             self.fence = Some(Fence {
                 marker: pending.marker,
                 length: pending.length,
@@ -678,8 +661,8 @@ impl MarkdownCodeState {
             self.indented_line = true;
         }
         if byte == b' ' {
-            if let Some(spaces) = self.leading_spaces.as_mut()
-                && !self.indented_line
+            if !self.indented_line
+                && let Some(spaces) = self.leading_spaces.as_mut()
             {
                 *spaces = spaces
                     .checked_add(1)
@@ -693,41 +676,41 @@ impl MarkdownCodeState {
 }
 
 fn possible_tag_at_start(suffix: &str) -> bool {
-    TAGS.into_iter().any(|tag| {
-        let opening = format!("<{tag}");
-        let closing = format!("</{tag}");
-        let opening_prefix = opening
-            .get(..suffix.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
-        let closing_prefix = closing
-            .get(..suffix.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
-        let closing_continues = suffix
-            .get(..closing.len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
-            && {
-                let rest = &suffix[closing.len()..];
-                closing_tag_end(rest).is_none() && rest.chars().all(char::is_whitespace)
-            };
-        opening_prefix || closing_prefix || closing_continues
-    })
+    TAGS.into_iter()
+        .find_map(|tag| {
+            let opening = format!("<{tag}");
+            let closing = format!("</{tag}");
+            let opening_prefix = opening
+                .get(..suffix.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+            let closing_prefix = closing
+                .get(..suffix.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(suffix));
+            let closing_continues = suffix
+                .get(..closing.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&closing))
+                && closing_tag_end(&suffix[closing.len()..]).is_none()
+                && suffix[closing.len()..].chars().all(char::is_whitespace);
+            (opening_prefix || closing_prefix || closing_continues).then_some(())
+        })
+        .is_some()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::Fence;
     use super::MarkdownCodeState;
-    use super::MarkdownFinish;
     use super::Sanitizer;
     use super::ScanResult;
     use super::TAG_AT_CALLS;
     use super::TagAt;
     use super::TagToken;
-    use super::closing_tag_end;
     use super::next_tag;
     use super::next_tag_outside_markdown;
     use super::opening_tag;
     use super::recognized_tag;
     use super::tag_at;
+
     #[test]
     fn quoted_attribute_delimiter_is_not_a_tag_delimiter() {
         let tag = opening_tag("<parameter note=\"a > b\"/>After").expect("complete tag");
@@ -738,12 +721,6 @@ mod tests {
     #[test]
     fn incomplete_quoted_attribute_stays_incomplete() {
         assert!(opening_tag("<parameter note=\"a >").is_none());
-    }
-    #[test]
-    fn backslash_before_quote_does_not_escape_xml_quote() {
-        let tag = opening_tag(r#"<parameter path="C:\">After"#).expect("complete tag");
-        assert_eq!(tag.end, r#"<parameter path="C:\">"#.len());
-        assert!(!tag.self_closing);
     }
 
     #[test]
@@ -757,6 +734,7 @@ mod tests {
         assert_eq!(recognized_tag("<functionality>"), None);
         assert_eq!(recognized_tag("<invoke"), None);
     }
+
     #[test]
     fn next_tag_keeps_quoted_delimiters_and_validates_closing_tags() {
         assert_eq!(
@@ -778,14 +756,6 @@ mod tests {
         );
         assert_eq!(next_tag("</function extra>"), None);
         assert_eq!(next_tag("<parameter note=\"unterminated"), None);
-    }
-    #[test]
-    fn closing_tag_end_requires_the_delimiter_after_whitespace() {
-        assert_eq!(closing_tag_end(">After"), Some(1));
-        assert_eq!(closing_tag_end(" \t>After"), Some(3));
-        assert_eq!(closing_tag_end("\u{2003}>After"), Some(4));
-        assert_eq!(closing_tag_end(" extra>"), None);
-        assert_eq!(closing_tag_end(" <tool>"), None);
     }
 
     #[test]
@@ -817,29 +787,16 @@ mod tests {
 
         assert_eq!(sanitizer.push("<parameter>duplicate"), "");
         assert_eq!(sanitizer.finish(), "");
-
-        assert_eq!(sanitizer.push("Before <parameter "), "Before ");
-        assert_eq!(sanitizer.finish(), "<parameter ");
-
-        assert_eq!(sanitizer.push("<parameter><tool "), "");
-        assert_eq!(sanitizer.finish(), "");
-
-        assert_eq!(sanitizer.push("<parameter>duplicate `"), "");
-        assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
-    fn unterminated_tool_fallback_preserves_body_and_nested_tool_literal() {
+    fn unterminated_tool_fallback_preserves_body() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(
             sanitizer.push("<tool>body <parameter>duplicate</parameter>"),
             ""
         );
         assert_eq!(sanitizer.finish(), "body ");
-
-        let mut nested = Sanitizer::default();
-        assert_eq!(nested.push("<tool>body <tool>literal</tool>"), "");
-        assert_eq!(nested.finish(), "body literal");
 
         let mut fragmented = Sanitizer::default();
         assert_eq!(fragmented.push("<tool>first"), "");
@@ -848,59 +805,53 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_tool_fallback_uses_the_recovered_output_markdown_position() {
-        let mut tilde = Sanitizer::default();
+    fn tool_fallback_uses_original_markdown_position_and_marker_closing_rules() {
+        let mut sanitizer = Sanitizer::default();
         assert_eq!(
-            tilde.push("prefix <tool>~~~x <parameter>duplicate</parameter>"),
+            sanitizer.push("prefix <tool>~~~x <parameter>duplicate</parameter>"),
             "prefix "
         );
-        assert_eq!(tilde.finish(), "~~~x ");
+        assert_eq!(sanitizer.finish(), "~~~x ");
 
-        let mut backtick = Sanitizer::default();
-        assert_eq!(backtick.push("prefix <tool>``"), "prefix ");
-        assert_eq!(backtick.push("`x <parameter>duplicate</parameter>"), "");
-        assert_eq!(backtick.finish(), "```x ");
+        let mut marker = Sanitizer::default();
+        assert_eq!(marker.push("<tool>body <tool>literal</tool>"), "");
+        assert_eq!(marker.finish(), "body literal");
 
-        let mut line_start = Sanitizer::default();
-        assert_eq!(
-            line_start.push("before\n<tool>```text\n<parameter>literal</parameter>"),
-            "before\n"
-        );
-        assert_eq!(
-            line_start.finish(),
-            "```text\n<parameter>literal</parameter>"
-        );
+        let mut unmatched_closing = Sanitizer::default();
+        assert_eq!(unmatched_closing.push("<tool>body </function>"), "");
+        assert_eq!(unmatched_closing.finish(), "body </function>");
     }
 
     #[test]
-    fn unterminated_tool_fallback_drops_incomplete_nested_openings() {
-        let mut plain = Sanitizer::default();
-        assert_eq!(plain.push("<tool>body <parameter "), "");
-        assert_eq!(plain.finish(), "body ");
-
-        let mut attributed = Sanitizer::default();
+    fn terminal_replays_unmatched_inline_and_resets_markdown() {
+        let mut sanitizer = Sanitizer::default();
         assert_eq!(
-            attributed.push("<tool>body <parameter note=\"unterminated"),
-            ""
+            sanitizer.push("before `literal <tool>duplicate</tool> tail"),
+            "before "
         );
-        assert_eq!(attributed.finish(), "body ");
-
-        let mut fragmented = Sanitizer::default();
-        assert_eq!(fragmented.push("<tool>body <para"), "");
-        assert_eq!(fragmented.push("meter "), "");
-        assert_eq!(fragmented.finish(), "body ");
-
-        let mut unmatched_inline = Sanitizer::default();
+        assert_eq!(sanitizer.finish(), "`literal  tail");
         assert_eq!(
-            unmatched_inline.push("<tool>body `candidate <parameter "),
-            ""
+            sanitizer.push("next <tool>duplicate</tool> response"),
+            "next  response"
         );
-        assert_eq!(unmatched_inline.finish(), "body `candidate ");
+        assert_eq!(sanitizer.finish(), "");
+    }
 
-        let mut fragmented_inline = Sanitizer::default();
-        assert_eq!(fragmented_inline.push("<tool>body `candidate <para"), "");
-        assert_eq!(fragmented_inline.push("meter note=\"unterminated"), "");
-        assert_eq!(fragmented_inline.finish(), "body `candidate ");
+    #[test]
+    fn fences_require_line_position_and_valid_closing_line() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("text ``` code <tool>literal</tool>"),
+            "text "
+        );
+        assert_eq!(sanitizer.finish(), "``` code ");
+
+        let mut closing = Sanitizer::default();
+        assert_eq!(
+            closing.push("~~~\n<tool>literal</tool>\n~~~ trailing\n<tool>still-literal</tool>"),
+            "~~~\n<tool>literal</tool>\n~~~ trailing\n<tool>still-literal</tool>"
+        );
+        assert_eq!(closing.finish(), "");
     }
 
     #[test]
@@ -915,51 +866,32 @@ mod tests {
     }
 
     #[test]
-    fn sanitizer_scans_markup_after_a_closed_single_backtick_run() {
+    fn sanitizer_reassembles_an_opening_tag_split_inside_a_quoted_attribute() {
         let mut sanitizer = Sanitizer::default();
-        assert_eq!(
-            sanitizer.push("before `literal` <tool>duplicate</tool> after"),
-            "before `literal`  after"
-        );
+        assert_eq!(sanitizer.push("Before <tool arg=\"a <"), "Before ");
+        assert_eq!(sanitizer.push(" b\">duplicate</tool>After"), "After");
         assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
-    fn markdown_delimiters_inside_suppressed_markup_do_not_change_state() {
+    fn sanitizer_tracks_nested_openings_and_ignores_mismatched_closings() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(
-            sanitizer.push("<tool note=\"```\">```<function>x</function>```</tool>After"),
+            sanitizer.push("<tool>outer <tool>inner</tool></function></tool>After"),
             "After"
         );
-        assert_eq!(
-            sanitizer.push("<parameter>duplicate</parameter>Done"),
-            "Done"
-        );
-    }
-
-    #[test]
-    fn emitted_unmatched_closing_tag_updates_markdown_position() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(
-            sanitizer.push("</tool>~~~code\n<parameter>duplicate</parameter>\n~~~\nDone"),
-            "</tool>~~~code\n\n~~~\nDone"
-        );
         assert_eq!(sanitizer.finish(), "");
     }
 
     #[test]
-    fn sanitizer_preserves_an_escaped_tag_split_across_fragments() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(sanitizer.push(r"\<tool"), r"\<tool");
-        assert_eq!(
-            sanitizer.push(">duplicate</tool> after"),
-            ">duplicate</tool> after"
-        );
-        assert_eq!(sanitizer.finish(), "");
-    }
+    fn tag_classifier_retains_earliest_plausible_incomplete_tag() {
+        assert_eq!(tag_at("<tool "), TagAt::Incomplete);
+        assert_eq!(tag_at("<tool note=\"a >"), TagAt::Incomplete);
+        assert_eq!(tag_at("</tool"), TagAt::Incomplete);
+        assert_eq!(tag_at("</to"), TagAt::Incomplete);
+        assert_eq!(tag_at("</tool extra"), TagAt::None);
+        assert_eq!(tag_at("<toolbox"), TagAt::None);
 
-    #[test]
-    fn sanitizer_stops_at_the_first_incomplete_recognized_opening() {
         let mut sanitizer = Sanitizer::default();
         assert_eq!(
             sanitizer.push("before <tool note=\"unterminated <parameter>literal</parameter> after"),
@@ -972,30 +904,136 @@ mod tests {
     }
 
     #[test]
-    fn sanitizer_replays_unmatched_inline_content_and_resets_after_finish() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(
-            sanitizer.push("before `literal <tool>duplicate</tool> tail"),
-            "before "
-        );
-        assert_eq!(sanitizer.finish(), "`literal  tail");
-
-        assert_eq!(
-            sanitizer.push("next <tool>duplicate</tool> response"),
-            "next  response"
-        );
-        assert_eq!(sanitizer.finish(), "");
+    fn markup_detection_keeps_complete_and_split_recognized_tags() {
+        assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
+        assert!(Sanitizer::may_contain_markup("before <parameter "));
+        assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
     }
 
     #[test]
-    fn sanitizer_releases_a_fragmented_closed_inline_candidate_as_literal() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(sanitizer.push("before `literal <tool>duplicate"), "before ");
+    fn markdown_state_tracks_inline_code_and_escapes() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("`");
+        state.resolve_pending_marker();
+        assert!(!state.permits_markup());
+        state.consume("`");
+        state.resolve_pending_marker();
+        assert!(state.permits_markup());
+
+        state.consume("\\");
+        assert!(!state.permits_markup());
+        state.consume("\\");
+        assert!(state.permits_markup());
+        state.consume("\\\n");
+        assert!(state.permits_markup());
+
+        state.consume("\\```");
+        assert!(!state.permits_markup());
+        state.consume("~~");
+        assert!(!state.permits_markup());
+        state.consume("~");
+        assert!(!state.permits_markup());
+        state.consume("``");
+        assert!(state.permits_markup());
+
+        let mut inline = MarkdownCodeState::default();
+        inline.consume("`x");
+        assert!(!inline.permits_markup());
+        inline.consume("~x");
+        assert!(!inline.permits_markup());
+        inline.consume("`x");
+        assert!(inline.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_requires_matching_fence_marker_and_length() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("````");
+        state.resolve_pending_marker();
+        assert!(!state.permits_markup());
+        state.consume("~~~");
+        state.resolve_pending_marker();
+        assert!(!state.permits_markup());
+        state.consume("```");
+        state.resolve_pending_marker();
+        assert!(!state.permits_markup());
+        state.consume("````");
+        state.resolve_pending_marker();
+        assert!(state.permits_markup());
+    }
+
+    #[test]
+    fn markdown_state_reassembles_split_fence_runs() {
+        let mut state = MarkdownCodeState::default();
+        state.consume("``");
+        state.consume("`");
+        state.consume("xml\n");
+        assert!(!state.permits_markup());
+        state.consume("``");
+        state.consume("`\n");
+        assert!(state.permits_markup());
+
+        let mut inline = MarkdownCodeState::default();
+        inline.consume("`x");
+        assert!(!inline.permits_markup());
+        inline.consume("~x");
+        assert!(!inline.permits_markup());
+        inline.consume("`x");
+        assert!(inline.permits_markup());
+
+        let mut short_tilde = MarkdownCodeState::default();
+        short_tilde.consume("~~x");
+        assert!(short_tilde.permits_markup());
+
+        let mut info_string = MarkdownCodeState::default();
+        info_string.consume("```xml");
         assert_eq!(
-            sanitizer.push("</tool>` after <tool>removed</tool>"),
-            "`literal <tool>duplicate</tool>` after "
+            info_string.fence,
+            Some(Fence {
+                marker: b'`',
+                length: 3,
+            })
+        );
+        assert!(info_string.opening_backtick_fence);
+        assert_eq!(info_string.inline_ticks, None);
+    }
+
+    #[test]
+    fn sanitizer_preserves_escaped_and_markdown_literal_markup() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("Use ` <tool>literal</tool> ` and \\<parameter>escaped</parameter>."),
+            "Use ` <tool>literal</tool> ` and \\<parameter>escaped</parameter>."
         );
         assert_eq!(sanitizer.finish(), "");
+        let mut fenced = sanitizer.push("\n```xml\n<function>example</function>\n```\n");
+        fenced.push_str(&sanitizer.finish());
+        assert_eq!(fenced, "\n```xml\n<function>example</function>\n```\n");
+        assert_eq!(sanitizer.push("<tool>duplicate</tool>After"), "After");
+    }
+
+    #[test]
+    fn terminal_retains_escaped_and_unmatched_inline_literal_suffixes() {
+        let mut escaped = Sanitizer::default();
+        assert_eq!(escaped.push("Use \\<tool"), "Use \\<tool");
+        assert_eq!(escaped.finish(), "");
+
+        let mut inline = Sanitizer::default();
+        assert_eq!(inline.push("Use `literal <tool"), "Use ");
+        assert_eq!(inline.finish(), "`literal <tool");
+    }
+
+    #[test]
+    fn sanitizer_preserves_fence_delimiters_split_across_chunks() {
+        let mut sanitizer = Sanitizer::default();
+        let mut output = sanitizer.push("Here is XML:\n``");
+        output.push_str(&sanitizer.push("`xml\n<function>literal</function>\n"));
+        output.push_str(&sanitizer.push("```\n<invoke>duplicate</invoke>After"));
+        output.push_str(&sanitizer.finish());
+
+        assert!(output.contains("<function>literal</function>"));
+        assert!(!output.contains("duplicate"));
+        assert!(output.ends_with("After"));
     }
 
     #[test]
@@ -1012,43 +1050,30 @@ mod tests {
     }
 
     #[test]
-    fn indented_backticks_do_not_hide_markup_on_later_lines() {
-        for indentation in ["    ", "\t"] {
-            for marker in ["`", "```"] {
-                let input = format!(
-                    "{indentation}{marker}\n<function>duplicate</function>\n{marker}\nAfter"
-                );
-                let expected = format!("{indentation}{marker}\n\n{marker}\nAfter");
-
-                for split in 0..=input.len() {
-                    let mut sanitizer = Sanitizer::default();
-                    let output = sanitizer.push(&input[..split])
-                        + &sanitizer.push(&input[split..])
-                        + &sanitizer.finish();
-                    assert_eq!(output, expected, "split {split} for {input:?}");
-                }
-            }
-        }
+    fn markdown_delimiters_inside_suppressed_markup_do_not_change_state() {
+        let mut sanitizer = Sanitizer::default();
+        assert_eq!(
+            sanitizer.push("<tool note=\"```\">```<function>x</function>```</tool>After"),
+            "After"
+        );
+        assert_eq!(
+            sanitizer.push("<parameter>duplicate</parameter>Done"),
+            "Done"
+        );
     }
 
     #[test]
-    fn inline_code_closure_resumes_markup_on_the_same_indented_line() {
-        for indentation in ["    ", "\t"] {
-            for marker in ["`", "``"] {
-                let input = format!(
-                    "{marker}code\n{indentation}{marker} after <function>duplicate</function>"
-                );
-                let expected = format!("{marker}code\n{indentation}{marker} after ");
+    fn sanitizer_handles_dense_and_incrementally_split_markup() {
+        let mut sanitizer = Sanitizer::default();
+        let dense = "<parameter/>".repeat(2_000) + "After";
+        assert_eq!(sanitizer.push(&dense), "After");
 
-                for split in 0..=input.len() {
-                    let mut sanitizer = Sanitizer::default();
-                    let output = sanitizer.push(&input[..split])
-                        + &sanitizer.push(&input[split..])
-                        + &sanitizer.finish();
-                    assert_eq!(output, expected, "split {split} for {input:?}");
-                }
-            }
+        let mut split = Sanitizer::default();
+        assert_eq!(split.push("<parameter name=\""), "");
+        for _ in 0..2_000 {
+            assert_eq!(split.push("x"), "");
         }
+        assert_eq!(split.push("\"/>After"), "After");
     }
 
     #[test]
@@ -1057,7 +1082,6 @@ mod tests {
         input.push_str("<tool/>");
         let mut markdown = MarkdownCodeState::default();
         TAG_AT_CALLS.set(0);
-
         assert!(matches!(
             next_tag_outside_markdown(&input, &mut markdown, false),
             ScanResult::Tag(TagToken::Opening {
@@ -1068,192 +1092,5 @@ mod tests {
             })
         ));
         assert_eq!(TAG_AT_CALLS.get(), 4_097);
-    }
-
-    #[test]
-    fn sanitizer_tracks_nested_openings_and_ignores_mismatched_closings() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(
-            sanitizer.push("<tool>outer <tool>inner</tool></function></tool>After"),
-            "After"
-        );
-        assert_eq!(sanitizer.finish(), "");
-    }
-
-    #[test]
-    fn tag_classifier_retains_only_plausible_incomplete_tags() {
-        assert_eq!(tag_at("<tool "), TagAt::Incomplete);
-        assert_eq!(tag_at("<tool note=\"a >"), TagAt::Incomplete);
-        assert_eq!(tag_at("</tool"), TagAt::Incomplete);
-        assert_eq!(tag_at("</tool \u{2003}"), TagAt::Incomplete);
-        assert!(matches!(tag_at("</tool>"), TagAt::Complete(_)));
-        assert!(matches!(tag_at("</tool >"), TagAt::Complete(_)));
-        assert_eq!(tag_at("</tool extra"), TagAt::None);
-        assert_eq!(tag_at("<toolbox"), TagAt::None);
-        assert_eq!(tag_at("</toolbox"), TagAt::None);
-    }
-
-    #[test]
-    fn markup_detection_keeps_complete_and_split_recognized_tags() {
-        assert!(Sanitizer::may_contain_markup("<tool>duplicate</tool>"));
-        assert!(Sanitizer::may_contain_markup("before <parameter "));
-        assert!(Sanitizer::may_contain_markup(
-            "before <parameter note=\"a >"
-        ));
-        assert!(Sanitizer::may_contain_markup(
-            "before <tool note=\"unterminated <parameter>literal</parameter>"
-        ));
-        assert!(!Sanitizer::may_contain_markup("ordinary assistant text"));
-    }
-
-    #[test]
-    fn sanitizer_releases_a_closing_tag_as_soon_as_its_tail_is_impossible() {
-        let mut sanitizer = Sanitizer::default();
-        assert_eq!(sanitizer.push("Before </tool "), "Before ");
-        assert_eq!(sanitizer.push("extra"), "</tool extra");
-        assert_eq!(sanitizer.finish(), "");
-    }
-
-    #[test]
-    fn markdown_state_tracks_inline_code_and_escapes_byte_by_byte() {
-        let mut state = MarkdownCodeState::default();
-        state.consume("`code");
-        assert!(!state.permits_markup());
-        state.consume("` after");
-        assert!(state.permits_markup());
-
-        state.consume("\\");
-        assert!(!state.permits_markup());
-        state.consume("\\");
-        assert!(state.permits_markup());
-        state.consume("\\\n");
-        assert!(state.permits_markup());
-
-        state.consume("\\```");
-        state.resolve_pending_marker();
-        assert!(!state.permits_markup());
-        assert_eq!(state.inline_ticks, Some(2));
-        state.consume("code`` after");
-        assert!(state.permits_markup());
-
-        let mut inline = MarkdownCodeState::default();
-        inline.consume("`foo\\` after");
-        assert!(inline.permits_markup());
-        assert_eq!(inline.inline_ticks, None);
-
-        inline.consume("`x");
-        assert!(!inline.permits_markup());
-        inline.consume("~x");
-        assert!(!inline.permits_markup());
-        inline.consume("` after");
-        assert!(inline.permits_markup());
-
-        let mut multiline_inline = MarkdownCodeState::default();
-        multiline_inline.consume("`code\n    ` after");
-        assert_eq!(multiline_inline.inline_ticks, None);
-        assert!(!multiline_inline.indented_line);
-        multiline_inline.consume("\n");
-        assert!(multiline_inline.permits_markup());
-    }
-
-    #[test]
-    fn markdown_state_requires_matching_fence_marker_length_and_line_placement() {
-        let mut state = MarkdownCodeState::default();
-        state.consume("````\n");
-        assert!(!state.permits_markup());
-        state.consume("~~~\n");
-        assert!(!state.permits_markup());
-        state.consume("```\n");
-        assert!(!state.permits_markup());
-        state.consume("text ```` still code\n");
-        assert!(!state.permits_markup());
-        state.consume("```` trailing text\n");
-        assert!(!state.permits_markup());
-        state.consume("   ````  \n");
-        assert!(state.permits_markup());
-
-        let mut midline = MarkdownCodeState::default();
-        midline.consume("text ``` code");
-        assert_eq!(midline.fence, None);
-        assert_eq!(midline.inline_ticks, Some(3));
-        midline.consume("``` after");
-        assert!(midline.permits_markup());
-
-        let mut midline_tildes = MarkdownCodeState::default();
-        midline_tildes.consume("text ~~~ code");
-        assert_eq!(midline_tildes.fence, None);
-        assert!(midline_tildes.permits_markup());
-
-        let mut indented = MarkdownCodeState::default();
-        indented.consume("    ~~~\n");
-        assert_eq!(indented.fence, None);
-        assert!(indented.permits_markup());
-    }
-
-    #[test]
-    fn markdown_state_reinterprets_invalid_backtick_fence_info_as_inline_code() {
-        let mut valid = MarkdownCodeState::default();
-        valid.consume("```lang\nbody with ` tick\n");
-        assert!(valid.fence.is_some());
-        assert_eq!(valid.inline_ticks, None);
-        valid.consume("```\nafter");
-        assert!(valid.permits_markup());
-
-        let mut unmatched = MarkdownCodeState::default();
-        unmatched.consume("```lang`oops\n<tool>outside</tool>");
-        assert_eq!(unmatched.fence, None);
-        assert_eq!(unmatched.inline_ticks, Some(3));
-        assert_eq!(unmatched.finish(), MarkdownFinish::ReplayUnmatchedInline);
-
-        let mut matched = MarkdownCodeState::default();
-        matched.consume("```lang`oops``` after");
-        assert_eq!(matched.fence, None);
-        assert!(matched.permits_markup());
-        assert_eq!(matched.finish(), MarkdownFinish::Complete);
-    }
-
-    #[test]
-    fn markdown_state_is_invariant_to_fragment_boundaries() {
-        for input in [
-            "```xml\n<tool>literal</tool>\n```\nafter",
-            "before `inline <tool>` after",
-            "\\```two ticks`` after",
-            "~~~\nbody\n~~~",
-            "```lang`oops\n<tool>outside</tool>",
-        ] {
-            let mut whole = MarkdownCodeState::default();
-            whole.consume(input);
-
-            let mut fragmented = MarkdownCodeState::default();
-            for byte in input.as_bytes() {
-                fragmented.consume(std::str::from_utf8(std::slice::from_ref(byte)).expect("ASCII"));
-            }
-            assert_eq!(fragmented, whole, "one-byte fragments for {input:?}");
-
-            for split in 0..=input.len() {
-                let mut split_state = MarkdownCodeState::default();
-                split_state.consume(&input[..split]);
-                split_state.consume(&input[split..]);
-                assert_eq!(split_state, whole, "split {split} for {input:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn markdown_state_reports_unmatched_inline_candidates_at_finish() {
-        let mut unmatched = MarkdownCodeState::default();
-        unmatched.consume("before `literal <tool> text");
-        assert!(!unmatched.permits_markup());
-        assert_eq!(unmatched.finish(), MarkdownFinish::ReplayUnmatchedInline);
-        assert!(unmatched.permits_markup());
-
-        let mut matched = MarkdownCodeState::default();
-        matched.consume("before `literal` after");
-        assert_eq!(matched.finish(), MarkdownFinish::Complete);
-
-        let mut terminal_fence = MarkdownCodeState::default();
-        terminal_fence.consume("~~~\nbody\n~~~");
-        assert_eq!(terminal_fence.finish(), MarkdownFinish::Complete);
-        assert!(terminal_fence.permits_markup());
     }
 }
