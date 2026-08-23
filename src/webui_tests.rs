@@ -1420,6 +1420,53 @@ fn model_reasoning_validation_resolves_default_only_against_discovery() {
 }
 
 #[test]
+fn levels_only_edit_auto_defaults_when_inherited_default_excluded() {
+    let provider = ProviderConfig::default();
+    let discovered = BTreeMap::from([(
+        "shared".into(),
+        json!({
+            "slug":"shared",
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],
+            "default_reasoning_level":"high"
+        }),
+    )]);
+    // User sets explicit levels that exclude the inherited default ("high")
+    // but doesn't set a new default. The first level should auto-become default.
+    let mut entry = ModelCatalogEntry {
+        id: "shared".into(),
+        supported_reasoning_levels: Some(vec!["low".into(), "medium".into()]),
+        default_reasoning_level: None,
+        ..ModelCatalogEntry::default()
+    };
+    validate_model_reasoning(&mut entry, &provider, &AppConfig::default(), &discovered)
+        .expect("auto-default should not reject");
+    assert_eq!(
+        entry.default_reasoning_level.as_deref(),
+        Some("low"),
+        "first supported level becomes default when inherited default is excluded"
+    );
+
+    // When inherited default IS in the new list, keep it.
+    let mut keep_default = ModelCatalogEntry {
+        id: "shared".into(),
+        supported_reasoning_levels: Some(vec!["low".into(), "high".into()]),
+        default_reasoning_level: None,
+        ..ModelCatalogEntry::default()
+    };
+    validate_model_reasoning(
+        &mut keep_default,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+    )
+    .expect("explicit levels with valid inherited default should pass");
+    assert!(
+        keep_default.default_reasoning_level.is_none(),
+        "inherited default should remain None when it is still valid"
+    );
+}
+
+#[test]
 fn model_editor_promotes_discovered_rows_without_freezing_unchanged_modes() {
     let app = webui_js_source();
 
