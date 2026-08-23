@@ -54,7 +54,7 @@ fn bundled_templates_include_example_profiles() {
     assert!(hicap.auth_scheme.is_empty());
     assert_eq!(
         hicap.headers.get("x-hicap-tag").map(String::as_str),
-        Some("codex-warp-jatmn")
+        Some("codex-warp")
     );
     assert!(!hicap.model_catalog_only);
     assert!(
@@ -67,12 +67,18 @@ fn bundled_templates_include_example_profiles() {
             .headers
             .get("x-hicap-tag")
             .map(String::as_str),
-        Some("codex-warp-jatmn")
+        Some("codex-warp")
     );
     assert!(
         hicap
             .model_catalog
             .iter()
             .any(|entry| entry.upstream_id.as_deref() == Some("hy3:free"))
+    );
+    assert!(
+        hicap
+            .model_catalog
+            .iter()
+            .any(|entry| entry.upstream_id.as_deref() == Some("grok-4.6"))
     );
 }
