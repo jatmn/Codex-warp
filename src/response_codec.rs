@@ -181,7 +181,7 @@ pub(crate) fn chat_stream_to_responses(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
-    chat_stream_to_responses_with_tool_markup_suppression(
+    chat_stream_to_responses_with_session_model(
         upstream,
         response_id,
         custom_tool_names,
@@ -192,11 +192,12 @@ pub(crate) fn chat_stream_to_responses(
         continue_guard,
         usage_recorder,
         false,
+        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
+pub(crate) fn chat_stream_to_responses_with_session_model(
     upstream: reqwest::Response,
     response_id: String,
     custom_tool_names: BTreeSet<String>,
@@ -207,6 +208,7 @@ pub(crate) fn chat_stream_to_responses_with_tool_markup_suppression(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
     suppress_duplicate_tool_markup: bool,
+    session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let created_event = sse("response.created", json!({

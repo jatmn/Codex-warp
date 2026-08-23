@@ -32,7 +32,7 @@ use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
 use crate::response_codec::chat_completion_payload;
 use crate::response_codec::chat_json_to_responses_with_tool_markup_suppression;
-use crate::response_codec::chat_stream_to_responses_with_tool_markup_suppression;
+use crate::response_codec::chat_stream_to_responses_with_session_model;
 use crate::response_codec::chat_usage_to_responses_usage;
 use crate::response_codec::morph_native_response_value;
 use crate::response_codec::native_stream_to_responses_with_session_model;
@@ -379,7 +379,7 @@ pub(crate) async fn proxy_chat_responses(
     let upstream_is_sse = should_stream_upstream(stream_requested, status, upstream.headers());
     if upstream_is_sse {
         let response_id = generated_id("resp");
-        let body = Body::from_stream(chat_stream_to_responses_with_tool_markup_suppression(
+        let body = Body::from_stream(chat_stream_to_responses_with_session_model(
             upstream,
             response_id,
             chat_transform.custom_tool_names,
@@ -390,6 +390,7 @@ pub(crate) async fn proxy_chat_responses(
             continue_guard,
             usage_recorder,
             selected.transform.suppress_duplicate_tool_markup,
+            session_model.clone().map(|update| (state.clone(), update)),
         ));
         let mut response = Response::new(body);
         response.headers_mut().insert(
