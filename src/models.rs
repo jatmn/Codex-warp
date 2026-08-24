@@ -724,9 +724,15 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
 /// The exact visible ID is the only route whose final global ownership is
 /// guaranteed when multiple providers advertise colliding bare aliases.
 fn is_hy3_model_id(id: &str) -> bool {
-    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
-    let id = canonical_model_family_id(id);
-    id.starts_with("hy3") || matches!(id.as_str(), "hunyuan-3" | "hunyuan3")
+    fn matches_hy3_id(id: &str) -> bool {
+        let id = canonical_model_family_id(id);
+        id.starts_with("hy3") || matches!(id.as_str(), "hunyuan-3" | "hunyuan3")
+    }
+
+    matches_hy3_id(id)
+        || id
+            .rsplit_once('/')
+            .is_some_and(|(_, suffix)| matches_hy3_id(suffix))
 }
 
 /// Whether `id` is one of the exact Grok 4.6 spellings advertised by the

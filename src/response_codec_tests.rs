@@ -512,6 +512,76 @@ fn streaming_chat_repair_rejects_conflicting_successful_finish_reasons() {
 }
 
 #[test]
+fn streaming_chat_repair_rejects_ambiguous_multiple_choices_without_indexes() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    accum.apply_chat_chunk(&json!({
+        "choices": [
+            {
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "exec_command", "arguments": "{\"cmd\":\"one\"}"}
+                }]}
+            },
+            {
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "exec_command", "arguments": "{\"cmd\":\"two\"}"}
+                }]},
+                "finish_reason": "tool_calls"
+            }
+        ]
+    }));
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
+}
+
+#[test]
+fn streaming_chat_repair_rejects_choice_changes_across_chunks() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    for (choice_index, arguments, finish_reason) in [
+        (0, "{\"cmd\":\"one\"}", None),
+        (1, "{\"cmd\":\"two\"}", Some("tool_calls")),
+    ] {
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "index": choice_index,
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": "exec_command", "arguments": arguments}
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+    }
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
+}
+
+#[test]
 fn streaming_chat_repair_stops_when_nonempty_call_id_changes() {
     let mut accum = ChatAccum {
         split_concatenated_tool_call_arguments: true,

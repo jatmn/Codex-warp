@@ -330,6 +330,7 @@ fn live_catalog_localizes_hy3_review_target_to_each_discovered_alias() {
         "concentrate.ai/hy3",
         "hicap/hy3:free",
         "tencent/hy3",
+        "hy3/custom",
         "hunyuan-3",
         "hunyuan3",
     ] {

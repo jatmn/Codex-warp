@@ -907,6 +907,7 @@ pub(crate) struct ChatAccum {
     finish_reason: Option<String>,
     tool_call_repair_invalid: bool,
     terminal_finish_seen: bool,
+    observed_choice_index: Option<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -1112,7 +1113,25 @@ impl ChatAccum {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if choices.len() > 1 {
+            self.tool_call_repair_invalid = true;
+        }
         for choice in choices {
+            let choice_index = match choice.get("index") {
+                Some(index) => index.as_u64().unwrap_or_else(|| {
+                    self.tool_call_repair_invalid = true;
+                    0
+                }),
+                None => 0,
+            };
+            if self
+                .observed_choice_index
+                .is_some_and(|observed| observed != choice_index)
+            {
+                self.tool_call_repair_invalid = true;
+            } else if self.observed_choice_index.is_none() {
+                self.observed_choice_index = Some(choice_index);
+            }
             let delta = choice.get("delta").unwrap_or(&Value::Null);
             let terminal_finish_seen_before_choice = self.terminal_finish_seen;
             if let Some(finish_reason) = chat_finish_reason(&choice) {
