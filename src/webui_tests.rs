@@ -1504,6 +1504,38 @@ fn levels_only_edit_auto_defaults_when_inherited_default_excluded() {
 }
 
 #[test]
+fn unrelated_edit_does_not_auto_default_persisted_levels_only_override() {
+    let provider = ProviderConfig::default();
+    let discovered = BTreeMap::from([(
+        "shared".into(),
+        json!({
+            "slug":"shared",
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],
+            "default_reasoning_level":"high"
+        }),
+    )]);
+    let mut entry = ModelCatalogEntry {
+        id: "shared".into(),
+        supported_reasoning_levels: Some(vec!["low".into(), "medium".into()]),
+        default_reasoning_level: None,
+        ..ModelCatalogEntry::default()
+    };
+
+    validate_model_reasoning(
+        &mut entry,
+        &provider,
+        &AppConfig::default(),
+        &discovered,
+        false,
+    )
+    .expect("unrelated edits must not reject persisted levels-only overrides");
+    assert!(
+        entry.default_reasoning_level.is_none(),
+        "auto-default is only for submitted reasoning edits"
+    );
+}
+
+#[test]
 fn default_only_reasoning_is_validated_without_discovery() {
     let mut entry = ModelCatalogEntry {
         id: "unknown-model".into(),

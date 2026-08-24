@@ -1671,7 +1671,8 @@ fn validate_model_reasoning(
     // inherited default is excluded by the new list, auto-set the default to
     // the first level so the persisted data is self-consistent instead of
     // silently inheriting an out-of-list default.
-    if entry.supported_reasoning_levels.is_some()
+    if reasoning_fields_changed
+        && entry.supported_reasoning_levels.is_some()
         && entry.default_reasoning_level.is_none()
         && !inherited_levels.is_empty()
         && !effective_levels
