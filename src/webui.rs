@@ -745,11 +745,12 @@ fn require_store(state: &AppState) -> Result<&Store, ApiError> {
 }
 
 async fn remove_provider_live_routes(state: &AppState, provider_id: &str) {
-    state
-        .model_routes
-        .write()
-        .await
-        .retain(|_, owner| owner != provider_id);
+    let mut routes = state.model_routes.write().await;
+    remove_provider_live_routes_from(&mut routes, provider_id);
+}
+
+fn remove_provider_live_routes_from(routes: &mut BTreeMap<String, String>, provider_id: &str) {
+    routes.retain(|_, owner| owner != provider_id);
 }
 
 async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
@@ -1874,6 +1875,16 @@ async fn update_provider(
         (snapshot, previous_enabled, refresh_discovery)
     };
 
+    // A live route discovered from the old identity must never be paired with
+    // the new destination or credentials. Acquire the route epoch before the
+    // durable commit so cancellation cannot leave SQLite ahead of in-memory
+    // publication, then update config and evict stale routes without an await.
+    let mut identity_routes = if snapshot.enabled && previous_enabled && refresh_discovery {
+        Some(state.model_routes.write().await)
+    } else {
+        None
+    };
+
     store
         .upsert_provider_overlay(&id, Some(snapshot.enabled), false, managed, Some(&snapshot))
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -1884,7 +1895,11 @@ async fn update_provider(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clone_from(&snapshot);
     }
+    if let Some(routes) = identity_routes.as_mut() {
+        remove_provider_live_routes_from(routes, &id);
+    }
     invalidate_model_discovery(&state);
+    drop(identity_routes);
     let reconcile_state = state.clone();
     let reconcile_id = id.clone();
     let enabled = snapshot.enabled;
@@ -1895,12 +1910,9 @@ async fn update_provider(
             if enabled != previous_enabled {
                 sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, enabled).await?;
             } else if enabled && refresh_discovery {
-                // Live-only routes describe the old discovery identity. Remove them
-                // before refreshing so a failed fetch cannot send an old gateway's
-                // models to the newly edited provider. Because routes retain only the
-                // winner for a colliding live-only slug, rebuild every provider so an
+                // Stale live routes were evicted in the same route/config epoch
+                // that published the new identity. Rebuild every provider so an
                 // unchanged provider can reclaim a removed route immediately.
-                remove_provider_live_routes(&reconcile_state, &reconcile_id).await;
                 if let Err(err) = models::refresh_model_routes_while_mutation_locked(
                     &reconcile_state,
                     models::MutationRouteRefresh::RefetchAll,

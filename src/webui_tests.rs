@@ -1708,6 +1708,21 @@ async fn remove_model_routes_only_removes_target_provider_ownership() {
 }
 
 #[tokio::test]
+async fn route_epoch_eviction_only_removes_the_target_provider() {
+    let state = test_state();
+    state.model_routes.write().await.extend([
+        ("alpha-model".to_string(), "alpha".to_string()),
+        ("beta-model".to_string(), "beta".to_string()),
+    ]);
+
+    remove_provider_live_routes(&state, "alpha").await;
+
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("alpha-model"));
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+}
+
+#[tokio::test]
 async fn removing_model_route_reassigns_a_shared_catalog_slug() {
     let state = test_state();
     {
@@ -4029,10 +4044,120 @@ async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
 }
 
 #[tokio::test]
+async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destination() {
+    let (state, store_dir) = temporary_store_state("provider-identity-routing-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://old-dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new-dynamic.example/v1".into()),
+                enabled: None,
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    let mut mutation_started = false;
+    for _ in 0..1_000 {
+        if state.mutation_lock.try_lock().is_err() {
+            mutation_started = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        mutation_started,
+        "provider update must acquire mutation lock"
+    );
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://old-dynamic.example/v1"),
+        "the replacement identity must wait for the stale-route epoch"
+    );
+
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("identity update succeeds");
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://new-dynamic.example/v1")
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "the new identity must publish only after its stale live routes are gone"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn update_provider_enable_change_reconciles_catalog_routes() {
     let (state, store_dir) = temporary_store_state("update-provider-enable-routes");
     let provider = ProviderConfig {
-        base_url: "https://dynamic.example/v1".into(),
+        base_url: "https://old-dynamic.example/v1".into(),
         enabled: false,
         model_catalog_only: true,
         model_catalog: vec![ModelCatalogEntry {
@@ -4055,26 +4180,52 @@ async fn update_provider_enable_change_reconciles_catalog_routes() {
         .providers
         .insert("dynamic".into(), provider);
 
-    let _ = update_provider(
-        State(state.clone()),
-        Path("dynamic".into()),
-        Json(ProviderPersist {
-            name: OptionalPatch::Absent,
-            base_url: None,
-            enabled: Some(true),
-            api_key_env: OptionalPatch::Absent,
-            api_key: OptionalPatch::Absent,
-            headers: OptionalPatch::Absent,
-            auth_header: None,
-            auth_scheme: None,
-            responses_path: None,
-            chat_completions_path: None,
-            models_path: None,
-            model_catalog_only: None,
-        }),
-    )
-    .await
-    .expect("enable provider through update");
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new-dynamic.example/v1".into()),
+                enabled: Some(true),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    let mut identity_published = false;
+    for _ in 0..1_000 {
+        if state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| provider.base_url == "https://new-dynamic.example/v1")
+        {
+            identity_published = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        identity_published,
+        "enabling a previously disabled provider has no usable stale route epoch and must publish before route synchronization"
+    );
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("enable provider through update");
 
     assert_eq!(
         state

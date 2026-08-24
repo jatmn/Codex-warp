@@ -90,39 +90,46 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         if model == "codex-auto-review" {
             return None;
         }
-        let route_id = state.model_routes.read().await.get(model).cloned();
+        // Route ownership and provider identity form one routing snapshot.
+        // Identity-changing mutations take the route write lock before
+        // publishing their new config, so retain this read guard until the
+        // selected provider has been cloned from that same epoch.
+        let routes = state.model_routes.read().await;
+        let route_id = routes.get(model).cloned();
         let config = state.read_config();
-        if let Some(provider_id) = route_id.as_deref()
+        let selected = if let Some(provider_id) = route_id.as_deref()
             && let Some(provider) = provider_by_id(&config, provider_id)
             && provider_accepts_requested_model(provider, Some(model))
         {
-            return Some(selected_provider(
+            Some(selected_provider(
                 &config,
                 provider_id,
                 provider,
                 Some(model),
-            ));
-        }
-        if let Some(provider_id) = provider_id_for_config_model(&config, model)
+            ))
+        } else if let Some(provider_id) = provider_id_for_config_model(&config, model)
             && let Some(provider) = provider_by_id(&config, &provider_id)
             && provider_accepts_requested_model(provider, Some(model))
         {
-            return Some(selected_provider(
+            Some(selected_provider(
                 &config,
                 &provider_id,
                 provider,
                 Some(model),
-            ));
-        }
-        let providers = provider_entries(&config);
-        if providers.len() == 1 {
-            let (id, provider) = providers[0];
-            if provider_accepts_requested_model(provider, Some(model)) {
-                return Some(selected_provider(&config, id, provider, Some(model)));
+            ))
+        } else {
+            let providers = provider_entries(&config);
+            if providers.len() == 1 {
+                let (id, provider) = providers[0];
+                provider_accepts_requested_model(provider, Some(model))
+                    .then(|| selected_provider(&config, id, provider, Some(model)))
+            } else {
+                None
             }
-            return None;
-        }
-        return None;
+        };
+        drop(config);
+        drop(routes);
+        return selected;
     }
     let config = state.read_config();
     provider_entries(&config)

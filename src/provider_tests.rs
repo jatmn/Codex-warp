@@ -31,6 +31,73 @@ fn test_state(config: AppConfig) -> AppState {
     )
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selection_retains_routing_epoch_while_reading_provider_identity() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://old-alpha.example/v1".into(),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".into(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".into(),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    let state = test_state(config);
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("alpha-live-only".into(), "alpha".into());
+
+    let blocked_config = state.config.clone();
+    let (config_held_tx, config_held_rx) = std::sync::mpsc::channel();
+    let (release_config_tx, release_config_rx) = std::sync::mpsc::channel();
+    let config_blocker = std::thread::spawn(move || {
+        let guard = blocked_config.write().expect("config lock");
+        config_held_tx.send(()).expect("report config lock");
+        release_config_rx.recv().expect("release config lock");
+        drop(guard);
+    });
+    config_held_rx.recv().expect("config lock acquired");
+    let select_state = state.clone();
+    let selection = tokio::spawn(async move {
+        select_provider(&select_state, &json!({"model": "alpha-live-only"})).await
+    });
+
+    let mut route_epoch_held = false;
+    for _ in 0..1_000 {
+        match state.model_routes.try_write() {
+            Ok(guard) => drop(guard),
+            Err(_) => {
+                route_epoch_held = true;
+                break;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        route_epoch_held,
+        "selection must retain its route guard while provider config is blocked"
+    );
+
+    release_config_tx.send(()).expect("release config lock");
+    config_blocker.join().expect("config blocker thread");
+    let selected = selection
+        .await
+        .expect("selection task")
+        .expect("live route must select alpha");
+    assert_eq!(selected.id, "alpha");
+    assert_eq!(selected.provider.base_url, "https://old-alpha.example/v1");
+}
+
 #[test]
 fn selected_provider_applies_matching_model_family_transform() {
     let mut config = load_config_layers(&[]).expect("default config loads");
