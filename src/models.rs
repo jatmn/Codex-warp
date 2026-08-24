@@ -531,17 +531,17 @@ pub(crate) fn seed_model_routes_from_config_and_store(
     ModelRouteSeedRead::Loaded(routes)
 }
 
-/// Replay overlay-enabled route seeds for one provider (e.g. after Web UI re-enable).
-pub(crate) fn register_overlay_route_seeds_for_provider(
-    routes: &mut BTreeMap<String, String>,
+/// Load overlay-enabled route seeds for one provider once so every in-memory
+/// route map can publish the same SQLite snapshot.
+pub(crate) fn load_overlay_route_seeds_for_provider(
     provider_id: &str,
     provider: &crate::config::ProviderConfig,
     store: &crate::store::Store,
-) {
+) -> Vec<(String, Option<String>)> {
     if !provider.enabled {
-        return;
+        return Vec::new();
     }
-    let seeds = match store.enabled_model_route_seeds_for_provider(provider_id) {
+    match store.enabled_model_route_seeds_for_provider(provider_id) {
         Ok(seeds) => seeds,
         Err(err) => {
             tracing::warn!(
@@ -549,18 +549,30 @@ pub(crate) fn register_overlay_route_seeds_for_provider(
                 error = %err,
                 "failed to read overlay route seeds during provider route sync"
             );
-            return;
+            Vec::new()
         }
-    };
+    }
+}
+
+/// Replay one provider's previously loaded overlay seed snapshot into a route map.
+pub(crate) fn register_overlay_route_seeds_for_provider(
+    routes: &mut BTreeMap<String, String>,
+    provider_id: &str,
+    provider: &crate::config::ProviderConfig,
+    seeds: &[(String, Option<String>)],
+) {
+    if !provider.enabled {
+        return;
+    }
     for (model_id, upstream_id) in seeds {
-        if !provider.model_is_enabled(&model_id) {
+        if !provider.model_is_enabled(model_id) {
             continue;
         }
-        routes.insert(model_id, provider_id.to_string());
-        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-            && provider.model_is_enabled(&upstream_id)
+        routes.insert(model_id.clone(), provider_id.to_string());
+        if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty())
+            && provider.model_is_enabled(upstream_id)
         {
-            routes.insert(upstream_id, provider_id.to_string());
+            routes.insert(upstream_id.to_string(), provider_id.to_string());
         }
     }
 }

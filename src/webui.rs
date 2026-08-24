@@ -936,23 +936,30 @@ async fn register_provider_enabled_route_seeds(
     provider_id: &str,
     provider: &ProviderConfig,
 ) {
+    let overlay_seeds = state
+        .store
+        .as_ref()
+        .map(|store| models::load_overlay_route_seeds_for_provider(provider_id, provider, store))
+        .unwrap_or_default();
+
     let mut routes = state.model_routes.write().await;
     register_catalog_routes_for_provider(&mut routes, provider_id, provider);
-    if let Some(store) = state.store.as_ref() {
-        models::register_overlay_route_seeds_for_provider(
-            &mut routes,
-            provider_id,
-            provider,
-            store,
-        );
-    }
+    models::register_overlay_route_seeds_for_provider(
+        &mut routes,
+        provider_id,
+        provider,
+        &overlay_seeds,
+    );
     drop(routes);
 
     let mut seeds = state.model_route_seeds.write().await;
     register_catalog_routes_for_provider(&mut seeds, provider_id, provider);
-    if let Some(store) = state.store.as_ref() {
-        models::register_overlay_route_seeds_for_provider(&mut seeds, provider_id, provider, store);
-    }
+    models::register_overlay_route_seeds_for_provider(
+        &mut seeds,
+        provider_id,
+        provider,
+        &overlay_seeds,
+    );
 }
 
 fn routed_models_for_provider(

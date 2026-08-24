@@ -2928,6 +2928,99 @@ async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
 }
 
 #[tokio::test]
+async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("enable-shared-seed-snapshot");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .upsert_model_catalog(
+            "dynamic",
+            &ModelCatalogEntry {
+                id: "overlay-model".into(),
+                upstream_id: Some("upstream-overlay-model".into()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+            false,
+            true,
+        )
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+
+    let seed_guard = state.model_route_seeds.write().await;
+    let sync_state = state.clone();
+    let sync_provider = provider.clone();
+    let sync = tokio::spawn(async move {
+        register_provider_enabled_route_seeds(&sync_state, "dynamic", &sync_provider).await;
+    });
+
+    let mut live_snapshot_published = false;
+    for _ in 0..1_000 {
+        if state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-model")
+            .is_some_and(|owner| owner == "dynamic")
+        {
+            live_snapshot_published = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        live_snapshot_published,
+        "provider sync must publish the live map before waiting for the seed cache"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force any later seed read to fail");
+    drop(corrupt);
+    drop(seed_guard);
+    sync.await.expect("provider route sync task");
+
+    assert_eq!(
+        state
+            .model_route_seeds
+            .read()
+            .await
+            .get("overlay-model")
+            .map(String::as_str),
+        Some("dynamic"),
+        "the fallback cache must receive the same successful SQLite snapshot as live routes"
+    );
+    assert_eq!(
+        state
+            .model_route_seeds
+            .read()
+            .await
+            .get("upstream-overlay-model")
+            .map(String::as_str),
+        Some("dynamic"),
+        "the shared snapshot must preserve the overlay's upstream routing identity"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
