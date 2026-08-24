@@ -56,6 +56,25 @@ fn openai_models_list_is_normalized_for_codex() {
 }
 
 #[test]
+fn normalize_models_rejects_nonempty_payload_with_no_usable_models() {
+    let provider = ProviderConfig::default();
+    let config = AppConfig::default();
+    let malformed = Bytes::from_static(br#"{"data":[{"foo":"bar"},{"id":""},{"slug":null}]}"#);
+    assert!(normalize_models(&malformed, &provider, &config).is_none());
+
+    let empty = Bytes::from_static(br#"{"data":[]}"#);
+    assert_eq!(
+        normalize_models(&empty, &provider, &config).expect("valid empty catalog"),
+        Vec::<serde_json::Value>::new()
+    );
+
+    let valid = Bytes::from_static(br#"{"data":[{"id":"good-model"}]}"#);
+    let models = normalize_models(&valid, &provider, &config).expect("valid catalog");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["slug"], "good-model");
+}
+
+#[test]
 fn model_metadata_config_overrides_openai_models_list() {
     let body =
         Bytes::from_static(br#"{"object":"list","data":[{"id":"mimo-v2.5","object":"model"}]}"#);
