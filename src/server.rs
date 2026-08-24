@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +29,9 @@ use crate::config::provider_entries;
 use crate::debug_log::DebugLog;
 use crate::http::no_provider_response;
 use crate::http::unknown_model_response;
+use crate::models::ModelRouteSeedRead;
 use crate::models::models;
+use crate::models::register_catalog_routes_for_provider;
 use crate::models::seed_model_routes_from_config_and_store;
 use crate::process_log::ProcessLog;
 use crate::process_log::TracingReload;
@@ -295,10 +298,25 @@ fn initialize_state_with_store(
             .map(crate::process_log::TracingReload::fallback_filter),
     )
     .map_err(anyhow::Error::msg)?;
-    let model_routes = store
-        .as_ref()
-        .map(|store| seed_model_routes_from_config_and_store(&config, store))
-        .unwrap_or_default();
+    let model_routes = match store.as_ref() {
+        Some(store) => match seed_model_routes_from_config_and_store(&config, store) {
+            ModelRouteSeedRead::Loaded(routes) => routes,
+            ModelRouteSeedRead::Failed(_) => {
+                let mut seeded = BTreeMap::new();
+                for (provider_id, provider) in provider_entries(&config) {
+                    register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+                }
+                seeded
+            }
+        },
+        None => {
+            let mut seeded = BTreeMap::new();
+            for (provider_id, provider) in provider_entries(&config) {
+                register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+            }
+            seeded
+        }
+    };
     let debug_log = DebugLog::new(&config.debug).map_err(anyhow::Error::msg)?;
     // Live logging is owned by `debug_log`. Drop `[debug]` from the live
     // AppConfig so runtime readers cannot treat a boot copy as current.

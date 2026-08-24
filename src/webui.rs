@@ -758,6 +758,11 @@ async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
         .write()
         .await
         .retain(|_, owner| owner != provider_id);
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .retain(|_, owner| owner != provider_id);
 }
 
 async fn remove_provider_discovery(state: &AppState, provider_id: &str) {
@@ -778,6 +783,16 @@ async fn remove_model_routes(
         && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
     {
         routes.remove(upstream_id);
+    }
+    drop(routes);
+    let mut seeds = state.model_route_seeds.write().await;
+    if seeds.get(model_id).map(String::as_str) == Some(provider_id) {
+        seeds.remove(model_id);
+    }
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+        && seeds.get(upstream_id).map(String::as_str) == Some(provider_id)
+    {
+        seeds.remove(upstream_id);
     }
 }
 
@@ -830,6 +845,12 @@ async fn insert_model_route(
     if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
         routes.insert(upstream_id.to_string(), provider_id.to_string());
     }
+    drop(routes);
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.insert(model_id.to_string(), provider_id.to_string());
+    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+        seeds.insert(upstream_id.to_string(), provider_id.to_string());
+    }
 }
 
 /// Apply a catalog mutation to the live route map. Both POST and PUT are
@@ -871,18 +892,7 @@ async fn sync_provider_routes_for_enabled(
                 .map(|(_, provider)| provider.clone())
                 .ok_or_else(|| ApiError::not_found(format!("provider `{provider_id}` not found")))?
         };
-        {
-            let mut routes = state.model_routes.write().await;
-            register_catalog_routes_for_provider(&mut routes, provider_id, &provider);
-            if let Some(store) = state.store.as_ref() {
-                models::register_overlay_route_seeds_for_provider(
-                    &mut routes,
-                    provider_id,
-                    &provider,
-                    store,
-                );
-            }
-        }
+        register_provider_enabled_route_seeds(state, provider_id, &provider).await;
         // Mutation-oriented refresh: fetch only this provider's upstream catalog
         // and retain prior discovery for every other provider. Always publishes.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
@@ -919,6 +929,30 @@ async fn sync_provider_routes_for_enabled(
         }
     }
     Ok(())
+}
+
+async fn register_provider_enabled_route_seeds(
+    state: &AppState,
+    provider_id: &str,
+    provider: &ProviderConfig,
+) {
+    let mut routes = state.model_routes.write().await;
+    register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    if let Some(store) = state.store.as_ref() {
+        models::register_overlay_route_seeds_for_provider(
+            &mut routes,
+            provider_id,
+            provider,
+            store,
+        );
+    }
+    drop(routes);
+
+    let mut seeds = state.model_route_seeds.write().await;
+    register_catalog_routes_for_provider(&mut seeds, provider_id, provider);
+    if let Some(store) = state.store.as_ref() {
+        models::register_overlay_route_seeds_for_provider(&mut seeds, provider_id, provider, store);
+    }
 }
 
 fn routed_models_for_provider(

@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use reqwest::Client;
-use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
@@ -241,6 +240,9 @@ pub(crate) struct AppState {
     /// Last successful normalized upstream catalog, kept per provider so the
     /// Web UI can edit live models without confusing colliding slugs.
     pub(crate) discovered_models: Arc<AsyncRwLock<BTreeMap<String, BTreeMap<String, Value>>>>,
+    /// Last successfully read catalog/SQLite route seeds. Unlike `model_routes`,
+    /// this never contains upstream-only discovery results.
+    pub(crate) model_route_seeds: Arc<AsyncRwLock<BTreeMap<String, String>>>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -280,9 +282,14 @@ impl AppState {
         tracing_reload: Option<TracingReload>,
         store: Option<Store>,
     ) -> Self {
+        let model_route_seeds = model_routes
+            .try_read()
+            .expect("new model route lock must be available")
+            .clone();
         Self {
             config,
             client,
+            model_route_seeds: Arc::new(AsyncRwLock::new(model_route_seeds)),
             model_routes,
             discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
