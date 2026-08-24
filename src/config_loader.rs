@@ -253,15 +253,26 @@ pub fn matching_model_families<'a>(
     let mut matches = config
         .model_families
         .iter()
-        .filter(|(_, family)| {
-            family
-                .patterns
-                .iter()
-                .any(|pattern| matches_model_pattern(pattern, model))
-        })
+        .filter(|(_, family)| model_matches_family_config(family, model))
         .collect::<Vec<_>>();
     matches.sort_by_key(|(id, family)| (family.priority, id.as_str()));
     matches.into_iter().map(|(_, family)| family).collect()
+}
+
+/// Return whether one named model family admits the model through the same
+/// canonical wildcard rules used when applying family metadata and transforms.
+pub fn model_matches_family(config: &AppConfig, family_id: &str, model: &str) -> bool {
+    config
+        .model_families
+        .get(family_id)
+        .is_some_and(|family| model_matches_family_config(family, model))
+}
+
+fn model_matches_family_config(family: &ModelFamilyConfig, model: &str) -> bool {
+    family
+        .patterns
+        .iter()
+        .any(|pattern| matches_model_pattern(pattern, model))
 }
 
 fn matches_model_pattern(pattern: &str, model: &str) -> bool {

@@ -11,6 +11,7 @@ pub use crate::config_loader::configured_provider_entries;
 pub use crate::config_loader::load_config_layers;
 pub use crate::config_loader::matches_model_pattern_for_sort;
 pub use crate::config_loader::matching_model_families;
+pub use crate::config_loader::model_matches_family;
 pub use crate::config_loader::provider_by_id;
 pub use crate::config_loader::provider_entries;
 pub use crate::config_loader::provider_id_for_config_model;
