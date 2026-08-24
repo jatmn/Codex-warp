@@ -70,6 +70,8 @@ pub(crate) enum MutationRouteRefresh {
     /// Fetch upstream models for one provider; retain prior discovery for every
     /// other enabled provider.
     RefetchOne,
+    /// Fetch one provider without publishing any route changes on failure.
+    RefetchOneAtomic,
     /// Fetch upstream models for every enabled provider. This is needed after
     /// removing a single route owner because the route map only retains the
     /// winner for a colliding live-only slug.
@@ -121,6 +123,11 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
         .is_some_and(|revision| state.model_route_seed_revision.load(Ordering::Acquire) != revision)
     {
         return Err("model route seed cache changed while refreshing routes; retry".to_string());
+    }
+    if mode == MutationRouteRefresh::RefetchOneAtomic
+        && let Some(warning) = discovery.fetch_warning
+    {
+        return Err(warning);
     }
     publish_model_routes(
         state,
@@ -195,7 +202,7 @@ async fn discover_routes_for_mutation(
 
     let fetch_ids: BTreeSet<String> = match mode {
         MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
-        MutationRouteRefresh::RefetchOne => {
+        MutationRouteRefresh::RefetchOne | MutationRouteRefresh::RefetchOneAtomic => {
             focus_provider_id.map(str::to_string).into_iter().collect()
         }
         MutationRouteRefresh::RefetchAll => {

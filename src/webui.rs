@@ -84,6 +84,10 @@ fn api_router(management_token: Option<String>, require_local_host: bool) -> Rou
         .route("/providers/{id}/enabled", post(set_provider_enabled))
         .route("/providers/{id}/models", post(add_model))
         .route(
+            "/providers/{id}/refresh-models",
+            post(refresh_provider_models),
+        )
+        .route(
             "/providers/{id}/models/enabled/{*model_id}",
             post(set_model_enabled),
         )
@@ -701,6 +705,13 @@ impl ApiError {
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: message.into(),
         }
     }
@@ -1906,6 +1917,56 @@ async fn list_providers(
         })
         .collect();
     Ok(Json(views))
+}
+
+async fn refresh_provider_models(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(_request): Json<serde_json::Value>,
+) -> Result<Json<ProviderView>, ApiError> {
+    let _mutation = state.mutation_lock.lock().await;
+    validate_provider_id(&id)?;
+    let provider = {
+        let config = state.read_config();
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.clone())
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
+    };
+    if !provider.enabled {
+        return Err(ApiError::bad_request(format!(
+            "provider `{id}` must be enabled before refreshing models"
+        )));
+    }
+    if provider.model_catalog_only {
+        return Err(ApiError::bad_request(format!(
+            "provider `{id}` uses a static model catalog"
+        )));
+    }
+    require_store(&state)?;
+
+    invalidate_model_discovery(&state);
+    let refresh_result = models::refresh_model_routes_while_mutation_locked(
+        &state,
+        models::MutationRouteRefresh::RefetchOneAtomic,
+        Some(&id),
+    )
+    .await;
+    invalidate_model_discovery(&state);
+    refresh_result
+        .map_err(|error| ApiError::bad_gateway(format!("model refresh failed: {error}")))?;
+
+    let routes = state.model_routes.read().await;
+    let routed = routed_models_for_provider(&routes, &id);
+    let discovered = state.discovered_models.read().await;
+    Ok(Json(build_provider_view(
+        &state,
+        &id,
+        &provider,
+        &routed,
+        discovered.get(&id).unwrap_or(&BTreeMap::new()),
+    )))
 }
 
 async fn list_provider_templates() -> Json<Vec<crate::provider_templates::ProviderTemplate>> {
