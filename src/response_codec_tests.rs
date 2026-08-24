@@ -178,6 +178,7 @@ fn concatenated_tool_call_repair_budget_enforces_each_exact_boundary() {
         split_concatenated_tool_call_arguments_with_budget("{}{}{}", &mut call_short),
         None
     );
+    assert_eq!(call_short.remaining_argument_bytes, 0);
 
     let mut byte_short = ToolCallRepairBudget {
         remaining_calls: 2,
@@ -187,6 +188,32 @@ fn concatenated_tool_call_repair_budget_enforces_each_exact_boundary() {
         split_concatenated_tool_call_arguments_with_budget("{}{}", &mut byte_short),
         None
     );
+    assert_eq!(byte_short.remaining_argument_bytes, 3);
+}
+
+#[test]
+fn concatenated_tool_call_repair_budget_charges_raw_failed_and_padded_input() {
+    let malformed = "{\"x\":";
+    let mut failed = ToolCallRepairBudget {
+        remaining_calls: 64,
+        remaining_argument_bytes: 10,
+    };
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget(malformed, &mut failed),
+        None
+    );
+    assert_eq!(failed.remaining_argument_bytes, 10 - malformed.len());
+
+    let padded = "  {}{}  ";
+    let mut whitespace = ToolCallRepairBudget {
+        remaining_calls: 2,
+        remaining_argument_bytes: padded.len(),
+    };
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget(padded, &mut whitespace),
+        Some(vec!["{}".to_string(), "{}".to_string()])
+    );
+    assert_eq!(whitespace.remaining_argument_bytes, 0);
 }
 
 #[test]

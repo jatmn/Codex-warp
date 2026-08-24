@@ -972,13 +972,15 @@ fn split_concatenated_tool_call_arguments_with_budget(
     if budget.remaining_argument_bytes == 0 {
         return None;
     }
+    if arguments.len() > budget.remaining_argument_bytes {
+        return None;
+    }
+    budget.remaining_argument_bytes -= arguments.len();
     let repaired = split_concatenated_tool_call_arguments(arguments)?;
-    let argument_bytes = repaired.iter().map(String::len).sum::<usize>();
-    if repaired.len() > budget.remaining_calls || argument_bytes > budget.remaining_argument_bytes {
+    if repaired.len() > budget.remaining_calls {
         return None;
     }
     budget.remaining_calls -= repaired.len();
-    budget.remaining_argument_bytes -= argument_bytes;
     Some(repaired)
 }
 

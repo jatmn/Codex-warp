@@ -100,7 +100,8 @@ repair that separates that invalid argument string into distinct Responses tool
 calls. A single JSON object, incomplete JSON, non-object JSON, or trailing junk
 is forwarded unchanged rather than guessed at. Repair runs only after a
 successful tool-call finish and shares a response-wide limit of 64 recovered
-calls and 1 MiB of recovered argument text across streaming and JSON responses.
+calls and 1 MiB of source argument text inspected for recovery across streaming
+and JSON responses.
 
 ## Guardian Auto-Review Compatibility
 
