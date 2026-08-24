@@ -71,6 +71,12 @@ pub(crate) enum MutationRouteRefresh {
     RefetchAll,
 }
 
+struct MutationRouteDiscovery {
+    routes: BTreeMap<String, String>,
+    retain_owners: BTreeSet<String>,
+    fetch_warning: Option<String>,
+}
+
 /// Mutation-oriented route refresh. Always publishes a best-effort route map
 /// (seeds + selective discovery + retained prior ownership) and returns a
 /// warning when the focused upstream fetch failed.
@@ -81,8 +87,7 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
 ) -> Result<(), String> {
     let revision = state.config_revision.load(Ordering::Acquire);
     let headers = HeaderMap::new();
-    let (routes, retain_owners, fetch_warning) =
-        discover_routes_for_mutation(state, &headers, mode, provider_id).await;
+    let discovery = discover_routes_for_mutation(state, &headers, mode, provider_id).await;
 
     if state.config_revision.load(Ordering::Acquire) != revision {
         return Err(
@@ -90,8 +95,8 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
-    publish_model_routes(state, routes, &retain_owners).await;
-    match fetch_warning {
+    publish_model_routes(state, discovery.routes, &discovery.retain_owners).await;
+    match discovery.fetch_warning {
         Some(warning) => Err(warning),
         None => Ok(()),
     }
@@ -121,7 +126,7 @@ async fn discover_routes_for_mutation(
     headers: &HeaderMap,
     mode: MutationRouteRefresh,
     focus_provider_id: Option<&str>,
-) -> (BTreeMap<String, String>, BTreeSet<String>, Option<String>) {
+) -> MutationRouteDiscovery {
     let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
@@ -190,7 +195,11 @@ async fn discover_routes_for_mutation(
         }
     }
 
-    (routes, retain_owners, fetch_warning)
+    MutationRouteDiscovery {
+        routes,
+        retain_owners,
+        fetch_warning,
+    }
 }
 
 async fn fetch_provider_upstream_models(
