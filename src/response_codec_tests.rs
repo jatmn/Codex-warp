@@ -121,6 +121,75 @@ fn concatenated_tool_call_repair_bounds_parser_work_by_argument_bytes() {
 }
 
 #[test]
+fn concatenated_tool_call_repair_budget_is_shared_across_source_calls() {
+    let mut budget = ToolCallRepairBudget {
+        remaining_calls: 5,
+        remaining_argument_bytes: 10,
+    };
+    assert!(split_concatenated_tool_call_arguments_with_budget("{}{}", &mut budget).is_some());
+    assert_eq!(budget.remaining_calls, 3);
+    assert_eq!(budget.remaining_argument_bytes, 6);
+
+    let repaired = split_concatenated_tool_call_arguments_with_budget("{}{}", &mut budget)
+        .expect("the second source call fits the shared budget");
+    assert_eq!(repaired, ["{}", "{}"]);
+    assert_eq!(budget.remaining_calls, 1);
+    assert_eq!(budget.remaining_argument_bytes, 2);
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget("{}{}", &mut budget),
+        None
+    );
+}
+
+#[test]
+fn concatenated_tool_call_repair_budget_enforces_each_exact_boundary() {
+    let mut exact = ToolCallRepairBudget {
+        remaining_calls: 2,
+        remaining_argument_bytes: 4,
+    };
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget("{}{}", &mut exact),
+        Some(vec!["{}".to_string(), "{}".to_string()])
+    );
+    assert_eq!(exact.remaining_calls, 0);
+    assert_eq!(exact.remaining_argument_bytes, 0);
+
+    for mut exhausted in [
+        ToolCallRepairBudget {
+            remaining_calls: 1,
+            remaining_argument_bytes: 4,
+        },
+        ToolCallRepairBudget {
+            remaining_calls: 2,
+            remaining_argument_bytes: 0,
+        },
+    ] {
+        assert_eq!(
+            split_concatenated_tool_call_arguments_with_budget("{}{}", &mut exhausted),
+            None
+        );
+    }
+
+    let mut call_short = ToolCallRepairBudget {
+        remaining_calls: 2,
+        remaining_argument_bytes: 6,
+    };
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget("{}{}{}", &mut call_short),
+        None
+    );
+
+    let mut byte_short = ToolCallRepairBudget {
+        remaining_calls: 2,
+        remaining_argument_bytes: 3,
+    };
+    assert_eq!(
+        split_concatenated_tool_call_arguments_with_budget("{}{}", &mut byte_short),
+        None
+    );
+}
+
+#[test]
 fn streaming_chat_repair_splits_concatenated_tool_calls_and_assigns_unique_ids() {
     let mut accum = ChatAccum {
         split_concatenated_tool_call_arguments: true,
@@ -191,6 +260,149 @@ fn streaming_chat_preserves_concatenated_arguments_without_opt_in() {
 }
 
 #[test]
+fn streaming_chat_repair_requires_a_successful_tool_call_finish() {
+    for finish_reason in ["stop", "length", "content_filter"] {
+        let mut accum = ChatAccum {
+            split_concatenated_tool_call_arguments: true,
+            ..ChatAccum::default()
+        };
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_original",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"one\"}{\"cmd\":\"two\"}"
+                    }
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+
+        let events = accum.finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+        );
+        let calls = completed_function_calls(&events);
+        assert_eq!(calls.len(), 1, "finish_reason={finish_reason}");
+        assert_eq!(
+            calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}",
+            "finish_reason={finish_reason}"
+        );
+    }
+}
+
+#[test]
+fn streaming_chat_repair_stops_when_function_identity_changes() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    for (name, arguments, finish_reason) in [
+        ("exec_command", "{\"cmd\":\"one\"}", None),
+        ("apply_patch", "{\"patch\":\"two\"}", Some("tool_calls")),
+    ] {
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_original",
+                    "function": {"name": name, "arguments": arguments}
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+    }
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["name"], "apply_patch");
+    assert_eq!(
+        calls[0]["arguments"],
+        "{\"cmd\":\"one\"}{\"patch\":\"two\"}"
+    );
+}
+
+#[test]
+fn streaming_chat_repair_stops_when_nonempty_call_id_changes() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    for (id, arguments, finish_reason) in [
+        ("call_one", "{\"cmd\":\"one\"}", None),
+        ("call_two", "{\"cmd\":\"two\"}", Some("tool_calls")),
+    ] {
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "function": {"name": "exec_command", "arguments": arguments}
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+    }
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["call_id"], "call_two");
+}
+
+#[test]
+fn streaming_chat_repair_ignores_an_empty_later_call_id() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    for (id, arguments, finish_reason) in [
+        ("call_one", "{\"cmd\":\"one\"}", None),
+        ("", "{\"cmd\":\"two\"}", Some("tool_calls")),
+    ] {
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "function": {"name": "exec_command", "arguments": arguments}
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+    }
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+    let calls = completed_function_calls(&events);
+    assert_eq!(calls.len(), 2);
+    assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+}
+
+#[test]
 fn non_stream_chat_repair_splits_concatenated_tool_calls() {
     let converted = chat_json_to_responses_with_tool_markup_suppression(
         json!({
@@ -223,6 +435,38 @@ fn non_stream_chat_repair_splits_concatenated_tool_calls() {
     assert_eq!(calls[1]["arguments"], "{\"cmd\":\"git diff\"}");
     assert_eq!(calls[0]["call_id"], "call_original");
     assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+}
+
+#[test]
+fn non_stream_chat_repair_requires_a_successful_tool_call_finish() {
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"tool_calls": [{
+                    "id": "call_original",
+                    "function": {
+                        "name": "exec_command",
+                        "arguments": "{\"cmd\":\"one\"}{\"cmd\":\"two\"}"
+                    }
+                }]}
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        false,
+        true,
+    );
+    let calls = converted["output"]
+        .as_array()
+        .expect("output array")
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
 }
 
 #[test]

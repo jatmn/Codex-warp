@@ -912,6 +912,21 @@ pub(crate) struct ToolCallAccum {
     id: String,
     name: String,
     arguments: String,
+    identity_changed: bool,
+}
+
+struct ToolCallRepairBudget {
+    remaining_calls: usize,
+    remaining_argument_bytes: usize,
+}
+
+impl Default for ToolCallRepairBudget {
+    fn default() -> Self {
+        Self {
+            remaining_calls: MAX_REPAIRED_CONCATENATED_TOOL_CALLS,
+            remaining_argument_bytes: MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES,
+        }
+    }
 }
 
 fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>> {
@@ -945,6 +960,30 @@ fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>
             .map(|range| arguments[range].trim().to_string())
             .collect()
     })
+}
+
+fn split_concatenated_tool_call_arguments_with_budget(
+    arguments: &str,
+    budget: &mut ToolCallRepairBudget,
+) -> Option<Vec<String>> {
+    if budget.remaining_calls < 2 {
+        return None;
+    }
+    if budget.remaining_argument_bytes == 0 {
+        return None;
+    }
+    let repaired = split_concatenated_tool_call_arguments(arguments)?;
+    let argument_bytes = repaired.iter().map(String::len).sum::<usize>();
+    if repaired.len() > budget.remaining_calls || argument_bytes > budget.remaining_argument_bytes {
+        return None;
+    }
+    budget.remaining_calls -= repaired.len();
+    budget.remaining_argument_bytes -= argument_bytes;
+    Some(repaired)
+}
+
+fn is_successful_tool_call_finish_reason(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| matches!(reason, "tool_calls" | "function_call"))
 }
 
 fn recovered_tool_call_id(upstream_id: Option<&str>, recovered_index: usize) -> String {
@@ -1138,6 +1177,9 @@ impl ChatAccum {
                     }
                     let acc = &mut self.tool_calls[index];
                     if let Some(id) = call.get("id").and_then(Value::as_str) {
+                        if !acc.id.is_empty() && !id.is_empty() && acc.id != id {
+                            acc.identity_changed = true;
+                        }
                         acc.id = id.to_string();
                     }
                     if let Some(name) = call
@@ -1145,6 +1187,9 @@ impl ChatAccum {
                         .and_then(|function| function.get("name"))
                         .and_then(Value::as_str)
                     {
+                        if !acc.name.is_empty() && !name.is_empty() && acc.name != name {
+                            acc.identity_changed = true;
+                        }
                         acc.name = name.to_string();
                     }
                     if let Some(arguments) = call
@@ -1222,13 +1267,20 @@ impl ChatAccum {
             ));
         }
 
+        let repair_enabled = self.split_concatenated_tool_call_arguments
+            && is_successful_tool_call_finish_reason(self.finish_reason.as_deref());
+        let mut repair_budget = ToolCallRepairBudget::default();
         for call in &self.tool_calls {
             if call.name.is_empty() {
                 continue;
             }
-            let repaired_arguments = self
-                .split_concatenated_tool_call_arguments
-                .then(|| split_concatenated_tool_call_arguments(&call.arguments))
+            let repaired_arguments = (repair_enabled && !call.identity_changed)
+                .then(|| {
+                    split_concatenated_tool_call_arguments_with_budget(
+                        &call.arguments,
+                        &mut repair_budget,
+                    )
+                })
                 .flatten();
             let arguments = repaired_arguments.as_ref().map_or_else(
                 || vec![call.arguments.as_str()],
@@ -2459,6 +2511,9 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
             }));
         }
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            let repair_enabled = split_concatenated_tool_call_arguments_enabled
+                && is_successful_tool_call_finish_reason(chat_finish_reason(choice));
+            let mut repair_budget = ToolCallRepairBudget::default();
             for call in calls {
                 let name = call
                     .get("function")
@@ -2471,8 +2526,13 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
                 let upstream_call_id = call.get("id").and_then(Value::as_str);
-                let repaired_arguments = split_concatenated_tool_call_arguments_enabled
-                    .then(|| split_concatenated_tool_call_arguments(arguments))
+                let repaired_arguments = repair_enabled
+                    .then(|| {
+                        split_concatenated_tool_call_arguments_with_budget(
+                            arguments,
+                            &mut repair_budget,
+                        )
+                    })
                     .flatten();
                 let arguments = repaired_arguments.as_ref().map_or_else(
                     || vec![arguments],

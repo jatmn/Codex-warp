@@ -71,6 +71,12 @@ pub(crate) enum MutationRouteRefresh {
     RefetchAll,
 }
 
+struct MutationRouteDiscovery {
+    routes: BTreeMap<String, String>,
+    retain_owners: BTreeSet<String>,
+    fetch_warning: Option<String>,
+}
+
 /// Mutation-oriented route refresh. Always publishes a best-effort route map
 /// (seeds + selective discovery + retained prior ownership) and returns a
 /// warning when the focused upstream fetch failed.
@@ -81,8 +87,7 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
 ) -> Result<(), String> {
     let revision = state.config_revision.load(Ordering::Acquire);
     let headers = HeaderMap::new();
-    let (routes, retain_owners, fetch_warning) =
-        discover_routes_for_mutation(state, &headers, mode, provider_id).await;
+    let discovery = discover_routes_for_mutation(state, &headers, mode, provider_id).await;
 
     if state.config_revision.load(Ordering::Acquire) != revision {
         return Err(
@@ -90,8 +95,8 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
-    publish_model_routes(state, routes, &retain_owners).await;
-    match fetch_warning {
+    publish_model_routes(state, discovery.routes, &discovery.retain_owners).await;
+    match discovery.fetch_warning {
         Some(warning) => Err(warning),
         None => Ok(()),
     }
@@ -121,7 +126,7 @@ async fn discover_routes_for_mutation(
     headers: &HeaderMap,
     mode: MutationRouteRefresh,
     focus_provider_id: Option<&str>,
-) -> (BTreeMap<String, String>, BTreeSet<String>, Option<String>) {
+) -> MutationRouteDiscovery {
     let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
@@ -190,7 +195,11 @@ async fn discover_routes_for_mutation(
         }
     }
 
-    (routes, retain_owners, fetch_warning)
+    MutationRouteDiscovery {
+        routes,
+        retain_owners,
+        fetch_warning,
+    }
 }
 
 async fn fetch_provider_upstream_models(
@@ -683,29 +692,46 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     if target.is_empty() {
         return;
     }
-    if canonical_model_family_id(&target) == "deepseek-v4-flash" && is_model_variant_id(id, &target)
+    let target_family = canonical_model_family_id(&target);
+    let id_suffix = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    if canonical_model_family_id(id_suffix) == target_family
+        || (target_family == "grok-4.6" && is_grok_4_6_alias_id(id))
+        || (target_family == "hy3" && is_hy3_model_id(id))
     {
         info["auto_review_model_override"] = json!(id);
         return;
     }
+    if target_family == "deepseek-v4-flash" && is_model_variant_id(id, &target) {
+        info["auto_review_model_override"] = json!(id);
+        return;
+    }
     if provider.model_catalog.is_empty() {
-        if canonical_model_family_id(&target) == "hy3" && is_hy3_model_id(id) {
-            info["auto_review_model_override"] = json!(id);
-        }
         return;
     }
     info["auto_review_model_override"] =
         json!(provider_local_model_id(provider, id, &target).unwrap_or(id));
 }
 
-/// Whether a live-catalog model ID is covered by the broad Hy3 family.
+/// Whether a model ID is covered by the broad Hy3 family.
 ///
-/// Live discovery has no static catalog from which to derive a provider-local
-/// review alias, so the exact discovered ID is the only guaranteed route.
+/// The exact visible ID is the only route whose final global ownership is
+/// guaranteed when multiple providers advertise colliding bare aliases.
 fn is_hy3_model_id(id: &str) -> bool {
     let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
     let id = canonical_model_family_id(id);
     id.starts_with("hy3") || matches!(id.as_str(), "hunyuan-3" | "hunyuan3")
+}
+
+/// Whether `id` is one of the exact Grok 4.6 spellings advertised by the
+/// bundled family catalog. Live discovery must preserve the provider's original
+/// spelling so Guardian requests use a route that discovery actually published.
+fn is_grok_4_6_alias_id(id: &str) -> bool {
+    let id = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
+    let id = canonical_model_family_id(id);
+    matches!(
+        id.as_str(),
+        "grok-4.6" | "grok4.6" | "grok-4.6-latest" | "grok4.6-latest"
+    )
 }
 
 /// Whether `id` is a nonempty dash/underscore suffix variant of `target`.

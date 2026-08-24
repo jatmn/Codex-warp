@@ -37,6 +37,7 @@ hide_codex_builtin_models = true
 # Paths are relative to the config file that declares them.
 # include = [
 #   "configs/clinepass.toml",
+#   "configs/hicap.toml",
 #   "configs/moonshot-kimicode.toml",
 #   "configs/opencode-go.toml",
 #   "configs/xiaomi-token-plan.toml",

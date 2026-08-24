@@ -173,6 +173,7 @@ tab. See the
 | --- | --- | --- | --- |
 | OpenAI-compatible template | [`configs/openai-compatible.toml`](configs/openai-compatible.toml) | Copy or edit for any provider with OpenAI-style auth and endpoints. | No |
 | ClinePass | [`configs/clinepass.toml`](configs/clinepass.toml) | Ready profile for ClinePass with a local documented model catalog. | No |
+| Hicap | [`configs/hicap.toml`](configs/hicap.toml) | Ready profile for Hicap with live model discovery, a local catalog fallback, and the required integration tag. | No |
 | Moonshot KimiCode | [`configs/moonshot-kimicode.toml`](configs/moonshot-kimicode.toml) | Ready profile for Moonshot KimiCode subscription keys with a local Kimi model catalog fallback. | No |
 | OpenCode Go | [`configs/opencode-go.toml`](configs/opencode-go.toml) | Ready profile for OpenCode Go subscription keys, limited to its OpenAI-compatible chat-completions models. | No |
 | Xiaomi Token Plan | [`configs/xiaomi-token-plan.toml`](configs/xiaomi-token-plan.toml) | Ready profile for `https://token-plan-sgp.xiaomimimo.com/v1`. | No |
@@ -213,7 +214,7 @@ the other headers) under `[provider.headers]` or `[providers.<id>.headers]`.
 | MiniMax | [`configs/model-families/minimax.toml`](configs/model-families/minimax.toml) | `minimax-m2.5`, `minimax-m2.7`, `minimax-m3` |
 | Moonshot AI | [`configs/model-families/moonshot-ai.toml`](configs/model-families/moonshot-ai.toml) | `kimi-k2`, `kimi-k2-0905`, `kimi-k2.5`, `kimi-k2.6`, `kimi-k2.6-code`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-for-coding` |
 | Alibaba Cloud | [`configs/model-families/qwen.toml`](configs/model-families/qwen.toml) | `qwen3.6-35b-a3b`; conservative broad defaults for `qwen3.6*` and `qwen3.7*` |
-| xAI | [`configs/model-families/x-ai.toml`](configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-build-0.1` |
+| xAI | [`configs/model-families/x-ai.toml`](configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-build-0.1` |
 | Xiaomi | [`configs/model-families/xiaomi.toml`](configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
 | Z.ai | [`configs/model-families/z-ai.toml`](configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2`, `glm-5.3` |
 | Tencent Hunyuan 3 (Hy3) | [`configs/model-families/hy3.toml`](configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |

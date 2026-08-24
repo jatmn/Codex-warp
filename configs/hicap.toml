@@ -1,0 +1,59 @@
+# Hicap provider profile.
+#
+# Hicap exposes an OpenAI-compatible chat-completions API and an authenticated
+# /models catalog. Keep a small local fallback for Codex model selection while
+# still merging the live catalog for the models available to each API key.
+
+[providers.hicap]
+name = "Hicap"
+base_url = "https://api.hicap.ai/v1"
+api_key_env = "HICAP_API_KEY"
+auth_header = "api-key"
+auth_scheme = ""
+responses_path = "/responses"
+chat_completions_path = "/chat/completions"
+models_path = "/models"
+model_catalog_only = false
+
+[providers.hicap.headers]
+# Hicap's Codex Warp integration expects this singular tag header. This differs
+# from the plural attribution header shown in Hicap's public examples.
+"x-hicap-tag" = "codex-warp"
+
+# The local entries are a fallback, not a catalog allowlist. Live /models rows
+# are merged with these provider-qualified slugs when discovery succeeds.
+
+[[providers.hicap.model_catalog]]
+id = "hicap/deepseek-v4-pro"
+upstream_id = "deepseek-v4-pro"
+display_name = "DeepSeek V4 Pro"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/glm-5.2"
+upstream_id = "glm-5.2"
+display_name = "GLM-5.2"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/grok-4.5"
+upstream_id = "grok-4.5"
+display_name = "Grok 4.5"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/grok-4.6"
+upstream_id = "grok-4.6"
+display_name = "Grok 4.6"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/hy3:free"
+upstream_id = "hy3:free"
+display_name = "Hy3 Free"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/kimi-k2.7-code"
+upstream_id = "kimi-k2.7-code"
+display_name = "Kimi K2.7 Code"
+
+[[providers.hicap.model_catalog]]
+id = "hicap/minimax-m3"
+upstream_id = "minimax-m3"
+display_name = "MiniMax M3"
