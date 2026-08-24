@@ -298,15 +298,19 @@ fn initialize_state_with_store(
             .map(crate::process_log::TracingReload::fallback_filter),
     )
     .map_err(anyhow::Error::msg)?;
-    let model_routes = match store.as_ref() {
+    let (model_routes, model_route_seeds) = match store.as_ref() {
         Some(store) => match seed_model_routes_from_config_and_store(&config, store) {
-            ModelRouteSeedRead::Loaded(routes) => routes,
-            ModelRouteSeedRead::Failed(_) => {
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, seeds),
+            ModelRouteSeedRead::Failed(err) => {
+                warn!(
+                    error = %err,
+                    "failed to read enabled model route seeds; overlay routes omitted at startup"
+                );
                 let mut seeded = BTreeMap::new();
                 for (provider_id, provider) in provider_entries(&config) {
                     register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
                 }
-                seeded
+                (seeded, Vec::new())
             }
         },
         None => {
@@ -314,7 +318,7 @@ fn initialize_state_with_store(
             for (provider_id, provider) in provider_entries(&config) {
                 register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
             }
-            seeded
+            (seeded, Vec::new())
         }
     };
     let debug_log = DebugLog::new(&config.debug).map_err(anyhow::Error::msg)?;
@@ -322,7 +326,7 @@ fn initialize_state_with_store(
     // AppConfig so runtime readers cannot treat a boot copy as current.
     config.debug = crate::config::DebugConfig::default();
 
-    Ok(AppState::from_parts(
+    let state = AppState::from_parts(
         Arc::new(RwLock::new(config)),
         Client::new(),
         Arc::new(AsyncRwLock::new(model_routes)),
@@ -332,7 +336,12 @@ fn initialize_state_with_store(
         process_log,
         tracing_reload,
         store,
-    ))
+    );
+    *state
+        .model_route_seeds
+        .try_write()
+        .expect("new model route seed lock must be available") = model_route_seeds;
+    Ok(state)
 }
 
 async fn shutdown_signal() {

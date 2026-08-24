@@ -232,17 +232,17 @@ mod session_model_cache_tests {
     }
 }
 
+pub(crate) type ModelRouteSeed = (String, String, Option<String>);
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
-    /// Last successful normalized upstream catalog, kept per provider so the
-    /// Web UI can edit live models without confusing colliding slugs.
-    pub(crate) discovered_models: Arc<AsyncRwLock<BTreeMap<String, BTreeMap<String, Value>>>>,
-    /// Last successfully read catalog/SQLite route seeds. Unlike `model_routes`,
-    /// this never contains upstream-only discovery results.
-    pub(crate) model_route_seeds: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Last successfully read persisted overlay seed rows, in ownership order.
+    /// Unlike `model_routes`, this retains superseded claims and never contains
+    /// configured catalogs or upstream-only discovery results.
+    pub(crate) model_route_seeds: Arc<AsyncRwLock<Vec<ModelRouteSeed>>>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -282,16 +282,11 @@ impl AppState {
         tracing_reload: Option<TracingReload>,
         store: Option<Store>,
     ) -> Self {
-        let model_route_seeds = model_routes
-            .try_read()
-            .expect("new model route lock must be available")
-            .clone();
         Self {
             config,
             client,
-            model_route_seeds: Arc::new(AsyncRwLock::new(model_route_seeds)),
+            model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
             model_routes,
-            discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
             mutation_lock,

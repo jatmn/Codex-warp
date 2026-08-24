@@ -1387,8 +1387,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1456,8 +1455,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1505,8 +1503,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1650,7 +1647,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         config: Arc::new(RwLock::new(AppConfig::default())),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1720,8 +1717,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1796,8 +1792,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         config: Arc::new(RwLock::new(config)),
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
-        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
-        model_route_seeds: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1854,7 +1849,7 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
     config.providers.insert("alpha".into(), alpha);
     config.providers.insert("beta".into(), beta);
 
-    let ModelRouteSeedRead::Loaded(routes) =
+    let ModelRouteSeedRead::Loaded { routes, .. } =
         seed_model_routes_from_config_and_store(&config, &store)
     else {
         panic!("seed read failed");
@@ -1909,7 +1904,7 @@ fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
         },
     );
 
-    let ModelRouteSeedRead::Loaded(routes) =
+    let ModelRouteSeedRead::Loaded { routes, .. } =
         seed_model_routes_from_config_and_store(&config, &store)
     else {
         panic!("seed read failed");
@@ -1954,7 +1949,7 @@ fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
         );
     }
 
-    let ModelRouteSeedRead::Loaded(routes) =
+    let ModelRouteSeedRead::Loaded { routes, .. } =
         seed_model_routes_from_config_and_store(&config, &store)
     else {
         panic!("seed read failed");
@@ -1962,4 +1957,55 @@ fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
     assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cached_overlay_rows_recompute_current_catalog_and_overlay_precedence() {
+    let mut config = AppConfig::default();
+    for provider_id in ["alpha", "beta"] {
+        config.providers.insert(
+            provider_id.into(),
+            ProviderConfig {
+                base_url: format!("https://{provider_id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let seeds = vec![
+        (
+            "alpha".into(),
+            "overlay-only".into(),
+            Some("overlay-upstream".into()),
+        ),
+        (
+            "beta".into(),
+            "overlay-only".into(),
+            Some("overlay-upstream".into()),
+        ),
+    ];
+
+    let routes = route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
+    assert_eq!(routes.get("overlay-only").map(String::as_str), Some("beta"));
+    assert_eq!(
+        routes.get("overlay-upstream").map(String::as_str),
+        Some("beta")
+    );
+
+    config.providers.get_mut("beta").unwrap().enabled = false;
+    let routes = route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("overlay-only").map(String::as_str),
+        Some("alpha"),
+        "the next still-enabled persisted claim must be recoverable"
+    );
+    assert_eq!(
+        routes.get("overlay-upstream").map(String::as_str),
+        Some("alpha")
+    );
 }

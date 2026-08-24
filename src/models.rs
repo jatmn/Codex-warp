@@ -28,6 +28,7 @@ use crate::http::endpoint_url;
 use crate::http::error_response;
 use crate::provider::provider_display_name;
 use crate::state::AppState;
+use crate::state::ModelRouteSeed;
 
 const DEFAULT_MODEL_CONTEXT_WINDOW: i64 = 128_000;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
@@ -76,11 +77,14 @@ struct MutationRouteDiscovery {
     routes: BTreeMap<String, String>,
     retain_owners: BTreeSet<String>,
     fetch_warning: Option<String>,
-    refreshed_seeds: Option<BTreeMap<String, String>>,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 }
 
 pub(crate) enum ModelRouteSeedRead {
-    Loaded(BTreeMap<String, String>),
+    Loaded {
+        routes: BTreeMap<String, String>,
+        seeds: Vec<ModelRouteSeed>,
+    },
     Failed(anyhow::Error),
 }
 
@@ -148,27 +152,24 @@ async fn discover_routes_for_mutation(
     let seed_config = state.read_config().clone();
     let (mut routes, refreshed_seeds) = match state.store.as_ref() {
         Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded(routes) => (routes.clone(), Some(routes)),
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
             ModelRouteSeedRead::Failed(err) => {
                 tracing::warn!(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                let mut seeds = state.model_route_seeds.read().await.clone();
-                seeds.retain(|model_id, provider_id| {
-                    crate::config::provider_by_id(&seed_config, provider_id).is_some_and(
-                        |provider| provider.enabled && provider.model_is_enabled(model_id),
-                    )
-                });
-                for (model_id, provider_id) in catalog_route_seeds(&seed_config) {
-                    seeds.entry(model_id).or_insert(provider_id);
-                }
-                (seeds, None)
+                (
+                    route_seeds_from_config_and_rows(
+                        &seed_config,
+                        &state.model_route_seeds.read().await,
+                    ),
+                    None,
+                )
             }
         },
         None => {
             let seeded = catalog_route_seeds(&seed_config);
-            (seeded.clone(), Some(seeded))
+            (seeded, Some(Vec::new()))
         }
     };
 
@@ -304,27 +305,24 @@ async fn models_for_revision(
     let seed_config = state.read_config().clone();
     let (mut routes, refreshed_seeds) = match state.store.as_ref() {
         Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded(routes) => (routes.clone(), Some(routes)),
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
             ModelRouteSeedRead::Failed(err) => {
                 tracing::warn!(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                let mut seeds = state.model_route_seeds.read().await.clone();
-                seeds.retain(|model_id, provider_id| {
-                    crate::config::provider_by_id(&seed_config, provider_id).is_some_and(
-                        |provider| provider.enabled && provider.model_is_enabled(model_id),
-                    )
-                });
-                for (model_id, provider_id) in catalog_route_seeds(&seed_config) {
-                    seeds.entry(model_id).or_insert(provider_id);
-                }
-                (seeds, None)
+                (
+                    route_seeds_from_config_and_rows(
+                        &seed_config,
+                        &state.model_route_seeds.read().await,
+                    ),
+                    None,
+                )
             }
         },
         None => {
             let seeded = catalog_route_seeds(&seed_config);
-            (seeded.clone(), Some(seeded))
+            (seeded, Some(Vec::new()))
         }
     };
     let mut failures = Vec::new();
@@ -407,7 +405,7 @@ async fn publish_models_if_current(
     revision: u64,
     routes: BTreeMap<String, String>,
     failed_providers: &BTreeSet<String>,
-    refreshed_seeds: Option<BTreeMap<String, String>>,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
     response: Response,
     mutation_locked: bool,
 ) -> Option<Response> {
@@ -437,7 +435,7 @@ async fn publish_model_routes(
     state: &AppState,
     mut routes: BTreeMap<String, String>,
     failed_providers: &BTreeSet<String>,
-    refreshed_seeds: Option<BTreeMap<String, String>>,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
     let prior = state.model_routes.read().await.clone();
     {
@@ -495,6 +493,28 @@ fn catalog_route_seeds(config: &AppConfig) -> BTreeMap<String, String> {
     routes
 }
 
+fn route_seeds_from_config_and_rows(
+    config: &AppConfig,
+    seeds: &[ModelRouteSeed],
+) -> BTreeMap<String, String> {
+    let mut routes = catalog_route_seeds(config);
+    for (provider_id, model_id, upstream_id) in seeds {
+        let Some(provider) = crate::config::provider_by_id(config, provider_id) else {
+            continue;
+        };
+        if !provider.enabled || !provider.model_is_enabled(model_id) {
+            continue;
+        }
+        routes.insert(model_id.clone(), provider_id.clone());
+        if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty())
+            && provider.model_is_enabled(upstream_id)
+        {
+            routes.insert(upstream_id.to_string(), provider_id.clone());
+        }
+    }
+    routes
+}
+
 /// Seed `model_routes` from enabled providers and SQLite overlays at startup.
 ///
 /// Catalog routes establish baseline ownership. Overlay seeds then claim
@@ -505,30 +525,12 @@ pub(crate) fn seed_model_routes_from_config_and_store(
     config: &AppConfig,
     store: &crate::store::Store,
 ) -> ModelRouteSeedRead {
-    let mut routes = BTreeMap::new();
-    for (provider_id, provider) in provider_entries(config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
-    }
     let seeds = match store.enabled_model_route_seeds() {
         Ok(seeds) => seeds,
         Err(err) => return ModelRouteSeedRead::Failed(err),
     };
-    for (provider_id, model_id, upstream_id) in seeds {
-        let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
-            continue;
-        };
-        if !provider.enabled || !provider.model_is_enabled(&model_id) {
-            continue;
-        }
-        // Explicit overlay enable claims ownership for colliding slugs.
-        routes.insert(model_id, provider_id.clone());
-        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-            && provider.model_is_enabled(&upstream_id)
-        {
-            routes.insert(upstream_id, provider_id);
-        }
-    }
-    ModelRouteSeedRead::Loaded(routes)
+    let routes = route_seeds_from_config_and_rows(config, &seeds);
+    ModelRouteSeedRead::Loaded { routes, seeds }
 }
 
 /// Load overlay-enabled route seeds for one provider once so every in-memory
@@ -537,21 +539,11 @@ pub(crate) fn load_overlay_route_seeds_for_provider(
     provider_id: &str,
     provider: &crate::config::ProviderConfig,
     store: &crate::store::Store,
-) -> Vec<(String, Option<String>)> {
+) -> Result<Vec<(String, Option<String>)>, anyhow::Error> {
     if !provider.enabled {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    match store.enabled_model_route_seeds_for_provider(provider_id) {
-        Ok(seeds) => seeds,
-        Err(err) => {
-            tracing::warn!(
-                provider_id = %provider_id,
-                error = %err,
-                "failed to read overlay route seeds during provider route sync"
-            );
-            Vec::new()
-        }
-    }
+    store.enabled_model_route_seeds_for_provider(provider_id)
 }
 
 /// Replay one provider's previously loaded overlay seed snapshot into a route map.

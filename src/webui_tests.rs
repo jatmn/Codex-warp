@@ -50,6 +50,19 @@ fn temporary_store_state(label: &str) -> (AppState, std::path::PathBuf) {
     (state_with_store(store), dir)
 }
 
+fn cached_seed_owner<'a>(
+    seeds: &'a [crate::state::ModelRouteSeed],
+    route: &str,
+) -> Option<&'a str> {
+    seeds
+        .iter()
+        .rev()
+        .find_map(|(provider_id, model_id, upstream_id)| {
+            (model_id == route || upstream_id.as_deref() == Some(route))
+                .then_some(provider_id.as_str())
+        })
+}
+
 fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
     ProviderPersist {
         name: OptionalPatch::Absent,
@@ -1598,6 +1611,16 @@ async fn insert_model_route_repoints_existing_owner() {
         let mut routes = state.model_routes.write().await;
         routes.insert("shared-model".into(), "alpha".into());
     }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push((
+            "beta".into(),
+            "shared-model".into(),
+            Some("old-upstream".into()),
+        ));
+        seeds.push(("beta".into(), "other-model".into(), None));
+        seeds.push(("alpha".into(), "shared-model".into(), None));
+    }
     insert_model_route(&state, "beta", "shared-model", Some("upstream-shared")).await;
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("shared-model").map(String::as_str), Some("beta"));
@@ -1607,37 +1630,81 @@ async fn insert_model_route_repoints_existing_owner() {
     );
     drop(routes);
     let seeds = state.model_route_seeds.read().await;
-    assert_eq!(seeds.get("shared-model").map(String::as_str), Some("beta"));
-    assert_eq!(
-        seeds.get("upstream-shared").map(String::as_str),
-        Some("beta")
+    assert_eq!(cached_seed_owner(&seeds, "shared-model"), Some("beta"));
+    assert_eq!(cached_seed_owner(&seeds, "upstream-shared"), Some("beta"));
+    assert_eq!(cached_seed_owner(&seeds, "old-upstream"), None);
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "other-model" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "shared-model" })
     );
 }
 
 #[tokio::test]
 async fn remove_model_routes_only_removes_target_provider_ownership() {
     let state = test_state();
-    for route_map in [&state.model_routes, &state.model_route_seeds] {
-        let mut routes = route_map.write().await;
+    {
+        let mut routes = state.model_routes.write().await;
         routes.insert("owned-model".into(), "beta".into());
         routes.insert("owned-upstream".into(), "beta".into());
         routes.insert("other-model".into(), "alpha".into());
         routes.insert("other-upstream".into(), "alpha".into());
     }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push((
+            "beta".into(),
+            "owned-model".into(),
+            Some("owned-upstream".into()),
+        ));
+        seeds.push((
+            "alpha".into(),
+            "other-model".into(),
+            Some("other-upstream".into()),
+        ));
+        seeds.push(("beta".into(), "other-model".into(), None));
+        seeds.push(("alpha".into(), "owned-model".into(), None));
+    }
 
     remove_model_routes(&state, "beta", "owned-model", Some("owned-upstream")).await;
-    remove_model_routes(&state, "beta", "other-model", Some("other-upstream")).await;
 
-    for route_map in [&state.model_routes, &state.model_route_seeds] {
-        let routes = route_map.read().await;
-        assert!(!routes.contains_key("owned-model"));
-        assert!(!routes.contains_key("owned-upstream"));
-        assert_eq!(routes.get("other-model").map(String::as_str), Some("alpha"));
-        assert_eq!(
-            routes.get("other-upstream").map(String::as_str),
-            Some("alpha")
-        );
-    }
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("owned-model"));
+    assert!(!routes.contains_key("owned-upstream"));
+    assert_eq!(routes.get("other-model").map(String::as_str), Some("alpha"));
+    assert_eq!(
+        routes.get("other-upstream").map(String::as_str),
+        Some("alpha")
+    );
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "owned-model" })
+    );
+    assert!(
+        !seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "owned-model" })
+    );
+    assert_eq!(cached_seed_owner(&seeds, "owned-upstream"), None);
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "other-model" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "other-model" })
+    );
+    assert_eq!(cached_seed_owner(&seeds, "other-upstream"), Some("alpha"));
 }
 
 #[tokio::test]
@@ -1857,12 +1924,9 @@ async fn insert_model_route_skips_disabled_provider() {
     let routes = state.model_routes.read().await;
     assert!(!routes.contains_key("blocked-model"));
     drop(routes);
-    assert!(
-        !state
-            .model_route_seeds
-            .read()
-            .await
-            .contains_key("blocked-model")
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "blocked-model"),
+        None
     );
 }
 
@@ -2784,7 +2848,7 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
     }
     let seeds = {
         let config = state.read_config();
-        let crate::models::ModelRouteSeedRead::Loaded(seeds) =
+        let crate::models::ModelRouteSeedRead::Loaded { seeds, .. } =
             crate::models::seed_model_routes_from_config_and_store(
                 &config,
                 state.store.as_ref().expect("store present"),
@@ -2795,8 +2859,8 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
         seeds
     };
     let mut seeds = seeds;
-    seeds.insert("disabled-model".into(), "dynamic".into());
-    seeds.insert("disabled-provider-model".into(), "disabled".into());
+    seeds.push(("dynamic".into(), "disabled-model".into(), None));
+    seeds.push(("disabled".into(), "disabled-provider-model".into(), None));
     *state.model_route_seeds.write().await = seeds;
     state
         .model_routes
@@ -2834,8 +2898,8 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
 
     {
         let mut seeds = state.model_route_seeds.write().await;
-        seeds.insert("disabled-model".into(), "dynamic".into());
-        seeds.insert("disabled-provider-model".into(), "disabled".into());
+        seeds.push(("dynamic".into(), "disabled-model".into(), None));
+        seeds.push(("disabled".into(), "disabled-provider-model".into(), None));
     }
     let response = models(State(state.clone()), HeaderMap::new()).await;
     assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -2856,19 +2920,26 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
 #[tokio::test]
 async fn remove_provider_model_routes_updates_live_and_cached_routes() {
     let state = test_state();
-    for route_map in [&state.model_routes, &state.model_route_seeds] {
-        let mut routes = route_map.write().await;
+    {
+        let mut routes = state.model_routes.write().await;
         routes.insert("alpha-model".into(), "alpha".into());
         routes.insert("beta-model".into(), "beta".into());
+    }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("alpha".into(), "alpha-model".into(), None));
+        seeds.push(("beta".into(), "beta-model".into(), None));
     }
 
     remove_provider_model_routes(&state, "alpha").await;
 
-    for route_map in [&state.model_routes, &state.model_route_seeds] {
-        let routes = route_map.read().await;
-        assert!(!routes.contains_key("alpha-model"));
-        assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
-    }
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("alpha-model"));
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert_eq!(cached_seed_owner(&seeds, "alpha-model"), None);
+    assert_eq!(cached_seed_owner(&seeds, "beta-model"), Some("beta"));
 }
 
 #[tokio::test]
@@ -2960,54 +3031,60 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("alpha".into(), "alpha-model".into(), None));
+        seeds.push(("dynamic".into(), "stale-dynamic-model".into(), None));
+    }
 
-    let seed_guard = state.model_route_seeds.write().await;
+    let route_guard = state.model_routes.write().await;
     let sync_state = state.clone();
     let sync_provider = provider.clone();
     let sync = tokio::spawn(async move {
         register_provider_enabled_route_seeds(&sync_state, "dynamic", &sync_provider).await;
     });
 
-    let mut live_snapshot_published = false;
+    let mut seed_snapshot_published = false;
     for _ in 0..1_000 {
-        if state
-            .model_routes
-            .read()
-            .await
-            .get("overlay-model")
-            .is_some_and(|owner| owner == "dynamic")
+        if cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model")
+            == Some("dynamic")
         {
-            live_snapshot_published = true;
+            seed_snapshot_published = true;
             break;
         }
         tokio::task::yield_now().await;
     }
     assert!(
-        live_snapshot_published,
-        "provider sync must publish the live map before waiting for the seed cache"
+        seed_snapshot_published,
+        "provider sync must cache the SQLite snapshot before waiting for live publication"
     );
+    {
+        let seeds = state.model_route_seeds.read().await;
+        assert_eq!(cached_seed_owner(&seeds, "alpha-model"), Some("alpha"));
+        assert_eq!(cached_seed_owner(&seeds, "stale-dynamic-model"), None);
+    }
 
     let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
     corrupt
         .execute("DROP TABLE model_overlays", [])
         .expect("force any later seed read to fail");
     drop(corrupt);
-    drop(seed_guard);
+    drop(route_guard);
     sync.await.expect("provider route sync task");
 
     assert_eq!(
         state
-            .model_route_seeds
+            .model_routes
             .read()
             .await
             .get("overlay-model")
             .map(String::as_str),
         Some("dynamic"),
-        "the fallback cache must receive the same successful SQLite snapshot as live routes"
+        "live routes must receive the same successful SQLite snapshot as the cache"
     );
     assert_eq!(
         state
-            .model_route_seeds
+            .model_routes
             .read()
             .await
             .get("upstream-overlay-model")
@@ -3016,6 +3093,205 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         "the shared snapshot must preserve the overlay's upstream routing identity"
     );
 
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("identity-edit-seed-fallback");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-only", true)
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+
+    remove_provider_live_routes(&state, "dynamic").await;
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::RefetchAll, None)
+        .await
+        .expect("catalog-only refresh");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("reenable-seed-fallback");
+    let mut provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-only", true)
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("alpha".into(), "alpha-model".into(), None));
+
+    provider.enabled = false;
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    remove_provider_live_routes(&state, "dynamic").await;
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    provider.enabled = true;
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic"),
+        "a failed provider-scoped read must replay only this provider's cached rows"
+    );
+    assert!(
+        !state.model_routes.read().await.contains_key("alpha-model"),
+        "cached rows owned by another provider must not be replayed as dynamic"
+    );
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed-only fallback");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn completing_mutation_rejects_fallback_built_from_intermediate_seed_cache() {
+    use crate::models::models;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("seed-publication-generation");
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: "https://dynamic.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    let mutation = state.mutation_lock.lock().await;
+    invalidate_model_discovery(&state);
+    let request_state = state.clone();
+    let request = tokio::spawn(async move { models(State(request_state), HeaderMap::new()).await });
+    for _ in 0..1_000 {
+        tokio::task::yield_now().await;
+    }
+
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("dynamic".into(), "overlay-only".into(), None));
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("overlay-only".into(), "dynamic".into());
+    complete_model_discovery_mutation(&state);
+    drop(mutation);
+
+    assert_eq!(
+        request.await.expect("models task").status(),
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic"),
+        "the request must retry after the mutation completion revision"
+    );
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }

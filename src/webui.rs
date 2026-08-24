@@ -408,10 +408,6 @@ struct ModelPersist {
     display_name: OptionalPatch<String>,
     #[serde(default)]
     description: OptionalPatch<String>,
-    #[serde(default)]
-    supported_reasoning_levels: OptionalPatch<Vec<String>>,
-    #[serde(default)]
-    default_reasoning_level: OptionalPatch<String>,
     enabled: Option<bool>,
 }
 
@@ -466,10 +462,6 @@ struct ModelView {
     enabled: bool,
     managed: bool,
     catalog: bool,
-    supported_reasoning_levels: Vec<String>,
-    default_reasoning_level: String,
-    configured_supported_reasoning_levels: Option<Vec<String>>,
-    configured_default_reasoning_level: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,21 +744,21 @@ fn require_store(state: &AppState) -> Result<&Store, ApiError> {
         .ok_or_else(|| ApiError::service_unavailable("analytics store is not configured"))
 }
 
-async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
+async fn remove_provider_live_routes(state: &AppState, provider_id: &str) {
     state
         .model_routes
         .write()
         .await
         .retain(|_, owner| owner != provider_id);
+}
+
+async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
+    remove_provider_live_routes(state, provider_id).await;
     state
         .model_route_seeds
         .write()
         .await
-        .retain(|_, owner| owner != provider_id);
-}
-
-async fn remove_provider_discovery(state: &AppState, provider_id: &str) {
-    state.discovered_models.write().await.remove(provider_id);
+        .retain(|(owner, _, _)| owner != provider_id);
 }
 
 async fn remove_model_routes(
@@ -785,15 +777,11 @@ async fn remove_model_routes(
         routes.remove(upstream_id);
     }
     drop(routes);
-    let mut seeds = state.model_route_seeds.write().await;
-    if seeds.get(model_id).map(String::as_str) == Some(provider_id) {
-        seeds.remove(model_id);
-    }
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-        && seeds.get(upstream_id).map(String::as_str) == Some(provider_id)
-    {
-        seeds.remove(upstream_id);
-    }
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
 }
 
 /// Rebuild discovery after a single-model removal so another enabled provider
@@ -847,10 +835,12 @@ async fn insert_model_route(
     }
     drop(routes);
     let mut seeds = state.model_route_seeds.write().await;
-    seeds.insert(model_id.to_string(), provider_id.to_string());
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
-        seeds.insert(upstream_id.to_string(), provider_id.to_string());
-    }
+    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
+    seeds.push((
+        provider_id.to_string(),
+        model_id.to_string(),
+        upstream_id.map(str::to_string),
+    ));
 }
 
 /// Apply a catalog mutation to the live route map. Both POST and PUT are
@@ -909,7 +899,7 @@ async fn sync_provider_routes_for_enabled(
             );
         }
     } else {
-        remove_provider_model_routes(state, provider_id).await;
+        remove_provider_live_routes(state, provider_id).await;
         // `model_routes` retains only the winning owner for a discovered slug,
         // so another provider's colliding live-only model cannot be recovered
         // from seeds or retained routes. Rebuild discovery to let it claim the
@@ -936,26 +926,45 @@ async fn register_provider_enabled_route_seeds(
     provider_id: &str,
     provider: &ProviderConfig,
 ) {
-    let overlay_seeds = state
-        .store
-        .as_ref()
-        .map(|store| models::load_overlay_route_seeds_for_provider(provider_id, provider, store))
-        .unwrap_or_default();
+    let overlay_seeds = match state.store.as_ref() {
+        Some(store) => {
+            match models::load_overlay_route_seeds_for_provider(provider_id, provider, store) {
+                Ok(overlay_seeds) => {
+                    let mut cached = state.model_route_seeds.write().await;
+                    cached.retain(|(owner, _, _)| owner != provider_id);
+                    cached.extend(overlay_seeds.iter().map(|(model_id, upstream_id)| {
+                        (
+                            provider_id.to_string(),
+                            model_id.clone(),
+                            upstream_id.clone(),
+                        )
+                    }));
+                    overlay_seeds
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        provider_id = %provider_id,
+                        error = %err,
+                        "failed to read overlay route seeds during provider route sync; using cached seeds"
+                    );
+                    state
+                        .model_route_seeds
+                        .read()
+                        .await
+                        .iter()
+                        .filter(|(owner, _, _)| owner == provider_id)
+                        .map(|(_, model_id, upstream_id)| (model_id.clone(), upstream_id.clone()))
+                        .collect()
+                }
+            }
+        }
+        None => Vec::new(),
+    };
 
     let mut routes = state.model_routes.write().await;
     register_catalog_routes_for_provider(&mut routes, provider_id, provider);
     models::register_overlay_route_seeds_for_provider(
         &mut routes,
-        provider_id,
-        provider,
-        &overlay_seeds,
-    );
-    drop(routes);
-
-    let mut seeds = state.model_route_seeds.write().await;
-    register_catalog_routes_for_provider(&mut seeds, provider_id, provider);
-    models::register_overlay_route_seeds_for_provider(
-        &mut seeds,
         provider_id,
         provider,
         &overlay_seeds,
@@ -994,10 +1003,8 @@ fn build_model_views(
     provider_id: &str,
     provider: &ProviderConfig,
     routed_models: &[String],
-    discovered: &BTreeMap<String, Value>,
 ) -> Vec<ModelView> {
     let managed_provider = provider_is_managed(state, provider_id);
-    let config = state.read_config().clone();
     let mut seen = BTreeSet::new();
     let mut models = Vec::new();
 
@@ -1006,29 +1013,14 @@ fn build_model_views(
         if let Some(upstream_id) = entry.upstream_id.as_ref().filter(|value| !value.is_empty()) {
             seen.insert(upstream_id.clone());
         }
-        let info = models::catalog_model_info(entry, provider, &config, Some(discovered));
-        let (supported_reasoning_levels, default_reasoning_level) =
-            models::reasoning_metadata(&info);
         models.push(ModelView {
             id: entry.id.clone(),
-            display_name: entry.display_name.clone().or_else(|| {
-                info.get("display_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            }),
+            display_name: entry.display_name.clone(),
             upstream_id: entry.upstream_id.clone(),
-            description: entry.description.clone().or_else(|| {
-                info.get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            }),
+            description: entry.description.clone(),
             enabled: provider.model_is_enabled(&entry.id),
             managed: managed_provider,
             catalog: true,
-            supported_reasoning_levels,
-            default_reasoning_level,
-            configured_supported_reasoning_levels: entry.supported_reasoning_levels.clone(),
-            configured_default_reasoning_level: entry.default_reasoning_level.clone(),
         });
     }
 
@@ -1036,12 +1028,6 @@ fn build_model_views(
         if seen.contains(disabled_id) {
             continue;
         }
-        let info = discovered
-            .get(disabled_id)
-            .cloned()
-            .unwrap_or_else(|| models::synthetic_model_info(disabled_id));
-        let (supported_reasoning_levels, default_reasoning_level) =
-            models::reasoning_metadata(&info);
         models.push(ModelView {
             id: disabled_id.clone(),
             display_name: None,
@@ -1050,10 +1036,6 @@ fn build_model_views(
             enabled: false,
             managed: false,
             catalog: false,
-            supported_reasoning_levels,
-            default_reasoning_level,
-            configured_supported_reasoning_levels: None,
-            configured_default_reasoning_level: None,
         });
         seen.insert(disabled_id.clone());
     }
@@ -1069,62 +1051,14 @@ fn build_model_views(
         {
             continue;
         }
-        let info = discovered
-            .get(routed_id)
-            .cloned()
-            .unwrap_or_else(|| models::synthetic_model_info(routed_id));
-        let (supported_reasoning_levels, default_reasoning_level) =
-            models::reasoning_metadata(&info);
         models.push(ModelView {
             id: routed_id.clone(),
-            display_name: info
-                .get("display_name")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            display_name: None,
             upstream_id: None,
             description: None,
             enabled: provider.model_is_enabled(routed_id),
             managed: false,
             catalog: false,
-            supported_reasoning_levels,
-            default_reasoning_level,
-            configured_supported_reasoning_levels: None,
-            configured_default_reasoning_level: None,
-        });
-        seen.insert(routed_id.clone());
-    }
-
-    // Route ownership is global, but discovery metadata is provider-local.
-    // Include collision losers as editable rows in their own provider card.
-    for (discovered_id, info) in discovered {
-        if seen.contains(discovered_id)
-            || provider
-                .model_catalog
-                .iter()
-                .any(|entry| catalog_entry_matches_model(entry, discovered_id))
-        {
-            continue;
-        }
-        let (supported_reasoning_levels, default_reasoning_level) =
-            models::reasoning_metadata(info);
-        models.push(ModelView {
-            id: discovered_id.clone(),
-            display_name: info
-                .get("display_name")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            upstream_id: None,
-            description: info
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            enabled: provider.model_is_enabled(discovered_id),
-            managed: false,
-            catalog: false,
-            supported_reasoning_levels,
-            default_reasoning_level,
-            configured_supported_reasoning_levels: None,
-            configured_default_reasoning_level: None,
         });
     }
 
@@ -1137,7 +1071,6 @@ fn build_provider_view(
     id: &str,
     provider: &ProviderConfig,
     routed_models: &[String],
-    discovered: &BTreeMap<String, Value>,
 ) -> ProviderView {
     let managed = provider_is_managed(state, id);
     ProviderView {
@@ -1176,7 +1109,7 @@ fn build_provider_view(
         named_template: bundled_provider_templates().iter().any(|template| {
             template.key != "custom" && !template.id.is_empty() && template.id == id
         }),
-        models: build_model_views(state, id, provider, routed_models, discovered),
+        models: build_model_views(state, id, provider, routed_models),
     }
 }
 
@@ -1632,97 +1565,9 @@ fn apply_model_persist(entry: &mut ModelCatalogEntry, fields: &ModelPersist) {
             entry.description = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
     }
-    match &fields.supported_reasoning_levels {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => entry.supported_reasoning_levels = None,
-        OptionalPatch::Set(levels) => entry.supported_reasoning_levels = Some(levels.clone()),
-    }
-    match &fields.default_reasoning_level {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => entry.default_reasoning_level = None,
-        OptionalPatch::Set(default) => {
-            entry.default_reasoning_level = Some(default.clone());
-        }
-    }
     if let Some(enabled) = fields.enabled {
         entry.enabled = enabled;
     }
-}
-
-fn validate_model_reasoning(
-    entry: &mut ModelCatalogEntry,
-    _provider: &ProviderConfig,
-    config: &AppConfig,
-    discovered: &BTreeMap<String, Value>,
-    reasoning_fields_changed: bool,
-) -> Result<(), ApiError> {
-    if let Some(levels) = &mut entry.supported_reasoning_levels {
-        if levels.is_empty() {
-            return Err(ApiError::bad_request(
-                "supported_reasoning_levels cannot be empty; use null to inherit",
-            ));
-        }
-        let mut seen = BTreeSet::new();
-        for level in levels.iter_mut() {
-            *level = level.trim().to_string();
-            if level.is_empty() {
-                return Err(ApiError::bad_request("reasoning levels cannot be empty"));
-            }
-            if !seen.insert(level.clone()) {
-                return Err(ApiError::bad_request(format!(
-                    "duplicate reasoning level `{level}`"
-                )));
-            }
-        }
-    }
-    if let Some(default) = &mut entry.default_reasoning_level {
-        *default = default.trim().to_string();
-        if default.is_empty() {
-            return Err(ApiError::bad_request(
-                "default_reasoning_level cannot be empty; use null to inherit",
-            ));
-        }
-    }
-
-    // When discovery metadata is unavailable and the edit does not touch
-    // reasoning fields, trust the persisted data rather than rejecting an
-    // unrelated partial edit against synthetic inherited levels.
-    if discovered.is_empty() && !reasoning_fields_changed {
-        return Ok(());
-    }
-
-    let mut inherited = entry.clone();
-    inherited.supported_reasoning_levels = None;
-    inherited.default_reasoning_level = None;
-    let inherited_info =
-        models::catalog_model_info(&inherited, _provider, config, Some(discovered));
-    let (inherited_levels, inherited_default) = models::reasoning_metadata(&inherited_info);
-    let effective_levels = entry
-        .supported_reasoning_levels
-        .as_ref()
-        .unwrap_or(&inherited_levels);
-    if let Some(default) = &entry.default_reasoning_level
-        && !effective_levels.iter().any(|level| level == default)
-    {
-        return Err(ApiError::bad_request(format!(
-            "default reasoning level `{default}` is not in supported_reasoning_levels"
-        )));
-    }
-    // When the user sets explicit levels without a new default, and the
-    // inherited default is excluded by the new list, auto-set the default to
-    // the first level so the persisted data is self-consistent instead of
-    // silently inheriting an out-of-list default.
-    if reasoning_fields_changed
-        && entry.supported_reasoning_levels.is_some()
-        && entry.default_reasoning_level.is_none()
-        && !inherited_levels.is_empty()
-        && !effective_levels
-            .iter()
-            .any(|level| level == &inherited_default)
-    {
-        entry.default_reasoning_level = Some(effective_levels[0].clone());
-    }
-    Ok(())
 }
 
 fn upsert_model_catalog_entry(provider: &mut ProviderConfig, entry: ModelCatalogEntry) {
@@ -1751,6 +1596,14 @@ fn invalidate_model_discovery(state: &AppState) {
     state.config_revision.fetch_add(1, Ordering::AcqRel);
 }
 
+fn complete_model_discovery_mutation(state: &AppState) {
+    // A discovery request can prepare fallback routes after the first revision
+    // bump but before this mutation finishes publishing route provenance.
+    // Advance again so that request cannot publish its intermediate snapshot
+    // after it eventually acquires mutation_lock.
+    state.config_revision.fetch_add(1, Ordering::AcqRel);
+}
+
 async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProviderView>>, ApiError> {
@@ -1762,18 +1615,11 @@ async fn list_providers(
             .collect()
     };
     let routes = state.model_routes.read().await;
-    let discovered = state.discovered_models.read().await.clone();
     let views = providers
         .into_iter()
         .map(|(id, provider)| {
             let routed = routed_models_for_provider(&routes, &id);
-            build_provider_view(
-                &state,
-                &id,
-                &provider,
-                &routed,
-                discovered.get(&id).unwrap_or(&BTreeMap::new()),
-            )
+            build_provider_view(&state, &id, &provider, &routed)
         })
         .collect();
     Ok(Json(views))
@@ -1812,7 +1658,7 @@ async fn create_provider(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let (provider_id, mut provider) = if let Some(template_key) = template_key {
+    let (provider_id, provider) = if let Some(template_key) = template_key {
         let template = find_provider_template(template_key).ok_or_else(|| {
             ApiError::bad_request(format!("unknown provider template `{template_key}`"))
         })?;
@@ -1890,17 +1736,6 @@ async fn create_provider(
         (id.to_string(), provider)
     };
     validate_model_catalog(&provider.model_catalog)?;
-    let config_snapshot = state.read_config().clone();
-    let provider_snapshot = provider.clone();
-    for entry in &mut provider.model_catalog {
-        validate_model_reasoning(
-            entry,
-            &provider_snapshot,
-            &config_snapshot,
-            &BTreeMap::new(),
-            true,
-        )?;
-    }
 
     let store = require_store(&state)?;
     {
@@ -1922,15 +1757,12 @@ async fn create_provider(
             .providers
             .insert(provider_id.clone(), provider.clone());
     }
-    // A deleted provider normally clears its discovery snapshot, but ensure a
-    // reused id never exposes any stale in-memory metadata before its first
-    // successful catalog refresh.
-    remove_provider_discovery(&state, &provider_id).await;
     invalidate_model_discovery(&state);
 
     if provider.enabled {
         sync_provider_routes_for_enabled(&state, &provider_id, true).await?;
     }
+    complete_model_discovery_mutation(&state);
 
     let provider = {
         let config = state.read_config();
@@ -1942,14 +1774,7 @@ async fn create_provider(
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &provider_id);
-    let discovered = state.discovered_models.read().await;
-    let view = build_provider_view(
-        &state,
-        &provider_id,
-        &provider,
-        &routed,
-        discovered.get(&provider_id).unwrap_or(&BTreeMap::new()),
-    );
+    let view = build_provider_view(&state, &provider_id, &provider, &routed);
     Ok((StatusCode::CREATED, Json(view)))
 }
 
@@ -1998,10 +1823,6 @@ async fn update_provider(
     }
     invalidate_model_discovery(&state);
 
-    if refresh_discovery {
-        remove_provider_discovery(&state, &id).await;
-    }
-
     if snapshot.enabled != previous_enabled {
         sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
     } else if snapshot.enabled && refresh_discovery {
@@ -2010,7 +1831,7 @@ async fn update_provider(
         // models to the newly edited provider. Because routes retain only the
         // winner for a colliding live-only slug, rebuild every provider so an
         // unchanged provider can reclaim a removed route immediately.
-        remove_provider_model_routes(&state, &id).await;
+        remove_provider_live_routes(&state, &id).await;
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
             &state,
             models::MutationRouteRefresh::RefetchAll,
@@ -2025,6 +1846,7 @@ async fn update_provider(
             );
         }
     }
+    complete_model_discovery_mutation(&state);
 
     let provider = {
         let config = state.read_config();
@@ -2036,14 +1858,7 @@ async fn update_provider(
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
-    let discovered = state.discovered_models.read().await;
-    Ok(Json(build_provider_view(
-        &state,
-        &id,
-        &provider,
-        &routed,
-        discovered.get(&id).unwrap_or(&BTreeMap::new()),
-    )))
+    Ok(Json(build_provider_view(&state, &id, &provider, &routed)))
 }
 
 async fn delete_provider(
@@ -2078,9 +1893,9 @@ async fn delete_provider(
     }
     invalidate_model_discovery(&state);
 
-    remove_provider_discovery(&state, &id).await;
-
+    remove_provider_model_routes(&state, &id).await;
     sync_provider_routes_for_enabled(&state, &id, false).await?;
+    complete_model_discovery_mutation(&state);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2132,6 +1947,7 @@ async fn set_provider_enabled(
     invalidate_model_discovery(&state);
 
     sync_provider_routes_for_enabled(&state, &id, body.enabled).await?;
+    complete_model_discovery_mutation(&state);
 
     let provider = {
         let config = state.read_config();
@@ -2143,47 +1959,24 @@ async fn set_provider_enabled(
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
-    let discovered = state.discovered_models.read().await;
-    Ok(Json(build_provider_view(
-        &state,
-        &id,
-        &provider,
-        &routed,
-        discovered.get(&id).unwrap_or(&BTreeMap::new()),
-    )))
+    Ok(Json(build_provider_view(&state, &id, &provider, &routed)))
 }
 
 async fn add_model(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(mut entry): Json<ModelCatalogEntry>,
+    Json(entry): Json<ModelCatalogEntry>,
 ) -> Result<(StatusCode, Json<ModelView>), ApiError> {
     let _mutation = state.mutation_lock.lock().await;
     validate_provider_id(&id)?;
     if entry.id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
     }
-    let (config_snapshot, provider_snapshot) = {
-        let config = state.read_config().clone();
+    {
+        let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-        let provider = configured_provider_entries(&config)
-            .into_iter()
-            .find(|(provider_id, _)| *provider_id == id)
-            .map(|(_, provider)| provider.clone())
-            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        (config, provider)
-    };
-    let discovered = state.discovered_models.read().await;
-    let provider_discovered = discovered.get(&id).cloned().unwrap_or_default();
-    drop(discovered);
-    validate_model_reasoning(
-        &mut entry,
-        &provider_snapshot,
-        &config_snapshot,
-        &provider_discovered,
-        true,
-    )?;
+    }
 
     let store = require_store(&state)?;
     let managed = lookup_provider_managed(&state, &id)?;
@@ -2219,6 +2012,7 @@ async fn add_model(
     invalidate_model_discovery(&state);
 
     sync_model_route(&state, &id, &entry, previous_upstream_id.as_deref()).await;
+    complete_model_discovery_mutation(&state);
 
     let provider = {
         let config = state.read_config();
@@ -2230,17 +2024,10 @@ async fn add_model(
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
-    let discovered = state.discovered_models.read().await;
-    let view = build_model_views(
-        &state,
-        &id,
-        &provider,
-        &routed,
-        discovered.get(&id).unwrap_or(&BTreeMap::new()),
-    )
-    .into_iter()
-    .find(|model| model.id == entry.id)
-    .ok_or_else(|| ApiError::not_found(format!("model `{}` not found", entry.id)))?;
+    let view = build_model_views(&state, &id, &provider, &routed)
+        .into_iter()
+        .find(|model| model.id == entry.id)
+        .ok_or_else(|| ApiError::not_found(format!("model `{}` not found", entry.id)))?;
     let status = if already_in_catalog {
         StatusCode::OK
     } else {
@@ -2261,11 +2048,8 @@ async fn update_model(
     }
     let store = require_store(&state)?;
     let managed = lookup_provider_managed(&state, &id)?;
-    let reasoning_fields_changed =
-        !matches!(fields.supported_reasoning_levels, OptionalPatch::Absent)
-            || !matches!(fields.default_reasoning_level, OptionalPatch::Absent);
 
-    let (mut updated, previous_upstream_id, config_snapshot, provider_snapshot) = {
+    let (updated, previous_upstream_id) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -2285,23 +2069,8 @@ async fn update_model(
         let mut updated = existing.clone();
         fields.apply_to(&mut updated);
         updated.id = model_id.clone();
-        (
-            updated,
-            previous_upstream_id,
-            config.clone(),
-            provider.clone(),
-        )
+        (updated, previous_upstream_id)
     };
-    let discovered = state.discovered_models.read().await;
-    let provider_discovered = discovered.get(&id).cloned().unwrap_or_default();
-    drop(discovered);
-    validate_model_reasoning(
-        &mut updated,
-        &provider_snapshot,
-        &config_snapshot,
-        &provider_discovered,
-        reasoning_fields_changed,
-    )?;
 
     store
         .upsert_model_catalog(&id, &updated, managed, false)
@@ -2316,6 +2085,7 @@ async fn update_model(
     invalidate_model_discovery(&state);
 
     sync_model_route(&state, &id, &updated, previous_upstream_id.as_deref()).await;
+    complete_model_discovery_mutation(&state);
 
     let provider = {
         let config = state.read_config();
@@ -2327,17 +2097,10 @@ async fn update_model(
     };
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
-    let discovered = state.discovered_models.read().await;
-    let view = build_model_views(
-        &state,
-        &id,
-        &provider,
-        &routed,
-        discovered.get(&id).unwrap_or(&BTreeMap::new()),
-    )
-    .into_iter()
-    .find(|model| model.id == model_id)
-    .ok_or_else(|| ApiError::not_found(format!("model `{model_id}` not found")))?;
+    let view = build_model_views(&state, &id, &provider, &routed)
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| ApiError::not_found(format!("model `{model_id}` not found")))?;
     Ok(Json(view))
 }
 
@@ -2435,6 +2198,7 @@ async fn delete_model(
     invalidate_model_discovery(&state);
 
     remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
+    complete_model_discovery_mutation(&state);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2513,33 +2277,19 @@ async fn set_model_enabled(
     } else {
         remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
     }
+    complete_model_discovery_mutation(&state);
 
-    let (config, provider) = {
-        let config = state.read_config().clone();
-        let provider = configured_provider_entries(&config)
-            .into_iter()
-            .find(|(provider_id, _)| *provider_id == id)
-            .map(|(_, provider)| provider.clone())
-            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
-        (config, provider)
-    };
+    let config = state.read_config();
+    let provider = configured_provider_entries(&config)
+        .into_iter()
+        .find(|(provider_id, _)| *provider_id == id)
+        .map(|(_, provider)| provider)
+        .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
     let enabled = provider.model_is_enabled(&model_id);
     let catalog_entry = provider
         .model_catalog
         .iter()
         .find(|entry| entry.id == model_id);
-    let discovered = state.discovered_models.read().await;
-    let provider_discovered = discovered.get(&id).cloned().unwrap_or_default();
-    let info = catalog_entry.map_or_else(
-        || {
-            provider_discovered
-                .get(&model_id)
-                .cloned()
-                .unwrap_or_else(|| models::synthetic_model_info(&model_id))
-        },
-        |entry| models::catalog_model_info(entry, &provider, &config, Some(&provider_discovered)),
-    );
-    let (supported_reasoning_levels, default_reasoning_level) = models::reasoning_metadata(&info);
     let view = ModelView {
         id: model_id.clone(),
         display_name: catalog_entry.and_then(|entry| entry.display_name.clone()),
@@ -2548,12 +2298,6 @@ async fn set_model_enabled(
         enabled,
         managed: catalog_entry.is_some() && lookup_provider_managed(&state, &id)?,
         catalog: catalog_entry.is_some(),
-        supported_reasoning_levels,
-        default_reasoning_level,
-        configured_supported_reasoning_levels: catalog_entry
-            .and_then(|entry| entry.supported_reasoning_levels.clone()),
-        configured_default_reasoning_level: catalog_entry
-            .and_then(|entry| entry.default_reasoning_level.clone()),
     };
     Ok(Json(view))
 }
