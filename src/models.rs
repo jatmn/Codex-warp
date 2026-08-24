@@ -442,6 +442,13 @@ async fn publish_model_discovery(
         }
     }
     *state.model_routes.write().await = routes;
+    let configured_providers = {
+        let config = state.read_config();
+        crate::config_loader::configured_provider_entries(&config)
+            .into_iter()
+            .map(|(provider_id, _)| provider_id.to_string())
+            .collect::<BTreeSet<_>>()
+    };
     let mut next_discovered = discovered;
     let prior_discovered = state.discovered_models.read().await.clone();
     for provider_id in retain_providers {
@@ -451,10 +458,13 @@ async fn publish_model_discovery(
                 .or_insert_with(|| models.clone());
         }
     }
-    // Keep disabled providers' snapshots available for the management view;
-    // removed providers are harmless because no view can reference them.
+    // Keep disabled providers' snapshots available for the management view,
+    // but discard removed providers so a later reused id cannot inherit a
+    // different provider's discovery metadata.
     for (provider_id, models) in prior_discovered {
-        next_discovered.entry(provider_id).or_insert(models);
+        if configured_providers.contains(&provider_id) {
+            next_discovered.entry(provider_id).or_insert(models);
+        }
     }
     *state.discovered_models.write().await = next_discovered;
 }

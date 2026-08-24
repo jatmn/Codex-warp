@@ -1880,6 +1880,10 @@ async fn create_provider(
             .providers
             .insert(provider_id.clone(), provider.clone());
     }
+    // A deleted provider normally clears its discovery snapshot, but ensure a
+    // reused id never exposes any stale in-memory metadata before its first
+    // successful catalog refresh.
+    remove_provider_discovery(&state, &provider_id).await;
     invalidate_model_discovery(&state);
 
     if provider.enabled {

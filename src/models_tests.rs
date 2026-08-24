@@ -2176,6 +2176,27 @@ fn exact_catalog_reasoning_override_wins_over_an_earlier_unrelated_entry() {
 }
 
 #[tokio::test]
+async fn discovery_publication_discards_removed_provider_snapshots() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "active".into(),
+        ProviderConfig {
+            base_url: "https://active.example/v1".into(),
+            ..ProviderConfig::default()
+        },
+    );
+    let state = test_state(config);
+    state.discovered_models.write().await.insert(
+        "removed".into(),
+        BTreeMap::from([("stale-model".into(), json!({"slug":"stale-model"}))]),
+    );
+
+    publish_model_discovery(&state, BTreeMap::new(), BTreeMap::new(), &BTreeSet::new()).await;
+
+    assert!(!state.discovered_models.read().await.contains_key("removed"));
+}
+
+#[tokio::test]
 async fn discovery_publication_keeps_provider_scoped_collision_metadata() {
     let mut config = AppConfig::default();
     for id in ["alpha", "beta"] {
