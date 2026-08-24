@@ -413,6 +413,38 @@ fn streaming_chat_repair_remembers_identity_across_an_empty_name() {
 }
 
 #[test]
+fn streaming_chat_repair_preserves_identity_after_an_empty_terminal_name() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    for (name, arguments, finish_reason) in [
+        ("exec_command", "{\"cmd\":\"one\"}", None),
+        ("", "{\"cmd\":\"two\"}", Some("tool_calls")),
+    ] {
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [{
+                    "index": 0,
+                    "function": {"name": name, "arguments": arguments}
+                }]},
+                "finish_reason": finish_reason
+            }]
+        }));
+    }
+
+    let calls = completed_function_calls(&accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    ));
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|call| call["name"] == "exec_command"));
+}
+
+#[test]
 fn streaming_chat_repair_rejects_tool_call_mutation_after_finish() {
     let mut accum = ChatAccum {
         split_concatenated_tool_call_arguments: true,
@@ -444,6 +476,68 @@ fn streaming_chat_repair_rejects_tool_call_mutation_after_finish() {
     let calls = completed_function_calls(&events);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
+}
+
+#[test]
+fn streaming_chat_repair_rejects_any_choice_after_terminal_finish() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [{
+                "index": 0,
+                "function": {"name": "exec_command", "arguments": "{}{}"}
+            }]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": "late"}}]
+    }));
+
+    let calls = completed_function_calls(&accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    ));
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["arguments"], "{}{}");
+}
+
+#[test]
+fn streaming_chat_repair_requires_numeric_source_call_indexes() {
+    for index in [Value::Null, json!("zero")] {
+        let mut accum = ChatAccum {
+            split_concatenated_tool_call_arguments: true,
+            ..ChatAccum::default()
+        };
+        let mut call = json!({
+            "function": {"name": "exec_command", "arguments": "{}{}"}
+        });
+        if !index.is_null() {
+            call["index"] = index;
+        }
+        accum.apply_chat_chunk(&json!({
+            "choices": [{
+                "delta": {"tool_calls": [call]},
+                "finish_reason": "tool_calls"
+            }]
+        }));
+
+        let calls = completed_function_calls(&accum.finish(
+            "resp_test",
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+        ));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["arguments"], "{}{}");
+    }
 }
 
 #[test]
@@ -682,7 +776,43 @@ fn streaming_chat_repair_ignores_an_empty_later_call_id() {
     );
     let calls = completed_function_calls(&events);
     assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["call_id"], "call_one");
     assert_ne!(calls[0]["call_id"], calls[1]["call_id"]);
+}
+
+#[test]
+fn streaming_chat_repair_fails_closed_for_duplicate_explicit_source_ids() {
+    let mut accum = ChatAccum {
+        split_concatenated_tool_call_arguments: true,
+        ..ChatAccum::default()
+    };
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_same",
+                    "function": {"name": "exec_command", "arguments": "{}{}"}
+                },
+                {
+                    "index": 1,
+                    "id": "call_same",
+                    "function": {"name": "exec_command", "arguments": "{}{}"}
+                }
+            ]},
+            "finish_reason": "tool_calls"
+        }]
+    }));
+
+    let calls = completed_function_calls(&accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    ));
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|call| call["arguments"] == "{}{}"));
 }
 
 #[test]
@@ -750,6 +880,47 @@ fn non_stream_chat_repair_requires_a_successful_tool_call_finish() {
         .collect::<Vec<_>>();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["arguments"], "{\"cmd\":\"one\"}{\"cmd\":\"two\"}");
+}
+
+#[test]
+fn non_stream_chat_repair_requires_one_unambiguous_choice() {
+    for choices in [
+        json!([
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [{
+                    "function": {"name": "exec_command", "arguments": "{}{}"}
+                }]}
+            },
+            {"index": 1, "finish_reason": "stop", "message": {"content": "other"}}
+        ]),
+        json!([{
+            "index": "zero",
+            "finish_reason": "tool_calls",
+            "message": {"tool_calls": [{
+                "function": {"name": "exec_command", "arguments": "{}{}"}
+            }]}
+        }]),
+    ] {
+        let converted = chat_json_to_responses_with_tool_markup_suppression(
+            json!({"choices": choices}),
+            &BTreeSet::new(),
+            &NamespaceHelpers::default(),
+            &crate::config::ToolPolicyConfig::default(),
+            None,
+            false,
+            true,
+        );
+        let calls = converted["output"]
+            .as_array()
+            .expect("output array")
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["arguments"], "{}{}");
+    }
 }
 
 #[test]
@@ -833,6 +1004,41 @@ fn non_stream_chat_generates_unique_ids_for_missing_and_empty_upstream_ids() {
         .collect::<BTreeSet<_>>();
     assert_eq!(call_ids.len(), calls.len());
     assert_eq!(calls[2]["call_id"], "call_explicit");
+}
+
+#[test]
+fn non_stream_chat_repair_fails_closed_for_duplicate_explicit_source_ids() {
+    let converted = chat_json_to_responses_with_tool_markup_suppression(
+        json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [
+                    {
+                        "id": "call_same",
+                        "function": {"name": "exec_command", "arguments": "{}{}"}
+                    },
+                    {
+                        "id": "call_same",
+                        "function": {"name": "exec_command", "arguments": "{}{}"}
+                    }
+                ]}
+            }]
+        }),
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+        false,
+        true,
+    );
+    let calls = converted["output"]
+        .as_array()
+        .expect("output array")
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|call| call["arguments"] == "{}{}"));
 }
 
 fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {

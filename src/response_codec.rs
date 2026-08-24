@@ -1014,6 +1014,14 @@ fn recovered_tool_call_id(upstream_id: Option<&str>, recovered_index: usize) -> 
     generated_id("call")
 }
 
+fn nonempty_ids_are_unique<'a>(ids: impl IntoIterator<Item = Option<&'a str>>) -> bool {
+    let mut seen = BTreeSet::new();
+    ids.into_iter()
+        .flatten()
+        .filter(|id| !id.is_empty())
+        .all(|id| seen.insert(id))
+}
+
 impl ChatAccum {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn with_tool_markup_suppression(suppress_duplicate_tool_markup: bool) -> Self {
@@ -1117,6 +1125,9 @@ impl ChatAccum {
             self.tool_call_repair_invalid = true;
         }
         for choice in choices {
+            if self.terminal_finish_seen {
+                self.tool_call_repair_invalid = true;
+            }
             let choice_index = match choice.get("index") {
                 Some(index) => index.as_u64().unwrap_or_else(|| {
                     self.tool_call_repair_invalid = true;
@@ -1133,14 +1144,8 @@ impl ChatAccum {
                 self.observed_choice_index = Some(choice_index);
             }
             let delta = choice.get("delta").unwrap_or(&Value::Null);
-            let terminal_finish_seen_before_choice = self.terminal_finish_seen;
             if let Some(finish_reason) = chat_finish_reason(&choice) {
-                if !is_successful_tool_call_finish_reason(Some(finish_reason))
-                    || self
-                        .finish_reason
-                        .as_deref()
-                        .is_some_and(|previous| previous != finish_reason)
-                {
+                if !is_successful_tool_call_finish_reason(Some(finish_reason)) {
                     self.tool_call_repair_invalid = true;
                 }
                 self.finish_reason = Some(finish_reason.to_string());
@@ -1213,14 +1218,20 @@ impl ChatAccum {
             }
 
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
-                if terminal_finish_seen_before_choice && !calls.is_empty() {
-                    self.tool_call_repair_invalid = true;
-                }
                 if let Some(event) = self.take_reasoning_delta() {
                     events.push(event);
                 }
                 for call in calls {
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let index = match call.get("index") {
+                        Some(index) => index.as_u64().unwrap_or_else(|| {
+                            self.tool_call_repair_invalid = true;
+                            0
+                        }),
+                        None => {
+                            self.tool_call_repair_invalid = true;
+                            0
+                        }
+                    } as usize;
                     if self.tool_calls.len() <= index {
                         self.tool_calls
                             .resize_with(index + 1, ToolCallAccum::default);
@@ -1234,7 +1245,9 @@ impl ChatAccum {
                                 acc.observed_id = id.to_string();
                             }
                         }
-                        acc.id = id.to_string();
+                        if !id.is_empty() {
+                            acc.id = id.to_string();
+                        }
                     }
                     if let Some(name) = call
                         .get("function")
@@ -1248,7 +1261,9 @@ impl ChatAccum {
                                 acc.observed_name = name.to_string();
                             }
                         }
-                        acc.name = name.to_string();
+                        if !name.is_empty() {
+                            acc.name = name.to_string();
+                        }
                     }
                     if let Some(arguments) = call
                         .get("function")
@@ -1327,7 +1342,12 @@ impl ChatAccum {
 
         let repair_enabled = self.split_concatenated_tool_call_arguments
             && !self.tool_call_repair_invalid
-            && is_successful_tool_call_finish_reason(self.finish_reason.as_deref());
+            && is_successful_tool_call_finish_reason(self.finish_reason.as_deref())
+            && nonempty_ids_are_unique(
+                self.tool_calls
+                    .iter()
+                    .map(|call| (!call.id.is_empty()).then_some(call.id.as_str())),
+            );
         let mut repair_budget = ToolCallRepairBudget::default();
         for call in &self.tool_calls {
             if call.name.is_empty() {
@@ -2523,10 +2543,8 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
         .unwrap_or_else(|| generated_id("resp"));
 
     let mut output = Vec::new();
-    if let Some(choice) = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
+    if let Some(choices) = value.get("choices").and_then(Value::as_array)
+        && let Some(choice) = choices.first()
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
@@ -2571,7 +2589,16 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
         }
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             let repair_enabled = split_concatenated_tool_call_arguments_enabled
-                && is_successful_tool_call_finish_reason(chat_finish_reason(choice));
+                && choices.len() == 1
+                && choice
+                    .get("index")
+                    .is_none_or(|index| index.as_u64().is_some())
+                && is_successful_tool_call_finish_reason(chat_finish_reason(choice))
+                && nonempty_ids_are_unique(
+                    calls
+                        .iter()
+                        .map(|call| call.get("id").and_then(Value::as_str)),
+                );
             let mut repair_budget = ToolCallRepairBudget::default();
             for call in calls {
                 let upstream_name = call
