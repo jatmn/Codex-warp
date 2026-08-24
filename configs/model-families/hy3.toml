@@ -45,6 +45,7 @@ shell_type = "shell_command"
 apply_patch_tool_type = "freeform"
 supports_search_tool = false
 include_skills_usage_instructions = true
+auto_review_model_override = "hy3"
 
 [model_families.hy3.transform]
 backend = "open_ai_chat"
@@ -54,6 +55,7 @@ force_parallel_tool_calls = false
 drop_empty_tool_choice = true
 reasoning_effort_none_value = "no_think"
 preserve_reasoning_content_history = true
+split_concatenated_tool_call_arguments = true
 
 # Exact override entry. It intentionally omits [transform] and most
 # [model_metadata] fields: family transforms/metadata merge cumulatively

@@ -94,6 +94,15 @@ normal Responses completion sequence when the stream ends cleanly after a
 documented terminal `finish_reason`. Truncated streams and mid-stream transport
 errors still fail.
 
+Some Hy3 gateways stream multiple invocations of the same function as adjacent
+JSON objects under one tool-call index. The Hy3 family enables a narrow output
+repair that separates that invalid argument string into distinct Responses tool
+calls. A single JSON object, incomplete JSON, non-object JSON, or trailing junk
+is forwarded unchanged rather than guessed at. Repair runs only after a
+successful tool-call finish and shares a response-wide limit of 64 recovered
+calls and 1 MiB of source argument text inspected for recovery across streaming
+and JSON responses.
+
 ## Guardian Auto-Review Compatibility
 
 Codex sends a separate Guardian request when reviewing whether an agent action

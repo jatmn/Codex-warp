@@ -21,6 +21,7 @@ use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
 use crate::config::canonical_model_family_id;
 use crate::config::matching_model_families;
+use crate::config::model_matches_family;
 use crate::config::provider_entries;
 use crate::http::apply_headers_with_accept;
 use crate::http::endpoint_url;
@@ -683,12 +684,20 @@ pub(crate) fn codex_model_info(
     if let Some(overrides) = provider.model_metadata.overrides.get(id) {
         apply_model_metadata_config(&mut info, overrides);
     }
-    localize_auto_review_model_override(&mut info, id, provider);
+    // Family membership must use the catalog matcher that supplied this
+    // metadata; a second ID-shape parser can drift from configured patterns.
+    let matches_hy3_family = model_matches_family(config, "hy3", id);
+    localize_auto_review_model_override(&mut info, id, provider, matches_hy3_family);
 
     Some(info)
 }
 
-fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &ProviderConfig) {
+fn localize_auto_review_model_override(
+    info: &mut Value,
+    id: &str,
+    provider: &ProviderConfig,
+    matches_hy3_family: bool,
+) {
     let Some(target) = info
         .get("auto_review_model_override")
         .and_then(Value::as_str)
@@ -703,6 +712,7 @@ fn localize_auto_review_model_override(info: &mut Value, id: &str, provider: &Pr
     let id_suffix = id.rsplit_once('/').map_or(id, |(_, suffix)| suffix);
     if canonical_model_family_id(id_suffix) == target_family
         || (target_family == "grok-4.6" && is_grok_4_6_alias_id(id))
+        || (target_family == "hy3" && matches_hy3_family)
     {
         info["auto_review_model_override"] = json!(id);
         return;

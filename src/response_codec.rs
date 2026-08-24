@@ -7,6 +7,7 @@ use async_stream::stream;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde::Serialize;
+use serde::de::IgnoredAny;
 use serde_json::Value;
 use serde_json::json;
 
@@ -165,6 +166,8 @@ const CONTINUE_GUARD_BUDGET_MAX_ENTRIES: usize = 10_000;
 /// Maximum number of bytes allowed in the SSE frame buffer before treating the
 /// upstream as misbehaving and returning an error.
 const SSE_FRAME_BUFFER_MAX_BYTES: usize = 16 * 1024 * 1024;
+const MAX_REPAIRED_CONCATENATED_TOOL_CALLS: usize = 64;
+const MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES: usize = 1024 * 1024;
 const SSE_FRAME_BUFFER_EXCEEDED_MESSAGE: &str = "upstream SSE frame buffer exceeded maximum size";
 
 // Stream conversion carries request context rather than a new struct.
@@ -192,6 +195,7 @@ pub(crate) fn chat_stream_to_responses(
         continue_guard,
         usage_recorder,
         false,
+        false,
         None,
     )
 }
@@ -208,6 +212,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
     continue_guard: ContinueGuardState,
     usage_recorder: Option<UsageRecorder>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments: bool,
     session_model: Option<(AppState, crate::state::SessionModelUpdate)>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
@@ -219,6 +224,7 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
         yield Ok(Bytes::from(created_event));
 
         let mut state = ChatAccum::with_tool_markup_suppression(suppress_duplicate_tool_markup);
+        state.split_concatenated_tool_call_arguments = split_concatenated_tool_call_arguments;
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut completed = false;
@@ -893,11 +899,15 @@ pub(crate) struct ChatAccum {
     reasoning_pending: String,
     tool_calls: Vec<ToolCallAccum>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments: bool,
     native_tool_call_seen: bool,
     deferred_content: Vec<String>,
     tool_markup_sanitizer: Sanitizer,
     usage: Option<Value>,
     finish_reason: Option<String>,
+    tool_call_repair_invalid: bool,
+    terminal_finish_seen: bool,
+    observed_choice_index: Option<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -905,6 +915,111 @@ pub(crate) struct ToolCallAccum {
     id: String,
     name: String,
     arguments: String,
+    identity_changed: bool,
+    observed_id: String,
+    observed_name: String,
+}
+
+struct ToolCallRepairBudget {
+    remaining_calls: usize,
+    remaining_argument_bytes: usize,
+}
+
+impl Default for ToolCallRepairBudget {
+    fn default() -> Self {
+        Self {
+            remaining_calls: MAX_REPAIRED_CONCATENATED_TOOL_CALLS,
+            remaining_argument_bytes: MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES,
+        }
+    }
+}
+
+fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>> {
+    if arguments.len() > MAX_REPAIRED_TOOL_CALL_ARGUMENT_BYTES {
+        return None;
+    }
+
+    let mut stream = serde_json::Deserializer::from_str(arguments).into_iter::<IgnoredAny>();
+    let mut object_ranges = Vec::new();
+    let mut object_start = 0;
+    loop {
+        let remaining = arguments.get(object_start..)?;
+        if trim_json_whitespace(remaining).is_empty() {
+            break;
+        }
+        if object_ranges.len() == MAX_REPAIRED_CONCATENATED_TOOL_CALLS {
+            return None;
+        }
+        if !trim_json_whitespace_start(remaining).starts_with('{') {
+            return None;
+        }
+        stream.next()?.ok()?;
+        let object_end = stream.byte_offset();
+        object_ranges.push(object_start..object_end);
+        object_start = object_end;
+    }
+
+    (object_ranges.len() > 1).then(|| {
+        object_ranges
+            .into_iter()
+            .map(|range| trim_json_whitespace(&arguments[range]).to_string())
+            .collect()
+    })
+}
+
+fn trim_json_whitespace(value: &str) -> &str {
+    value.trim_matches(is_json_whitespace)
+}
+
+fn trim_json_whitespace_start(value: &str) -> &str {
+    value.trim_start_matches(is_json_whitespace)
+}
+
+fn is_json_whitespace(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r')
+}
+
+fn split_concatenated_tool_call_arguments_with_budget(
+    arguments: &str,
+    budget: &mut ToolCallRepairBudget,
+) -> Option<Vec<String>> {
+    if budget.remaining_calls < 2 {
+        return None;
+    }
+    if budget.remaining_argument_bytes == 0 {
+        return None;
+    }
+    if arguments.len() > budget.remaining_argument_bytes {
+        return None;
+    }
+    budget.remaining_argument_bytes -= arguments.len();
+    let repaired = split_concatenated_tool_call_arguments(arguments)?;
+    if repaired.len() > budget.remaining_calls {
+        return None;
+    }
+    budget.remaining_calls -= repaired.len();
+    Some(repaired)
+}
+
+fn is_successful_tool_call_finish_reason(reason: Option<&str>) -> bool {
+    reason.is_some_and(|reason| matches!(reason, "tool_calls" | "function_call"))
+}
+
+fn recovered_tool_call_id(upstream_id: Option<&str>, recovered_index: usize) -> String {
+    if recovered_index == 0
+        && let Some(upstream_id) = upstream_id.filter(|id| !id.is_empty())
+    {
+        return upstream_id.to_string();
+    }
+    generated_id("call")
+}
+
+fn nonempty_ids_are_unique<'a>(ids: impl IntoIterator<Item = Option<&'a str>>) -> bool {
+    let mut seen = BTreeSet::new();
+    ids.into_iter()
+        .flatten()
+        .filter(|id| !id.is_empty())
+        .all(|id| seen.insert(id))
 }
 
 impl ChatAccum {
@@ -1006,10 +1121,35 @@ impl ChatAccum {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        if choices.len() > 1 {
+            self.tool_call_repair_invalid = true;
+        }
         for choice in choices {
+            if self.terminal_finish_seen {
+                self.tool_call_repair_invalid = true;
+            }
+            let choice_index = match choice.get("index") {
+                Some(index) => index.as_u64().unwrap_or_else(|| {
+                    self.tool_call_repair_invalid = true;
+                    0
+                }),
+                None => 0,
+            };
+            if self
+                .observed_choice_index
+                .is_some_and(|observed| observed != choice_index)
+            {
+                self.tool_call_repair_invalid = true;
+            } else if self.observed_choice_index.is_none() {
+                self.observed_choice_index = Some(choice_index);
+            }
             let delta = choice.get("delta").unwrap_or(&Value::Null);
             if let Some(finish_reason) = chat_finish_reason(&choice) {
+                if !is_successful_tool_call_finish_reason(Some(finish_reason)) {
+                    self.tool_call_repair_invalid = true;
+                }
                 self.finish_reason = Some(finish_reason.to_string());
+                self.terminal_finish_seen = true;
             }
             if let Some(incoming) = chat_reasoning_text(delta)
                 && let Some(reasoning) =
@@ -1082,21 +1222,48 @@ impl ChatAccum {
                     events.push(event);
                 }
                 for call in calls {
-                    let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                    let index = match call.get("index") {
+                        Some(index) => index.as_u64().unwrap_or_else(|| {
+                            self.tool_call_repair_invalid = true;
+                            0
+                        }),
+                        None => {
+                            self.tool_call_repair_invalid = true;
+                            0
+                        }
+                    } as usize;
                     if self.tool_calls.len() <= index {
                         self.tool_calls
                             .resize_with(index + 1, ToolCallAccum::default);
                     }
                     let acc = &mut self.tool_calls[index];
                     if let Some(id) = call.get("id").and_then(Value::as_str) {
-                        acc.id = id.to_string();
+                        if !id.is_empty() {
+                            if !acc.observed_id.is_empty() && acc.observed_id != id {
+                                acc.identity_changed = true;
+                            } else if acc.observed_id.is_empty() {
+                                acc.observed_id = id.to_string();
+                            }
+                        }
+                        if !id.is_empty() {
+                            acc.id = id.to_string();
+                        }
                     }
                     if let Some(name) = call
                         .get("function")
                         .and_then(|function| function.get("name"))
                         .and_then(Value::as_str)
                     {
-                        acc.name = name.to_string();
+                        if !name.is_empty() {
+                            if !acc.observed_name.is_empty() && acc.observed_name != name {
+                                acc.identity_changed = true;
+                            } else if acc.observed_name.is_empty() {
+                                acc.observed_name = name.to_string();
+                            }
+                        }
+                        if !name.is_empty() {
+                            acc.name = name.to_string();
+                        }
                     }
                     if let Some(arguments) = call
                         .get("function")
@@ -1173,30 +1340,49 @@ impl ChatAccum {
             ));
         }
 
+        let repair_enabled = self.split_concatenated_tool_call_arguments
+            && !self.tool_call_repair_invalid
+            && is_successful_tool_call_finish_reason(self.finish_reason.as_deref())
+            && nonempty_ids_are_unique(
+                self.tool_calls
+                    .iter()
+                    .map(|call| (!call.id.is_empty()).then_some(call.id.as_str())),
+            );
+        let mut repair_budget = ToolCallRepairBudget::default();
         for call in &self.tool_calls {
             if call.name.is_empty() {
                 continue;
             }
-            let call_id = if call.id.is_empty() {
-                generated_id("call")
-            } else {
-                call.id.clone()
-            };
-            let item = tool_call_item(
-                &call.name,
-                &call.arguments,
-                &call_id,
-                custom_tool_names,
-                namespace_helpers,
-                tool_policy,
+            let repaired_arguments = (repair_enabled && !call.identity_changed)
+                .then(|| {
+                    split_concatenated_tool_call_arguments_with_budget(
+                        &call.arguments,
+                        &mut repair_budget,
+                    )
+                })
+                .flatten();
+            let arguments = repaired_arguments.as_ref().map_or_else(
+                || vec![call.arguments.as_str()],
+                |items| items.iter().map(String::as_str).collect(),
             );
-            events.push(sse(
-                "response.output_item.done",
-                json!({
-                    "type": "response.output_item.done",
-                    "item": item
-                }),
-            ));
+            for (index, arguments) in arguments.into_iter().enumerate() {
+                let call_id = recovered_tool_call_id(Some(&call.id), index);
+                let item = tool_call_item(
+                    &call.name,
+                    arguments,
+                    &call_id,
+                    custom_tool_names,
+                    namespace_helpers,
+                    tool_policy,
+                );
+                events.push(sse(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "item": item
+                    }),
+                ));
+            }
         }
 
         let end_turn = self.end_turn(continue_guard);
@@ -2336,6 +2522,7 @@ pub(crate) fn chat_json_to_responses_with_policy(
         tool_policy,
         continue_guard,
         false,
+        false,
     )
 }
 
@@ -2346,6 +2533,7 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
     tool_policy: &ToolPolicyConfig,
     continue_guard: Option<(&DebugLog, &str, &ContinueGuardState)>,
     suppress_duplicate_tool_markup: bool,
+    split_concatenated_tool_call_arguments_enabled: bool,
 ) -> Value {
     let value = chat_completion_payload(&value);
     let response_id = value
@@ -2355,10 +2543,8 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
         .unwrap_or_else(|| generated_id("resp"));
 
     let mut output = Vec::new();
-    if let Some(choice) = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
+    if let Some(choices) = value.get("choices").and_then(Value::as_array)
+        && let Some(choice) = choices.first()
         && let Some(message) = choice.get("message")
     {
         let reasoning = chat_reasoning_text(message);
@@ -2402,26 +2588,54 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
             }));
         }
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            let repair_enabled = split_concatenated_tool_call_arguments_enabled
+                && choices.len() == 1
+                && choice
+                    .get("index")
+                    .is_none_or(|index| index.as_u64().is_some())
+                && is_successful_tool_call_finish_reason(chat_finish_reason(choice))
+                && nonempty_ids_are_unique(
+                    calls
+                        .iter()
+                        .map(|call| call.get("id").and_then(Value::as_str)),
+                );
+            let mut repair_budget = ToolCallRepairBudget::default();
             for call in calls {
-                let name = call
+                let upstream_name = call
                     .get("function")
                     .and_then(|f| f.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool");
+                    .and_then(Value::as_str);
+                let name = upstream_name.unwrap_or("tool");
                 let arguments = call
                     .get("function")
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
-                let call_id = call.get("id").and_then(Value::as_str).unwrap_or("call");
-                output.push(tool_call_item(
-                    name,
-                    arguments,
-                    call_id,
-                    custom_tool_names,
-                    namespace_helpers,
-                    tool_policy,
-                ));
+                let upstream_call_id = call.get("id").and_then(Value::as_str);
+                let repaired_arguments = (repair_enabled
+                    && upstream_name.is_some_and(|name| !name.is_empty()))
+                .then(|| {
+                    split_concatenated_tool_call_arguments_with_budget(
+                        arguments,
+                        &mut repair_budget,
+                    )
+                })
+                .flatten();
+                let arguments = repaired_arguments.as_ref().map_or_else(
+                    || vec![arguments],
+                    |items| items.iter().map(String::as_str).collect(),
+                );
+                for (index, arguments) in arguments.into_iter().enumerate() {
+                    let call_id = recovered_tool_call_id(upstream_call_id, index);
+                    output.push(tool_call_item(
+                        name,
+                        arguments,
+                        &call_id,
+                        custom_tool_names,
+                        namespace_helpers,
+                        tool_policy,
+                    ));
+                }
             }
         }
     }

@@ -281,6 +281,83 @@ fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
 }
 
 #[test]
+fn manual_catalog_localizes_hy3_auto_review_to_provider_model() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "concentrate.ai/hy3".to_string(),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "concentrate.ai/hy3")
+        .expect("Hy3 model is listed");
+
+    assert_eq!(model["auto_review_model_override"], "concentrate.ai/hy3");
+}
+
+#[test]
+fn manual_catalog_keeps_hy3_review_on_the_visible_model_when_bare_aliases_collide() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "hy3".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "hicap/hy3:free".to_string(),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+
+    let model = manual_catalog_models(&provider, &config)
+        .into_iter()
+        .find(|model| model["slug"] == "hicap/hy3:free")
+        .expect("Hy3 free model is listed");
+
+    assert_eq!(model["auto_review_model_override"], "hicap/hy3:free");
+}
+
+#[test]
+fn live_catalog_localizes_hy3_review_target_to_each_discovered_alias() {
+    let config = load_config_layers(&[]).expect("default config loads");
+    for id in [
+        "concentrate.ai/hy3",
+        "hicap/hy3:free",
+        "hicap/hy3/custom",
+        "tencent/hy3",
+        "tencent/hy3/custom",
+        "hy3/custom",
+        "hunyuan-3",
+        "hunyuan3",
+    ] {
+        let body = Bytes::from(
+            serde_json::to_vec(&json!({"data": [{"id": id}]})).expect("live model row serializes"),
+        );
+        let models = normalize_models(&body, &ProviderConfig::default(), &config)
+            .expect("live model row is normalized");
+        let info = models.first().expect("live model row is retained");
+        assert_eq!(
+            info["auto_review_model_override"], id,
+            "live alias {id} must remain provider-routable"
+        );
+    }
+
+    let unrelated_body = Bytes::from_static(
+        br#"{"data":[{"id":"other/model","auto_review_model_override":"hy3"}]}"#,
+    );
+    let unrelated = normalize_models(&unrelated_body, &ProviderConfig::default(), &config)
+        .expect("unrelated live model row is normalized");
+    assert_eq!(unrelated[0]["auto_review_model_override"], "hy3");
+}
+
+#[test]
 fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
     let config = load_config_layers(&[]).expect("default config loads");
     let provider = ProviderConfig {
@@ -451,6 +528,7 @@ fn live_catalog_localizes_auto_review_target_to_the_discovered_model() {
         &mut info,
         "concentrate.ai/deepseek-v4-flash-0731",
         &ProviderConfig::default(),
+        false,
     );
     assert_eq!(
         info["auto_review_model_override"],
@@ -465,6 +543,7 @@ fn live_catalog_localizes_exact_auto_review_target_to_provider_model_id() {
         &mut info,
         "concentrate.ai/grok-4.6",
         &ProviderConfig::default(),
+        false,
     );
     assert_eq!(
         info["auto_review_model_override"],
@@ -491,7 +570,7 @@ fn live_catalog_localizes_grok_4_6_aliases_to_discovered_ids() {
 #[test]
 fn grok_4_6_alias_localization_preserves_distinct_review_targets() {
     let mut info = json!({"auto_review_model_override": "upstream-review"});
-    localize_auto_review_model_override(&mut info, "grok4.6", &ProviderConfig::default());
+    localize_auto_review_model_override(&mut info, "grok4.6", &ProviderConfig::default(), false);
     assert_eq!(info["auto_review_model_override"], "upstream-review");
 }
 
@@ -521,6 +600,7 @@ fn live_catalog_localizes_canonical_deepseek_flash_review_target() {
         &mut info,
         "concentrate.ai/deepseek-v4-flash-0731",
         &ProviderConfig::default(),
+        false,
     );
     assert_eq!(
         info["auto_review_model_override"],
