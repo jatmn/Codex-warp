@@ -905,6 +905,8 @@ pub(crate) struct ChatAccum {
     tool_markup_sanitizer: Sanitizer,
     usage: Option<Value>,
     finish_reason: Option<String>,
+    tool_call_repair_invalid: bool,
+    terminal_finish_seen: bool,
 }
 
 #[derive(Default, Clone)]
@@ -913,6 +915,8 @@ pub(crate) struct ToolCallAccum {
     name: String,
     arguments: String,
     identity_changed: bool,
+    observed_id: String,
+    observed_name: String,
 }
 
 struct ToolCallRepairBudget {
@@ -939,13 +943,13 @@ fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>
     let mut object_start = 0;
     loop {
         let remaining = arguments.get(object_start..)?;
-        if remaining.trim().is_empty() {
+        if trim_json_whitespace(remaining).is_empty() {
             break;
         }
         if object_ranges.len() == MAX_REPAIRED_CONCATENATED_TOOL_CALLS {
             return None;
         }
-        if !remaining.trim_start().starts_with('{') {
+        if !trim_json_whitespace_start(remaining).starts_with('{') {
             return None;
         }
         stream.next()?.ok()?;
@@ -957,9 +961,21 @@ fn split_concatenated_tool_call_arguments(arguments: &str) -> Option<Vec<String>
     (object_ranges.len() > 1).then(|| {
         object_ranges
             .into_iter()
-            .map(|range| arguments[range].trim().to_string())
+            .map(|range| trim_json_whitespace(&arguments[range]).to_string())
             .collect()
     })
+}
+
+fn trim_json_whitespace(value: &str) -> &str {
+    value.trim_matches(is_json_whitespace)
+}
+
+fn trim_json_whitespace_start(value: &str) -> &str {
+    value.trim_start_matches(is_json_whitespace)
+}
+
+fn is_json_whitespace(character: char) -> bool {
+    matches!(character, ' ' | '\t' | '\n' | '\r')
 }
 
 fn split_concatenated_tool_call_arguments_with_budget(
@@ -1098,8 +1114,18 @@ impl ChatAccum {
             .unwrap_or_default();
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
+            let terminal_finish_seen_before_choice = self.terminal_finish_seen;
             if let Some(finish_reason) = chat_finish_reason(&choice) {
+                if !is_successful_tool_call_finish_reason(Some(finish_reason))
+                    || self
+                        .finish_reason
+                        .as_deref()
+                        .is_some_and(|previous| previous != finish_reason)
+                {
+                    self.tool_call_repair_invalid = true;
+                }
                 self.finish_reason = Some(finish_reason.to_string());
+                self.terminal_finish_seen = true;
             }
             if let Some(incoming) = chat_reasoning_text(delta)
                 && let Some(reasoning) =
@@ -1168,6 +1194,9 @@ impl ChatAccum {
             }
 
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                if terminal_finish_seen_before_choice && !calls.is_empty() {
+                    self.tool_call_repair_invalid = true;
+                }
                 if let Some(event) = self.take_reasoning_delta() {
                     events.push(event);
                 }
@@ -1179,8 +1208,12 @@ impl ChatAccum {
                     }
                     let acc = &mut self.tool_calls[index];
                     if let Some(id) = call.get("id").and_then(Value::as_str) {
-                        if !acc.id.is_empty() && !id.is_empty() && acc.id != id {
-                            acc.identity_changed = true;
+                        if !id.is_empty() {
+                            if !acc.observed_id.is_empty() && acc.observed_id != id {
+                                acc.identity_changed = true;
+                            } else if acc.observed_id.is_empty() {
+                                acc.observed_id = id.to_string();
+                            }
                         }
                         acc.id = id.to_string();
                     }
@@ -1189,8 +1222,12 @@ impl ChatAccum {
                         .and_then(|function| function.get("name"))
                         .and_then(Value::as_str)
                     {
-                        if !acc.name.is_empty() && !name.is_empty() && acc.name != name {
-                            acc.identity_changed = true;
+                        if !name.is_empty() {
+                            if !acc.observed_name.is_empty() && acc.observed_name != name {
+                                acc.identity_changed = true;
+                            } else if acc.observed_name.is_empty() {
+                                acc.observed_name = name.to_string();
+                            }
                         }
                         acc.name = name.to_string();
                     }
@@ -1270,6 +1307,7 @@ impl ChatAccum {
         }
 
         let repair_enabled = self.split_concatenated_tool_call_arguments
+            && !self.tool_call_repair_invalid
             && is_successful_tool_call_finish_reason(self.finish_reason.as_deref());
         let mut repair_budget = ToolCallRepairBudget::default();
         for call in &self.tool_calls {
@@ -2517,25 +2555,26 @@ pub(crate) fn chat_json_to_responses_with_tool_markup_suppression(
                 && is_successful_tool_call_finish_reason(chat_finish_reason(choice));
             let mut repair_budget = ToolCallRepairBudget::default();
             for call in calls {
-                let name = call
+                let upstream_name = call
                     .get("function")
                     .and_then(|f| f.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool");
+                    .and_then(Value::as_str);
+                let name = upstream_name.unwrap_or("tool");
                 let arguments = call
                     .get("function")
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
                     .unwrap_or("{}");
                 let upstream_call_id = call.get("id").and_then(Value::as_str);
-                let repaired_arguments = repair_enabled
-                    .then(|| {
-                        split_concatenated_tool_call_arguments_with_budget(
-                            arguments,
-                            &mut repair_budget,
-                        )
-                    })
-                    .flatten();
+                let repaired_arguments = (repair_enabled
+                    && upstream_name.is_some_and(|name| !name.is_empty()))
+                .then(|| {
+                    split_concatenated_tool_call_arguments_with_budget(
+                        arguments,
+                        &mut repair_budget,
+                    )
+                })
+                .flatten();
                 let arguments = repaired_arguments.as_ref().map_or_else(
                     || vec![arguments],
                     |items| items.iter().map(String::as_str).collect(),
