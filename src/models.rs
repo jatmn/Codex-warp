@@ -165,6 +165,7 @@ async fn discover_routes_for_mutation(
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
         .collect();
+    let prior_routes = state.model_routes.read().await.clone();
 
     let seed_config = state.read_config().clone();
     let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
@@ -185,6 +186,7 @@ async fn discover_routes_for_mutation(
             (seeded, Some(Vec::new()), None)
         }
     };
+    let seed_routes = routes.clone();
 
     let mut retain_owners: BTreeSet<String> =
         provider_list.iter().map(|(id, _)| id.clone()).collect();
@@ -241,6 +243,19 @@ async fn discover_routes_for_mutation(
             retain_owners.remove(&provider_id);
         } else {
             fetch_warning = Some(provider_failures.join("; "));
+        }
+    }
+
+    for (slug, owner) in prior_routes {
+        if seed_routes.contains_key(&slug) || fetch_ids.contains(&owner) {
+            continue;
+        }
+        let Some((provider_id, provider)) = provider_list.iter().find(|(id, _)| id == &owner)
+        else {
+            continue;
+        };
+        if provider.model_is_enabled(&slug) {
+            routes.insert(slug, provider_id.clone());
         }
     }
 
