@@ -291,7 +291,7 @@ fn manual_catalog_localizes_hy3_auto_review_to_provider_model() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "concentrate.ai/hy3")
         .expect("Hy3 model is listed");
@@ -316,7 +316,7 @@ fn manual_catalog_keeps_hy3_review_on_the_visible_model_when_bare_aliases_collid
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "hicap/hy3:free")
         .expect("Hy3 free model is listed");
@@ -2218,6 +2218,62 @@ fn shared_catalog_aliases_apply_only_agreed_raw_reasoning_overrides() {
         );
         assert_eq!(raw["default_reasoning_level"], "max");
     }
+}
+
+#[test]
+fn prefixed_live_slug_applies_catalog_id_overlap_reasoning_overrides() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "live-model".into(),
+            supported_reasoning_levels: Some(vec!["high".into()]),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    let mut raw = synthetic_model_info("provider/live-model");
+    raw["supported_reasoning_levels"] = json!([{"effort": "medium", "description": "upstream"}]);
+    raw["default_reasoning_level"] = json!("medium");
+    apply_matching_catalog_overrides(&mut raw, &provider);
+
+    assert_eq!(
+        raw["supported_reasoning_levels"],
+        json!([{"effort": "high", "description": "high"}])
+    );
+    assert_eq!(raw["default_reasoning_level"], "high");
+}
+
+#[test]
+fn shared_upstream_aliases_ignore_partial_reasoning_consensus() {
+    let provider = ProviderConfig {
+        model_catalog: vec![
+            ModelCatalogEntry {
+                id: "provider/fast".into(),
+                upstream_id: Some("live-model".into()),
+                supported_reasoning_levels: Some(vec!["high".into()]),
+                default_reasoning_level: Some("high".into()),
+                ..ModelCatalogEntry::default()
+            },
+            ModelCatalogEntry {
+                id: "provider/deep".into(),
+                upstream_id: Some("live-model".into()),
+                supported_reasoning_levels: Some(vec!["high".into()]),
+                default_reasoning_level: Some("low".into()),
+                ..ModelCatalogEntry::default()
+            },
+        ],
+        ..ProviderConfig::default()
+    };
+    let mut raw = synthetic_model_info("live-model");
+    raw["supported_reasoning_levels"] = json!([{"effort": "medium", "description": "upstream"}]);
+    raw["default_reasoning_level"] = json!("medium");
+    apply_matching_catalog_overrides(&mut raw, &provider);
+
+    assert_eq!(
+        raw["supported_reasoning_levels"],
+        json!([{"effort": "medium", "description": "upstream"}])
+    );
+    assert_eq!(raw["default_reasoning_level"], "medium");
 }
 
 #[test]
