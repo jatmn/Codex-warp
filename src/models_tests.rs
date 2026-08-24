@@ -2139,6 +2139,88 @@ fn catalog_reasoning_override_applies_to_live_upstream_alias_before_dedupe() {
 }
 
 #[test]
+fn conflicting_catalog_aliases_preserve_raw_reasoning_metadata_in_either_order() {
+    let aliases = [
+        ModelCatalogEntry {
+            id: "provider/fast".into(),
+            upstream_id: Some("live-model".into()),
+            supported_reasoning_levels: Some(vec!["low".into()]),
+            default_reasoning_level: Some("low".into()),
+            ..ModelCatalogEntry::default()
+        },
+        ModelCatalogEntry {
+            id: "provider/deep".into(),
+            upstream_id: Some("live-model".into()),
+            supported_reasoning_levels: Some(vec!["high".into(), "max".into()]),
+            default_reasoning_level: Some("max".into()),
+            ..ModelCatalogEntry::default()
+        },
+    ];
+
+    for model_catalog in [aliases.to_vec(), aliases.into_iter().rev().collect()] {
+        let provider = ProviderConfig {
+            model_catalog,
+            ..ProviderConfig::default()
+        };
+        let mut raw = synthetic_model_info("live-model");
+        raw["supported_reasoning_levels"] =
+            json!([{"effort": "medium", "description": "upstream"}]);
+        raw["default_reasoning_level"] = json!("medium");
+        apply_matching_catalog_overrides(&mut raw, &provider);
+
+        assert_eq!(
+            raw["supported_reasoning_levels"],
+            json!([{"effort": "medium", "description": "upstream"}])
+        );
+        assert_eq!(raw["default_reasoning_level"], "medium");
+
+        let aliases = manual_catalog_models(&provider, &AppConfig::default(), None);
+        let fast = aliases
+            .iter()
+            .find(|model| model["slug"] == "provider/fast")
+            .expect("fast alias remains listed");
+        let deep = aliases
+            .iter()
+            .find(|model| model["slug"] == "provider/deep")
+            .expect("deep alias remains listed");
+        assert_eq!(fast["default_reasoning_level"], "low");
+        assert_eq!(deep["default_reasoning_level"], "max");
+    }
+}
+
+#[test]
+fn shared_catalog_aliases_apply_only_agreed_raw_reasoning_overrides() {
+    let alias = |id: &str| ModelCatalogEntry {
+        id: id.into(),
+        upstream_id: Some("live-model".into()),
+        supported_reasoning_levels: Some(vec!["high".into(), "max".into()]),
+        default_reasoning_level: Some("max".into()),
+        ..ModelCatalogEntry::default()
+    };
+
+    for model_catalog in [
+        vec![alias("provider/only")],
+        vec![alias("provider/a"), alias("provider/b")],
+    ] {
+        let provider = ProviderConfig {
+            model_catalog,
+            ..ProviderConfig::default()
+        };
+        let mut raw = synthetic_model_info("live-model");
+        apply_matching_catalog_overrides(&mut raw, &provider);
+
+        assert_eq!(
+            raw["supported_reasoning_levels"],
+            json!([
+                {"effort": "high", "description": "high"},
+                {"effort": "max", "description": "max"}
+            ])
+        );
+        assert_eq!(raw["default_reasoning_level"], "max");
+    }
+}
+
+#[test]
 fn exact_catalog_reasoning_override_wins_over_an_earlier_unrelated_entry() {
     let provider = ProviderConfig {
         model_catalog: vec![

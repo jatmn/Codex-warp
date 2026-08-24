@@ -798,25 +798,42 @@ fn apply_matching_catalog_overrides(info: &mut Value, provider: &ProviderConfig)
     let Some(slug) = info.get("slug").and_then(Value::as_str).map(str::to_string) else {
         return;
     };
-    if let Some(entry) = provider
+    if let Some(entry) = provider.model_catalog.iter().find(|entry| entry.id == slug) {
+        apply_catalog_reasoning_overrides(info, entry);
+        return;
+    }
+
+    let upstream_matches = provider
         .model_catalog
         .iter()
-        .find(|entry| entry.id == slug)
-        .or_else(|| {
-            provider
-                .model_catalog
-                .iter()
-                .find(|entry| entry.upstream_id.as_deref() == Some(slug.as_str()))
-        })
-        .or_else(|| {
-            provider
-                .model_catalog
-                .iter()
-                .find(|entry| config::catalog_entry_matches_model(entry, &slug))
-        })
-    {
-        apply_catalog_reasoning_overrides(info, entry);
+        .filter(|entry| entry.upstream_id.as_deref() == Some(slug.as_str()))
+        .collect::<Vec<_>>();
+    if !upstream_matches.is_empty() {
+        apply_catalog_reasoning_consensus(info, &upstream_matches);
+        return;
     }
+
+    let alias_matches = provider
+        .model_catalog
+        .iter()
+        .filter(|entry| config::catalog_entry_matches_model(entry, &slug))
+        .collect::<Vec<_>>();
+    if !alias_matches.is_empty() {
+        apply_catalog_reasoning_consensus(info, &alias_matches);
+    }
+}
+
+fn apply_catalog_reasoning_consensus(info: &mut Value, entries: &[&ModelCatalogEntry]) {
+    let Some(first) = entries.first() else {
+        return;
+    };
+    if !entries.iter().all(|entry| {
+        entry.supported_reasoning_levels == first.supported_reasoning_levels
+            && entry.default_reasoning_level == first.default_reasoning_level
+    }) {
+        return;
+    }
+    apply_catalog_reasoning_overrides(info, first);
 }
 
 fn apply_catalog_entry_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
