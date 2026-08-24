@@ -317,6 +317,16 @@ fn model_form_requires_an_upstream_id_only_when_creating() {
 }
 
 #[test]
+fn model_form_preserves_missing_catalog_upstream_id_but_seeds_promotions() {
+    let app = webui_js_source();
+
+    assert!(
+        app.contains("[name=upstream_id]\").value = m.upstream_id || (m.catalog ? \"\" : m.id);")
+    );
+    assert!(!app.contains("m.upstream_id || m.id || \"\""));
+}
+
+#[test]
 fn model_persist_deserializes_omitted_enabled_as_none() {
     let fields: ModelPersist =
         serde_json::from_str(r#"{"display_name":"Renamed"}"#).expect("deserialize");

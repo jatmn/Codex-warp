@@ -1257,7 +1257,7 @@
       modelForm.dataset.mode = m.catalog ? "edit" : "promote";
       $("#model-form-title").textContent = "Edit model";
       idInput.value = m.id;
-      modelForm.querySelector("[name=upstream_id]").value = m.upstream_id || m.id || "";
+      modelForm.querySelector("[name=upstream_id]").value = m.upstream_id || (m.catalog ? "" : m.id);
       modelForm.querySelector("[name=display_name]").value = m.display_name || "";
       modelForm.querySelector("[name=description]").value = m.description || "";
       modelForm.querySelector("[name=supported_reasoning_levels]").value =
