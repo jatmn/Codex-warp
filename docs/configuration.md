@@ -431,6 +431,7 @@ The UI can:
 - edit and remove providers and model catalog entries
 - toggle providers on/off (disabled providers are omitted from `/v1/models`)
 - toggle models on/off per provider
+- manually refresh an enabled provider's dynamic upstream model catalog
 - chart token usage, prompts, and sessions over time with a line chart, plus
   token usage over time with a bar chart (global, per provider, and per model)
 - chart model usage over time with per-model lines for both sessions and

@@ -2472,6 +2472,17 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn webui_offers_provider_scoped_model_refresh() {
+    let js = webui_js_source();
+    assert!(js.contains("if (!provider.model_catalog_only)"));
+    assert!(js.contains("/refresh-models`"));
+    assert!(js.contains("refreshBtn.disabled = !provider.enabled"));
+    assert!(js.contains("const refreshingProviderIds = new Set();"));
+    assert!(js.contains("refreshingProviderIds.has(provider.id)"));
+    assert!(js.contains("but could not reload providers"));
+}
+
+#[test]
 fn webui_app_includes_model_and_pie_chart_renderers() {
     let app = include_str!("webui_static/app-main.js");
     assert!(app.contains("function drawModelUsageChart("));

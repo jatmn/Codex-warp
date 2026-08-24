@@ -279,8 +279,15 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   border-top: none;
 }
 .models.collapsed { display: none; }
-.models-label {
+.models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
   margin: 0 0.35rem 0.45rem;
+}
+.models-label {
+  margin: 0;
   font-size: 0.72rem;
   font-weight: 650;
   letter-spacing: 0.04em;
