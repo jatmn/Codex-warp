@@ -72,24 +72,23 @@ async fn selection_retains_routing_epoch_while_reading_provider_identity() {
         select_provider(&select_state, &json!({"model": "alpha-live-only"})).await
     });
 
-    let mut route_epoch_held = false;
-    for _ in 0..1_000 {
-        match state.model_routes.try_write() {
-            Ok(guard) => drop(guard),
-            Err(_) => {
-                route_epoch_held = true;
-                break;
+    let route_epoch_held = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match state.model_routes.try_write() {
+                Ok(guard) => drop(guard),
+                Err(_) => break,
             }
+            tokio::task::yield_now().await;
         }
-        tokio::task::yield_now().await;
-    }
+    })
+    .await
+    .is_ok();
+    release_config_tx.send(()).expect("release config lock");
+    config_blocker.join().expect("config blocker thread");
     assert!(
         route_epoch_held,
         "selection must retain its route guard while provider config is blocked"
     );
-
-    release_config_tx.send(()).expect("release config lock");
-    config_blocker.join().expect("config blocker thread");
     let selected = selection
         .await
         .expect("selection task")
