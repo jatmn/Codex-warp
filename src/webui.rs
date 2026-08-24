@@ -43,7 +43,6 @@ use crate::debug_log::effective_max_log_age_days;
 use crate::debug_log::effective_max_log_mb;
 use crate::debug_log::normalize_debug_config;
 use crate::models;
-use crate::models::register_catalog_routes_for_provider;
 use crate::process_log::tracing_filter_from_debug_or;
 use crate::process_log::validate_debug_live_config_or;
 use crate::provider::provider_display_name;
@@ -754,11 +753,11 @@ async fn remove_provider_live_routes(state: &AppState, provider_id: &str) {
 
 async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
     remove_provider_live_routes(state, provider_id).await;
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.retain(|(owner, _, _)| owner != provider_id);
     state
-        .model_route_seeds
-        .write()
-        .await
-        .retain(|(owner, _, _)| owner != provider_id);
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
 }
 
 async fn remove_model_routes(
@@ -777,11 +776,11 @@ async fn remove_model_routes(
         routes.remove(upstream_id);
     }
     drop(routes);
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
     state
-        .model_route_seeds
-        .write()
-        .await
-        .retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
 }
 
 /// Rebuild discovery after a single-model removal so another enabled provider
@@ -822,8 +821,21 @@ async fn insert_model_route(
             .into_iter()
             .find(|(id, _)| *id == provider_id)
             .map(|(_, provider)| provider.enabled)
-            .unwrap_or(false)
     };
+    let Some(provider_enabled) = provider_enabled else {
+        return;
+    };
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
+    seeds.push((
+        provider_id.to_string(),
+        model_id.to_string(),
+        upstream_id.map(str::to_string),
+    ));
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
+    drop(seeds);
     if !provider_enabled {
         return;
     }
@@ -833,14 +845,6 @@ async fn insert_model_route(
     if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
         routes.insert(upstream_id.to_string(), provider_id.to_string());
     }
-    drop(routes);
-    let mut seeds = state.model_route_seeds.write().await;
-    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
-    seeds.push((
-        provider_id.to_string(),
-        model_id.to_string(),
-        upstream_id.map(str::to_string),
-    ));
 }
 
 /// Apply a catalog mutation to the live route map. Both POST and PUT are
@@ -874,15 +878,15 @@ async fn sync_provider_routes_for_enabled(
     enabled: bool,
 ) -> Result<(), ApiError> {
     if enabled {
-        let provider = {
+        {
             let config = state.read_config();
             configured_provider_entries(&config)
                 .into_iter()
                 .find(|(id, _)| *id == provider_id)
-                .map(|(_, provider)| provider.clone())
+                .map(|(_, provider)| provider)
                 .ok_or_else(|| ApiError::not_found(format!("provider `{provider_id}` not found")))?
         };
-        register_provider_enabled_route_seeds(state, provider_id, &provider).await;
+        register_provider_enabled_route_seeds(state, provider_id).await;
         // Mutation-oriented refresh: fetch only this provider's upstream catalog
         // and retain prior discovery for every other provider. Always publishes.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
@@ -921,54 +925,37 @@ async fn sync_provider_routes_for_enabled(
     Ok(())
 }
 
-async fn register_provider_enabled_route_seeds(
-    state: &AppState,
-    provider_id: &str,
-    provider: &ProviderConfig,
-) {
-    let overlay_seeds = match state.store.as_ref() {
-        Some(store) => {
-            match models::load_overlay_route_seeds_for_provider(provider_id, provider, store) {
-                Ok(overlay_seeds) => {
-                    let mut cached = state.model_route_seeds.write().await;
-                    cached.retain(|(owner, _, _)| owner != provider_id);
-                    cached.extend(overlay_seeds.iter().map(|(model_id, upstream_id)| {
-                        (
-                            provider_id.to_string(),
-                            model_id.clone(),
-                            upstream_id.clone(),
-                        )
-                    }));
-                    overlay_seeds
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        provider_id = %provider_id,
-                        error = %err,
-                        "failed to read overlay route seeds during provider route sync; using cached seeds"
-                    );
-                    state
-                        .model_route_seeds
-                        .read()
-                        .await
-                        .iter()
-                        .filter(|(owner, _, _)| owner == provider_id)
-                        .map(|(_, model_id, upstream_id)| (model_id.clone(), upstream_id.clone()))
-                        .collect()
-                }
+async fn register_provider_enabled_route_seeds(state: &AppState, provider_id: &str) {
+    let config = state.read_config().clone();
+    let stable_routes = match state.store.as_ref() {
+        Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
+            models::ModelRouteSeedRead::Loaded { routes, seeds } => {
+                let mut cached = state.model_route_seeds.write().await;
+                *cached = seeds;
+                state
+                    .model_route_seed_revision
+                    .fetch_add(1, Ordering::AcqRel);
+                routes
             }
-        }
-        None => Vec::new(),
+            models::ModelRouteSeedRead::Failed(err) => {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    error = %err,
+                    "failed to read globally ordered route seeds during provider sync; using cached seeds"
+                );
+                models::route_seeds_from_config_and_rows(
+                    &config,
+                    &state.model_route_seeds.read().await,
+                )
+            }
+        },
+        None => models::route_seeds_from_config_and_rows(&config, &[]),
     };
 
     let mut routes = state.model_routes.write().await;
-    register_catalog_routes_for_provider(&mut routes, provider_id, provider);
-    models::register_overlay_route_seeds_for_provider(
-        &mut routes,
-        provider_id,
-        provider,
-        &overlay_seeds,
-    );
+    for (model_id, owner) in stable_routes {
+        routes.insert(model_id, owner);
+    }
 }
 
 fn routed_models_for_provider(
@@ -1758,6 +1745,10 @@ async fn create_provider(
             .insert(provider_id.clone(), provider.clone());
     }
     invalidate_model_discovery(&state);
+    // Creation establishes a new provider identity for this ID. Never allow
+    // retained soft-delete provenance from an earlier identity to cross into it
+    // if the replacement's seed read fails.
+    remove_provider_model_routes(&state, &provider_id).await;
 
     if provider.enabled {
         sync_provider_routes_for_enabled(&state, &provider_id, true).await?;

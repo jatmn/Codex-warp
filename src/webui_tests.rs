@@ -1907,7 +1907,7 @@ async fn catalog_upsert_disabling_model_rebuilds_its_route() {
 }
 
 #[tokio::test]
-async fn insert_model_route_skips_disabled_provider() {
+async fn insert_model_route_caches_disabled_provider_without_publishing_live_route() {
     let state = test_state();
     {
         let mut config = state.config.write().expect("config lock");
@@ -1921,11 +1921,16 @@ async fn insert_model_route_skips_disabled_provider() {
         );
     }
     insert_model_route(&state, "disabled", "blocked-model", None).await;
+    insert_model_route(&state, "missing", "missing-model", None).await;
     let routes = state.model_routes.read().await;
     assert!(!routes.contains_key("blocked-model"));
     drop(routes);
     assert_eq!(
         cached_seed_owner(&state.model_route_seeds.read().await, "blocked-model"),
+        Some("disabled")
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "missing-model"),
         None
     );
 }
@@ -2943,6 +2948,24 @@ async fn remove_provider_model_routes_updates_live_and_cached_routes() {
 }
 
 #[tokio::test]
+async fn enabling_unknown_provider_is_rejected_even_when_other_providers_exist() {
+    let state = test_state();
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let error = sync_provider_routes_for_enabled(&state, "missing", true)
+        .await
+        .expect_err("missing provider must not match a different configured provider");
+    assert_eq!(error.status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
@@ -2973,7 +2996,7 @@ async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
         .providers
         .insert("dynamic".into(), provider.clone());
 
-    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    register_provider_enabled_route_seeds(&state, "dynamic").await;
     let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
     corrupt
         .execute("DROP TABLE model_overlays", [])
@@ -3026,6 +3049,12 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         )
         .expect("seed overlay route");
     state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "alpha-model", true)
+        .expect("seed sibling provider route");
+    state
         .config
         .write()
         .expect("config lock")
@@ -3039,9 +3068,8 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
 
     let route_guard = state.model_routes.write().await;
     let sync_state = state.clone();
-    let sync_provider = provider.clone();
     let sync = tokio::spawn(async move {
-        register_provider_enabled_route_seeds(&sync_state, "dynamic", &sync_provider).await;
+        register_provider_enabled_route_seeds(&sync_state, "dynamic").await;
     });
 
     let mut seed_snapshot_published = false;
@@ -3098,6 +3126,129 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
 }
 
 #[tokio::test]
+async fn provider_enable_preserves_global_persisted_claim_order() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("enable-global-seed-order");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "shared", true)
+        .expect("seed older alpha claim");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("beta", "shared", true)
+        .expect("seed newer beta claim");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for provider_id in ["alpha", "beta"] {
+            config.providers.insert(
+                provider_id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{provider_id}.example/v1"),
+                    enabled: true,
+                    model_catalog_only: true,
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+
+    register_provider_enabled_route_seeds(&state, "alpha").await;
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "shared"),
+        Some("beta")
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta"),
+        "provider enable must immediately publish global persisted precedence"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force later seed read failure");
+    drop(corrupt);
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("cached seed fallback");
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_creation_evicts_cached_rows_from_prior_identity() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("provider-identity-seed-boundary");
+    state.config.write().expect("config lock").providers.insert(
+        "replacement".into(),
+        ProviderConfig {
+            base_url: "https://new.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    state.model_route_seeds.write().await.push((
+        "replacement".into(),
+        "old-identity-model".into(),
+        None,
+    ));
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-identity-model".into(), "replacement".into());
+
+    // This is the identity boundary used by create_provider after persistence
+    // replaces any retained soft-delete rows for the same ID.
+    remove_provider_model_routes(&state, "replacement").await;
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force replacement seed read failure");
+    drop(corrupt);
+    register_provider_enabled_route_seeds(&state, "replacement").await;
+
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "old-identity-model"),
+        None
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-identity-model")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
@@ -3122,7 +3273,7 @@ async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() 
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    register_provider_enabled_route_seeds(&state, "dynamic").await;
 
     remove_provider_live_routes(&state, "dynamic").await;
     let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
@@ -3173,7 +3324,7 @@ async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    register_provider_enabled_route_seeds(&state, "dynamic").await;
     state
         .model_route_seeds
         .write()
@@ -3202,7 +3353,7 @@ async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic", &provider).await;
+    register_provider_enabled_route_seeds(&state, "dynamic").await;
     assert_eq!(
         state
             .model_routes
@@ -3294,6 +3445,100 @@ async fn completing_mutation_rejects_fallback_built_from_intermediate_seed_cache
     );
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn one_mutation_cannot_exhaust_model_discovery_retries_at_both_revision_boundaries() {
+    use crate::models::models;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+    use tokio::sync::mpsc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first_gate = Arc::new(Notify::new());
+    let second_gate = Arc::new(Notify::new());
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let app = axum::Router::new().route(
+        "/models",
+        axum::routing::get({
+            let calls = calls.clone();
+            let first_gate = first_gate.clone();
+            let second_gate = second_gate.clone();
+            move || {
+                let calls = calls.clone();
+                let first_gate = first_gate.clone();
+                let second_gate = second_gate.clone();
+                let started_tx = started_tx.clone();
+                async move {
+                    let call = calls.fetch_add(1, Ordering::AcqRel);
+                    started_tx.send(call).expect("report model fetch");
+                    match call {
+                        0 => first_gate.notified().await,
+                        1 => second_gate.notified().await,
+                        _ => {}
+                    }
+                    axum::Json(serde_json::json!({
+                        "object": "list",
+                        "data": [{"id": "stable-model", "object": "model"}]
+                    }))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = test_state();
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let request_state = state.clone();
+    let request = tokio::spawn(async move { models(State(request_state), HeaderMap::new()).await });
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("first model fetch must start"),
+        Some(0)
+    );
+    let first_mutation = state.mutation_lock.lock().await;
+    invalidate_model_discovery(&state);
+    first_gate.notify_one();
+    drop(first_mutation);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("second model fetch must start"),
+        Some(1)
+    );
+    let mutation_completion = state.mutation_lock.lock().await;
+    complete_model_discovery_mutation(&state);
+    second_gate.notify_one();
+    drop(mutation_completion);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .expect("model discovery must finish")
+            .expect("models task")
+            .status(),
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+    server.abort();
 }
 
 #[tokio::test]

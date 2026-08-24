@@ -1388,6 +1388,7 @@ async fn models_prunes_prior_routes_when_catalog_refresh_is_empty() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1456,6 +1457,7 @@ async fn models_uses_current_catalog_owner_across_rebuild() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1504,6 +1506,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1648,6 +1651,7 @@ async fn models_can_rebuild_while_a_webui_mutation_holds_the_lock() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1718,6 +1722,7 @@ async fn mutation_route_refresh_retains_other_providers_without_refetching() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(0)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -1793,6 +1798,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
         client: Client::new(),
         model_routes: Arc::new(AsyncRwLock::new(prior)),
         model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
         config_revision: Arc::new(AtomicU64::new(1)),
         mutation_lock: Arc::new(AsyncMutex::new(())),
@@ -2007,5 +2013,67 @@ fn cached_overlay_rows_recompute_current_catalog_and_overlay_precedence() {
     assert_eq!(
         routes.get("overlay-upstream").map(String::as_str),
         Some("alpha")
+    );
+}
+
+#[tokio::test]
+async fn stale_fallback_seed_generation_cannot_overwrite_newer_live_routes() {
+    use std::sync::atomic::Ordering;
+
+    let state = test_state(AppConfig::default());
+    let fallback_revision = state.model_route_seed_revision.load(Ordering::Acquire);
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("new-owner".into(), "shared".into(), None));
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "new-owner".into());
+
+    let mut stale_routes = BTreeMap::new();
+    stale_routes.insert("shared".into(), "old-owner".into());
+    let response = publish_models_if_current(
+        &state,
+        state.config_revision.load(Ordering::Acquire),
+        stale_routes,
+        &BTreeSet::new(),
+        ModelRouteSeedPublication {
+            refreshed: None,
+            fallback_revision: Some(fallback_revision),
+        },
+        Json(json!({ "models": [] })).into_response(),
+        false,
+    )
+    .await;
+
+    assert!(response.is_none());
+    let mutation_locked_response = publish_models_if_current(
+        &state,
+        state.config_revision.load(Ordering::Acquire),
+        BTreeMap::from([("shared".into(), "old-owner".into())]),
+        &BTreeSet::new(),
+        ModelRouteSeedPublication {
+            refreshed: None,
+            fallback_revision: Some(fallback_revision),
+        },
+        Json(json!({ "models": [] })).into_response(),
+        true,
+    )
+    .await;
+    assert!(mutation_locked_response.is_none());
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("new-owner")
     );
 }

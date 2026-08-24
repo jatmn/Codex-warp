@@ -32,7 +32,10 @@ use crate::state::ModelRouteSeed;
 
 const DEFAULT_MODEL_CONTEXT_WINDOW: i64 = 128_000;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-const MODEL_DISCOVERY_RETRY_LIMIT: usize = 2;
+// One Web UI mutation advances the discovery revision at both invalidation and
+// completion. A request can legitimately lose one attempt to each boundary,
+// so it needs a third attempt to observe the final stable generation.
+const MODEL_DISCOVERY_RETRY_LIMIT: usize = 3;
 pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
@@ -77,7 +80,12 @@ struct MutationRouteDiscovery {
     routes: BTreeMap<String, String>,
     retain_owners: BTreeSet<String>,
     fetch_warning: Option<String>,
-    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
+    seed_publication: ModelRouteSeedPublication,
+}
+
+struct ModelRouteSeedPublication {
+    refreshed: Option<Vec<ModelRouteSeed>>,
+    fallback_revision: Option<u64>,
 }
 
 pub(crate) enum ModelRouteSeedRead {
@@ -106,11 +114,18 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
+    if discovery
+        .seed_publication
+        .fallback_revision
+        .is_some_and(|revision| state.model_route_seed_revision.load(Ordering::Acquire) != revision)
+    {
+        return Err("model route seed cache changed while refreshing routes; retry".to_string());
+    }
     publish_model_routes(
         state,
         discovery.routes,
         &discovery.retain_owners,
-        discovery.refreshed_seeds,
+        discovery.seed_publication.refreshed,
     )
     .await;
     match discovery.fetch_warning {
@@ -150,26 +165,23 @@ async fn discover_routes_for_mutation(
         .collect();
 
     let seed_config = state.read_config().clone();
-    let (mut routes, refreshed_seeds) = match state.store.as_ref() {
+    let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
         Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
             ModelRouteSeedRead::Failed(err) => {
                 tracing::warn!(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                (
-                    route_seeds_from_config_and_rows(
-                        &seed_config,
-                        &state.model_route_seeds.read().await,
-                    ),
-                    None,
-                )
+                let seeds = state.model_route_seeds.read().await;
+                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
+                let revision = state.model_route_seed_revision.load(Ordering::Acquire);
+                (routes, None, Some(revision))
             }
         },
         None => {
             let seeded = catalog_route_seeds(&seed_config);
-            (seeded, Some(Vec::new()))
+            (seeded, Some(Vec::new()), None)
         }
     };
 
@@ -228,7 +240,10 @@ async fn discover_routes_for_mutation(
         routes,
         retain_owners,
         fetch_warning,
-        refreshed_seeds,
+        seed_publication: ModelRouteSeedPublication {
+            refreshed: refreshed_seeds,
+            fallback_revision: fallback_seed_revision,
+        },
     }
 }
 
@@ -303,26 +318,23 @@ async fn models_for_revision(
 
     let mut merged_models = Vec::new();
     let seed_config = state.read_config().clone();
-    let (mut routes, refreshed_seeds) = match state.store.as_ref() {
+    let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
         Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
             ModelRouteSeedRead::Failed(err) => {
                 tracing::warn!(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                (
-                    route_seeds_from_config_and_rows(
-                        &seed_config,
-                        &state.model_route_seeds.read().await,
-                    ),
-                    None,
-                )
+                let seeds = state.model_route_seeds.read().await;
+                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
+                let revision = state.model_route_seed_revision.load(Ordering::Acquire);
+                (routes, None, Some(revision))
             }
         },
         None => {
             let seeded = catalog_route_seeds(&seed_config);
-            (seeded, Some(Vec::new()))
+            (seeded, Some(Vec::new()), None)
         }
     };
     let mut failures = Vec::new();
@@ -365,7 +377,10 @@ async fn models_for_revision(
                 revision,
                 routes,
                 &failed_providers,
-                refreshed_seeds,
+                ModelRouteSeedPublication {
+                    refreshed: refreshed_seeds,
+                    fallback_revision: fallback_seed_revision,
+                },
                 Json(json!({ "models": [] })).into_response(),
                 mutation_locked,
             )
@@ -393,7 +408,10 @@ async fn models_for_revision(
         revision,
         routes,
         &failed_providers,
-        refreshed_seeds,
+        ModelRouteSeedPublication {
+            refreshed: refreshed_seeds,
+            fallback_revision: fallback_seed_revision,
+        },
         Json(json!({ "models": merged_models })).into_response(),
         mutation_locked,
     )
@@ -405,7 +423,7 @@ async fn publish_models_if_current(
     revision: u64,
     routes: BTreeMap<String, String>,
     failed_providers: &BTreeSet<String>,
-    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
+    seed_publication: ModelRouteSeedPublication,
     response: Response,
     mutation_locked: bool,
 ) -> Option<Response> {
@@ -413,7 +431,12 @@ async fn publish_models_if_current(
         if state.config_revision.load(Ordering::Acquire) != revision {
             return None;
         }
-        publish_model_routes(state, routes, failed_providers, refreshed_seeds).await;
+        if seed_publication.fallback_revision.is_some_and(|revision| {
+            state.model_route_seed_revision.load(Ordering::Acquire) != revision
+        }) {
+            return None;
+        }
+        publish_model_routes(state, routes, failed_providers, seed_publication.refreshed).await;
         return Some(response);
     }
 
@@ -421,7 +444,13 @@ async fn publish_models_if_current(
     if state.config_revision.load(Ordering::Acquire) != revision {
         return None;
     }
-    publish_model_routes(state, routes, failed_providers, refreshed_seeds).await;
+    if seed_publication
+        .fallback_revision
+        .is_some_and(|revision| state.model_route_seed_revision.load(Ordering::Acquire) != revision)
+    {
+        return None;
+    }
+    publish_model_routes(state, routes, failed_providers, seed_publication.refreshed).await;
     Some(response)
 }
 
@@ -459,7 +488,11 @@ async fn publish_model_routes(
     }
     *state.model_routes.write().await = routes;
     if let Some(seeds) = refreshed_seeds {
-        *state.model_route_seeds.write().await = seeds;
+        let mut cached = state.model_route_seeds.write().await;
+        *cached = seeds;
+        state
+            .model_route_seed_revision
+            .fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -493,7 +526,7 @@ fn catalog_route_seeds(config: &AppConfig) -> BTreeMap<String, String> {
     routes
 }
 
-fn route_seeds_from_config_and_rows(
+pub(crate) fn route_seeds_from_config_and_rows(
     config: &AppConfig,
     seeds: &[ModelRouteSeed],
 ) -> BTreeMap<String, String> {
@@ -531,42 +564,6 @@ pub(crate) fn seed_model_routes_from_config_and_store(
     };
     let routes = route_seeds_from_config_and_rows(config, &seeds);
     ModelRouteSeedRead::Loaded { routes, seeds }
-}
-
-/// Load overlay-enabled route seeds for one provider once so every in-memory
-/// route map can publish the same SQLite snapshot.
-pub(crate) fn load_overlay_route_seeds_for_provider(
-    provider_id: &str,
-    provider: &crate::config::ProviderConfig,
-    store: &crate::store::Store,
-) -> Result<Vec<(String, Option<String>)>, anyhow::Error> {
-    if !provider.enabled {
-        return Ok(Vec::new());
-    }
-    store.enabled_model_route_seeds_for_provider(provider_id)
-}
-
-/// Replay one provider's previously loaded overlay seed snapshot into a route map.
-pub(crate) fn register_overlay_route_seeds_for_provider(
-    routes: &mut BTreeMap<String, String>,
-    provider_id: &str,
-    provider: &crate::config::ProviderConfig,
-    seeds: &[(String, Option<String>)],
-) {
-    if !provider.enabled {
-        return;
-    }
-    for (model_id, upstream_id) in seeds {
-        if !provider.model_is_enabled(model_id) {
-            continue;
-        }
-        routes.insert(model_id.clone(), provider_id.to_string());
-        if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty())
-            && provider.model_is_enabled(upstream_id)
-        {
-            routes.insert(upstream_id.to_string(), provider_id.to_string());
-        }
-    }
 }
 
 pub(crate) fn add_models_for_provider(

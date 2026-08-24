@@ -951,6 +951,7 @@ impl Store {
     }
 
     /// Enabled overlay models for one provider that should own routes after restart or re-enable.
+    #[cfg_attr(not(test), allow(dead_code))] // scoped query remains covered by store tests
     pub(crate) fn enabled_model_route_seeds_for_provider(
         &self,
         provider_id: &str,

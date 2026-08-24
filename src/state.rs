@@ -243,6 +243,8 @@ pub(crate) struct AppState {
     /// Unlike `model_routes`, this retains superseded claims and never contains
     /// configured catalogs or upstream-only discovery results.
     pub(crate) model_route_seeds: Arc<AsyncRwLock<Vec<ModelRouteSeed>>>,
+    /// Advances under the seed-cache write lock whenever raw provenance changes.
+    pub(crate) model_route_seed_revision: Arc<AtomicU64>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -286,6 +288,7 @@ impl AppState {
             config,
             client,
             model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+            model_route_seed_revision: Arc::new(AtomicU64::new(0)),
             model_routes,
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
