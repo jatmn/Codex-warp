@@ -899,7 +899,7 @@ async fn sync_provider_routes_for_enabled(
                 .map(|(_, provider)| provider)
                 .ok_or_else(|| ApiError::not_found(format!("provider `{provider_id}` not found")))?
         };
-        register_provider_enabled_route_seeds(state, provider_id).await;
+        synchronize_global_route_seed_snapshot(state, provider_id).await;
         // Mutation-oriented refresh: fetch only this provider's upstream catalog
         // and retain prior discovery for every other provider. Always publishes.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
@@ -938,7 +938,7 @@ async fn sync_provider_routes_for_enabled(
     Ok(())
 }
 
-async fn register_provider_enabled_route_seeds(state: &AppState, provider_id: &str) {
+async fn synchronize_global_route_seed_snapshot(state: &AppState, provider_id: &str) {
     let config = state.read_config().clone();
     let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
         Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
@@ -1815,6 +1815,12 @@ async fn create_provider(
             if provider_enabled {
                 sync_provider_routes_for_enabled(&reconcile_state, &reconcile_provider_id, true)
                     .await?;
+            } else {
+                // Disabled providers stay out of live routing, but their newly
+                // committed raw claims must remain available if the store read
+                // fails during a later enable operation.
+                synchronize_global_route_seed_snapshot(&reconcile_state, &reconcile_provider_id)
+                    .await;
             }
             Ok(())
         },

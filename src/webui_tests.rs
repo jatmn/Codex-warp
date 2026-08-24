@@ -3101,7 +3101,7 @@ async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
         .providers
         .insert("dynamic".into(), provider.clone());
 
-    register_provider_enabled_route_seeds(&state, "dynamic").await;
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
     let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
     corrupt
         .execute("DROP TABLE model_overlays", [])
@@ -3173,7 +3173,7 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
     let route_guard = state.model_routes.write().await;
     let sync_state = state.clone();
     let sync = tokio::spawn(async move {
-        register_provider_enabled_route_seeds(&sync_state, "dynamic").await;
+        synchronize_global_route_seed_snapshot(&sync_state, "dynamic").await;
     });
 
     for _ in 0..1_000 {
@@ -3220,7 +3220,7 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
         "cancellation must leave the provenance snapshot unchanged"
     );
 
-    register_provider_enabled_route_seeds(&state, "dynamic").await;
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
 
     assert_eq!(
         state
@@ -3425,7 +3425,7 @@ async fn provider_enable_preserves_global_persisted_claim_order() {
         }
     }
 
-    register_provider_enabled_route_seeds(&state, "alpha").await;
+    synchronize_global_route_seed_snapshot(&state, "alpha").await;
     assert_eq!(
         cached_seed_owner(&state.model_route_seeds.read().await, "shared"),
         Some("beta")
@@ -3496,7 +3496,7 @@ async fn provider_creation_evicts_cached_rows_from_prior_identity() {
         .execute("DROP TABLE model_overlays", [])
         .expect("force replacement seed read failure");
     drop(corrupt);
-    register_provider_enabled_route_seeds(&state, "replacement").await;
+    synchronize_global_route_seed_snapshot(&state, "replacement").await;
 
     assert_eq!(
         cached_seed_owner(&state.model_route_seeds.read().await, "old-identity-model"),
@@ -3508,6 +3508,107 @@ async fn provider_creation_evicts_cached_rows_from_prior_identity() {
             .read()
             .await
             .contains_key("old-identity-model")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn disabled_provider_creation_caches_claims_for_failed_reenable_read() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("disabled-create-seed-fallback");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "shared", true)
+        .expect("persist older claim");
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    synchronize_global_route_seed_snapshot(&state, "alpha").await;
+
+    let (_, Json(created)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: Some("beta".into()),
+            template: None,
+            fields: ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://beta.example/v1".into()),
+                enabled: Some(false),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: Some(true),
+            },
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+        }),
+    )
+    .await
+    .expect("create disabled provider");
+    assert!(!created.enabled);
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("alpha"),
+        "disabled provider claims must not become live"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "shared"),
+        Some("beta"),
+        "the newest persisted claim must still be cached while disabled"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force re-enable seed read failure");
+    drop(corrupt);
+
+    let Json(enabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("beta".into()),
+        Json(EnabledBody { enabled: true }),
+    )
+    .await
+    .expect("enable from cached provenance");
+    assert!(enabled.enabled);
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta"),
+        "failed SQLite recovery must preserve the disabled provider's newer explicit claim"
     );
 
     drop(state);
@@ -3539,7 +3640,7 @@ async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() 
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic").await;
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
 
     remove_provider_live_routes(&state, "dynamic").await;
     let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
@@ -3590,7 +3691,7 @@ async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic").await;
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
     state
         .model_route_seeds
         .write()
@@ -3619,7 +3720,7 @@ async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    register_provider_enabled_route_seeds(&state, "dynamic").await;
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
     assert_eq!(
         state
             .model_routes
