@@ -625,6 +625,10 @@ pub(crate) fn normalize_models(
         .filter_map(|model| codex_model_info(model, provider, config))
         .collect::<Vec<_>>();
 
+    if !data.is_empty() && models.is_empty() {
+        return None;
+    }
+
     Some(models)
 }
 
@@ -661,6 +665,9 @@ pub(crate) fn codex_model_info(
         .or_else(|| model.get("id"))
         .or_else(|| model.get("model"))
         .and_then(Value::as_str)?;
+    if id.trim().is_empty() {
+        return None;
+    }
 
     let mut info = if model.get("slug").is_some() {
         model.clone()
