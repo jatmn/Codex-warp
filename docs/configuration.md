@@ -477,9 +477,10 @@ discovered models. Editing one promotes its exact live slug to a catalog
 override. `supported_reasoning_levels` and `default_reasoning_level` can be set
 while adding or editing a model; omitting them preserves inheritance, while
 JSON `null` clears an existing override. Discovery metadata is retained per
-provider, so providers that report the same slug keep their own modes, and a
-temporarily disabled model keeps the metadata from its last successful
-catalog refresh.
+provider, so providers that report the same slug keep their own modes. A
+temporarily disabled model, and a catalog alias whose upstream slug is no
+longer in the latest fetch, keep the metadata from the last successful
+catalog refresh instead of falling back to synthetic `none` modes.
 
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`

@@ -442,12 +442,13 @@ async fn publish_model_discovery(
         }
     }
     *state.model_routes.write().await = routes;
-    let configured_providers = {
+    let (configured_providers, config) = {
         let config = state.read_config();
-        crate::config_loader::configured_provider_entries(&config)
+        let configured_providers = crate::config_loader::configured_provider_entries(&config)
             .into_iter()
             .map(|(provider_id, _)| provider_id.to_string())
-            .collect::<BTreeSet<_>>()
+            .collect::<BTreeSet<_>>();
+        (configured_providers, config.clone())
     };
     let mut next_discovered = discovered;
     let prior_discovered = state.discovered_models.read().await.clone();
@@ -461,12 +462,60 @@ async fn publish_model_discovery(
     // Keep disabled providers' snapshots available for the management view,
     // but discard removed providers so a later reused id cannot inherit a
     // different provider's discovery metadata.
-    for (provider_id, models) in prior_discovered {
-        if configured_providers.contains(&provider_id) {
-            next_discovered.entry(provider_id).or_insert(models);
+    for (provider_id, models) in &prior_discovered {
+        if configured_providers.contains(provider_id) {
+            next_discovered
+                .entry(provider_id.clone())
+                .or_insert_with(|| models.clone());
         }
     }
+    // A successful refresh owns the live catalog, but it must not erase last-known
+    // metadata for slugs the operator still references locally (disabled models
+    // and catalog aliases) when upstream no longer returns them.
+    merge_locally_retained_discovery(&mut next_discovered, &prior_discovered, &config);
     *state.discovered_models.write().await = next_discovered;
+}
+
+fn retained_discovery_slugs(provider: &ProviderConfig) -> BTreeSet<String> {
+    let mut slugs = BTreeSet::new();
+    for disabled_id in &provider.disabled_models {
+        if !disabled_id.is_empty() {
+            slugs.insert(disabled_id.clone());
+        }
+    }
+    for entry in &provider.model_catalog {
+        if !entry.id.is_empty() {
+            slugs.insert(entry.id.clone());
+        }
+        if let Some(upstream_id) = entry
+            .upstream_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            slugs.insert(upstream_id.to_string());
+        }
+    }
+    slugs
+}
+
+fn merge_locally_retained_discovery(
+    next_discovered: &mut BTreeMap<String, BTreeMap<String, Value>>,
+    prior_discovered: &BTreeMap<String, BTreeMap<String, Value>>,
+    config: &AppConfig,
+) {
+    for (provider_id, prior_models) in prior_discovered {
+        let Some(next_models) = next_discovered.get_mut(provider_id) else {
+            continue;
+        };
+        let Some(provider) = crate::config::provider_by_id(config, provider_id) else {
+            continue;
+        };
+        for slug in retained_discovery_slugs(provider) {
+            if let Some(info) = prior_models.get(&slug) {
+                next_models.entry(slug).or_insert_with(|| info.clone());
+            }
+        }
+    }
 }
 
 fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {

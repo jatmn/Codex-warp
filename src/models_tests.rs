@@ -2375,3 +2375,161 @@ async fn discovery_publication_keeps_provider_scoped_collision_metadata() {
         "high"
     );
 }
+
+#[tokio::test]
+async fn successful_refresh_keeps_disabled_model_discovery_metadata() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            disabled_models: vec!["shared".into()],
+            ..ProviderConfig::default()
+        },
+    );
+    let state = test_state(config);
+    state.discovered_models.write().await.insert(
+        "alpha".into(),
+        BTreeMap::from([
+            (
+                "shared".into(),
+                json!({
+                    "slug":"shared",
+                    "default_reasoning_level":"high",
+                    "supported_reasoning_levels":[{"effort":"high"}]
+                }),
+            ),
+            (
+                "gone".into(),
+                json!({
+                    "slug":"gone",
+                    "default_reasoning_level":"low",
+                    "supported_reasoning_levels":[{"effort":"low"}]
+                }),
+            ),
+        ]),
+    );
+    let discovered = BTreeMap::from([(
+        "alpha".into(),
+        BTreeMap::from([(
+            "live".into(),
+            json!({
+                "slug":"live",
+                "default_reasoning_level":"medium",
+                "supported_reasoning_levels":[{"effort":"medium"}]
+            }),
+        )]),
+    )]);
+
+    publish_model_discovery(&state, BTreeMap::new(), discovered, &BTreeSet::new()).await;
+
+    let snapshots = state.discovered_models.read().await;
+    assert_eq!(
+        snapshots["alpha"]["shared"]["default_reasoning_level"],
+        "high"
+    );
+    assert_eq!(
+        snapshots["alpha"]["live"]["default_reasoning_level"],
+        "medium"
+    );
+    assert!(
+        !snapshots["alpha"].contains_key("gone"),
+        "unreferenced prior slugs must not accumulate after a successful refresh"
+    );
+}
+
+#[tokio::test]
+async fn successful_refresh_prefers_fresh_metadata_for_still_disabled_slug() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            disabled_models: vec!["shared".into()],
+            ..ProviderConfig::default()
+        },
+    );
+    let state = test_state(config);
+    state.discovered_models.write().await.insert(
+        "alpha".into(),
+        BTreeMap::from([(
+            "shared".into(),
+            json!({
+                "slug":"shared",
+                "default_reasoning_level":"low",
+                "supported_reasoning_levels":[{"effort":"low"}]
+            }),
+        )]),
+    );
+    let discovered = BTreeMap::from([(
+        "alpha".into(),
+        BTreeMap::from([(
+            "shared".into(),
+            json!({
+                "slug":"shared",
+                "default_reasoning_level":"max",
+                "supported_reasoning_levels":[{"effort":"max"}]
+            }),
+        )]),
+    )]);
+
+    publish_model_discovery(&state, BTreeMap::new(), discovered, &BTreeSet::new()).await;
+
+    assert_eq!(
+        state.discovered_models.read().await["alpha"]["shared"]["default_reasoning_level"],
+        "max"
+    );
+}
+
+#[tokio::test]
+async fn catalog_only_success_keeps_catalog_upstream_discovery_metadata() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "manual".into(),
+        ProviderConfig {
+            base_url: "https://manual.example/v1".into(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "manual/custom".into(),
+                upstream_id: Some("upstream-model".into()),
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    let state = test_state(config);
+    state.discovered_models.write().await.insert(
+        "manual".into(),
+        BTreeMap::from([(
+            "upstream-model".into(),
+            json!({
+                "slug":"upstream-model",
+                "default_reasoning_level":"high",
+                "supported_reasoning_levels":[{"effort":"high"}]
+            }),
+        )]),
+    );
+
+    publish_model_discovery(
+        &state,
+        BTreeMap::new(),
+        BTreeMap::from([("manual".into(), BTreeMap::new())]),
+        &BTreeSet::new(),
+    )
+    .await;
+
+    let snapshots = state.discovered_models.read().await.clone();
+    assert_eq!(
+        snapshots["manual"]["upstream-model"]["default_reasoning_level"],
+        "high"
+    );
+    let config = state.read_config().clone();
+    let provider = provider_by_id(&config, "manual").expect("manual provider");
+    let info = catalog_model_info(
+        &provider.model_catalog[0],
+        provider,
+        &config,
+        snapshots.get("manual"),
+    );
+    assert_eq!(info["default_reasoning_level"], "high");
+}
