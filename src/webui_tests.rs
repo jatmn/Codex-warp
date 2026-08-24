@@ -2996,6 +2996,7 @@ async fn enabling_provider_primes_overlay_seed_cache_before_seed_read_failure() 
     corrupt
         .execute("DROP TABLE model_overlays", [])
         .expect("drop overlay table to force a seed read failure");
+    drop(corrupt);
     crate::models::refresh_model_routes_while_mutation_locked(
         &state,
         MutationRouteRefresh::SeedsAndRetain,
