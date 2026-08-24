@@ -1875,7 +1875,7 @@ async fn disabling_provider_refetches_live_only_fallback_owner() {
 
 #[tokio::test]
 async fn catalog_upsert_disabling_model_rebuilds_its_route() {
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("catalog-disable-rebuild");
     {
         let mut config = state.config.write().expect("config lock");
         for id in ["alpha", "beta"] {
@@ -1893,11 +1893,68 @@ async fn catalog_upsert_disabling_model_rebuilds_its_route() {
                 },
             );
         }
-        config
-            .providers
-            .get_mut("alpha")
-            .expect("alpha exists")
-            .disable_model("shared");
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+    let initial_revision = state.config_revision.load(Ordering::Acquire);
+
+    let (_, Json(_view)) = add_model(
+        State(state.clone()),
+        Path("alpha".to_string()),
+        Json(ModelCatalogEntry {
+            id: "shared".into(),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect("disable existing catalog model");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(
+        state.config_revision.load(Ordering::Acquire),
+        initial_revision + 2,
+        "successful reconciliation must publish its completion generation"
+    );
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn catalog_upsert_changing_alias_rebuilds_retired_collision() {
+    let (state, store_dir) = temporary_store_state("catalog-alias-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
     }
     state
         .model_routes
@@ -1905,20 +1962,181 @@ async fn catalog_upsert_disabling_model_rebuilds_its_route() {
         .await
         .insert("shared".into(), "alpha".into());
 
-    sync_model_route(
-        &state,
-        "alpha",
-        &ModelCatalogEntry {
-            id: "shared".into(),
-            enabled: false,
+    let (_, Json(_view)) = add_model(
+        State(state.clone()),
+        Path("alpha".to_string()),
+        Json(ModelCatalogEntry {
+            id: "friendly".into(),
+            upstream_id: Some("new-shared".into()),
             ..ModelCatalogEntry::default()
-        },
-        None,
+        }),
     )
-    .await;
+    .await
+    .expect("replace existing catalog alias");
 
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn catalog_update_disabling_model_rebuilds_its_route() {
+    let (state, store_dir) = temporary_store_state("catalog-update-disable-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = update_model(
+        State(state.clone()),
+        Path(("alpha".to_string(), "shared".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Absent,
+            description: OptionalPatch::Absent,
+            enabled: Some(false),
+        }),
+    )
+    .await
+    .expect("disable existing catalog model through update");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn catalog_update_changing_alias_rebuilds_retired_collision() {
+    let (state, store_dir) = temporary_store_state("catalog-update-alias-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = update_model(
+        State(state.clone()),
+        Path(("alpha".to_string(), "friendly".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Set("new-shared".into()),
+            display_name: OptionalPatch::Absent,
+            description: OptionalPatch::Absent,
+            enabled: None,
+        }),
+    )
+    .await
+    .expect("replace existing catalog alias through update");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn model_disable_endpoint_rebuilds_colliding_sibling_route() {
+    let (state, store_dir) = temporary_store_state("model-disable-endpoint-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = set_model_enabled(
+        State(state.clone()),
+        Path(("alpha".to_string(), "shared".to_string())),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("disable catalog model through enablement endpoint");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }
 
 #[tokio::test]
@@ -3269,8 +3487,8 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
 }
 
 #[tokio::test]
-async fn committed_model_update_reconciliation_survives_handler_cancellation() {
-    let (state, store_dir) = temporary_store_state("cancelled-model-update-reconciliation");
+async fn model_update_waits_for_route_epoch_before_durable_publication() {
+    let (state, store_dir) = temporary_store_state("model-update-route-epoch");
     let model_id = "dynamic/friendly";
     let old_upstream_id = "old-upstream";
     let new_upstream_id = "new-upstream";
@@ -3323,17 +3541,7 @@ async fn committed_model_update_reconciliation_survives_handler_cancellation() {
         .await
     });
 
-    for _ in 0..1_000 {
-        let committed = state
-            .read_config()
-            .providers
-            .get("dynamic")
-            .and_then(|provider| provider.model_catalog.first())
-            .and_then(|model| model.upstream_id.as_deref())
-            == Some(new_upstream_id);
-        if committed {
-            break;
-        }
+    for _ in 0..100 {
         tokio::task::yield_now().await;
     }
     assert_eq!(
@@ -3343,8 +3551,13 @@ async fn committed_model_update_reconciliation_survives_handler_cancellation() {
             .get("dynamic")
             .and_then(|provider| provider.model_catalog.first())
             .and_then(|model| model.upstream_id.as_deref()),
-        Some(new_upstream_id),
-        "the durable/config mutation must commit before cancellation"
+        Some(old_upstream_id),
+        "catalog publication must wait for the matching route write epoch"
+    );
+    assert_eq!(
+        state.config_revision.load(Ordering::Acquire),
+        initial_revision,
+        "a blocked route epoch must not expose a partial mutation generation"
     );
 
     update.abort();
@@ -3354,30 +3567,15 @@ async fn committed_model_update_reconciliation_survives_handler_cancellation() {
             .expect_err("outer handler task must be cancelled")
             .is_cancelled()
     );
-    assert!(
-        state.mutation_lock.try_lock().is_err(),
-        "detached reconciliation must retain the mutation lock"
-    );
-
     drop(route_guard);
-    let mut completed = false;
-    for _ in 0..1_000 {
-        if let Ok(guard) = state.mutation_lock.try_lock() {
-            drop(guard);
-            completed = true;
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(completed, "detached reconciliation must finish");
 
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get(model_id).map(String::as_str), Some("dynamic"));
     assert_eq!(
-        routes.get(new_upstream_id).map(String::as_str),
+        routes.get(old_upstream_id).map(String::as_str),
         Some("dynamic")
     );
-    assert!(!routes.contains_key(old_upstream_id));
+    assert!(!routes.contains_key(new_upstream_id));
     drop(routes);
     let seeds = state.model_route_seeds.read().await;
     assert_eq!(cached_seed_owner(&seeds, model_id), Some("dynamic"));
@@ -3387,23 +3585,118 @@ async fn committed_model_update_reconciliation_survives_handler_cancellation() {
             .any(|(provider_id, seed_model_id, upstream_id)| {
                 provider_id == "dynamic"
                     && seed_model_id == model_id
-                    && upstream_id.as_deref() == Some(new_upstream_id)
+                    && upstream_id.as_deref() == Some(old_upstream_id)
             })
     );
     assert!(
         seeds
             .iter()
-            .all(|(_, _, upstream_id)| { upstream_id.as_deref() != Some(old_upstream_id) })
+            .all(|(_, _, upstream_id)| { upstream_id.as_deref() != Some(new_upstream_id) })
     );
     assert_eq!(
         state.config_revision.load(Ordering::Acquire),
-        initial_revision + 2,
-        "the detached task must publish the completion generation"
+        initial_revision,
+        "cancellation before the route epoch must leave the mutation uncommitted"
+    );
+    let persisted = state
+        .store
+        .as_ref()
+        .expect("store present")
+        .enabled_model_route_seeds()
+        .expect("load persisted seeds");
+    assert!(
+        persisted
+            .iter()
+            .any(|(provider_id, seed_model_id, upstream_id)| {
+                provider_id == "dynamic"
+                    && seed_model_id == model_id
+                    && upstream_id.as_deref() == Some(old_upstream_id)
+            })
     );
 
     drop(seeds);
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn model_route_epoch_cannot_select_retired_colliding_alias_owner() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("new-shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let mut routes = state.model_routes.write().await;
+    routes.insert("shared".into(), "alpha".into());
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.extend([
+        ("alpha".into(), "friendly".into(), Some("shared".into())),
+        ("alpha".into(), "sibling".into(), None),
+        ("beta".into(), "shared".into(), None),
+        ("beta".into(), "friendly".into(), None),
+    ]);
+
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: "alpha",
+            model_id: "friendly",
+            previous_upstream_id: Some("shared"),
+            current_upstream_id: Some("new-shared"),
+            model_enabled: true,
+            provider_enabled: true,
+        },
+    );
+    drop(seeds);
+    drop(routes);
+
+    let selected = crate::provider::select_provider(
+        &state,
+        &serde_json::json!({"model": "shared", "input": "hello"}),
+    )
+    .await
+    .expect("the remaining explicit catalog owner must be selected");
+    assert_eq!(selected.id, "beta");
+    let routes = state.model_routes.read().await;
+    assert_ne!(routes.get("shared").map(String::as_str), Some("alpha"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(provider_id, model_id, _)| { provider_id == "alpha" && model_id == "sibling" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(provider_id, model_id, _)| { provider_id == "beta" && model_id == "friendly" })
+    );
 }
 
 #[tokio::test]
