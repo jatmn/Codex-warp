@@ -752,12 +752,12 @@ async fn remove_provider_live_routes(state: &AppState, provider_id: &str) {
 }
 
 async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
-    remove_provider_live_routes(state, provider_id).await;
-    let mut seeds = state.model_route_seeds.write().await;
-    seeds.retain(|(owner, _, _)| owner != provider_id);
     state
-        .model_route_seed_revision
-        .fetch_add(1, Ordering::AcqRel);
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            routes.retain(|_, owner| owner != provider_id);
+            seeds.retain(|(owner, _, _)| owner != provider_id);
+        })
+        .await;
 }
 
 async fn remove_model_routes(
@@ -766,21 +766,21 @@ async fn remove_model_routes(
     model_id: &str,
     upstream_id: Option<&str>,
 ) {
-    let mut routes = state.model_routes.write().await;
-    if routes.get(model_id).map(String::as_str) == Some(provider_id) {
-        routes.remove(model_id);
-    }
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-        && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
-    {
-        routes.remove(upstream_id);
-    }
-    drop(routes);
-    let mut seeds = state.model_route_seeds.write().await;
-    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
     state
-        .model_route_seed_revision
-        .fetch_add(1, Ordering::AcqRel);
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            if routes.get(model_id).map(String::as_str) == Some(provider_id) {
+                routes.remove(model_id);
+            }
+            if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+                && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
+            {
+                routes.remove(upstream_id);
+            }
+            seeds.retain(|(owner, seed_model_id, _)| {
+                owner != provider_id || seed_model_id != model_id
+            });
+        })
+        .await;
 }
 
 /// Rebuild discovery after a single-model removal so another enabled provider
@@ -825,26 +825,38 @@ async fn insert_model_route(
     let Some(provider_enabled) = provider_enabled else {
         return;
     };
-    let mut seeds = state.model_route_seeds.write().await;
-    seeds.retain(|(owner, seed_model_id, _)| owner != provider_id || seed_model_id != model_id);
-    seeds.push((
-        provider_id.to_string(),
-        model_id.to_string(),
-        upstream_id.map(str::to_string),
-    ));
-    state
-        .model_route_seed_revision
-        .fetch_add(1, Ordering::AcqRel);
-    drop(seeds);
     if !provider_enabled {
+        state
+            .mutate_model_route_seeds(|seeds| {
+                seeds.retain(|(owner, seed_model_id, _)| {
+                    owner != provider_id || seed_model_id != model_id
+                });
+                seeds.push((
+                    provider_id.to_string(),
+                    model_id.to_string(),
+                    upstream_id.map(str::to_string),
+                ));
+            })
+            .await;
         return;
     }
-    let mut routes = state.model_routes.write().await;
-    // Explicit operator enable/add always claims ownership for colliding slugs.
-    routes.insert(model_id.to_string(), provider_id.to_string());
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
-        routes.insert(upstream_id.to_string(), provider_id.to_string());
-    }
+    state
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            seeds.retain(|(owner, seed_model_id, _)| {
+                owner != provider_id || seed_model_id != model_id
+            });
+            seeds.push((
+                provider_id.to_string(),
+                model_id.to_string(),
+                upstream_id.map(str::to_string),
+            ));
+            // Explicit operator enable/add always claims ownership for colliding slugs.
+            routes.insert(model_id.to_string(), provider_id.to_string());
+            if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+                routes.insert(upstream_id.to_string(), provider_id.to_string());
+            }
+        })
+        .await;
 }
 
 /// Apply a catalog mutation to the live route map. Both POST and PUT are
@@ -927,34 +939,39 @@ async fn sync_provider_routes_for_enabled(
 
 async fn register_provider_enabled_route_seeds(state: &AppState, provider_id: &str) {
     let config = state.read_config().clone();
-    let stable_routes = match state.store.as_ref() {
+    let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
         Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
-            models::ModelRouteSeedRead::Loaded { routes, seeds } => {
-                let mut cached = state.model_route_seeds.write().await;
-                *cached = seeds;
-                state
-                    .model_route_seed_revision
-                    .fetch_add(1, Ordering::AcqRel);
-                routes
-            }
+            models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
             models::ModelRouteSeedRead::Failed(err) => {
                 tracing::warn!(
                     provider_id = %provider_id,
                     error = %err,
                     "failed to read globally ordered route seeds during provider sync; using cached seeds"
                 );
-                models::route_seeds_from_config_and_rows(
-                    &config,
-                    &state.model_route_seeds.read().await,
+                let (seeds, _) = state.model_route_seed_snapshot().await;
+                (
+                    models::route_seeds_from_config_and_rows(&config, &seeds),
+                    None,
                 )
             }
         },
-        None => models::route_seeds_from_config_and_rows(&config, &[]),
+        None => (models::route_seeds_from_config_and_rows(&config, &[]), None),
     };
 
-    let mut routes = state.model_routes.write().await;
-    for (model_id, owner) in stable_routes {
-        routes.insert(model_id, owner);
+    if let Some(seeds) = refreshed_seeds {
+        state
+            .mutate_model_routes_and_seeds(|routes, cached| {
+                for (model_id, owner) in stable_routes {
+                    routes.insert(model_id, owner);
+                }
+                *cached = seeds;
+            })
+            .await;
+    } else {
+        let mut routes = state.model_routes.write().await;
+        for (model_id, owner) in stable_routes {
+            routes.insert(model_id, owner);
+        }
     }
 }
 

@@ -173,9 +173,8 @@ async fn discover_routes_for_mutation(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                let seeds = state.model_route_seeds.read().await;
+                let (seeds, revision) = state.model_route_seed_snapshot().await;
                 let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
-                let revision = state.model_route_seed_revision.load(Ordering::Acquire);
                 (routes, None, Some(revision))
             }
         },
@@ -326,9 +325,8 @@ async fn models_for_revision(
                     error = %err,
                     "failed to read enabled model route seeds; falling back to cached seeds"
                 );
-                let seeds = state.model_route_seeds.read().await;
+                let (seeds, revision) = state.model_route_seed_snapshot().await;
                 let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
-                let revision = state.model_route_seed_revision.load(Ordering::Acquire);
                 (routes, None, Some(revision))
             }
         },
@@ -386,7 +384,8 @@ async fn models_for_revision(
             )
             .await;
         }
-        if state.config_revision.load(Ordering::Acquire) != revision {
+        if !cache_seed_snapshot_if_current(&state, revision, refreshed_seeds, mutation_locked).await
+        {
             return None;
         }
         // Keep previously discovered routes when upstream catalogs fail transiently.
@@ -416,6 +415,40 @@ async fn models_for_revision(
         mutation_locked,
     )
     .await
+}
+
+/// Retain a successful authoritative seed read even when catalog discovery has
+/// no response to publish. The failed response leaves live routes unchanged,
+/// but later SQLite failures must still fall back to the last successful raw
+/// provenance snapshot.
+async fn cache_seed_snapshot_if_current(
+    state: &AppState,
+    revision: u64,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
+    mutation_locked: bool,
+) -> bool {
+    if mutation_locked {
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return false;
+        }
+        if let Some(seeds) = refreshed_seeds {
+            state
+                .mutate_model_route_seeds(|cached| *cached = seeds)
+                .await;
+        }
+        return true;
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return false;
+    }
+    if let Some(seeds) = refreshed_seeds {
+        state
+            .mutate_model_route_seeds(|cached| *cached = seeds)
+            .await;
+    }
+    true
 }
 
 async fn publish_models_if_current(
@@ -466,33 +499,41 @@ async fn publish_model_routes(
     failed_providers: &BTreeSet<String>,
     refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
-    let prior = state.model_routes.read().await.clone();
-    {
+    let retain_failed_routes = |routes: &mut BTreeMap<String, String>,
+                                prior: &BTreeMap<String, String>| {
         let config = state.read_config();
         for (model_id, owner) in prior {
-            if !failed_providers.contains(&owner) {
+            if !failed_providers.contains(owner) {
                 continue;
             }
-            let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
+            let Some(provider) = crate::config::provider_by_id(&config, owner) else {
                 continue;
             };
-            if !provider.model_is_enabled(&model_id) {
+            if !provider.model_is_enabled(model_id) {
                 continue;
             }
             // A fresh successful discovery owns the route for this refresh.
             // Retain stale ownership only when no healthy provider supplied
             // the same model, otherwise `/models` can advertise one provider
             // while `/responses` is routed to the failed prior owner.
-            routes.entry(model_id).or_insert(owner);
+            routes
+                .entry(model_id.clone())
+                .or_insert_with(|| owner.clone());
         }
-    }
-    *state.model_routes.write().await = routes;
+    };
+
     if let Some(seeds) = refreshed_seeds {
-        let mut cached = state.model_route_seeds.write().await;
-        *cached = seeds;
         state
-            .model_route_seed_revision
-            .fetch_add(1, Ordering::AcqRel);
+            .mutate_model_routes_and_seeds(|prior, cached| {
+                retain_failed_routes(&mut routes, prior);
+                *prior = routes;
+                *cached = seeds;
+            })
+            .await;
+    } else {
+        let mut prior = state.model_routes.write().await;
+        retain_failed_routes(&mut routes, &prior);
+        *prior = routes;
     }
 }
 

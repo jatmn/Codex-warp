@@ -1537,6 +1537,78 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
 }
 
 #[tokio::test]
+async fn route_and_seed_publication_is_cancellation_safe() {
+    use std::sync::atomic::Ordering;
+
+    let state = test_state(AppConfig::default());
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "old-owner".into());
+    let mut seed_guard = state.model_route_seeds.write().await;
+    seed_guard.push(("old-owner".into(), "shared".into(), None));
+    let initial_seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
+
+    let publish_state = state.clone();
+    let publish = tokio::spawn(async move {
+        publish_model_routes(
+            &publish_state,
+            BTreeMap::from([("shared".into(), "new-owner".into())]),
+            &BTreeSet::new(),
+            Some(vec![("new-owner".into(), "shared".into(), None)]),
+        )
+        .await;
+    });
+
+    let mut publication_reached_seed_contention = false;
+    for _ in 0..1_000 {
+        match state.model_routes.try_read() {
+            Ok(routes) if routes.get("shared").map(String::as_str) == Some("new-owner") => {
+                publication_reached_seed_contention = true;
+                break;
+            }
+            Err(_) => {
+                publication_reached_seed_contention = true;
+                break;
+            }
+            _ => tokio::task::yield_now().await,
+        }
+    }
+    assert!(
+        publication_reached_seed_contention,
+        "publication must reach the contended seed lock"
+    );
+    publish.abort();
+    assert!(
+        publish
+            .await
+            .expect_err("publication must be cancelled")
+            .is_cancelled()
+    );
+    drop(seed_guard);
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("old-owner"),
+        "cancellation must not leave newly published live routes"
+    );
+    assert_eq!(
+        state.model_route_seeds.read().await.as_slice(),
+        &[("old-owner".into(), "shared".into(), None)]
+    );
+    assert_eq!(
+        state.model_route_seed_revision.load(Ordering::Acquire),
+        initial_seed_revision
+    );
+}
+
+#[tokio::test]
 async fn models_returns_empty_list_when_no_providers_configured() {
     use crate::models::models;
     use axum::extract::State;
@@ -2013,6 +2085,38 @@ fn cached_overlay_rows_recompute_current_catalog_and_overlay_precedence() {
     assert_eq!(
         routes.get("overlay-upstream").map(String::as_str),
         Some("alpha")
+    );
+}
+
+#[tokio::test]
+async fn mutation_locked_failed_refresh_does_not_cache_stale_seed_snapshot() {
+    use std::sync::atomic::Ordering;
+
+    let state = test_state(AppConfig::default());
+    state.config_revision.store(1, Ordering::Release);
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("current-owner".into(), "shared".into(), None));
+    let initial_seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
+
+    assert!(
+        !cache_seed_snapshot_if_current(
+            &state,
+            0,
+            Some(vec![("stale-owner".into(), "shared".into(), None)]),
+            true,
+        )
+        .await
+    );
+    assert_eq!(
+        state.model_route_seeds.read().await.as_slice(),
+        &[("current-owner".into(), "shared".into(), None)]
+    );
+    assert_eq!(
+        state.model_route_seed_revision.load(Ordering::Acquire),
+        initial_seed_revision
     );
 }
 

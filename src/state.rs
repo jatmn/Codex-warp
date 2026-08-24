@@ -271,6 +271,41 @@ impl AppState {
         self.config.write().expect("config lock poisoned")
     }
 
+    /// Clone the raw provenance cache and its generation from one read epoch.
+    pub(crate) async fn model_route_seed_snapshot(&self) -> (Vec<ModelRouteSeed>, u64) {
+        let seeds = self.model_route_seeds.read().await;
+        let revision = self.model_route_seed_revision.load(Ordering::Acquire);
+        (seeds.clone(), revision)
+    }
+
+    /// Mutate raw provenance and advance its generation without an intervening
+    /// cancellation point.
+    pub(crate) async fn mutate_model_route_seeds<R>(
+        &self,
+        mutation: impl FnOnce(&mut Vec<ModelRouteSeed>) -> R,
+    ) -> R {
+        let mut seeds = self.model_route_seeds.write().await;
+        let result = mutation(&mut seeds);
+        self.model_route_seed_revision
+            .fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
+    /// Acquire both route-state locks before changing either half of a logical
+    /// ownership publication. The synchronous mutation cannot be cancelled
+    /// after one map changes but before the other map and generation change.
+    pub(crate) async fn mutate_model_routes_and_seeds<R>(
+        &self,
+        mutation: impl FnOnce(&mut BTreeMap<String, String>, &mut Vec<ModelRouteSeed>) -> R,
+    ) -> R {
+        let mut routes = self.model_routes.write().await;
+        let mut seeds = self.model_route_seeds.write().await;
+        let result = mutation(&mut routes, &mut seeds);
+        self.model_route_seed_revision
+            .fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
     // Assembled from independently initialized subsystems at startup.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(

@@ -1920,6 +1920,12 @@ async fn insert_model_route_caches_disabled_provider_without_publishing_live_rou
             },
         );
     }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("disabled".into(), "sibling-model".into(), None));
+        seeds.push(("other".into(), "blocked-model".into(), None));
+        seeds.push(("disabled".into(), "blocked-model".into(), None));
+    }
     insert_model_route(&state, "disabled", "blocked-model", None).await;
     insert_model_route(&state, "missing", "missing-model", None).await;
     let routes = state.model_routes.read().await;
@@ -1932,6 +1938,27 @@ async fn insert_model_route_caches_disabled_provider_without_publishing_live_rou
     assert_eq!(
         cached_seed_owner(&state.model_route_seeds.read().await, "missing-model"),
         None
+    );
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| owner == "disabled" && model_id == "sibling-model"),
+        "updating one disabled-provider model must retain its sibling seed"
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| owner == "other" && model_id == "blocked-model"),
+        "updating one provider must retain another provider's colliding claim"
+    );
+    assert_eq!(
+        seeds
+            .iter()
+            .filter(|(owner, model_id, _)| { owner == "disabled" && model_id == "blocked-model" })
+            .count(),
+        1,
+        "the target claim must be replaced rather than duplicated"
     );
 }
 
@@ -2806,6 +2833,84 @@ fn discovery_settings_changed_detects_endpoint_and_catalog_mode() {
 }
 
 #[tokio::test]
+async fn failed_catalog_refresh_retains_successful_seed_snapshot_for_fallback() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::models;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("failed-catalog-seed-retention");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-model", true)
+        .expect("seed overlay route");
+
+    let upstream = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async { axum::http::StatusCode::BAD_GATEWAY }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind failing upstream");
+    let address = listener.local_addr().expect("failing upstream address");
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("overlay-model"),
+        "a failed catalog refresh must leave live routes unchanged"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model"),
+        Some("dynamic"),
+        "a successful SQLite read must become the next fallback snapshot"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force later seed read failure");
+    drop(corrupt);
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("cached seed fallback");
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-model")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+
+    drop(_mutation);
+    server.abort();
+    let _ = server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
     use crate::models::MutationRouteRefresh;
     use crate::models::models;
@@ -3022,9 +3127,7 @@ async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
 }
 
 #[tokio::test]
-async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
-    use rusqlite::Connection;
-
+async fn enabling_provider_route_snapshot_is_cancellation_safe() {
     let (state, store_dir) = temporary_store_state("enable-shared-seed-snapshot");
     let provider = ProviderConfig {
         base_url: "https://dynamic.example/v1".into(),
@@ -3065,6 +3168,7 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         seeds.push(("alpha".into(), "alpha-model".into(), None));
         seeds.push(("dynamic".into(), "stale-dynamic-model".into(), None));
     }
+    let initial_seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
 
     let route_guard = state.model_routes.write().await;
     let sync_state = state.clone();
@@ -3072,33 +3176,51 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         register_provider_enabled_route_seeds(&sync_state, "dynamic").await;
     });
 
-    let mut seed_snapshot_published = false;
     for _ in 0..1_000 {
-        if cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model")
-            == Some("dynamic")
-        {
-            seed_snapshot_published = true;
-            break;
-        }
         tokio::task::yield_now().await;
     }
-    assert!(
-        seed_snapshot_published,
-        "provider sync must cache the SQLite snapshot before waiting for live publication"
-    );
     {
         let seeds = state.model_route_seeds.read().await;
+        assert_eq!(cached_seed_owner(&seeds, "overlay-model"), None);
         assert_eq!(cached_seed_owner(&seeds, "alpha-model"), Some("alpha"));
-        assert_eq!(cached_seed_owner(&seeds, "stale-dynamic-model"), None);
+        assert_eq!(
+            cached_seed_owner(&seeds, "stale-dynamic-model"),
+            Some("dynamic")
+        );
     }
+    assert_eq!(
+        state.model_route_seed_revision.load(Ordering::Acquire),
+        initial_seed_revision,
+        "waiting for the live-route lock must not publish provenance early"
+    );
+    assert!(
+        !sync.is_finished(),
+        "route publication must still be blocked"
+    );
 
-    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
-    corrupt
-        .execute("DROP TABLE model_overlays", [])
-        .expect("force any later seed read to fail");
-    drop(corrupt);
+    sync.abort();
+    assert!(
+        sync.await
+            .expect_err("route sync must be cancelled")
+            .is_cancelled(),
+        "the blocked publication task must be cancelled"
+    );
     drop(route_guard);
-    sync.await.expect("provider route sync task");
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("overlay-model"),
+        "cancellation must leave the live route snapshot unchanged"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model"),
+        None,
+        "cancellation must leave the provenance snapshot unchanged"
+    );
+
+    register_provider_enabled_route_seeds(&state, "dynamic").await;
 
     assert_eq!(
         state
@@ -3120,6 +3242,12 @@ async fn enabling_provider_applies_one_overlay_snapshot_to_both_route_maps() {
         Some("dynamic"),
         "the shared snapshot must preserve the overlay's upstream routing identity"
     );
+    {
+        let seeds = state.model_route_seeds.read().await;
+        assert_eq!(cached_seed_owner(&seeds, "overlay-model"), Some("dynamic"));
+        assert_eq!(cached_seed_owner(&seeds, "alpha-model"), Some("alpha"));
+        assert_eq!(cached_seed_owner(&seeds, "stale-dynamic-model"), None);
+    }
 
     drop(state);
     std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
