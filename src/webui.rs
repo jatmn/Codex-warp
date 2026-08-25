@@ -761,11 +761,19 @@ fn remove_provider_live_routes_from(routes: &mut BTreeMap<String, String>, provi
     routes.retain(|_, owner| owner != provider_id);
 }
 
+fn evict_provider_owned_routes_and_seeds(
+    routes: &mut BTreeMap<String, String>,
+    seeds: &mut Vec<crate::state::ModelRouteSeed>,
+    provider_id: &str,
+) {
+    remove_provider_live_routes_from(routes, provider_id);
+    seeds.retain(|(owner, _, _)| owner != provider_id);
+}
+
 async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
     state
         .mutate_model_routes_and_seeds(|routes, seeds| {
-            routes.retain(|_, owner| owner != provider_id);
-            seeds.retain(|(owner, _, _)| owner != provider_id);
+            evict_provider_owned_routes_and_seeds(routes, seeds, provider_id);
         })
         .await;
 }
@@ -2033,6 +2041,11 @@ async fn create_provider(
         }
     }
 
+    // Reused IDs can still own leftover live routes or overlay seeds from a
+    // previous identity. Take that epoch before the new config is visible.
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
+
     store
         .create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -2043,6 +2056,12 @@ async fn create_provider(
             .providers
             .insert(provider_id.clone(), provider.clone());
     }
+    evict_provider_owned_routes_and_seeds(&mut routes, &mut seeds, &provider_id);
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
+    drop(seeds);
+    drop(routes);
     // A deleted provider normally clears its discovery snapshot, but ensure a
     // reused id never exposes any stale in-memory metadata before its first
     // successful catalog refresh.

@@ -3958,6 +3958,107 @@ async fn disabled_provider_creation_caches_claims_for_failed_reenable_read() {
 }
 
 #[tokio::test]
+async fn create_provider_reused_id_evicts_stale_routes_before_config_is_visible() {
+    let (state, store_dir) = temporary_store_state("create-provider-reuse-route-epoch");
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("old-live-only".into(), "dynamic".into());
+        routes.insert("alpha-live-only".into(), "alpha".into());
+    }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("dynamic".into(), "old-live-only".into(), None));
+    }
+
+    let route_epoch = state.model_routes.read().await;
+    let create_state = state.clone();
+    let create = tokio::spawn(async move {
+        create_provider(
+            State(create_state),
+            Json(CreateProviderBody {
+                id: Some("dynamic".into()),
+                template: None,
+                fields: ProviderPersist {
+                    name: OptionalPatch::Absent,
+                    base_url: Some("https://new-dynamic.example/v1".into()),
+                    enabled: Some(true),
+                    api_key_env: OptionalPatch::Absent,
+                    api_key: OptionalPatch::Absent,
+                    headers: OptionalPatch::Absent,
+                    auth_header: None,
+                    auth_scheme: None,
+                    responses_path: None,
+                    chat_completions_path: None,
+                    models_path: None,
+                    model_catalog_only: Some(true),
+                },
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "dynamic-model".into(),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider create must acquire mutation lock"
+    );
+    assert!(
+        !state.read_config().providers.contains_key("dynamic"),
+        "reused-id create must not publish the new identity while stale live routes remain"
+    );
+
+    drop(route_epoch);
+    let _ = create.await.expect("create task").expect("create succeeds");
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://new-dynamic.example/v1")
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "create must evict prior-identity live routes with the new config"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "old-live-only"),
+        None,
+        "create must drop prior-identity overlay seeds with the new config"
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("alpha-live-only")
+            .map(String::as_str),
+        Some("alpha"),
+        "create must evict only the reused provider's leftover routes"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
