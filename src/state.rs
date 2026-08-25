@@ -233,6 +233,8 @@ mod session_model_cache_tests {
     }
 }
 
+pub(crate) type ModelRouteSeed = (String, String, Option<String>);
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
@@ -241,6 +243,12 @@ pub(crate) struct AppState {
     /// Last successful normalized upstream catalog, kept per provider so the
     /// Web UI can edit live models without confusing colliding slugs.
     pub(crate) discovered_models: Arc<AsyncRwLock<BTreeMap<String, BTreeMap<String, Value>>>>,
+    /// Last successfully read persisted overlay seed rows, in ownership order.
+    /// Unlike `model_routes`, this retains superseded claims and never contains
+    /// configured catalogs or upstream-only discovery results.
+    pub(crate) model_route_seeds: Arc<AsyncRwLock<Vec<ModelRouteSeed>>>,
+    /// Advances under the seed-cache write lock whenever raw provenance changes.
+    pub(crate) model_route_seed_revision: Arc<AtomicU64>,
     /// Most recent concrete model per Codex prompt-cache session. Guardian
     /// requests namespace the same key with `guardian:`.
     pub(crate) session_models: Arc<AsyncRwLock<SessionModelCache>>,
@@ -267,6 +275,41 @@ impl AppState {
         self.config.write().expect("config lock poisoned")
     }
 
+    /// Clone the raw provenance cache and its generation from one read epoch.
+    pub(crate) async fn model_route_seed_snapshot(&self) -> (Vec<ModelRouteSeed>, u64) {
+        let seeds = self.model_route_seeds.read().await;
+        let revision = self.model_route_seed_revision.load(Ordering::Acquire);
+        (seeds.clone(), revision)
+    }
+
+    /// Mutate raw provenance and advance its generation without an intervening
+    /// cancellation point.
+    pub(crate) async fn mutate_model_route_seeds<R>(
+        &self,
+        mutation: impl FnOnce(&mut Vec<ModelRouteSeed>) -> R,
+    ) -> R {
+        let mut seeds = self.model_route_seeds.write().await;
+        let result = mutation(&mut seeds);
+        self.model_route_seed_revision
+            .fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
+    /// Acquire both route-state locks before changing either half of a logical
+    /// ownership publication. The synchronous mutation cannot be cancelled
+    /// after one map changes but before the other map and generation change.
+    pub(crate) async fn mutate_model_routes_and_seeds<R>(
+        &self,
+        mutation: impl FnOnce(&mut BTreeMap<String, String>, &mut Vec<ModelRouteSeed>) -> R,
+    ) -> R {
+        let mut routes = self.model_routes.write().await;
+        let mut seeds = self.model_route_seeds.write().await;
+        let result = mutation(&mut routes, &mut seeds);
+        self.model_route_seed_revision
+            .fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
     // Assembled from independently initialized subsystems at startup.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
@@ -283,6 +326,8 @@ impl AppState {
         Self {
             config,
             client,
+            model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+            model_route_seed_revision: Arc::new(AtomicU64::new(0)),
             model_routes,
             discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),

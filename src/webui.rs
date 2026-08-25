@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,7 +44,6 @@ use crate::debug_log::effective_max_log_age_days;
 use crate::debug_log::effective_max_log_mb;
 use crate::debug_log::normalize_debug_config;
 use crate::models;
-use crate::models::register_catalog_routes_for_provider;
 use crate::process_log::tracing_filter_from_debug_or;
 use crate::process_log::validate_debug_live_config_or;
 use crate::provider::provider_display_name;
@@ -752,38 +752,64 @@ fn require_store(state: &AppState) -> Result<&Store, ApiError> {
         .ok_or_else(|| ApiError::service_unavailable("analytics store is not configured"))
 }
 
+async fn remove_provider_live_routes(state: &AppState, provider_id: &str) {
+    let mut routes = state.model_routes.write().await;
+    remove_provider_live_routes_from(&mut routes, provider_id);
+}
+
+fn remove_provider_live_routes_from(routes: &mut BTreeMap<String, String>, provider_id: &str) {
+    routes.retain(|_, owner| owner != provider_id);
+}
+
+fn evict_provider_owned_routes_and_seeds(
+    routes: &mut BTreeMap<String, String>,
+    seeds: &mut Vec<crate::state::ModelRouteSeed>,
+    provider_id: &str,
+) {
+    remove_provider_live_routes_from(routes, provider_id);
+    seeds.retain(|(owner, _, _)| owner != provider_id);
+}
+
 async fn remove_provider_model_routes(state: &AppState, provider_id: &str) {
     state
-        .model_routes
-        .write()
-        .await
-        .retain(|_, owner| owner != provider_id);
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            evict_provider_owned_routes_and_seeds(routes, seeds, provider_id);
+        })
+        .await;
 }
 
 async fn remove_provider_discovery(state: &AppState, provider_id: &str) {
     state.discovered_models.write().await.remove(provider_id);
 }
 
+#[cfg(test)]
 async fn remove_model_routes(
     state: &AppState,
     provider_id: &str,
     model_id: &str,
     upstream_id: Option<&str>,
 ) {
-    let mut routes = state.model_routes.write().await;
-    if routes.get(model_id).map(String::as_str) == Some(provider_id) {
-        routes.remove(model_id);
-    }
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-        && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
-    {
-        routes.remove(upstream_id);
-    }
+    state
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            if routes.get(model_id).map(String::as_str) == Some(provider_id) {
+                routes.remove(model_id);
+            }
+            if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
+                && routes.get(upstream_id).map(String::as_str) == Some(provider_id)
+            {
+                routes.remove(upstream_id);
+            }
+            seeds.retain(|(owner, seed_model_id, _)| {
+                owner != provider_id || seed_model_id != model_id
+            });
+        })
+        .await;
 }
 
 /// Rebuild discovery after a single-model removal so another enabled provider
 /// can immediately claim an overlapping live-only slug. Live discovery stores
 /// only the winning owner, so every enabled provider must be refetched here.
+#[cfg(test)]
 async fn remove_model_routes_and_rebuild(
     state: &AppState,
     provider_id: &str,
@@ -807,6 +833,77 @@ async fn remove_model_routes_and_rebuild(
     }
 }
 
+/// Publish the directly knowable route and raw-provenance effects of one
+/// catalog mutation. Callers hold both route-state write guards, so config and
+/// ownership can be advanced as one epoch without another cancellation point.
+struct ModelRouteEpochUpdate<'a> {
+    provider_id: &'a str,
+    model_id: &'a str,
+    previous_upstream_id: Option<&'a str>,
+    current_upstream_id: Option<&'a str>,
+    model_enabled: bool,
+    provider_enabled: bool,
+}
+
+fn publish_model_route_epoch(
+    routes: &mut BTreeMap<String, String>,
+    seeds: &mut Vec<crate::state::ModelRouteSeed>,
+    update: ModelRouteEpochUpdate<'_>,
+) {
+    for route_id in [
+        Some(update.model_id),
+        update.previous_upstream_id,
+        update.current_upstream_id,
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|route_id| !route_id.is_empty())
+    {
+        if routes.get(route_id).map(String::as_str) == Some(update.provider_id) {
+            routes.remove(route_id);
+        }
+    }
+    seeds.retain(|(owner, seed_model_id, _)| {
+        owner != update.provider_id || seed_model_id != update.model_id
+    });
+
+    if !update.model_enabled {
+        return;
+    }
+
+    seeds.push((
+        update.provider_id.to_string(),
+        update.model_id.to_string(),
+        update.current_upstream_id.map(str::to_string),
+    ));
+    if update.provider_enabled {
+        // Explicit operator enable/add/update remains the newest owner for
+        // colliding slugs, matching persisted route_order precedence.
+        routes.insert(update.model_id.to_string(), update.provider_id.to_string());
+        if let Some(upstream_id) = update.current_upstream_id.filter(|value| !value.is_empty()) {
+            routes.insert(upstream_id.to_string(), update.provider_id.to_string());
+        }
+    }
+}
+
+async fn rebuild_model_routes_after_mutation(state: &AppState, provider_id: &str, model_id: &str) {
+    if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+        state,
+        models::MutationRouteRefresh::RefetchAll,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            provider_id = %provider_id,
+            model_id = %model_id,
+            error = %err,
+            "model route refresh after mutation reported a warning"
+        );
+    }
+}
+
+#[cfg(test)]
 async fn insert_model_route(
     state: &AppState,
     provider_id: &str,
@@ -819,42 +916,42 @@ async fn insert_model_route(
             .into_iter()
             .find(|(id, _)| *id == provider_id)
             .map(|(_, provider)| provider.enabled)
-            .unwrap_or(false)
+    };
+    let Some(provider_enabled) = provider_enabled else {
+        return;
     };
     if !provider_enabled {
+        state
+            .mutate_model_route_seeds(|seeds| {
+                seeds.retain(|(owner, seed_model_id, _)| {
+                    owner != provider_id || seed_model_id != model_id
+                });
+                seeds.push((
+                    provider_id.to_string(),
+                    model_id.to_string(),
+                    upstream_id.map(str::to_string),
+                ));
+            })
+            .await;
         return;
     }
-    let mut routes = state.model_routes.write().await;
-    // Explicit operator enable/add always claims ownership for colliding slugs.
-    routes.insert(model_id.to_string(), provider_id.to_string());
-    if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
-        routes.insert(upstream_id.to_string(), provider_id.to_string());
-    }
-}
-
-/// Apply a catalog mutation to the live route map. Both POST and PUT are
-/// upserts, so they must share this transition rather than letting one leave a
-/// disabled model's previous owner behind.
-async fn sync_model_route(
-    state: &AppState,
-    provider_id: &str,
-    entry: &ModelCatalogEntry,
-    previous_upstream_id: Option<&str>,
-) {
-    if previous_upstream_id != entry.upstream_id.as_deref() {
-        remove_model_routes_and_rebuild(state, provider_id, &entry.id, previous_upstream_id).await;
-    }
-    if entry.enabled {
-        insert_model_route(state, provider_id, &entry.id, entry.upstream_id.as_deref()).await;
-    } else {
-        remove_model_routes_and_rebuild(
-            state,
-            provider_id,
-            &entry.id,
-            entry.upstream_id.as_deref(),
-        )
+    state
+        .mutate_model_routes_and_seeds(|routes, seeds| {
+            seeds.retain(|(owner, seed_model_id, _)| {
+                owner != provider_id || seed_model_id != model_id
+            });
+            seeds.push((
+                provider_id.to_string(),
+                model_id.to_string(),
+                upstream_id.map(str::to_string),
+            ));
+            // Explicit operator enable/add always claims ownership for colliding slugs.
+            routes.insert(model_id.to_string(), provider_id.to_string());
+            if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty()) {
+                routes.insert(upstream_id.to_string(), provider_id.to_string());
+            }
+        })
         .await;
-    }
 }
 
 async fn sync_provider_routes_for_enabled(
@@ -863,26 +960,15 @@ async fn sync_provider_routes_for_enabled(
     enabled: bool,
 ) -> Result<(), ApiError> {
     if enabled {
-        let provider = {
+        {
             let config = state.read_config();
             configured_provider_entries(&config)
                 .into_iter()
                 .find(|(id, _)| *id == provider_id)
-                .map(|(_, provider)| provider.clone())
+                .map(|(_, provider)| provider)
                 .ok_or_else(|| ApiError::not_found(format!("provider `{provider_id}` not found")))?
         };
-        {
-            let mut routes = state.model_routes.write().await;
-            register_catalog_routes_for_provider(&mut routes, provider_id, &provider);
-            if let Some(store) = state.store.as_ref() {
-                models::register_overlay_route_seeds_for_provider(
-                    &mut routes,
-                    provider_id,
-                    &provider,
-                    store,
-                );
-            }
-        }
+        synchronize_global_route_seed_snapshot(state, provider_id).await;
         // Mutation-oriented refresh: fetch only this provider's upstream catalog
         // and retain prior discovery for every other provider. Always publishes.
         if let Err(err) = models::refresh_model_routes_while_mutation_locked(
@@ -899,7 +985,7 @@ async fn sync_provider_routes_for_enabled(
             );
         }
     } else {
-        remove_provider_model_routes(state, provider_id).await;
+        remove_provider_live_routes(state, provider_id).await;
         // `model_routes` retains only the winning owner for a discovered slug,
         // so another provider's colliding live-only model cannot be recovered
         // from seeds or retained routes. Rebuild discovery to let it claim the
@@ -919,6 +1005,44 @@ async fn sync_provider_routes_for_enabled(
         }
     }
     Ok(())
+}
+
+async fn synchronize_global_route_seed_snapshot(state: &AppState, provider_id: &str) {
+    let config = state.read_config().clone();
+    let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
+        Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
+            models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
+            models::ModelRouteSeedRead::Failed(err) => {
+                tracing::warn!(
+                    provider_id = %provider_id,
+                    error = %err,
+                    "failed to read globally ordered route seeds during provider sync; using cached seeds"
+                );
+                let (seeds, _) = state.model_route_seed_snapshot().await;
+                (
+                    models::route_seeds_from_config_and_rows(&config, &seeds),
+                    None,
+                )
+            }
+        },
+        None => (models::route_seeds_from_config_and_rows(&config, &[]), None),
+    };
+
+    if let Some(seeds) = refreshed_seeds {
+        state
+            .mutate_model_routes_and_seeds(|routes, cached| {
+                for (model_id, owner) in stable_routes {
+                    routes.insert(model_id, owner);
+                }
+                *cached = seeds;
+            })
+            .await;
+    } else {
+        let mut routes = state.model_routes.write().await;
+        for (model_id, owner) in stable_routes {
+            routes.insert(model_id, owner);
+        }
+    }
 }
 
 fn routed_models_for_provider(
@@ -1710,6 +1834,52 @@ fn invalidate_model_discovery(state: &AppState) {
     state.config_revision.fetch_add(1, Ordering::AcqRel);
 }
 
+fn complete_model_discovery_mutation(state: &AppState) {
+    // A discovery request can prepare fallback routes after the first revision
+    // bump but before this mutation finishes publishing route provenance.
+    // Advance again so that request cannot publish its intermediate snapshot
+    // after it eventually acquires mutation_lock.
+    state.config_revision.fetch_add(1, Ordering::AcqRel);
+}
+
+struct ModelDiscoveryMutationCompletion(AppState);
+
+impl Drop for ModelDiscoveryMutationCompletion {
+    fn drop(&mut self) {
+        complete_model_discovery_mutation(&self.0);
+    }
+}
+
+/// Finish the in-memory half of a committed provider/model mutation outside
+/// the request future. Axum can drop a handler when its client disconnects;
+/// the owned task keeps both reconciliation and `mutation_lock` alive until the
+/// route/provenance snapshot and completion generation have been published.
+fn finish_model_discovery_mutation<F>(
+    state: AppState,
+    mutation: tokio::sync::OwnedMutexGuard<()>,
+    reconcile: F,
+) -> tokio::task::JoinHandle<(tokio::sync::OwnedMutexGuard<()>, Result<(), ApiError>)>
+where
+    F: Future<Output = Result<(), ApiError>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let completion = ModelDiscoveryMutationCompletion(state);
+        let result = reconcile.await;
+        drop(completion);
+        (mutation, result)
+    })
+}
+
+async fn await_model_discovery_mutation(
+    task: tokio::task::JoinHandle<(tokio::sync::OwnedMutexGuard<()>, Result<(), ApiError>)>,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, ApiError> {
+    let (mutation, result) = task
+        .await
+        .map_err(|err| ApiError::internal(format!("model route reconciliation failed: {err}")))?;
+    result?;
+    Ok(mutation)
+}
+
 async fn list_providers(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProviderView>>, ApiError> {
@@ -1761,7 +1931,7 @@ async fn create_provider(
     State(state): State<AppState>,
     Json(body): Json<CreateProviderBody>,
 ) -> Result<(StatusCode, Json<ProviderView>), ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     let mut fields = body.fields;
     normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
@@ -1871,6 +2041,11 @@ async fn create_provider(
         }
     }
 
+    // Reused IDs can still own leftover live routes or overlay seeds from a
+    // previous identity. Take that epoch before the new config is visible.
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
+
     store
         .create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -1881,15 +2056,42 @@ async fn create_provider(
             .providers
             .insert(provider_id.clone(), provider.clone());
     }
+    evict_provider_owned_routes_and_seeds(&mut routes, &mut seeds, &provider_id);
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
+    drop(seeds);
+    drop(routes);
     // A deleted provider normally clears its discovery snapshot, but ensure a
     // reused id never exposes any stale in-memory metadata before its first
     // successful catalog refresh.
     remove_provider_discovery(&state, &provider_id).await;
     invalidate_model_discovery(&state);
-
-    if provider.enabled {
-        sync_provider_routes_for_enabled(&state, &provider_id, true).await?;
-    }
+    let reconcile_state = state.clone();
+    let reconcile_provider_id = provider_id.clone();
+    let provider_enabled = provider.enabled;
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            // Creation establishes a new provider identity for this ID. Never allow
+            // retained soft-delete provenance from an earlier identity to cross into it
+            // if the replacement's seed read fails.
+            remove_provider_model_routes(&reconcile_state, &reconcile_provider_id).await;
+            if provider_enabled {
+                sync_provider_routes_for_enabled(&reconcile_state, &reconcile_provider_id, true)
+                    .await?;
+            } else {
+                // Disabled providers stay out of live routing, but their newly
+                // committed raw claims must remain available if the store read
+                // fails during a later enable operation.
+                synchronize_global_route_seed_snapshot(&reconcile_state, &reconcile_provider_id)
+                    .await;
+            }
+            Ok(())
+        },
+    ))
+    .await?;
 
     let provider = {
         let config = state.read_config();
@@ -1917,7 +2119,7 @@ async fn update_provider(
     Path(id): Path<String>,
     Json(mut fields): Json<ProviderPersist>,
 ) -> Result<Json<ProviderView>, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     normalize_provider_api_key_fields(&mut fields);
     validate_provider_persist(&fields)?;
@@ -1945,6 +2147,21 @@ async fn update_provider(
         (snapshot, previous_enabled, refresh_discovery)
     };
 
+    // A live route discovered from the old identity must never be paired with
+    // the new destination or credentials. Acquire the route epoch before the
+    // durable commit so cancellation cannot leave SQLite ahead of in-memory
+    // publication, then update config and evict stale routes without an await.
+    // Disabling uses the same epoch: live ownership must be gone before the
+    // disabled config is visible, otherwise selection can fall through to
+    // another provider while this owner's routes are still published.
+    let mut identity_routes = if (snapshot.enabled && previous_enabled && refresh_discovery)
+        || (previous_enabled && !snapshot.enabled)
+    {
+        Some(state.model_routes.write().await)
+    } else {
+        None
+    };
+
     store
         .upsert_provider_overlay(&id, Some(snapshot.enabled), false, managed, Some(&snapshot))
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -1955,35 +2172,45 @@ async fn update_provider(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.clone_from(&snapshot);
     }
+    if let Some(routes) = identity_routes.as_mut() {
+        remove_provider_live_routes_from(routes, &id);
+    }
     invalidate_model_discovery(&state);
-
     if refresh_discovery {
         remove_provider_discovery(&state, &id).await;
     }
-
-    if snapshot.enabled != previous_enabled {
-        sync_provider_routes_for_enabled(&state, &id, snapshot.enabled).await?;
-    } else if snapshot.enabled && refresh_discovery {
-        // Live-only routes describe the old discovery identity. Remove them
-        // before refreshing so a failed fetch cannot send an old gateway's
-        // models to the newly edited provider. Because routes retain only the
-        // winner for a colliding live-only slug, rebuild every provider so an
-        // unchanged provider can reclaim a removed route immediately.
-        remove_provider_model_routes(&state, &id).await;
-        if let Err(err) = models::refresh_model_routes_while_mutation_locked(
-            &state,
-            models::MutationRouteRefresh::RefetchAll,
-            None,
-        )
-        .await
-        {
-            tracing::warn!(
-                provider_id = %id,
-                error = %err,
-                "provider update route refresh could not load upstream models; catalog/overlay routes remain published"
-            );
-        }
-    }
+    drop(identity_routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let enabled = snapshot.enabled;
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            if enabled != previous_enabled {
+                sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, enabled).await?;
+            } else if enabled && refresh_discovery {
+                // Stale live routes were evicted in the same route/config epoch
+                // that published the new identity. Rebuild every provider so an
+                // unchanged provider can reclaim a removed route immediately.
+                if let Err(err) = models::refresh_model_routes_while_mutation_locked(
+                    &reconcile_state,
+                    models::MutationRouteRefresh::RefetchAll,
+                    None,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        provider_id = %reconcile_id,
+                        error = %err,
+                        "provider update route refresh could not load upstream models; catalog/overlay routes remain published"
+                    );
+                }
+            }
+            Ok(())
+        },
+    ))
+    .await?;
 
     let provider = {
         let config = state.read_config();
@@ -2009,7 +2236,7 @@ async fn delete_provider(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     if id == PRIMARY_PROVIDER_ID {
         return Err(ApiError::bad_request("cannot delete default provider id"));
@@ -2036,10 +2263,18 @@ async fn delete_provider(
         config.providers.remove(&id);
     }
     invalidate_model_discovery(&state);
-
     remove_provider_discovery(&state, &id).await;
-
-    sync_provider_routes_for_enabled(&state, &id, false).await?;
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            remove_provider_model_routes(&reconcile_state, &reconcile_id).await;
+            sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, false).await
+        },
+    ))
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2048,15 +2283,27 @@ async fn set_provider_enabled(
     Path(id): Path<String>,
     Json(body): Json<EnabledBody>,
 ) -> Result<Json<ProviderView>, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
 
-    {
+    let previous_enabled = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-    }
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.enabled)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
+    };
+    // Evict live routes before the disabled config is visible so selection cannot
+    // observe this owner together with enabled=false while the old routes remain.
+    let mut disable_routes = if previous_enabled && !body.enabled {
+        Some(state.model_routes.write().await)
+    } else {
+        None
+    };
 
     let managed = lookup_provider_managed(&state, &id)?;
     if managed
@@ -2088,9 +2335,23 @@ async fn set_provider_enabled(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.enabled = body.enabled;
     }
+    if let Some(routes) = disable_routes.as_mut() {
+        remove_provider_live_routes_from(routes, &id);
+    }
     invalidate_model_discovery(&state);
-
-    sync_provider_routes_for_enabled(&state, &id, body.enabled).await?;
+    drop(disable_routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let enabled = body.enabled;
+    let _mutation =
+        await_model_discovery_mutation(finish_model_discovery_mutation(
+            state.clone(),
+            mutation,
+            async move {
+                sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, enabled).await
+            },
+        ))
+        .await?;
 
     let provider = {
         let config = state.read_config();
@@ -2117,7 +2378,7 @@ async fn add_model(
     Path(id): Path<String>,
     Json(mut entry): Json<ModelCatalogEntry>,
 ) -> Result<(StatusCode, Json<ModelView>), ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     if entry.id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -2147,7 +2408,7 @@ async fn add_model(
     let store = require_store(&state)?;
     let managed = lookup_provider_managed(&state, &id)?;
 
-    let (already_in_catalog, previous_upstream_id) = {
+    let (already_in_catalog, previous_upstream_id, provider_enabled) = {
         let config = state.read_config();
         configured_provider_entries(&config)
             .into_iter()
@@ -2160,11 +2421,17 @@ async fn add_model(
                 (
                     existing.is_some(),
                     existing.and_then(|catalog| catalog.upstream_id.clone()),
+                    provider.enabled,
                 )
             })
-            .unwrap_or((false, None))
+            .unwrap_or((false, None, false))
     };
 
+    // Selection takes the route read guard before cloning config. Take the
+    // matching write epoch before the durable commit so cancellation cannot
+    // expose the replacement catalog with stale ownership.
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
     store
         .upsert_model_catalog(&id, &entry, managed, !already_in_catalog)
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -2175,9 +2442,45 @@ async fn add_model(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         upsert_model_catalog_entry(provider, entry.clone());
     }
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: &id,
+            model_id: &entry.id,
+            previous_upstream_id: previous_upstream_id.as_deref(),
+            current_upstream_id: entry.upstream_id.as_deref(),
+            model_enabled: entry.enabled,
+            provider_enabled,
+        },
+    );
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
     invalidate_model_discovery(&state);
-
-    sync_model_route(&state, &id, &entry, previous_upstream_id.as_deref()).await;
+    drop(seeds);
+    drop(routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let reconcile_model_id = entry.id.clone();
+    let needs_rebuild =
+        !entry.enabled || previous_upstream_id.as_deref() != entry.upstream_id.as_deref();
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            if needs_rebuild {
+                rebuild_model_routes_after_mutation(
+                    &reconcile_state,
+                    &reconcile_id,
+                    &reconcile_model_id,
+                )
+                .await;
+            }
+            Ok(())
+        },
+    ))
+    .await?;
 
     let provider = {
         let config = state.read_config();
@@ -2213,7 +2516,7 @@ async fn update_model(
     Path((id, model_id)): Path<(String, String)>,
     Json(fields): Json<ModelPersist>,
 ) -> Result<Json<ModelView>, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -2224,7 +2527,7 @@ async fn update_model(
         !matches!(fields.supported_reasoning_levels, OptionalPatch::Absent)
             || !matches!(fields.default_reasoning_level, OptionalPatch::Absent);
 
-    let (mut updated, previous_upstream_id, config_snapshot, provider_snapshot) = {
+    let (mut updated, previous_upstream_id, config_snapshot, provider_snapshot, provider_enabled) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -2249,6 +2552,7 @@ async fn update_model(
             previous_upstream_id,
             config.clone(),
             provider.clone(),
+            provider.enabled,
         )
     };
     let discovered = state.discovered_models.read().await;
@@ -2262,6 +2566,8 @@ async fn update_model(
         reasoning_fields_changed,
     )?;
 
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
     store
         .upsert_model_catalog(&id, &updated, managed, false)
         .map_err(|err| ApiError::internal(err.to_string()))?;
@@ -2272,9 +2578,45 @@ async fn update_model(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         upsert_model_catalog_entry(provider, updated.clone());
     }
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: &id,
+            model_id: &updated.id,
+            previous_upstream_id: previous_upstream_id.as_deref(),
+            current_upstream_id: updated.upstream_id.as_deref(),
+            model_enabled: updated.enabled,
+            provider_enabled,
+        },
+    );
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
     invalidate_model_discovery(&state);
-
-    sync_model_route(&state, &id, &updated, previous_upstream_id.as_deref()).await;
+    drop(seeds);
+    drop(routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let reconcile_model_id = updated.id.clone();
+    let needs_rebuild =
+        !updated.enabled || previous_upstream_id.as_deref() != updated.upstream_id.as_deref();
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            if needs_rebuild {
+                rebuild_model_routes_after_mutation(
+                    &reconcile_state,
+                    &reconcile_id,
+                    &reconcile_model_id,
+                )
+                .await;
+            }
+            Ok(())
+        },
+    ))
+    .await?;
 
     let provider = {
         let config = state.read_config();
@@ -2304,7 +2646,7 @@ async fn delete_model(
     State(state): State<AppState>,
     Path((id, model_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
@@ -2312,7 +2654,7 @@ async fn delete_model(
     let store = require_store(&state)?;
     let managed = lookup_provider_managed(&state, &id)?;
 
-    let (catalog_entry, upstream_id, managed_snapshot) = {
+    let (catalog_entry, upstream_id, managed_snapshot, provider_enabled) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -2342,12 +2684,19 @@ async fn delete_model(
         } else {
             None
         };
-        (catalog_entry, upstream_id, managed_snapshot)
+        (
+            catalog_entry,
+            upstream_id,
+            managed_snapshot,
+            provider.enabled,
+        )
     };
 
     // Managed providers are fully overlay-owned. For TOML-backed providers,
     // only a row explicitly marked as UI-created may be hard-deleted; ordinary
     // overlay rows can be edits or enablement changes to a TOML catalog entry.
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
     let mut hard_delete = managed;
     if let Some(entry) = &catalog_entry {
         if managed {
@@ -2391,9 +2740,41 @@ async fn delete_model(
             provider.disable_model(&model_id);
         }
     }
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: &id,
+            model_id: &model_id,
+            previous_upstream_id: upstream_id.as_deref(),
+            current_upstream_id: None,
+            model_enabled: false,
+            provider_enabled,
+        },
+    );
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
     invalidate_model_discovery(&state);
-
-    remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
+    drop(seeds);
+    drop(routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let reconcile_model_id = model_id.clone();
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            rebuild_model_routes_after_mutation(
+                &reconcile_state,
+                &reconcile_id,
+                &reconcile_model_id,
+            )
+            .await;
+            Ok(())
+        },
+    ))
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2402,14 +2783,14 @@ async fn set_model_enabled(
     Path((id, model_id)): Path<(String, String)>,
     Json(body): Json<EnabledBody>,
 ) -> Result<Json<ModelView>, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     if model_id.trim().is_empty() {
         return Err(ApiError::bad_request("model id is required"));
     }
     let store = require_store(&state)?;
 
-    let (in_catalog, previous_upstream_id) = {
+    let (in_catalog, previous_upstream_id, provider_enabled) = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
@@ -2427,16 +2808,18 @@ async fn set_model_enabled(
             .iter()
             .find(|catalog| catalog.id == model_id)
             .and_then(|entry| entry.upstream_id.clone());
-        (in_catalog, upstream_id)
+        (in_catalog, upstream_id, provider.enabled)
     };
 
+    let mut routes = state.model_routes.write().await;
+    let mut seeds = state.model_route_seeds.write().await;
     let restored_catalog = store
         .set_model_enabled(&id, &model_id, body.enabled)
         .map_err(|err| ApiError::internal(err.to_string()))?;
     let upstream_id = restored_catalog
         .as_ref()
         .and_then(|entry| entry.upstream_id.clone())
-        .or(previous_upstream_id);
+        .or_else(|| previous_upstream_id.clone());
 
     {
         let mut config = state.write_config();
@@ -2465,13 +2848,44 @@ async fn set_model_enabled(
             provider.disable_model(&model_id);
         }
     }
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: &id,
+            model_id: &model_id,
+            previous_upstream_id: previous_upstream_id.as_deref(),
+            current_upstream_id: upstream_id.as_deref(),
+            model_enabled: body.enabled,
+            provider_enabled,
+        },
+    );
+    state
+        .model_route_seed_revision
+        .fetch_add(1, Ordering::AcqRel);
     invalidate_model_discovery(&state);
-
-    if body.enabled {
-        insert_model_route(&state, &id, &model_id, upstream_id.as_deref()).await;
-    } else {
-        remove_model_routes_and_rebuild(&state, &id, &model_id, upstream_id.as_deref()).await;
-    }
+    drop(seeds);
+    drop(routes);
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let reconcile_model_id = model_id.clone();
+    let enabled = body.enabled;
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            if !enabled {
+                rebuild_model_routes_after_mutation(
+                    &reconcile_state,
+                    &reconcile_id,
+                    &reconcile_model_id,
+                )
+                .await;
+            }
+            Ok(())
+        },
+    ))
+    .await?;
 
     let (config, provider) = {
         let config = state.read_config().clone();

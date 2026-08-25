@@ -1,9 +1,11 @@
 use super::*;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
@@ -34,6 +36,63 @@ fn test_state() -> AppState {
         Some(crate::process_log::TracingReload::for_tests(process_log)),
         None,
     )
+}
+
+fn temporary_store_state(label: &str) -> (AppState, std::path::PathBuf) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let dir =
+        std::env::temp_dir().join(format!("codex-warp-{label}-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create temporary store directory");
+    let store = crate::store::Store::open(&dir.join("overlay.db")).expect("open temporary store");
+    (state_with_store(store), dir)
+}
+
+async fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if ready() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+async fn wait_until_async<F, Fut>(mut ready: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if ready().await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+fn cached_seed_owner<'a>(
+    seeds: &'a [crate::state::ModelRouteSeed],
+    route: &str,
+) -> Option<&'a str> {
+    seeds
+        .iter()
+        .rev()
+        .find_map(|(provider_id, model_id, upstream_id)| {
+            (model_id == route || upstream_id.as_deref() == Some(route))
+                .then_some(provider_id.as_str())
+        })
 }
 
 fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
@@ -1584,6 +1643,16 @@ async fn insert_model_route_repoints_existing_owner() {
         let mut routes = state.model_routes.write().await;
         routes.insert("shared-model".into(), "alpha".into());
     }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push((
+            "beta".into(),
+            "shared-model".into(),
+            Some("old-upstream".into()),
+        ));
+        seeds.push(("beta".into(), "other-model".into(), None));
+        seeds.push(("alpha".into(), "shared-model".into(), None));
+    }
     insert_model_route(&state, "beta", "shared-model", Some("upstream-shared")).await;
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("shared-model").map(String::as_str), Some("beta"));
@@ -1591,18 +1660,98 @@ async fn insert_model_route_repoints_existing_owner() {
         routes.get("upstream-shared").map(String::as_str),
         Some("beta")
     );
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert_eq!(cached_seed_owner(&seeds, "shared-model"), Some("beta"));
+    assert_eq!(cached_seed_owner(&seeds, "upstream-shared"), Some("beta"));
+    assert_eq!(cached_seed_owner(&seeds, "old-upstream"), None);
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "other-model" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "shared-model" })
+    );
 }
 
 #[tokio::test]
-async fn remove_model_routes_preserves_other_provider_upstream_slug() {
+async fn remove_model_routes_only_removes_target_provider_ownership() {
     let state = test_state();
     {
         let mut routes = state.model_routes.write().await;
-        routes.insert("gpt-4".into(), "alpha".into());
+        routes.insert("owned-model".into(), "beta".into());
+        routes.insert("owned-upstream".into(), "beta".into());
+        routes.insert("other-model".into(), "alpha".into());
+        routes.insert("other-upstream".into(), "alpha".into());
     }
-    remove_model_routes(&state, "beta", "other-model", Some("gpt-4")).await;
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push((
+            "beta".into(),
+            "owned-model".into(),
+            Some("owned-upstream".into()),
+        ));
+        seeds.push((
+            "alpha".into(),
+            "other-model".into(),
+            Some("other-upstream".into()),
+        ));
+        seeds.push(("beta".into(), "other-model".into(), None));
+        seeds.push(("alpha".into(), "owned-model".into(), None));
+    }
+
+    remove_model_routes(&state, "beta", "owned-model", Some("owned-upstream")).await;
+
     let routes = state.model_routes.read().await;
-    assert_eq!(routes.get("gpt-4").map(String::as_str), Some("alpha"));
+    assert!(!routes.contains_key("owned-model"));
+    assert!(!routes.contains_key("owned-upstream"));
+    assert_eq!(routes.get("other-model").map(String::as_str), Some("alpha"));
+    assert_eq!(
+        routes.get("other-upstream").map(String::as_str),
+        Some("alpha")
+    );
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "owned-model" })
+    );
+    assert!(
+        !seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "owned-model" })
+    );
+    assert_eq!(cached_seed_owner(&seeds, "owned-upstream"), None);
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "beta" && model_id == "other-model" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| { owner == "alpha" && model_id == "other-model" })
+    );
+    assert_eq!(cached_seed_owner(&seeds, "other-upstream"), Some("alpha"));
+}
+
+#[tokio::test]
+async fn route_epoch_eviction_only_removes_the_target_provider() {
+    let state = test_state();
+    state.model_routes.write().await.extend([
+        ("alpha-model".to_string(), "alpha".to_string()),
+        ("beta-model".to_string(), "beta".to_string()),
+    ]);
+
+    remove_provider_live_routes(&state, "alpha").await;
+
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("alpha-model"));
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
 }
 
 #[tokio::test]
@@ -1758,7 +1907,7 @@ async fn disabling_provider_refetches_live_only_fallback_owner() {
 
 #[tokio::test]
 async fn catalog_upsert_disabling_model_rebuilds_its_route() {
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("catalog-disable-rebuild");
     {
         let mut config = state.config.write().expect("config lock");
         for id in ["alpha", "beta"] {
@@ -1776,11 +1925,68 @@ async fn catalog_upsert_disabling_model_rebuilds_its_route() {
                 },
             );
         }
-        config
-            .providers
-            .get_mut("alpha")
-            .expect("alpha exists")
-            .disable_model("shared");
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+    let initial_revision = state.config_revision.load(Ordering::Acquire);
+
+    let (_, Json(_view)) = add_model(
+        State(state.clone()),
+        Path("alpha".to_string()),
+        Json(ModelCatalogEntry {
+            id: "shared".into(),
+            enabled: false,
+            ..ModelCatalogEntry::default()
+        }),
+    )
+    .await
+    .expect("disable existing catalog model");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(
+        state.config_revision.load(Ordering::Acquire),
+        initial_revision + 2,
+        "successful reconciliation must publish its completion generation"
+    );
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn catalog_upsert_changing_alias_rebuilds_retired_collision() {
+    let (state, store_dir) = temporary_store_state("catalog-alias-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
     }
     state
         .model_routes
@@ -1788,24 +1994,189 @@ async fn catalog_upsert_disabling_model_rebuilds_its_route() {
         .await
         .insert("shared".into(), "alpha".into());
 
-    sync_model_route(
-        &state,
-        "alpha",
-        &ModelCatalogEntry {
-            id: "shared".into(),
-            enabled: false,
+    let (_, Json(_view)) = add_model(
+        State(state.clone()),
+        Path("alpha".to_string()),
+        Json(ModelCatalogEntry {
+            id: "friendly".into(),
+            upstream_id: Some("new-shared".into()),
             ..ModelCatalogEntry::default()
-        },
-        None,
+        }),
     )
-    .await;
+    .await
+    .expect("replace existing catalog alias");
 
     let routes = state.model_routes.read().await;
     assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }
 
 #[tokio::test]
-async fn insert_model_route_skips_disabled_provider() {
+async fn catalog_update_disabling_model_rebuilds_its_route() {
+    let (state, store_dir) = temporary_store_state("catalog-update-disable-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = update_model(
+        State(state.clone()),
+        Path(("alpha".to_string(), "shared".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Absent,
+            display_name: OptionalPatch::Absent,
+            description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
+            enabled: Some(false),
+        }),
+    )
+    .await
+    .expect("disable existing catalog model through update");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn catalog_update_changing_alias_rebuilds_retired_collision() {
+    let (state, store_dir) = temporary_store_state("catalog-update-alias-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = update_model(
+        State(state.clone()),
+        Path(("alpha".to_string(), "friendly".to_string())),
+        Json(ModelPersist {
+            upstream_id: OptionalPatch::Set("new-shared".into()),
+            display_name: OptionalPatch::Absent,
+            description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
+            enabled: None,
+        }),
+    )
+    .await
+    .expect("replace existing catalog alias through update");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("shared").map(String::as_str), Some("beta"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn model_disable_endpoint_rebuilds_colliding_sibling_route() {
+    let (state, store_dir) = temporary_store_state("model-disable-endpoint-rebuild");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for id in ["alpha", "beta"] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{id}.example/v1"),
+                    model_catalog_only: true,
+                    model_catalog: vec![ModelCatalogEntry {
+                        id: "shared".into(),
+                        ..ModelCatalogEntry::default()
+                    }],
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("shared".into(), "alpha".into());
+
+    let Json(_view) = set_model_enabled(
+        State(state.clone()),
+        Path(("alpha".to_string(), "shared".to_string())),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("disable catalog model through enablement endpoint");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn insert_model_route_caches_disabled_provider_without_publishing_live_route() {
     let state = test_state();
     {
         let mut config = state.config.write().expect("config lock");
@@ -1818,9 +2189,46 @@ async fn insert_model_route_skips_disabled_provider() {
             },
         );
     }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("disabled".into(), "sibling-model".into(), None));
+        seeds.push(("other".into(), "blocked-model".into(), None));
+        seeds.push(("disabled".into(), "blocked-model".into(), None));
+    }
     insert_model_route(&state, "disabled", "blocked-model", None).await;
+    insert_model_route(&state, "missing", "missing-model", None).await;
     let routes = state.model_routes.read().await;
     assert!(!routes.contains_key("blocked-model"));
+    drop(routes);
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "blocked-model"),
+        Some("disabled")
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "missing-model"),
+        None
+    );
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| owner == "disabled" && model_id == "sibling-model"),
+        "updating one disabled-provider model must retain its sibling seed"
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(owner, model_id, _)| owner == "other" && model_id == "blocked-model"),
+        "updating one provider must retain another provider's colliding claim"
+    );
+    assert_eq!(
+        seeds
+            .iter()
+            .filter(|(owner, model_id, _)| { owner == "disabled" && model_id == "blocked-model" })
+            .count(),
+        1,
+        "the target claim must be replaced rather than duplicated"
+    );
 }
 
 #[test]
@@ -2694,6 +3102,1258 @@ fn discovery_settings_changed_detects_endpoint_and_catalog_mode() {
 }
 
 #[tokio::test]
+async fn failed_catalog_refresh_retains_successful_seed_snapshot_for_fallback() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::models;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("failed-catalog-seed-retention");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-model", true)
+        .expect("seed overlay route");
+
+    let upstream = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async { axum::http::StatusCode::BAD_GATEWAY }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind failing upstream");
+    let address = listener.local_addr().expect("failing upstream address");
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_GATEWAY);
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("overlay-model"),
+        "a failed catalog refresh must leave live routes unchanged"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model"),
+        Some("dynamic"),
+        "a successful SQLite read must become the next fallback snapshot"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force later seed read failure");
+    drop(corrupt);
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("cached seed fallback");
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-model")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+
+    drop(_mutation);
+    server.abort();
+    let _ = server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::models;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("focused-seed-fallback");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-model", true)
+        .expect("seed overlay route");
+
+    let upstream = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"data": [{"id": "new-live-model"}]}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    {
+        let mut config = state.config.write().expect("config lock");
+        let mut dynamic = ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        };
+        dynamic.disable_model("disabled-model");
+        config.providers.insert("dynamic".into(), dynamic);
+        config.providers.insert(
+            "disabled".into(),
+            ProviderConfig {
+                base_url: "https://disabled.example/v1".into(),
+                enabled: false,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let seeds = {
+        let config = state.read_config();
+        let crate::models::ModelRouteSeedRead::Loaded { seeds, .. } =
+            crate::models::seed_model_routes_from_config_and_store(
+                &config,
+                state.store.as_ref().expect("store present"),
+            )
+        else {
+            panic!("seed cache read failed");
+        };
+        seeds
+    };
+    let mut seeds = seeds;
+    seeds.push(("dynamic".into(), "disabled-model".into(), None));
+    seeds.push(("disabled".into(), "disabled-provider-model".into(), None));
+    *state.model_route_seeds.write().await = seeds;
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-model".into(), "dynamic".into());
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    refresh_model_routes_while_mutation_locked(
+        &state,
+        MutationRouteRefresh::RefetchOne,
+        Some("dynamic"),
+    )
+    .await
+    .expect("focused refetch");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-model").map(String::as_str),
+        Some("dynamic")
+    );
+    assert_eq!(
+        routes.get("new-live-model").map(String::as_str),
+        Some("dynamic")
+    );
+    assert!(!routes.contains_key("old-live-model"));
+    assert!(!routes.contains_key("disabled-model"));
+    assert!(!routes.contains_key("disabled-provider-model"));
+    drop(routes);
+
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("dynamic".into(), "disabled-model".into(), None));
+        seeds.push(("disabled".into(), "disabled-provider-model".into(), None));
+    }
+    let response = models(State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-model").map(String::as_str),
+        Some("dynamic")
+    );
+    assert!(!routes.contains_key("disabled-model"));
+    assert!(!routes.contains_key("disabled-provider-model"));
+    drop(routes);
+    server.abort();
+    let _ = server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn remove_provider_model_routes_updates_live_and_cached_routes() {
+    let state = test_state();
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("alpha-model".into(), "alpha".into());
+        routes.insert("beta-model".into(), "beta".into());
+    }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("alpha".into(), "alpha-model".into(), None));
+        seeds.push(("beta".into(), "beta-model".into(), None));
+    }
+
+    remove_provider_model_routes(&state, "alpha").await;
+
+    let routes = state.model_routes.read().await;
+    assert!(!routes.contains_key("alpha-model"));
+    assert_eq!(routes.get("beta-model").map(String::as_str), Some("beta"));
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert_eq!(cached_seed_owner(&seeds, "alpha-model"), None);
+    assert_eq!(cached_seed_owner(&seeds, "beta-model"), Some("beta"));
+}
+
+#[tokio::test]
+async fn enabling_unknown_provider_is_rejected_even_when_other_providers_exist() {
+    let state = test_state();
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let error = sync_provider_routes_for_enabled(&state, "missing", true)
+        .await
+        .expect_err("missing provider must not match a different configured provider");
+    assert_eq!(error.status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn enabling_provider_primes_seed_cache_before_store_read_failure() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("enable-seed-fallback");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "catalog-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-model", true)
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed-only refresh");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("overlay-model").map(String::as_str),
+        Some("dynamic")
+    );
+    assert_eq!(
+        routes.get("catalog-model").map(String::as_str),
+        Some("dynamic")
+    );
+    drop(routes);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn enabling_provider_route_snapshot_is_cancellation_safe() {
+    let (state, store_dir) = temporary_store_state("enable-shared-seed-snapshot");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .upsert_model_catalog(
+            "dynamic",
+            &ModelCatalogEntry {
+                id: "overlay-model".into(),
+                upstream_id: Some("upstream-overlay-model".into()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            },
+            false,
+            true,
+        )
+        .expect("seed overlay route");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "alpha-model", true)
+        .expect("seed sibling provider route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    let mut seed_guard = state.model_route_seeds.write().await;
+    seed_guard.push(("alpha".into(), "alpha-model".into(), None));
+    seed_guard.push(("dynamic".into(), "stale-dynamic-model".into(), None));
+    let initial_seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
+
+    let sync_state = state.clone();
+    let sync = tokio::spawn(async move {
+        synchronize_global_route_seed_snapshot(&sync_state, "dynamic").await;
+    });
+
+    assert!(
+        wait_until_async(|| async { state.model_routes.try_write().is_err() }).await,
+        "route publication must acquire live routes and park on the held seed epoch"
+    );
+    assert_eq!(cached_seed_owner(&seed_guard, "overlay-model"), None);
+    assert_eq!(cached_seed_owner(&seed_guard, "alpha-model"), Some("alpha"));
+    assert_eq!(
+        cached_seed_owner(&seed_guard, "stale-dynamic-model"),
+        Some("dynamic")
+    );
+    assert_eq!(
+        state.model_route_seed_revision.load(Ordering::Acquire),
+        initial_seed_revision,
+        "waiting for the seed lock must not publish provenance early"
+    );
+    assert!(
+        !sync.is_finished(),
+        "route publication must still be blocked"
+    );
+
+    sync.abort();
+    assert!(
+        sync.await
+            .expect_err("route sync must be cancelled")
+            .is_cancelled(),
+        "the blocked publication task must be cancelled"
+    );
+    drop(seed_guard);
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("overlay-model"),
+        "cancellation must leave the live route snapshot unchanged"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "overlay-model"),
+        None,
+        "cancellation must leave the provenance snapshot unchanged"
+    );
+
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-model")
+            .map(String::as_str),
+        Some("dynamic"),
+        "live routes must receive the same successful SQLite snapshot as the cache"
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("upstream-overlay-model")
+            .map(String::as_str),
+        Some("dynamic"),
+        "the shared snapshot must preserve the overlay's upstream routing identity"
+    );
+    {
+        let seeds = state.model_route_seeds.read().await;
+        assert_eq!(cached_seed_owner(&seeds, "overlay-model"), Some("dynamic"));
+        assert_eq!(cached_seed_owner(&seeds, "alpha-model"), Some("alpha"));
+        assert_eq!(cached_seed_owner(&seeds, "stale-dynamic-model"), None);
+    }
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn model_update_waits_for_route_epoch_before_durable_publication() {
+    let (state, store_dir) = temporary_store_state("model-update-route-epoch");
+    let model_id = "dynamic/friendly";
+    let old_upstream_id = "old-upstream";
+    let new_upstream_id = "new-upstream";
+    let entry = ModelCatalogEntry {
+        id: model_id.into(),
+        upstream_id: Some(old_upstream_id.into()),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: "https://dynamic.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            model_catalog: vec![entry.clone()],
+            ..ProviderConfig::default()
+        },
+    );
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .upsert_model_catalog("dynamic", &entry, false, true)
+        .expect("persist initial model");
+    state.model_routes.write().await.extend([
+        (model_id.into(), "dynamic".into()),
+        (old_upstream_id.into(), "dynamic".into()),
+    ]);
+    state.model_route_seeds.write().await.push((
+        "dynamic".into(),
+        model_id.into(),
+        Some(old_upstream_id.into()),
+    ));
+    let initial_revision = state.config_revision.load(Ordering::Acquire);
+
+    let route_guard = state.model_routes.write().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_model(
+            State(update_state),
+            Path(("dynamic".to_string(), model_id.to_string())),
+            Json(ModelPersist {
+                upstream_id: OptionalPatch::Set(new_upstream_id.into()),
+                display_name: OptionalPatch::Absent,
+                description: OptionalPatch::Absent,
+                supported_reasoning_levels: OptionalPatch::Absent,
+                default_reasoning_level: OptionalPatch::Absent,
+                enabled: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "model update must acquire the mutation lock before the blocked route epoch"
+    );
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .and_then(|provider| provider.model_catalog.first())
+            .and_then(|model| model.upstream_id.as_deref()),
+        Some(old_upstream_id),
+        "catalog publication must wait for the matching route write epoch"
+    );
+    assert_eq!(
+        state.config_revision.load(Ordering::Acquire),
+        initial_revision,
+        "a blocked route epoch must not expose a partial mutation generation"
+    );
+
+    update.abort();
+    assert!(
+        update
+            .await
+            .expect_err("outer handler task must be cancelled")
+            .is_cancelled()
+    );
+    drop(route_guard);
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get(model_id).map(String::as_str), Some("dynamic"));
+    assert_eq!(
+        routes.get(old_upstream_id).map(String::as_str),
+        Some("dynamic")
+    );
+    assert!(!routes.contains_key(new_upstream_id));
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert_eq!(cached_seed_owner(&seeds, model_id), Some("dynamic"));
+    assert!(
+        seeds
+            .iter()
+            .any(|(provider_id, seed_model_id, upstream_id)| {
+                provider_id == "dynamic"
+                    && seed_model_id == model_id
+                    && upstream_id.as_deref() == Some(old_upstream_id)
+            })
+    );
+    assert!(
+        seeds
+            .iter()
+            .all(|(_, _, upstream_id)| { upstream_id.as_deref() != Some(new_upstream_id) })
+    );
+    assert_eq!(
+        state.config_revision.load(Ordering::Acquire),
+        initial_revision,
+        "cancellation before the route epoch must leave the mutation uncommitted"
+    );
+    let persisted = state
+        .store
+        .as_ref()
+        .expect("store present")
+        .enabled_model_route_seeds()
+        .expect("load persisted seeds");
+    assert!(
+        persisted
+            .iter()
+            .any(|(provider_id, seed_model_id, upstream_id)| {
+                provider_id == "dynamic"
+                    && seed_model_id == model_id
+                    && upstream_id.as_deref() == Some(old_upstream_id)
+            })
+    );
+
+    drop(seeds);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn model_route_epoch_cannot_select_retired_colliding_alias_owner() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "friendly".into(),
+                    upstream_id: Some("new-shared".into()),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared".into(),
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    let mut routes = state.model_routes.write().await;
+    routes.insert("shared".into(), "alpha".into());
+    let mut seeds = state.model_route_seeds.write().await;
+    seeds.extend([
+        ("alpha".into(), "friendly".into(), Some("shared".into())),
+        ("alpha".into(), "sibling".into(), None),
+        ("beta".into(), "shared".into(), None),
+        ("beta".into(), "friendly".into(), None),
+    ]);
+
+    publish_model_route_epoch(
+        &mut routes,
+        &mut seeds,
+        ModelRouteEpochUpdate {
+            provider_id: "alpha",
+            model_id: "friendly",
+            previous_upstream_id: Some("shared"),
+            current_upstream_id: Some("new-shared"),
+            model_enabled: true,
+            provider_enabled: true,
+        },
+    );
+    drop(seeds);
+    drop(routes);
+
+    let selected = crate::provider::select_provider(
+        &state,
+        &serde_json::json!({"model": "shared", "input": "hello"}),
+    )
+    .await
+    .expect("the remaining explicit catalog owner must be selected");
+    assert_eq!(selected.id, "beta");
+    let routes = state.model_routes.read().await;
+    assert_ne!(routes.get("shared").map(String::as_str), Some("alpha"));
+    assert_eq!(routes.get("new-shared").map(String::as_str), Some("alpha"));
+    drop(routes);
+    let seeds = state.model_route_seeds.read().await;
+    assert!(
+        seeds
+            .iter()
+            .any(|(provider_id, model_id, _)| { provider_id == "alpha" && model_id == "sibling" })
+    );
+    assert!(
+        seeds
+            .iter()
+            .any(|(provider_id, model_id, _)| { provider_id == "beta" && model_id == "friendly" })
+    );
+}
+
+#[tokio::test]
+async fn provider_enable_preserves_global_persisted_claim_order() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("enable-global-seed-order");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "shared", true)
+        .expect("seed older alpha claim");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("beta", "shared", true)
+        .expect("seed newer beta claim");
+    {
+        let mut config = state.config.write().expect("config lock");
+        for provider_id in ["alpha", "beta"] {
+            config.providers.insert(
+                provider_id.into(),
+                ProviderConfig {
+                    base_url: format!("https://{provider_id}.example/v1"),
+                    enabled: true,
+                    model_catalog_only: true,
+                    ..ProviderConfig::default()
+                },
+            );
+        }
+    }
+
+    synchronize_global_route_seed_snapshot(&state, "alpha").await;
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "shared"),
+        Some("beta")
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta"),
+        "provider enable must immediately publish global persisted precedence"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force later seed read failure");
+    drop(corrupt);
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("cached seed fallback");
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_creation_evicts_cached_rows_from_prior_identity() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("provider-identity-seed-boundary");
+    state.config.write().expect("config lock").providers.insert(
+        "replacement".into(),
+        ProviderConfig {
+            base_url: "https://new.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    state.model_route_seeds.write().await.push((
+        "replacement".into(),
+        "old-identity-model".into(),
+        None,
+    ));
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-identity-model".into(), "replacement".into());
+
+    // This is the identity boundary used by create_provider after persistence
+    // replaces any retained soft-delete rows for the same ID.
+    remove_provider_model_routes(&state, "replacement").await;
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force replacement seed read failure");
+    drop(corrupt);
+    synchronize_global_route_seed_snapshot(&state, "replacement").await;
+
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "old-identity-model"),
+        None
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-identity-model")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn disabled_provider_creation_caches_claims_for_failed_reenable_read() {
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("disabled-create-seed-fallback");
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("alpha", "shared", true)
+        .expect("persist older claim");
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    synchronize_global_route_seed_snapshot(&state, "alpha").await;
+
+    let (_, Json(created)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: Some("beta".into()),
+            template: None,
+            fields: ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://beta.example/v1".into()),
+                enabled: Some(false),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: Some(true),
+            },
+            model_catalog: vec![ModelCatalogEntry {
+                id: "shared".into(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+        }),
+    )
+    .await
+    .expect("create disabled provider");
+    assert!(!created.enabled);
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("alpha"),
+        "disabled provider claims must not become live"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "shared"),
+        Some("beta"),
+        "the newest persisted claim must still be cached while disabled"
+    );
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force re-enable seed read failure");
+    drop(corrupt);
+
+    let Json(enabled) = set_provider_enabled(
+        State(state.clone()),
+        Path("beta".into()),
+        Json(EnabledBody { enabled: true }),
+    )
+    .await
+    .expect("enable from cached provenance");
+    assert!(enabled.enabled);
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared")
+            .map(String::as_str),
+        Some("beta"),
+        "failed SQLite recovery must preserve the disabled provider's newer explicit claim"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn create_provider_reused_id_evicts_stale_routes_before_config_is_visible() {
+    let (state, store_dir) = temporary_store_state("create-provider-reuse-route-epoch");
+    state.config.write().expect("config lock").providers.insert(
+        "alpha".into(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("old-live-only".into(), "dynamic".into());
+        routes.insert("alpha-live-only".into(), "alpha".into());
+    }
+    {
+        let mut seeds = state.model_route_seeds.write().await;
+        seeds.push(("dynamic".into(), "old-live-only".into(), None));
+    }
+
+    let route_epoch = state.model_routes.read().await;
+    let create_state = state.clone();
+    let create = tokio::spawn(async move {
+        create_provider(
+            State(create_state),
+            Json(CreateProviderBody {
+                id: Some("dynamic".into()),
+                template: None,
+                fields: ProviderPersist {
+                    name: OptionalPatch::Absent,
+                    base_url: Some("https://new-dynamic.example/v1".into()),
+                    enabled: Some(true),
+                    api_key_env: OptionalPatch::Absent,
+                    api_key: OptionalPatch::Absent,
+                    headers: OptionalPatch::Absent,
+                    auth_header: None,
+                    auth_scheme: None,
+                    responses_path: None,
+                    chat_completions_path: None,
+                    models_path: None,
+                    model_catalog_only: Some(true),
+                },
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "dynamic-model".into(),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider create must acquire mutation lock"
+    );
+    assert!(
+        !state.read_config().providers.contains_key("dynamic"),
+        "reused-id create must not publish the new identity while stale live routes remain"
+    );
+
+    drop(route_epoch);
+    let _ = create.await.expect("create task").expect("create succeeds");
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://new-dynamic.example/v1")
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "create must evict prior-identity live routes with the new config"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "old-live-only"),
+        None,
+        "create must drop prior-identity overlay seeds with the new config"
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("alpha-live-only")
+            .map(String::as_str),
+        Some("alpha"),
+        "create must evict only the reused provider's leftover routes"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn identity_edit_failure_recovers_overlay_routes_from_cached_provenance() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("identity-edit-seed-fallback");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-only", true)
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
+
+    remove_provider_live_routes(&state, "dynamic").await;
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::RefetchAll, None)
+        .await
+        .expect("catalog-only refresh");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn reenable_read_failure_uses_disabled_providers_cached_provenance() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("reenable-seed-fallback");
+    let mut provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .set_model_enabled("dynamic", "overlay-only", true)
+        .expect("seed overlay route");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("alpha".into(), "alpha-model".into(), None));
+
+    provider.enabled = false;
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    remove_provider_live_routes(&state, "dynamic").await;
+
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    provider.enabled = true;
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider.clone());
+    synchronize_global_route_seed_snapshot(&state, "dynamic").await;
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic"),
+        "a failed provider-scoped read must replay only this provider's cached rows"
+    );
+    assert!(
+        !state.model_routes.read().await.contains_key("alpha-model"),
+        "cached rows owned by another provider must not be replayed as dynamic"
+    );
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed-only fallback");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn completing_mutation_rejects_fallback_built_from_intermediate_seed_cache() {
+    use crate::models::models;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use rusqlite::Connection;
+
+    let (state, store_dir) = temporary_store_state("seed-publication-generation");
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: "https://dynamic.example/v1".into(),
+            enabled: true,
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        },
+    );
+    let corrupt = Connection::open(store_dir.join("overlay.db")).expect("open database");
+    corrupt
+        .execute("DROP TABLE model_overlays", [])
+        .expect("force seed read failure");
+    drop(corrupt);
+
+    let mutation = state.mutation_lock.lock().await;
+    invalidate_model_discovery(&state);
+    let request_state = state.clone();
+    let request = tokio::spawn(async move { models(State(request_state), HeaderMap::new()).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !request.is_finished(),
+        "the models request must still be waiting on the held mutation lock"
+    );
+
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("dynamic".into(), "overlay-only".into(), None));
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("overlay-only".into(), "dynamic".into());
+    complete_model_discovery_mutation(&state);
+    drop(mutation);
+
+    assert_eq!(
+        request.await.expect("models task").status(),
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("overlay-only")
+            .map(String::as_str),
+        Some("dynamic"),
+        "the request must retry after the mutation completion revision"
+    );
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn one_mutation_cannot_exhaust_model_discovery_retries_at_both_revision_boundaries() {
+    use crate::models::models;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+    use tokio::sync::mpsc;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let first_gate = Arc::new(Notify::new());
+    let second_gate = Arc::new(Notify::new());
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let app = axum::Router::new().route(
+        "/models",
+        axum::routing::get({
+            let calls = calls.clone();
+            let first_gate = first_gate.clone();
+            let second_gate = second_gate.clone();
+            move || {
+                let calls = calls.clone();
+                let first_gate = first_gate.clone();
+                let second_gate = second_gate.clone();
+                let started_tx = started_tx.clone();
+                async move {
+                    let call = calls.fetch_add(1, Ordering::AcqRel);
+                    started_tx.send(call).expect("report model fetch");
+                    match call {
+                        0 => first_gate.notified().await,
+                        1 => second_gate.notified().await,
+                        _ => {}
+                    }
+                    axum::Json(serde_json::json!({
+                        "object": "list",
+                        "data": [{"id": "stable-model", "object": "model"}]
+                    }))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let state = test_state();
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+
+    let request_state = state.clone();
+    let request = tokio::spawn(async move { models(State(request_state), HeaderMap::new()).await });
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("first model fetch must start"),
+        Some(0)
+    );
+    let first_mutation = state.mutation_lock.lock().await;
+    invalidate_model_discovery(&state);
+    first_gate.notify_one();
+    drop(first_mutation);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+            .await
+            .expect("second model fetch must start"),
+        Some(1)
+    );
+    let mutation_completion = state.mutation_lock.lock().await;
+    complete_model_discovery_mutation(&state);
+    second_gate.notify_one();
+    drop(mutation_completion);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), request)
+            .await
+            .expect("model discovery must finish")
+            .expect("models task")
+            .status(),
+        axum::http::StatusCode::OK
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+    server.abort();
+}
+
+#[tokio::test]
 async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
@@ -2811,6 +4471,541 @@ async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
         "a healthy provider must immediately reclaim a live-only route after the old owner changes identity"
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destination() {
+    let (state, store_dir) = temporary_store_state("provider-identity-routing-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://old-dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new-dynamic.example/v1".into()),
+                enabled: None,
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider update must acquire mutation lock"
+    );
+
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://old-dynamic.example/v1"),
+        "the replacement identity must wait for the stale-route epoch"
+    );
+
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("identity update succeeds");
+    assert_eq!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .map(|provider| provider.base_url.as_str()),
+        Some("https://new-dynamic.example/v1")
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "the new identity must publish only after its stale live routes are gone"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_disable_routing_epoch_evicts_live_routes_before_config_is_visible() {
+    let (state, store_dir) = temporary_store_state("provider-disable-routing-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: None,
+                enabled: Some(false),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider disable must acquire mutation lock"
+    );
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| provider.enabled),
+        "disabled config must wait for the live-route eviction epoch"
+    );
+
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("disable task")
+        .expect("disable succeeds");
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| !provider.enabled)
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "disabling must evict live routes in the same epoch as the disabled config"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn set_provider_enabled_disable_evicts_live_routes_in_same_epoch() {
+    let (state, store_dir) = temporary_store_state("set-provider-enabled-disable-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let disable_state = state.clone();
+    let disable = tokio::spawn(async move {
+        set_provider_enabled(
+            State(disable_state),
+            Path("dynamic".into()),
+            Json(EnabledBody { enabled: false }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider disable must acquire mutation lock"
+    );
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| provider.enabled),
+        "set_provider_enabled must not publish disabled config while live routes remain"
+    );
+
+    drop(route_epoch);
+    let _ = disable
+        .await
+        .expect("disable task")
+        .expect("disable succeeds");
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| !provider.enabled)
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "set_provider_enabled must evict live routes before returning"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn update_disabled_provider_identity_does_not_wait_for_route_epoch() {
+    let (state, store_dir) = temporary_store_state("update-disabled-provider-no-route-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://old.example/v1".into(),
+        enabled: false,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "dynamic-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new.example/v1".into()),
+                enabled: None,
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| {
+            state
+                .read_config()
+                .providers
+                .get("dynamic")
+                .is_some_and(|provider| provider.base_url == "https://new.example/v1")
+        })
+        .await,
+        "a still-disabled identity edit must not acquire the live-route epoch"
+    );
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("disabled identity edit succeeds");
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn set_provider_enabled_true_does_not_wait_for_route_epoch() {
+    use std::sync::atomic::Ordering;
+
+    let (state, store_dir) = temporary_store_state("set-provider-enabled-true-no-route-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+    let before_revision = state.config_revision.load(Ordering::Acquire);
+
+    let route_epoch = state.model_routes.read().await;
+    let enable_state = state.clone();
+    let enable = tokio::spawn(async move {
+        set_provider_enabled(
+            State(enable_state),
+            Path("dynamic".into()),
+            Json(EnabledBody { enabled: true }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.config_revision.load(Ordering::Acquire) > before_revision).await,
+        "re-enabling an already enabled provider must not acquire the live-route epoch"
+    );
+    drop(route_epoch);
+    let _ = enable.await.expect("enable task").expect("enable succeeds");
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn update_provider_enable_change_reconciles_catalog_routes() {
+    let (state, store_dir) = temporary_store_state("update-provider-enable-routes");
+    let provider = ProviderConfig {
+        base_url: "https://old-dynamic.example/v1".into(),
+        enabled: false,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "dynamic-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider);
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new-dynamic.example/v1".into()),
+                enabled: Some(true),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| {
+            state
+                .read_config()
+                .providers
+                .get("dynamic")
+                .is_some_and(|provider| provider.base_url == "https://new-dynamic.example/v1")
+        })
+        .await,
+        "enabling a previously disabled provider has no usable stale route epoch and must publish before route synchronization"
+    );
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("enable provider through update");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("dynamic-model")
+            .map(String::as_str),
+        Some("dynamic"),
+        "an enablement change must take the provider synchronization branch"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn update_disabled_provider_identity_does_not_refresh_route_seeds() {
+    let (state, store_dir) = temporary_store_state("update-disabled-provider-identity");
+    let provider = ProviderConfig {
+        base_url: "https://old.example/v1".into(),
+        enabled: false,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "dynamic-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .insert("dynamic".into(), provider);
+    state
+        .model_route_seeds
+        .write()
+        .await
+        .push(("sentinel".into(), "cached-model".into(), None));
+    let seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
+
+    let _ = update_provider(
+        State(state.clone()),
+        Path("dynamic".into()),
+        Json(ProviderPersist {
+            name: OptionalPatch::Absent,
+            base_url: Some("https://new.example/v1".into()),
+            enabled: None,
+            api_key_env: OptionalPatch::Absent,
+            api_key: OptionalPatch::Absent,
+            headers: OptionalPatch::Absent,
+            auth_header: None,
+            auth_scheme: None,
+            responses_path: None,
+            chat_completions_path: None,
+            models_path: None,
+            model_catalog_only: None,
+        }),
+    )
+    .await
+    .expect("edit disabled provider identity");
+
+    assert_eq!(
+        state.model_route_seed_revision.load(Ordering::Acquire),
+        seed_revision,
+        "identity edits must not refresh discovery while the provider is disabled"
+    );
+    assert_eq!(
+        cached_seed_owner(&state.model_route_seeds.read().await, "cached-model"),
+        Some("sentinel")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
 }
 
 #[tokio::test]

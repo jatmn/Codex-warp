@@ -28,10 +28,14 @@ use crate::http::endpoint_url;
 use crate::http::error_response;
 use crate::provider::provider_display_name;
 use crate::state::AppState;
+use crate::state::ModelRouteSeed;
 
 const DEFAULT_MODEL_CONTEXT_WINDOW: i64 = 128_000;
 const MODEL_CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-const MODEL_DISCOVERY_RETRY_LIMIT: usize = 2;
+// One Web UI mutation advances the discovery revision at both invalidation and
+// completion. A request can legitimately lose one attempt to each boundary,
+// so it needs a third attempt to observe the final stable generation.
+const MODEL_DISCOVERY_RETRY_LIMIT: usize = 3;
 pub(crate) const CODEX_BUILTIN_MODEL_SLUGS: &[&str] = &[
     "gpt-5.5",
     "gpt-5.4",
@@ -72,11 +76,25 @@ pub(crate) enum MutationRouteRefresh {
     RefetchAll,
 }
 
-struct MutationDiscovery {
+struct MutationRouteDiscovery {
     routes: BTreeMap<String, String>,
+    retain_owners: BTreeSet<String>,
+    fetch_warning: Option<String>,
+    seed_publication: ModelRouteSeedPublication,
+}
+
+struct ModelRouteSeedPublication {
+    refreshed: Option<Vec<ModelRouteSeed>>,
+    fallback_revision: Option<u64>,
     discovered: BTreeMap<String, BTreeMap<String, Value>>,
-    retain_providers: BTreeSet<String>,
-    warning: Option<String>,
+}
+
+pub(crate) enum ModelRouteSeedRead {
+    Loaded {
+        routes: BTreeMap<String, String>,
+        seeds: Vec<ModelRouteSeed>,
+    },
+    Failed(anyhow::Error),
 }
 
 /// Mutation-oriented route refresh. Always publishes a best-effort route map
@@ -97,14 +115,22 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
                 .to_string(),
         );
     }
-    publish_model_discovery(
+    if discovery
+        .seed_publication
+        .fallback_revision
+        .is_some_and(|revision| state.model_route_seed_revision.load(Ordering::Acquire) != revision)
+    {
+        return Err("model route seed cache changed while refreshing routes; retry".to_string());
+    }
+    publish_model_routes(
         state,
         discovery.routes,
-        discovery.discovered,
-        &discovery.retain_providers,
+        discovery.seed_publication.discovered,
+        &discovery.retain_owners,
+        discovery.seed_publication.refreshed,
     )
     .await;
-    match discovery.warning {
+    match discovery.fetch_warning {
         Some(warning) => Err(warning),
         None => Ok(()),
     }
@@ -134,23 +160,31 @@ async fn discover_routes_for_mutation(
     headers: &HeaderMap,
     mode: MutationRouteRefresh,
     focus_provider_id: Option<&str>,
-) -> MutationDiscovery {
+) -> MutationRouteDiscovery {
     let provider_list: Vec<(String, ProviderConfig)> = provider_entries(&state.read_config())
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
         .collect();
 
-    let mut routes = state
-        .store
-        .as_ref()
-        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
-        .unwrap_or_default();
-    if state.store.is_none() {
-        let config = state.read_config();
-        for (provider_id, provider) in provider_entries(&config) {
-            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    let seed_config = state.read_config().clone();
+    let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
+        Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
+            ModelRouteSeedRead::Failed(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to read enabled model route seeds; falling back to cached seeds"
+                );
+                let (seeds, revision) = state.model_route_seed_snapshot().await;
+                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
+                (routes, None, Some(revision))
+            }
+        },
+        None => {
+            let seeded = catalog_route_seeds(&seed_config);
+            (seeded, Some(Vec::new()), None)
         }
-    }
+    };
 
     let mut retain_owners: BTreeSet<String> =
         provider_list.iter().map(|(id, _)| id.clone()).collect();
@@ -210,11 +244,15 @@ async fn discover_routes_for_mutation(
         }
     }
 
-    MutationDiscovery {
+    MutationRouteDiscovery {
         routes,
-        discovered,
-        retain_providers: retain_owners,
-        warning: fetch_warning,
+        retain_owners,
+        fetch_warning,
+        seed_publication: ModelRouteSeedPublication {
+            refreshed: refreshed_seeds,
+            fallback_revision: fallback_seed_revision,
+            discovered,
+        },
     }
 }
 
@@ -299,11 +337,25 @@ async fn models_for_revision(
     .await;
 
     let mut merged_models = Vec::new();
-    let mut routes = state
-        .store
-        .as_ref()
-        .map(|store| seed_model_routes_from_config_and_store(&state.read_config(), store))
-        .unwrap_or_default();
+    let seed_config = state.read_config().clone();
+    let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
+        Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
+            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
+            ModelRouteSeedRead::Failed(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to read enabled model route seeds; falling back to cached seeds"
+                );
+                let (seeds, revision) = state.model_route_seed_snapshot().await;
+                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
+                (routes, None, Some(revision))
+            }
+        },
+        None => {
+            let seeded = catalog_route_seeds(&seed_config);
+            (seeded, Some(Vec::new()), None)
+        }
+    };
     let mut failures = Vec::new();
     let mut failed_providers = BTreeSet::new();
     let mut discovered = BTreeMap::new();
@@ -348,14 +400,19 @@ async fn models_for_revision(
                 &state,
                 revision,
                 routes,
-                discovered,
                 &failed_providers,
+                ModelRouteSeedPublication {
+                    refreshed: refreshed_seeds,
+                    fallback_revision: fallback_seed_revision,
+                    discovered,
+                },
                 Json(json!({ "models": [] })).into_response(),
                 mutation_locked,
             )
             .await;
         }
-        if state.config_revision.load(Ordering::Acquire) != revision {
+        if !cache_seed_snapshot_if_current(&state, revision, refreshed_seeds, mutation_locked).await
+        {
             return None;
         }
         // Keep previously discovered routes when upstream catalogs fail transiently.
@@ -376,20 +433,58 @@ async fn models_for_revision(
         &state,
         revision,
         routes,
-        discovered,
         &failed_providers,
+        ModelRouteSeedPublication {
+            refreshed: refreshed_seeds,
+            fallback_revision: fallback_seed_revision,
+            discovered,
+        },
         Json(json!({ "models": merged_models })).into_response(),
         mutation_locked,
     )
     .await
 }
 
+/// Retain a successful authoritative seed read even when catalog discovery has
+/// no response to publish. The failed response leaves live routes unchanged,
+/// but later SQLite failures must still fall back to the last successful raw
+/// provenance snapshot.
+async fn cache_seed_snapshot_if_current(
+    state: &AppState,
+    revision: u64,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
+    mutation_locked: bool,
+) -> bool {
+    if mutation_locked {
+        if state.config_revision.load(Ordering::Acquire) != revision {
+            return false;
+        }
+        if let Some(seeds) = refreshed_seeds {
+            state
+                .mutate_model_route_seeds(|cached| *cached = seeds)
+                .await;
+        }
+        return true;
+    }
+
+    let _mutation = state.mutation_lock.lock().await;
+    if state.config_revision.load(Ordering::Acquire) != revision {
+        return false;
+    }
+    if let Some(seeds) = refreshed_seeds {
+        state
+            .mutate_model_route_seeds(|cached| *cached = seeds)
+            .await;
+    }
+    true
+}
+
 async fn publish_models_if_current(
     state: &AppState,
     revision: u64,
     routes: BTreeMap<String, String>,
-    discovered: BTreeMap<String, BTreeMap<String, Value>>,
     failed_providers: &BTreeSet<String>,
+    seed_publication: ModelRouteSeedPublication,
     response: Response,
     mutation_locked: bool,
 ) -> Option<Response> {
@@ -397,7 +492,19 @@ async fn publish_models_if_current(
         if state.config_revision.load(Ordering::Acquire) != revision {
             return None;
         }
-        publish_model_discovery(state, routes, discovered, failed_providers).await;
+        if seed_publication.fallback_revision.is_some_and(|revision| {
+            state.model_route_seed_revision.load(Ordering::Acquire) != revision
+        }) {
+            return None;
+        }
+        publish_model_routes(
+            state,
+            routes,
+            seed_publication.discovered,
+            failed_providers,
+            seed_publication.refreshed,
+        )
+        .await;
         return Some(response);
     }
 
@@ -405,7 +512,20 @@ async fn publish_models_if_current(
     if state.config_revision.load(Ordering::Acquire) != revision {
         return None;
     }
-    publish_model_discovery(state, routes, discovered, failed_providers).await;
+    if seed_publication
+        .fallback_revision
+        .is_some_and(|revision| state.model_route_seed_revision.load(Ordering::Acquire) != revision)
+    {
+        return None;
+    }
+    publish_model_routes(
+        state,
+        routes,
+        seed_publication.discovered,
+        failed_providers,
+        seed_publication.refreshed,
+    )
+    .await;
     Some(response)
 }
 
@@ -415,33 +535,58 @@ async fn publish_models_if_current(
 /// persisted UI overlays. Prior discovered ownership is restored only when the
 /// owning provider's upstream catalog fetch failed, so a successful response can
 /// remove stale routes while transient failures remain usable.
-async fn publish_model_discovery(
+async fn publish_model_routes(
     state: &AppState,
     mut routes: BTreeMap<String, String>,
     discovered: BTreeMap<String, BTreeMap<String, Value>>,
-    retain_providers: &BTreeSet<String>,
+    failed_providers: &BTreeSet<String>,
+    refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
-    let prior = state.model_routes.read().await.clone();
-    {
+    let retain_failed_routes = |routes: &mut BTreeMap<String, String>,
+                                prior: &BTreeMap<String, String>| {
         let config = state.read_config();
         for (model_id, owner) in prior {
-            if !retain_providers.contains(&owner) {
+            if !failed_providers.contains(owner) {
                 continue;
             }
-            let Some(provider) = crate::config::provider_by_id(&config, &owner) else {
+            let Some(provider) = crate::config::provider_by_id(&config, owner) else {
                 continue;
             };
-            if !provider.model_is_enabled(&model_id) {
+            if !provider.model_is_enabled(model_id) {
                 continue;
             }
             // A fresh successful discovery owns the route for this refresh.
             // Retain stale ownership only when no healthy provider supplied
             // the same model, otherwise `/models` can advertise one provider
             // while `/responses` is routed to the failed prior owner.
-            routes.entry(model_id).or_insert(owner);
+            routes
+                .entry(model_id.clone())
+                .or_insert_with(|| owner.clone());
         }
+    };
+
+    if let Some(seeds) = refreshed_seeds {
+        state
+            .mutate_model_routes_and_seeds(|prior, cached| {
+                retain_failed_routes(&mut routes, prior);
+                *prior = routes;
+                *cached = seeds;
+            })
+            .await;
+    } else {
+        let mut prior = state.model_routes.write().await;
+        retain_failed_routes(&mut routes, &prior);
+        *prior = routes;
     }
-    *state.model_routes.write().await = routes;
+
+    publish_discovered_models(state, discovered, failed_providers).await;
+}
+
+async fn publish_discovered_models(
+    state: &AppState,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
+    retain_providers: &BTreeSet<String>,
+) {
     let (configured_providers, config) = {
         let config = state.read_config();
         let configured_providers = crate::config_loader::configured_provider_entries(&config)
@@ -555,6 +700,36 @@ pub(crate) fn register_catalog_routes_for_provider(
     }
 }
 
+fn catalog_route_seeds(config: &AppConfig) -> BTreeMap<String, String> {
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(config) {
+        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+    }
+    routes
+}
+
+pub(crate) fn route_seeds_from_config_and_rows(
+    config: &AppConfig,
+    seeds: &[ModelRouteSeed],
+) -> BTreeMap<String, String> {
+    let mut routes = catalog_route_seeds(config);
+    for (provider_id, model_id, upstream_id) in seeds {
+        let Some(provider) = crate::config::provider_by_id(config, provider_id) else {
+            continue;
+        };
+        if !provider.enabled || !provider.model_is_enabled(model_id) {
+            continue;
+        }
+        routes.insert(model_id.clone(), provider_id.clone());
+        if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty())
+            && provider.model_is_enabled(upstream_id)
+        {
+            routes.insert(upstream_id.to_string(), provider_id.clone());
+        }
+    }
+    routes
+}
+
 /// Seed `model_routes` from enabled providers and SQLite overlays at startup.
 ///
 /// Catalog routes establish baseline ownership. Overlay seeds then claim
@@ -564,71 +739,13 @@ pub(crate) fn register_catalog_routes_for_provider(
 pub(crate) fn seed_model_routes_from_config_and_store(
     config: &AppConfig,
     store: &crate::store::Store,
-) -> BTreeMap<String, String> {
-    let mut routes = BTreeMap::new();
-    for (provider_id, provider) in provider_entries(config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
-    }
+) -> ModelRouteSeedRead {
     let seeds = match store.enabled_model_route_seeds() {
         Ok(seeds) => seeds,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                "failed to read enabled model route seeds; overlay routes omitted at startup"
-            );
-            return routes;
-        }
+        Err(err) => return ModelRouteSeedRead::Failed(err),
     };
-    for (provider_id, model_id, upstream_id) in seeds {
-        let Some(provider) = crate::config::provider_by_id(config, &provider_id) else {
-            continue;
-        };
-        if !provider.enabled || !provider.model_is_enabled(&model_id) {
-            continue;
-        }
-        // Explicit overlay enable claims ownership for colliding slugs.
-        routes.insert(model_id, provider_id.clone());
-        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-            && provider.model_is_enabled(&upstream_id)
-        {
-            routes.insert(upstream_id, provider_id);
-        }
-    }
-    routes
-}
-
-/// Replay overlay-enabled route seeds for one provider (e.g. after Web UI re-enable).
-pub(crate) fn register_overlay_route_seeds_for_provider(
-    routes: &mut BTreeMap<String, String>,
-    provider_id: &str,
-    provider: &crate::config::ProviderConfig,
-    store: &crate::store::Store,
-) {
-    if !provider.enabled {
-        return;
-    }
-    let seeds = match store.enabled_model_route_seeds_for_provider(provider_id) {
-        Ok(seeds) => seeds,
-        Err(err) => {
-            tracing::warn!(
-                provider_id = %provider_id,
-                error = %err,
-                "failed to read overlay route seeds during provider route sync"
-            );
-            return;
-        }
-    };
-    for (model_id, upstream_id) in seeds {
-        if !provider.model_is_enabled(&model_id) {
-            continue;
-        }
-        routes.insert(model_id, provider_id.to_string());
-        if let Some(upstream_id) = upstream_id.filter(|value| !value.is_empty())
-            && provider.model_is_enabled(&upstream_id)
-        {
-            routes.insert(upstream_id, provider_id.to_string());
-        }
-    }
+    let routes = route_seeds_from_config_and_rows(config, &seeds);
+    ModelRouteSeedRead::Loaded { routes, seeds }
 }
 
 pub(crate) fn add_models_for_provider(
@@ -1220,6 +1337,7 @@ pub(crate) fn apply_provider_model_metadata(info: &mut Value, model: &Value) {
     copy_field(info, model, "supports_search_tool");
     copy_field(info, model, "supports_reasoning_summaries");
     copy_field(info, model, "support_verbosity");
+    copy_field(info, model, "default_reasoning_level");
     copy_field(info, model, "default_reasoning_summary");
     copy_field(info, model, "include_skills_usage_instructions");
     copy_field(info, model, "apply_patch_tool_type");
@@ -1247,29 +1365,21 @@ pub(crate) fn apply_provider_model_metadata(info: &mut Value, model: &Value) {
     {
         add_input_modality(info, "image");
     }
-    let upstream_default = model
+    if let Some(levels) = model
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+    {
+        info["supported_reasoning_levels"] = reasoning_levels_json(levels);
+    } else if model
         .get("default_reasoning_level")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let upstream_levels = model
-        .get("supported_reasoning_levels")
-        .and_then(Value::as_array);
-    if let Some(levels) = upstream_levels {
-        info["supported_reasoning_levels"] = reasoning_levels_json(levels);
-    }
-    if let Some(default) = upstream_default {
-        info["default_reasoning_level"] = json!(default);
-        // Some gateways report only a default. Treat that as a one-mode model
-        // instead of leaving the synthetic `none` list paired with it.
-        if upstream_levels.is_none() {
-            info["supported_reasoning_levels"] =
-                json!([{"effort": default, "description": default}]);
-        }
-    } else if upstream_levels.is_some()
-        && let Some(first) = reasoning_metadata(info).0.first()
+        .is_some_and(|level| !level.trim().is_empty())
     {
-        info["default_reasoning_level"] = json!(first);
+        // Synthetic models start with a `none` supported list. If upstream
+        // advertises only a default level, drop that placeholder so
+        // reconciliation can synthesize a matching supported entry.
+        info.as_object_mut()
+            .map(|obj| obj.remove("supported_reasoning_levels"));
     }
 }
 
