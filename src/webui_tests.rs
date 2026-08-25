@@ -4472,6 +4472,291 @@ async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destina
 }
 
 #[tokio::test]
+async fn provider_disable_routing_epoch_evicts_live_routes_before_config_is_visible() {
+    let (state, store_dir) = temporary_store_state("provider-disable-routing-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+        config.providers.insert(
+            "beta".into(),
+            ProviderConfig {
+                base_url: "https://beta.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: None,
+                enabled: Some(false),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider disable must acquire mutation lock"
+    );
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| provider.enabled),
+        "disabled config must wait for the live-route eviction epoch"
+    );
+
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("disable task")
+        .expect("disable succeeds");
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| !provider.enabled)
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "disabling must evict live routes in the same epoch as the disabled config"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn set_provider_enabled_disable_evicts_live_routes_in_same_epoch() {
+    let (state, store_dir) = temporary_store_state("set-provider-enabled-disable-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-live-only".into(), "dynamic".into());
+
+    let route_epoch = state.model_routes.read().await;
+    let disable_state = state.clone();
+    let disable = tokio::spawn(async move {
+        set_provider_enabled(
+            State(disable_state),
+            Path("dynamic".into()),
+            Json(EnabledBody { enabled: false }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "provider disable must acquire mutation lock"
+    );
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| provider.enabled),
+        "set_provider_enabled must not publish disabled config while live routes remain"
+    );
+
+    drop(route_epoch);
+    let _ = disable
+        .await
+        .expect("disable task")
+        .expect("disable succeeds");
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get("dynamic")
+            .is_some_and(|provider| !provider.enabled)
+    );
+    assert!(
+        !state
+            .model_routes
+            .read()
+            .await
+            .contains_key("old-live-only"),
+        "set_provider_enabled must evict live routes before returning"
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn update_disabled_provider_identity_does_not_wait_for_route_epoch() {
+    let (state, store_dir) = temporary_store_state("update-disabled-provider-no-route-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://old.example/v1".into(),
+        enabled: false,
+        model_catalog_only: true,
+        model_catalog: vec![ModelCatalogEntry {
+            id: "dynamic-model".into(),
+            enabled: true,
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+
+    let route_epoch = state.model_routes.read().await;
+    let update_state = state.clone();
+    let update = tokio::spawn(async move {
+        update_provider(
+            State(update_state),
+            Path("dynamic".into()),
+            Json(ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: Some("https://new.example/v1".into()),
+                enabled: None,
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Absent,
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+            }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| {
+            state
+                .read_config()
+                .providers
+                .get("dynamic")
+                .is_some_and(|provider| provider.base_url == "https://new.example/v1")
+        })
+        .await,
+        "a still-disabled identity edit must not acquire the live-route epoch"
+    );
+    drop(route_epoch);
+    let _ = update
+        .await
+        .expect("update task")
+        .expect("disabled identity edit succeeds");
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn set_provider_enabled_true_does_not_wait_for_route_epoch() {
+    use std::sync::atomic::Ordering;
+
+    let (state, store_dir) = temporary_store_state("set-provider-enabled-true-no-route-epoch");
+    let provider = ProviderConfig {
+        base_url: "https://dynamic.example/v1".into(),
+        enabled: true,
+        model_catalog_only: true,
+        ..ProviderConfig::default()
+    };
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .expect("persist provider");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert("dynamic".into(), provider);
+    }
+    let before_revision = state.config_revision.load(Ordering::Acquire);
+
+    let route_epoch = state.model_routes.read().await;
+    let enable_state = state.clone();
+    let enable = tokio::spawn(async move {
+        set_provider_enabled(
+            State(enable_state),
+            Path("dynamic".into()),
+            Json(EnabledBody { enabled: true }),
+        )
+        .await
+    });
+
+    assert!(
+        wait_until(|| state.config_revision.load(Ordering::Acquire) > before_revision).await,
+        "re-enabling an already enabled provider must not acquire the live-route epoch"
+    );
+    drop(route_epoch);
+    let _ = enable.await.expect("enable task").expect("enable succeeds");
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn update_provider_enable_change_reconciles_catalog_routes() {
     let (state, store_dir) = temporary_store_state("update-provider-enable-routes");
     let provider = ProviderConfig {

@@ -168,7 +168,7 @@ fn manual_provider_catalog_is_normalized_for_codex() {
         .expect("clinepass config loads");
     let provider = provider_by_id(&config, "cline_pass").expect("clinepass provider exists");
 
-    let models = manual_catalog_models(provider, &config);
+    let models = manual_catalog_models(provider, &config, None);
     let qwen = models
         .iter()
         .find(|model| model["slug"] == "cline-pass/qwen3.7-max")
@@ -273,7 +273,7 @@ fn manual_catalog_localizes_canonical_auto_review_targets_to_routable_ids() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "mimo_v2.5_pro")
         .expect("Mimo Pro model is listed");
@@ -292,7 +292,7 @@ fn manual_catalog_localizes_hy3_auto_review_to_provider_model() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "concentrate.ai/hy3")
         .expect("Hy3 model is listed");
@@ -317,7 +317,7 @@ fn manual_catalog_keeps_hy3_review_on_the_visible_model_when_bare_aliases_collid
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "hicap/hy3:free")
         .expect("Hy3 free model is listed");
@@ -376,7 +376,7 @@ fn manual_catalog_does_not_localize_auto_review_to_a_disabled_target() {
         ..ProviderConfig::default()
     };
 
-    let model = manual_catalog_models(&provider, &config)
+    let model = manual_catalog_models(&provider, &config, None)
         .into_iter()
         .find(|model| model["slug"] == "mimo-v2.5-pro")
         .expect("Mimo Pro model is listed");
@@ -795,7 +795,7 @@ fn versioned_deepseek_v4_flash_models_advertise_a_routable_auto_review_target() 
         ..ModelCatalogEntry::default()
     });
 
-    let models = manual_catalog_models(&provider, &config);
+    let models = manual_catalog_models(&provider, &config, None);
     let model = models
         .iter()
         .find(|model| model["slug"] == "concentrate.ai/deepseek-v4-flash-0731")
@@ -817,7 +817,7 @@ fn assert_auto_review_overrides(
         .unwrap_or_else(|error| panic!("{config_path} config loads: {error}"));
     let provider = provider_by_id(&config, provider_id)
         .unwrap_or_else(|| panic!("{provider_id} provider exists"));
-    let models = manual_catalog_models(provider, &config);
+    let models = manual_catalog_models(provider, &config, None);
     let actual = models
         .iter()
         .map(|model| {
@@ -975,6 +975,24 @@ fn provider_model_fields_are_preserved_when_available() {
     assert_eq!(
         value["models"][0]["supported_reasoning_levels"][1]["effort"],
         "high"
+    );
+}
+
+#[test]
+fn codex_model_info_synthesizes_supported_reasoning_from_default() {
+    let model = json!({
+        "id": "upstream-only-default",
+        "object": "model",
+        "default_reasoning_level": "high"
+    });
+
+    let info = codex_model_info(&model, &ProviderConfig::default(), &AppConfig::default())
+        .expect("model info");
+
+    assert_eq!(info["default_reasoning_level"], "high");
+    assert_eq!(
+        info["supported_reasoning_levels"],
+        json!([{"effort": "high", "description": "high"}])
     );
 }
 
@@ -1258,7 +1276,7 @@ fn manual_catalog_models_skip_upstream_id_aliases() {
             ..crate::config::ModelCatalogEntry::default()
         });
     let config = load_config_layers(&[]).expect("default config loads");
-    let models = manual_catalog_models(&provider, &config);
+    let models = manual_catalog_models(&provider, &config, None);
 
     assert_eq!(models.len(), 1);
     assert_eq!(models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
@@ -1268,6 +1286,42 @@ fn manual_catalog_models_skip_upstream_id_aliases() {
             .all(|model| model["slug"].as_str() != Some("gpt-5.4")),
         "upstream_id alias should not be listed as a separate model"
     );
+}
+
+#[test]
+fn manual_catalog_models_copy_discovered_upstream_metadata() {
+    let mut provider = ProviderConfig::default();
+    provider
+        .model_catalog
+        .push(crate::config::ModelCatalogEntry {
+            id: "hicap/gpt-5.4".to_string(),
+            upstream_id: Some("gpt-5.4".to_string()),
+            display_name: Some("GPT-5.4".to_string()),
+            ..crate::config::ModelCatalogEntry::default()
+        });
+    let config = load_config_layers(&[]).expect("default config loads");
+    let mut discovered = BTreeMap::new();
+    discovered.insert(
+        "gpt-5.4".to_string(),
+        json!({
+            "slug": "gpt-5.4",
+            "object": "model",
+            "context_window": 272_000,
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "low"},
+                {"effort": "high", "description": "high"}
+            ],
+            "default_reasoning_level": "high"
+        }),
+    );
+
+    let models = manual_catalog_models(&provider, &config, Some(&discovered));
+
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["slug"].as_str(), Some("hicap/gpt-5.4"));
+    assert_eq!(models[0]["context_window"], 272_000);
+    assert_eq!(models[0]["default_reasoning_level"], "high");
+    assert_eq!(models[0]["supported_reasoning_levels"][1]["effort"], "high");
 }
 
 #[test]
@@ -1287,7 +1341,7 @@ fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
 
     let mut merged_models = Vec::new();
     let config = load_config_layers(&[]).expect("default config loads");
-    let catalog_models = manual_catalog_models(&hicap, &config);
+    let catalog_models = manual_catalog_models(&hicap, &config, None);
 
     let added = add_models_for_provider(
         &mut merged_models,
@@ -1527,7 +1581,7 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
     refreshed.insert("shared".to_string(), "beta".to_string());
     let failed_providers = BTreeSet::from(["alpha".to_string()]);
 
-    publish_model_routes(&state, refreshed, &failed_providers, None).await;
+    publish_model_routes(&state, refreshed, BTreeMap::new(), &failed_providers, None).await;
 
     assert_eq!(
         state
@@ -1537,6 +1591,74 @@ async fn failed_provider_route_recovery_does_not_replace_fresh_model_owner() {
             .get("shared")
             .map(String::as_str),
         Some("beta")
+    );
+}
+
+#[tokio::test]
+async fn publish_model_routes_stores_discovered_models() {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    use std::sync::RwLock;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".to_string(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".into(),
+            ..ProviderConfig::default()
+        },
+    );
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: None,
+        structured_output: std::sync::Arc::new(
+            crate::structured_output::StructuredOutputCache::default(),
+        ),
+    };
+    let mut discovered = BTreeMap::new();
+    discovered.insert(
+        "alpha".to_string(),
+        BTreeMap::from([(
+            "live-model".to_string(),
+            json!({"slug": "live-model", "object": "model"}),
+        )]),
+    );
+
+    publish_model_routes(
+        &state,
+        BTreeMap::from([("live-model".to_string(), "alpha".to_string())]),
+        discovered,
+        &BTreeSet::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        state
+            .discovered_models
+            .read()
+            .await
+            .get("alpha")
+            .is_some_and(|models| models.contains_key("live-model")),
+        "successful discovery must populate the Web UI discovered-model cache"
     );
 }
 
@@ -1559,6 +1681,7 @@ async fn route_and_seed_publication_is_cancellation_safe() {
         publish_model_routes(
             &publish_state,
             BTreeMap::from([("shared".into(), "new-owner".into())]),
+            BTreeMap::new(),
             &BTreeSet::new(),
             Some(vec![("new-owner".into(), "shared".into(), None)]),
         )
@@ -2156,6 +2279,7 @@ async fn stale_fallback_seed_generation_cannot_overwrite_newer_live_routes() {
         ModelRouteSeedPublication {
             refreshed: None,
             fallback_revision: Some(fallback_revision),
+            discovered: BTreeMap::new(),
         },
         Json(json!({ "models": [] })).into_response(),
         false,
@@ -2171,6 +2295,7 @@ async fn stale_fallback_seed_generation_cannot_overwrite_newer_live_routes() {
         ModelRouteSeedPublication {
             refreshed: None,
             fallback_revision: Some(fallback_revision),
+            discovered: BTreeMap::new(),
         },
         Json(json!({ "models": [] })).into_response(),
         true,

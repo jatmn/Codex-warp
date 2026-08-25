@@ -86,6 +86,7 @@ struct MutationRouteDiscovery {
 struct ModelRouteSeedPublication {
     refreshed: Option<Vec<ModelRouteSeed>>,
     fallback_revision: Option<u64>,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
 }
 
 pub(crate) enum ModelRouteSeedRead {
@@ -124,6 +125,7 @@ pub(crate) async fn refresh_model_routes_while_mutation_locked(
     publish_model_routes(
         state,
         discovery.routes,
+        discovery.seed_publication.discovered,
         &discovery.retain_owners,
         discovery.seed_publication.refreshed,
     )
@@ -187,6 +189,7 @@ async fn discover_routes_for_mutation(
     let mut retain_owners: BTreeSet<String> =
         provider_list.iter().map(|(id, _)| id.clone()).collect();
     let mut fetch_warning = None;
+    let mut discovered = BTreeMap::new();
 
     let fetch_ids: BTreeSet<String> = match mode {
         MutationRouteRefresh::SeedsAndRetain => BTreeSet::new(),
@@ -217,6 +220,12 @@ async fn discover_routes_for_mutation(
         let Some(current) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
             continue;
         };
+        if provider_failures.is_empty() {
+            discovered.insert(
+                provider_id.clone(),
+                discovered_models_by_slug(&provider_models),
+            );
+        }
         let mut merged_models = Vec::new();
         let _added = add_models_for_provider(
             &mut merged_models,
@@ -242,6 +251,7 @@ async fn discover_routes_for_mutation(
         seed_publication: ModelRouteSeedPublication {
             refreshed: refreshed_seeds,
             fallback_revision: fallback_seed_revision,
+            discovered,
         },
     }
 }
@@ -306,11 +316,22 @@ async fn models_for_revision(
         async move {
             let (mut provider_models, provider_failures) =
                 fetch_provider_upstream_models(&state, &headers, &provider_id, &provider).await;
+            let discovered_models = discovered_models_by_slug(&provider_models);
             let config = state.read_config().clone();
             if !provider.model_catalog.is_empty() {
-                provider_models.extend(manual_catalog_models(&provider, &config));
+                provider_models.extend(manual_catalog_models(
+                    &provider,
+                    &config,
+                    Some(&discovered_models),
+                ));
             }
-            (provider_id, provider, provider_models, provider_failures)
+            (
+                provider_id,
+                provider,
+                provider_models,
+                discovered_models,
+                provider_failures,
+            )
         }
     }))
     .await;
@@ -337,6 +358,7 @@ async fn models_for_revision(
     };
     let mut failures = Vec::new();
     let mut failed_providers = BTreeSet::new();
+    let mut discovered = BTreeMap::new();
 
     if state.store.is_none() {
         let config = state.read_config();
@@ -345,9 +367,13 @@ async fn models_for_revision(
         }
     }
 
-    for (provider_id, _stale_provider, provider_models, provider_failures) in fetch_results {
+    for (provider_id, _stale_provider, provider_models, discovered_models, provider_failures) in
+        fetch_results
+    {
         if !provider_failures.is_empty() {
             failed_providers.insert(provider_id.clone());
+        } else {
+            discovered.insert(provider_id.clone(), discovered_models);
         }
         let config = state.read_config().clone();
         let Some(provider) = crate::config::provider_by_id(&config, &provider_id).cloned() else {
@@ -378,6 +404,7 @@ async fn models_for_revision(
                 ModelRouteSeedPublication {
                     refreshed: refreshed_seeds,
                     fallback_revision: fallback_seed_revision,
+                    discovered,
                 },
                 Json(json!({ "models": [] })).into_response(),
                 mutation_locked,
@@ -410,6 +437,7 @@ async fn models_for_revision(
         ModelRouteSeedPublication {
             refreshed: refreshed_seeds,
             fallback_revision: fallback_seed_revision,
+            discovered,
         },
         Json(json!({ "models": merged_models })).into_response(),
         mutation_locked,
@@ -469,7 +497,14 @@ async fn publish_models_if_current(
         }) {
             return None;
         }
-        publish_model_routes(state, routes, failed_providers, seed_publication.refreshed).await;
+        publish_model_routes(
+            state,
+            routes,
+            seed_publication.discovered,
+            failed_providers,
+            seed_publication.refreshed,
+        )
+        .await;
         return Some(response);
     }
 
@@ -483,7 +518,14 @@ async fn publish_models_if_current(
     {
         return None;
     }
-    publish_model_routes(state, routes, failed_providers, seed_publication.refreshed).await;
+    publish_model_routes(
+        state,
+        routes,
+        seed_publication.discovered,
+        failed_providers,
+        seed_publication.refreshed,
+    )
+    .await;
     Some(response)
 }
 
@@ -496,6 +538,7 @@ async fn publish_models_if_current(
 async fn publish_model_routes(
     state: &AppState,
     mut routes: BTreeMap<String, String>,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
     failed_providers: &BTreeSet<String>,
     refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
@@ -535,6 +578,104 @@ async fn publish_model_routes(
         retain_failed_routes(&mut routes, &prior);
         *prior = routes;
     }
+
+    publish_discovered_models(state, discovered, failed_providers).await;
+}
+
+async fn publish_discovered_models(
+    state: &AppState,
+    discovered: BTreeMap<String, BTreeMap<String, Value>>,
+    retain_providers: &BTreeSet<String>,
+) {
+    let (configured_providers, config) = {
+        let config = state.read_config();
+        let configured_providers = crate::config_loader::configured_provider_entries(&config)
+            .into_iter()
+            .map(|(provider_id, _)| provider_id.to_string())
+            .collect::<BTreeSet<_>>();
+        (configured_providers, config.clone())
+    };
+    let mut next_discovered = discovered;
+    let prior_discovered = state.discovered_models.read().await.clone();
+    for provider_id in retain_providers {
+        if let Some(models) = prior_discovered.get(provider_id) {
+            next_discovered
+                .entry(provider_id.clone())
+                .or_insert_with(|| models.clone());
+        }
+    }
+    // Keep disabled providers' snapshots available for the management view,
+    // but discard removed providers so a later reused id cannot inherit a
+    // different provider's discovery metadata.
+    for (provider_id, models) in &prior_discovered {
+        if configured_providers.contains(provider_id) {
+            next_discovered
+                .entry(provider_id.clone())
+                .or_insert_with(|| models.clone());
+        }
+    }
+    // A successful refresh owns the live catalog, but it must not erase last-known
+    // metadata for slugs the operator still references locally (disabled models
+    // and catalog aliases) when upstream no longer returns them.
+    merge_locally_retained_discovery(&mut next_discovered, &prior_discovered, &config);
+    *state.discovered_models.write().await = next_discovered;
+}
+
+fn retained_discovery_slugs(provider: &ProviderConfig) -> BTreeSet<String> {
+    let mut slugs = BTreeSet::new();
+    for disabled_id in &provider.disabled_models {
+        if !disabled_id.is_empty() {
+            slugs.insert(disabled_id.clone());
+        }
+    }
+    for entry in &provider.model_catalog {
+        if !entry.id.is_empty() {
+            slugs.insert(entry.id.clone());
+        }
+        if let Some(upstream_id) = entry
+            .upstream_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            slugs.insert(upstream_id.to_string());
+        }
+    }
+    slugs
+}
+
+fn merge_locally_retained_discovery(
+    next_discovered: &mut BTreeMap<String, BTreeMap<String, Value>>,
+    prior_discovered: &BTreeMap<String, BTreeMap<String, Value>>,
+    config: &AppConfig,
+) {
+    for (provider_id, prior_models) in prior_discovered {
+        let Some(next_models) = next_discovered.get_mut(provider_id) else {
+            continue;
+        };
+        let Some(provider) = crate::config::provider_by_id(config, provider_id) else {
+            continue;
+        };
+        for slug in retained_discovery_slugs(provider) {
+            if let Some(info) = prior_models.get(&slug) {
+                next_models.entry(slug).or_insert_with(|| info.clone());
+            }
+        }
+    }
+}
+
+fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {
+    let mut seen = BTreeSet::new();
+    models
+        .iter()
+        .filter_map(|model| {
+            let slug = model.get("slug").and_then(Value::as_str)?;
+            if seen.insert(slug.to_string()) {
+                Some((slug.to_string(), model.clone()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn register_catalog_routes_for_provider(
@@ -736,25 +877,17 @@ pub(crate) fn normalize_models(
     Some(models)
 }
 
-pub(crate) fn manual_catalog_models(provider: &ProviderConfig, config: &AppConfig) -> Vec<Value> {
+pub(crate) fn manual_catalog_models(
+    provider: &ProviderConfig,
+    config: &AppConfig,
+    discovered: Option<&BTreeMap<String, Value>>,
+) -> Vec<Value> {
     let mut models = Vec::new();
     for entry in &provider.model_catalog {
         if !provider.model_is_enabled(&entry.id) {
             continue;
         }
-        let mut model = json!({
-            "id": entry.id,
-            "object": "model"
-        });
-        if let Some(display_name) = &entry.display_name {
-            model["display_name"] = json!(display_name);
-        }
-        if let Some(description) = &entry.description {
-            model["description"] = json!(description);
-        }
-        if let Some(info) = codex_model_info(&model, provider, config) {
-            models.push(info);
-        }
+        models.push(catalog_model_info(entry, provider, config, discovered));
     }
     models
 }
@@ -791,6 +924,7 @@ pub(crate) fn codex_model_info(
     // metadata; a second ID-shape parser can drift from configured patterns.
     let matches_hy3_family = model_matches_family(config, "hy3", id);
     localize_auto_review_model_override(&mut info, id, provider, matches_hy3_family);
+    reconcile_reasoning_metadata(&mut info);
 
     Some(info)
 }
@@ -1236,6 +1370,16 @@ pub(crate) fn apply_provider_model_metadata(info: &mut Value, model: &Value) {
         .and_then(Value::as_array)
     {
         info["supported_reasoning_levels"] = reasoning_levels_json(levels);
+    } else if model
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .is_some_and(|level| !level.trim().is_empty())
+    {
+        // Synthetic models start with a `none` supported list. If upstream
+        // advertises only a default level, drop that placeholder so
+        // reconciliation can synthesize a matching supported entry.
+        info.as_object_mut()
+            .map(|obj| obj.remove("supported_reasoning_levels"));
     }
 }
 

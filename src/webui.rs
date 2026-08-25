@@ -2132,7 +2132,12 @@ async fn update_provider(
     // the new destination or credentials. Acquire the route epoch before the
     // durable commit so cancellation cannot leave SQLite ahead of in-memory
     // publication, then update config and evict stale routes without an await.
-    let mut identity_routes = if snapshot.enabled && previous_enabled && refresh_discovery {
+    // Disabling uses the same epoch: live ownership must be gone before the
+    // disabled config is visible, otherwise selection can fall through to
+    // another provider while this owner's routes are still published.
+    let mut identity_routes = if (snapshot.enabled && previous_enabled && refresh_discovery)
+        || (previous_enabled && !snapshot.enabled)
+    {
         Some(state.model_routes.write().await)
     } else {
         None
@@ -2263,11 +2268,23 @@ async fn set_provider_enabled(
     validate_provider_id(&id)?;
     let store = require_store(&state)?;
 
-    {
+    let previous_enabled = {
         let config = state.read_config();
         ensure_provider_exists(&config, &id)
             .map_err(|_| ApiError::not_found(format!("provider `{id}` not found")))?;
-    }
+        configured_provider_entries(&config)
+            .into_iter()
+            .find(|(provider_id, _)| *provider_id == id)
+            .map(|(_, provider)| provider.enabled)
+            .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?
+    };
+    // Evict live routes before the disabled config is visible so selection cannot
+    // observe this owner together with enabled=false while the old routes remain.
+    let mut disable_routes = if previous_enabled && !body.enabled {
+        Some(state.model_routes.write().await)
+    } else {
+        None
+    };
 
     let managed = lookup_provider_managed(&state, &id)?;
     if managed
@@ -2299,7 +2316,11 @@ async fn set_provider_enabled(
             .ok_or_else(|| ApiError::not_found(format!("provider `{id}` not found")))?;
         provider.enabled = body.enabled;
     }
+    if let Some(routes) = disable_routes.as_mut() {
+        remove_provider_live_routes_from(routes, &id);
+    }
     invalidate_model_discovery(&state);
+    drop(disable_routes);
     let reconcile_state = state.clone();
     let reconcile_id = id.clone();
     let enabled = body.enabled;
