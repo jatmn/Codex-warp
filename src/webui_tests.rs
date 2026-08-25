@@ -2047,6 +2047,8 @@ async fn catalog_update_disabling_model_rebuilds_its_route() {
             upstream_id: OptionalPatch::Absent,
             display_name: OptionalPatch::Absent,
             description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
             enabled: Some(false),
         }),
     )
@@ -2110,6 +2112,8 @@ async fn catalog_update_changing_alias_rebuilds_retired_collision() {
             upstream_id: OptionalPatch::Set("new-shared".into()),
             display_name: OptionalPatch::Absent,
             description: OptionalPatch::Absent,
+            supported_reasoning_levels: OptionalPatch::Absent,
+            default_reasoning_level: OptionalPatch::Absent,
             enabled: None,
         }),
     )
@@ -3562,6 +3566,8 @@ async fn model_update_waits_for_route_epoch_before_durable_publication() {
                 upstream_id: OptionalPatch::Set(new_upstream_id.into()),
                 display_name: OptionalPatch::Absent,
                 description: OptionalPatch::Absent,
+                supported_reasoning_levels: OptionalPatch::Absent,
+                default_reasoning_level: OptionalPatch::Absent,
                 enabled: None,
             }),
         )

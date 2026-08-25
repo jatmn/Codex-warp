@@ -617,6 +617,9 @@ pub(crate) fn add_models_for_provider(
 ) -> usize {
     let mut added = 0;
     let gateway_name = provider_display_name(provider_id, provider);
+    for model in &mut models {
+        apply_matching_catalog_overrides(model, provider);
+    }
     models = dedupe_models_by_slug(models);
     models.sort_by_key(|model| model_sort_key(config, model));
     for model in models {
@@ -790,6 +793,195 @@ pub(crate) fn codex_model_info(
     localize_auto_review_model_override(&mut info, id, provider, matches_hy3_family);
 
     Some(info)
+}
+
+pub(crate) fn catalog_model_info(
+    entry: &ModelCatalogEntry,
+    provider: &ProviderConfig,
+    config: &AppConfig,
+    discovered: Option<&BTreeMap<String, Value>>,
+) -> Value {
+    let discovered_model = discovered.and_then(|models| {
+        entry
+            .upstream_id
+            .as_deref()
+            .and_then(|id| models.get(id))
+            .or_else(|| models.get(&entry.id))
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|(slug, _)| config::catalog_entry_matches_model(entry, slug))
+                    .map(|(_, model)| model)
+            })
+    });
+    let mut info = discovered_model.cloned().unwrap_or_else(|| {
+        let model = json!({"id": entry.id, "object": "model"});
+        codex_model_info(&model, provider, config)
+            .unwrap_or_else(|| synthetic_model_info(&entry.id))
+    });
+    // Catalog ids are the public model identity; upstream_id only selects the
+    // discovery record and remains available for request routing.
+    info["slug"] = json!(entry.id);
+    apply_catalog_entry_overrides(&mut info, entry);
+    info
+}
+
+fn apply_matching_catalog_overrides(info: &mut Value, provider: &ProviderConfig) {
+    let Some(slug) = info.get("slug").and_then(Value::as_str).map(str::to_string) else {
+        return;
+    };
+    if let Some(entry) = provider.model_catalog.iter().find(|entry| entry.id == slug) {
+        apply_catalog_reasoning_overrides(info, entry);
+        return;
+    }
+
+    let upstream_matches = provider
+        .model_catalog
+        .iter()
+        .filter(|entry| entry.upstream_id.as_deref() == Some(slug.as_str()))
+        .collect::<Vec<_>>();
+    if !upstream_matches.is_empty() {
+        apply_catalog_reasoning_consensus(info, &upstream_matches);
+        return;
+    }
+
+    let alias_matches = provider
+        .model_catalog
+        .iter()
+        .filter(|entry| config::catalog_entry_matches_model(entry, &slug))
+        .collect::<Vec<_>>();
+    if !alias_matches.is_empty() {
+        apply_catalog_reasoning_consensus(info, &alias_matches);
+    }
+}
+
+fn apply_catalog_reasoning_consensus(info: &mut Value, entries: &[&ModelCatalogEntry]) {
+    let Some(first) = entries.first() else {
+        return;
+    };
+    if !entries.iter().all(|entry| {
+        entry.supported_reasoning_levels == first.supported_reasoning_levels
+            && entry.default_reasoning_level == first.default_reasoning_level
+    }) {
+        return;
+    }
+    apply_catalog_reasoning_overrides(info, first);
+}
+
+fn apply_catalog_entry_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
+    if let Some(display_name) = &entry.display_name {
+        info["display_name"] = json!(display_name);
+    }
+    if let Some(description) = &entry.description {
+        info["description"] = json!(description);
+    }
+    apply_catalog_reasoning_overrides(info, entry);
+}
+
+fn apply_catalog_reasoning_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
+    if let Some(levels) = &entry.supported_reasoning_levels {
+        let existing = info
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        info["supported_reasoning_levels"] = json!(
+            levels
+                .iter()
+                .map(|level| catalog_reasoning_level_object(level, &existing))
+                .collect::<Vec<_>>()
+        );
+    }
+    if let Some(default) = &entry.default_reasoning_level {
+        info["default_reasoning_level"] = json!(default);
+    }
+    reconcile_reasoning_metadata(info);
+}
+
+fn catalog_reasoning_level_object(level: &str, existing: &[Value]) -> Value {
+    let matched = existing.iter().find(|item| {
+        item.get("effort")
+            .and_then(Value::as_str)
+            .or_else(|| item.as_str())
+            .is_some_and(|effort| effort.trim() == level)
+    });
+    match matched {
+        Some(Value::Object(obj)) => {
+            let mut obj = obj.clone();
+            obj.insert("effort".to_string(), json!(level));
+            Value::Object(obj)
+        }
+        _ => json!({"effort": level, "description": level}),
+    }
+}
+
+pub(crate) fn reasoning_metadata(info: &Value) -> (Vec<String>, String) {
+    let levels = info
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|level| {
+            level
+                .get("effort")
+                .and_then(Value::as_str)
+                .or_else(|| level.as_str())
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let default = info
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_string();
+    (levels, default)
+}
+
+fn reconcile_reasoning_metadata(info: &mut Value) {
+    let (raw_levels, raw_default) = reasoning_metadata(info);
+    let mut levels = Vec::new();
+    for level in raw_levels {
+        let level = level.trim();
+        if !level.is_empty() && !levels.iter().any(|existing| existing == level) {
+            levels.push(level.to_string());
+        }
+    }
+    if levels.is_empty() {
+        let fallback = raw_default.trim();
+        levels.push(if fallback.is_empty() {
+            "none".to_string()
+        } else {
+            fallback.to_string()
+        });
+    }
+    let default = raw_default.trim();
+    let default = if levels.iter().any(|level| level == default) {
+        default.to_string()
+    } else {
+        levels[0].clone()
+    };
+    let canonical_objects = info
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.len() == levels.len()
+                && items.iter().zip(&levels).all(|(item, level)| {
+                    item.as_object().is_some()
+                        && item.get("effort").and_then(Value::as_str) == Some(level.as_str())
+                })
+        });
+    if canonical_objects {
+        // Preserve upstream descriptions and any future per-level metadata.
+        info["default_reasoning_level"] = json!(default);
+        return;
+    }
+    info["supported_reasoning_levels"] = json!(
+        levels
+            .iter()
+            .map(|level| json!({"effort": level, "description": level}))
+            .collect::<Vec<_>>()
+    );
+    info["default_reasoning_level"] = json!(default);
 }
 
 fn localize_auto_review_model_override(

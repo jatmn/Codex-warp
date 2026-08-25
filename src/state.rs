@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use reqwest::Client;
+use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
@@ -239,6 +240,9 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<RwLock<AppConfig>>,
     pub(crate) client: Client,
     pub(crate) model_routes: Arc<AsyncRwLock<BTreeMap<String, String>>>,
+    /// Last successful normalized upstream catalog, kept per provider so the
+    /// Web UI can edit live models without confusing colliding slugs.
+    pub(crate) discovered_models: Arc<AsyncRwLock<BTreeMap<String, BTreeMap<String, Value>>>>,
     /// Last successfully read persisted overlay seed rows, in ownership order.
     /// Unlike `model_routes`, this retains superseded claims and never contains
     /// configured catalogs or upstream-only discovery results.
@@ -325,6 +329,7 @@ impl AppState {
             model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
             model_route_seed_revision: Arc::new(AtomicU64::new(0)),
             model_routes,
+            discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
             session_models: Arc::new(AsyncRwLock::new(SessionModelCache::default())),
             config_revision,
             mutation_lock,
