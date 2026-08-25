@@ -4411,6 +4411,78 @@ async fn discovery_refetch_keeps_live_only_routes_when_upstream_fetch_fails() {
 }
 
 #[tokio::test]
+async fn focused_refetch_retains_sibling_live_routes_and_ownership() {
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+
+    let upstream = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "data": [
+                    {"id": "shared-model"},
+                    {"id": "focused-model"}
+                ]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "focused".into(),
+            ProviderConfig {
+                base_url: format!("http://{address}"),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "sibling".into(),
+            ProviderConfig {
+                base_url: "http://127.0.0.1:1".into(),
+                enabled: true,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    {
+        let mut routes = state.model_routes.write().await;
+        routes.insert("shared-model".into(), "sibling".into());
+        routes.insert("sibling-model".into(), "sibling".into());
+        routes.insert("stale-focused-model".into(), "focused".into());
+    }
+
+    refresh_model_routes_while_mutation_locked(
+        &state,
+        MutationRouteRefresh::RefetchOne,
+        Some("focused"),
+    )
+    .await
+    .expect("focused refetch");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        Some("sibling")
+    );
+    assert_eq!(
+        routes.get("sibling-model").map(String::as_str),
+        Some("sibling")
+    );
+    assert_eq!(
+        routes.get("focused-model").map(String::as_str),
+        Some("focused")
+    );
+    assert!(!routes.contains_key("stale-focused-model"));
+    server.abort();
+}
+
+#[tokio::test]
 async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
