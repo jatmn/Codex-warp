@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use bytes::Bytes;
 use serde_json::json;
@@ -1561,20 +1562,19 @@ async fn route_and_seed_publication_is_cancellation_safe() {
         .await;
     });
 
-    let mut publication_reached_seed_contention = false;
-    for _ in 0..1_000 {
-        match state.model_routes.try_read() {
-            Ok(routes) if routes.get("shared").map(String::as_str) == Some("new-owner") => {
-                publication_reached_seed_contention = true;
-                break;
+    let publication_reached_seed_contention = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match state.model_routes.try_read() {
+                Ok(routes) if routes.get("shared").map(String::as_str) == Some("new-owner") => {
+                    break;
+                }
+                Err(_) => break,
+                _ => tokio::task::yield_now().await,
             }
-            Err(_) => {
-                publication_reached_seed_contention = true;
-                break;
-            }
-            _ => tokio::task::yield_now().await,
         }
-    }
+    })
+    .await
+    .is_ok();
     assert!(
         publication_reached_seed_contention,
         "publication must reach the contended seed lock"

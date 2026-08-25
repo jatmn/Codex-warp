@@ -1,9 +1,11 @@
 use super::*;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 use reqwest::Client;
 use tokio::sync::Mutex as AsyncMutex;
@@ -48,6 +50,36 @@ fn temporary_store_state(label: &str) -> (AppState, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).expect("create temporary store directory");
     let store = crate::store::Store::open(&dir.join("overlay.db")).expect("open temporary store");
     (state_with_store(store), dir)
+}
+
+async fn wait_until(mut ready: impl FnMut() -> bool) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if ready() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+async fn wait_until_async<F, Fut>(mut ready: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if ready().await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
 }
 
 fn cached_seed_owner<'a>(
@@ -3396,35 +3428,30 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
         .expect("config lock")
         .providers
         .insert("dynamic".into(), provider.clone());
-    {
-        let mut seeds = state.model_route_seeds.write().await;
-        seeds.push(("alpha".into(), "alpha-model".into(), None));
-        seeds.push(("dynamic".into(), "stale-dynamic-model".into(), None));
-    }
+    let mut seed_guard = state.model_route_seeds.write().await;
+    seed_guard.push(("alpha".into(), "alpha-model".into(), None));
+    seed_guard.push(("dynamic".into(), "stale-dynamic-model".into(), None));
     let initial_seed_revision = state.model_route_seed_revision.load(Ordering::Acquire);
 
-    let route_guard = state.model_routes.write().await;
     let sync_state = state.clone();
     let sync = tokio::spawn(async move {
         synchronize_global_route_seed_snapshot(&sync_state, "dynamic").await;
     });
 
-    for _ in 0..1_000 {
-        tokio::task::yield_now().await;
-    }
-    {
-        let seeds = state.model_route_seeds.read().await;
-        assert_eq!(cached_seed_owner(&seeds, "overlay-model"), None);
-        assert_eq!(cached_seed_owner(&seeds, "alpha-model"), Some("alpha"));
-        assert_eq!(
-            cached_seed_owner(&seeds, "stale-dynamic-model"),
-            Some("dynamic")
-        );
-    }
+    assert!(
+        wait_until_async(|| async { state.model_routes.try_write().is_err() }).await,
+        "route publication must acquire live routes and park on the held seed epoch"
+    );
+    assert_eq!(cached_seed_owner(&seed_guard, "overlay-model"), None);
+    assert_eq!(cached_seed_owner(&seed_guard, "alpha-model"), Some("alpha"));
+    assert_eq!(
+        cached_seed_owner(&seed_guard, "stale-dynamic-model"),
+        Some("dynamic")
+    );
     assert_eq!(
         state.model_route_seed_revision.load(Ordering::Acquire),
         initial_seed_revision,
-        "waiting for the live-route lock must not publish provenance early"
+        "waiting for the seed lock must not publish provenance early"
     );
     assert!(
         !sync.is_finished(),
@@ -3438,7 +3465,7 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
             .is_cancelled(),
         "the blocked publication task must be cancelled"
     );
-    drop(route_guard);
+    drop(seed_guard);
     assert!(
         !state
             .model_routes
@@ -3541,9 +3568,10 @@ async fn model_update_waits_for_route_epoch_before_durable_publication() {
         .await
     });
 
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
+    assert!(
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
+        "model update must acquire the mutation lock before the blocked route epoch"
+    );
     assert_eq!(
         state
             .read_config()
@@ -4087,9 +4115,11 @@ async fn completing_mutation_rejects_fallback_built_from_intermediate_seed_cache
     invalidate_model_discovery(&state);
     let request_state = state.clone();
     let request = tokio::spawn(async move { models(State(request_state), HeaderMap::new()).await });
-    for _ in 0..1_000 {
-        tokio::task::yield_now().await;
-    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !request.is_finished(),
+        "the models request must still be waiting on the held mutation lock"
+    );
 
     state
         .model_route_seeds
@@ -4394,21 +4424,10 @@ async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destina
         .await
     });
 
-    let mut mutation_started = false;
-    for _ in 0..1_000 {
-        if state.mutation_lock.try_lock().is_err() {
-            mutation_started = true;
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
     assert!(
-        mutation_started,
+        wait_until(|| state.mutation_lock.try_lock().is_err()).await,
         "provider update must acquire mutation lock"
     );
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
 
     assert_eq!(
         state
@@ -4497,21 +4516,15 @@ async fn update_provider_enable_change_reconciles_catalog_routes() {
         .await
     });
 
-    let mut identity_published = false;
-    for _ in 0..1_000 {
-        if state
-            .read_config()
-            .providers
-            .get("dynamic")
-            .is_some_and(|provider| provider.base_url == "https://new-dynamic.example/v1")
-        {
-            identity_published = true;
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
     assert!(
-        identity_published,
+        wait_until(|| {
+            state
+                .read_config()
+                .providers
+                .get("dynamic")
+                .is_some_and(|provider| provider.base_url == "https://new-dynamic.example/v1")
+        })
+        .await,
         "enabling a previously disabled provider has no usable stale route epoch and must publish before route synchronization"
     );
     drop(route_epoch);
