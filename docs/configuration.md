@@ -157,6 +157,25 @@ Precedence is:
 3. matching model-family metadata, in priority order
 4. provider defaults
 5. exact provider model overrides
+6. explicit reasoning fields on a provider `model_catalog` entry
+
+A catalog entry can override the modes for one routable model, including a
+live upstream model selected through `upstream_id`:
+
+```toml
+[[providers.provider_b.model_catalog]]
+id = "provider-b/model-a"
+upstream_id = "model-a"
+supported_reasoning_levels = ["low", "high", "max"]
+default_reasoning_level = "high"
+```
+
+Both reasoning fields are optional. Omitting them inherits the normalized
+upstream, model-family, and provider metadata. The default must be one of the
+effective supported levels. An explicit `supported_reasoning_levels` list
+selects which modes are advertised; matching upstream level objects keep their
+descriptions and other per-level metadata, and newly added modes synthesize
+`{effort, description}` objects.
 
 ## Request Morphs
 
@@ -456,6 +475,15 @@ keep their current values, and JSON `null` clears optional string fields
 (`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
 re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
+The model editor also shows the effective reasoning modes for automatically
+discovered models. Editing one promotes its exact live slug to a catalog
+override. `supported_reasoning_levels` and `default_reasoning_level` can be set
+while adding or editing a model; omitting them preserves inheritance, while
+JSON `null` clears an existing override. Discovery metadata is retained per
+provider, so providers that report the same slug keep their own modes. A
+temporarily disabled model, and a catalog alias whose upstream slug is no
+longer in the latest fetch, keep the metadata from the last successful
+catalog refresh instead of falling back to synthetic `none` modes.
 
 `PUT /api/providers/{id}` is a partial update: omitted fields keep their current
 values, and JSON `null` clears `api_key`, `api_key_env`, `name`, and `headers`

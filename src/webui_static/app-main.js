@@ -430,7 +430,12 @@
       name.textContent = m.display_name || m.id || "";
       const idEl = document.createElement("small");
       idEl.textContent = m.id ?? "";
-      meta.append(name, idEl);
+      const reasoning = document.createElement("small");
+      const modes = Array.isArray(m.supported_reasoning_levels)
+        ? m.supported_reasoning_levels.join(", ")
+        : "none";
+      reasoning.textContent = `Reasoning: ${modes} (default: ${m.default_reasoning_level || "none"})`;
+      meta.append(name, idEl, reasoning);
       const sw = toggleSwitch(async (enabled) => {
         try {
           const view = await api(
@@ -465,14 +470,12 @@
         } catch (e) { status(`Error: ${formatErrorMessage(e)}`); }
       });
       const actions = [sw.wrap];
-      if (m.catalog) {
-        const edit = document.createElement("button");
-        edit.type = "button";
-        edit.className = "btn small";
-        edit.textContent = "Edit";
-        edit.addEventListener("click", () => openModelForm(provider.id, m));
-        actions.push(edit);
-      }
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "btn small";
+      edit.textContent = "Edit";
+      edit.addEventListener("click", () => openModelForm(provider.id, m));
+      actions.push(edit);
       actions.push(del);
       row.append(meta, ...actions);
       container.append(row);
@@ -1169,12 +1172,23 @@
   const modelDialog = $("#model-dialog");
   const modelForm = $("#model-form");
   let editingModel = null;
+  function parseReasoningLevels(value) {
+    return [...new Set(String(value || "").split(",").map((level) => level.trim()).filter(Boolean))];
+  }
+
+  function sameStringArray(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
   $("#model-form-cancel").addEventListener("click", () => modelDialog.close());
   modelForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const fd = new FormData(modelForm);
     const providerId = fd.get("provider_id");
     const upstreamId = fd.get("upstream_id")?.trim() || "";
+    const levelsText = fd.get("supported_reasoning_levels")?.trim() || "";
+    const levels = parseReasoningLevels(levelsText);
+    const defaultLevel = fd.get("default_reasoning_level")?.trim() || "";
     const mode = modelForm.dataset.mode || "create";
     let id;
     if (mode === "create") {
@@ -1186,15 +1200,39 @@
     } else {
       id = fd.get("id")?.trim() || "";
     }
+    if (defaultLevel && levelsText && !levels.includes(defaultLevel)) {
+      status("Default reasoning mode must be included in the available modes");
+      return;
+    }
     const body = {
       id,
       upstream_id: upstreamId || null,
-      display_name: fd.get("display_name")?.trim() || null,
-      description: fd.get("description")?.trim() || null,
       enabled: editingModel?.enabled ?? true,
     };
+    const displayName = fd.get("display_name")?.trim() || "";
+    const description = fd.get("description")?.trim() || "";
+    if (!editingModel) {
+      if (displayName) body.display_name = displayName;
+      if (description) body.description = description;
+    } else {
+      if (displayName !== (editingModel.display_name || "")) body.display_name = displayName || null;
+      if (description !== (editingModel.description || "")) body.description = description || null;
+    }
+    const previousLevels = Array.isArray(editingModel?.supported_reasoning_levels)
+      ? editingModel.supported_reasoning_levels
+      : [];
+    const previousDefault = editingModel?.default_reasoning_level || "";
+    const levelsChanged = !!editingModel && !sameStringArray(levels, previousLevels);
+    const defaultChanged = !!editingModel && defaultLevel !== previousDefault;
+    if (!editingModel) {
+      if (levelsText) body.supported_reasoning_levels = levels;
+      if (defaultLevel) body.default_reasoning_level = defaultLevel;
+    } else {
+      if (levelsChanged) body.supported_reasoning_levels = levelsText ? levels : null;
+      if (defaultChanged) body.default_reasoning_level = defaultLevel || null;
+    }
     try {
-      if (mode === "create") {
+      if (mode === "create" || mode === "promote") {
         await api(`/providers/${encodeURIComponent(providerId)}/models`, {
           method: "POST",
           body: JSON.stringify(body),
@@ -1216,12 +1254,16 @@
     modelForm.querySelector("[name=provider_id]").value = providerId;
     const idInput = modelForm.querySelector("[name=id]");
     if (m) {
-      modelForm.dataset.mode = "edit";
+      modelForm.dataset.mode = m.catalog ? "edit" : "promote";
       $("#model-form-title").textContent = "Edit model";
       idInput.value = m.id;
-      modelForm.querySelector("[name=upstream_id]").value = m.upstream_id || "";
+      modelForm.querySelector("[name=upstream_id]").value = m.upstream_id || (m.catalog ? "" : m.id);
       modelForm.querySelector("[name=display_name]").value = m.display_name || "";
       modelForm.querySelector("[name=description]").value = m.description || "";
+      modelForm.querySelector("[name=supported_reasoning_levels]").value =
+        (m.supported_reasoning_levels || []).join(", ");
+      modelForm.querySelector("[name=default_reasoning_level]").value =
+        m.default_reasoning_level || "";
     } else {
       modelForm.dataset.mode = "create";
       $("#model-form-title").textContent = "Add model";

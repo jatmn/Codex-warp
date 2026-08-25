@@ -1203,6 +1203,8 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
     let entry = ModelCatalogEntry {
         id: "my-model".into(),
         upstream_id: Some("gpt-4".into()),
+        supported_reasoning_levels: Some(vec!["low".into(), "high".into()]),
+        default_reasoning_level: Some("high".into()),
         enabled: true,
         ..ModelCatalogEntry::default()
     };
@@ -1234,6 +1236,14 @@ fn apply_overlays_catalog_json_enable_clears_toml_disabled_models() {
     assert!(provider.model_is_enabled("my-model"));
     assert!(provider.model_is_enabled("gpt-4"));
     assert!(provider.disabled_models.is_empty());
+    assert_eq!(
+        provider.model_catalog[0].supported_reasoning_levels,
+        Some(vec!["low".into(), "high".into()])
+    );
+    assert_eq!(
+        provider.model_catalog[0].default_reasoning_level.as_deref(),
+        Some("high")
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

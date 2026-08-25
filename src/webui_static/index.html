@@ -207,6 +207,9 @@
           <label>Model ID <input name="upstream_id"></label>
           <label>Display name <input name="display_name"></label>
           <label>Description <input name="description"></label>
+          <label>Reasoning modes <input name="supported_reasoning_levels" placeholder="none, low, medium, high"></label>
+          <label>Default reasoning mode <input name="default_reasoning_level" placeholder="medium"></label>
+          <p class="hint muted">Separate modes with commas. Clear a field on an existing model to inherit provider or model-family metadata.</p>
           <div class="form-actions">
             <button type="button" class="btn" id="model-form-cancel">Cancel</button>
             <button type="submit" class="btn primary">Save</button>
