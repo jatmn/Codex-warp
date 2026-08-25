@@ -2221,6 +2221,62 @@ fn shared_catalog_aliases_apply_only_agreed_raw_reasoning_overrides() {
 }
 
 #[test]
+fn catalog_supported_levels_keep_matching_upstream_level_objects() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "live-model".into(),
+            supported_reasoning_levels: Some(vec!["low".into(), "high".into(), "max".into()]),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    let mut raw = synthetic_model_info("live-model");
+    raw["supported_reasoning_levels"] = json!([
+        {"effort": "low", "description": "Quick analysis"},
+        {"effort": "high", "description": "Deep analysis", "custom": true}
+    ]);
+    raw["default_reasoning_level"] = json!("high");
+    apply_matching_catalog_overrides(&mut raw, &provider);
+
+    assert_eq!(
+        raw["supported_reasoning_levels"],
+        json!([
+            {"effort": "low", "description": "Quick analysis"},
+            {"effort": "high", "description": "Deep analysis", "custom": true},
+            {"effort": "max", "description": "max"}
+        ])
+    );
+    assert_eq!(raw["default_reasoning_level"], "high");
+}
+
+#[test]
+fn catalog_supported_levels_drop_unlisted_upstream_level_objects() {
+    let provider = ProviderConfig {
+        model_catalog: vec![ModelCatalogEntry {
+            id: "live-model".into(),
+            supported_reasoning_levels: Some(vec!["high".into()]),
+            default_reasoning_level: Some("high".into()),
+            ..ModelCatalogEntry::default()
+        }],
+        ..ProviderConfig::default()
+    };
+    let mut raw = synthetic_model_info("live-model");
+    raw["supported_reasoning_levels"] = json!([
+        {"effort": "low", "description": "Quick analysis"},
+        {"effort": "high", "description": "Deep analysis", "custom": true}
+    ]);
+    raw["default_reasoning_level"] = json!("medium");
+    apply_matching_catalog_overrides(&mut raw, &provider);
+
+    assert_eq!(
+        raw["supported_reasoning_levels"],
+        json!([{"effort": "high", "description": "Deep analysis", "custom": true}])
+    );
+    assert_eq!(raw["default_reasoning_level"], "high");
+}
+
+#[test]
 fn prefixed_live_slug_applies_catalog_id_overlap_reasoning_overrides() {
     let provider = ProviderConfig {
         model_catalog: vec![ModelCatalogEntry {

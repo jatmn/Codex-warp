@@ -172,7 +172,10 @@ default_reasoning_level = "high"
 
 Both reasoning fields are optional. Omitting them inherits the normalized
 upstream, model-family, and provider metadata. The default must be one of the
-effective supported levels.
+effective supported levels. An explicit `supported_reasoning_levels` list
+selects which modes are advertised; matching upstream level objects keep their
+descriptions and other per-level metadata, and newly added modes synthesize
+`{effort, description}` objects.
 
 ## Request Morphs
 

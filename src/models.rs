@@ -897,10 +897,15 @@ fn apply_catalog_entry_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
 
 fn apply_catalog_reasoning_overrides(info: &mut Value, entry: &ModelCatalogEntry) {
     if let Some(levels) = &entry.supported_reasoning_levels {
+        let existing = info
+            .get("supported_reasoning_levels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         info["supported_reasoning_levels"] = json!(
             levels
                 .iter()
-                .map(|level| json!({"effort": level, "description": level}))
+                .map(|level| catalog_reasoning_level_object(level, &existing))
                 .collect::<Vec<_>>()
         );
     }
@@ -908,6 +913,23 @@ fn apply_catalog_reasoning_overrides(info: &mut Value, entry: &ModelCatalogEntry
         info["default_reasoning_level"] = json!(default);
     }
     reconcile_reasoning_metadata(info);
+}
+
+fn catalog_reasoning_level_object(level: &str, existing: &[Value]) -> Value {
+    let matched = existing.iter().find(|item| {
+        item.get("effort")
+            .and_then(Value::as_str)
+            .or_else(|| item.as_str())
+            .is_some_and(|effort| effort.trim() == level)
+    });
+    match matched {
+        Some(Value::Object(obj)) => {
+            let mut obj = obj.clone();
+            obj.insert("effort".to_string(), json!(level));
+            Value::Object(obj)
+        }
+        _ => json!({"effort": level, "description": level}),
+    }
 }
 
 pub(crate) fn reasoning_metadata(info: &Value) -> (Vec<String>, String) {
