@@ -475,6 +475,15 @@ keep their current values, and JSON `null` clears optional string fields
 (`upstream_id`, `display_name`, `description`). Omitting `enabled` does not
 re-enable a disabled model. `POST /api/providers/{id}/models` still creates or
 replaces a full catalog entry (with `enabled` defaulting to true when omitted).
+`POST /api/providers/{id}/refresh-models` re-fetches one enabled provider's
+upstream `/models` catalog and atomically updates its live model view and route
+map. A successful response adds newly reported models and removes live-only
+models no longer returned by that provider; configured catalog entries and
+persisted operator overlays remain authoritative. Static
+(`model_catalog_only = true`) and disabled providers cannot be refreshed. A
+failed fetch preserves the last discovered routes. The action requires a JSON
+body and is unavailable with `--no-webui-store`.
+
 The model editor also shows the effective reasoning modes for automatically
 discovered models. Editing one promotes its exact live slug to a catalog
 override. `supported_reasoning_levels` and `default_reasoning_level` can be set

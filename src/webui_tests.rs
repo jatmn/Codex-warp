@@ -4483,6 +4483,166 @@ async fn focused_refetch_retains_sibling_live_routes_and_ownership() {
 }
 
 #[tokio::test]
+async fn provider_model_refresh_replaces_routes_over_http() {
+    let upstream = axum::Router::new().route(
+        "/models",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"data": [{"id": "new-model"}]}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream_server =
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+
+    let (state, store_dir) = temporary_store_state("provider-refresh-success");
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: format!("http://{address}"),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("old-model".into(), "dynamic".into());
+    let revision = state.config_revision.load(Ordering::Acquire);
+
+    let app = router(None, false).with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let management_server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let form = client
+        .post(format!(
+            "http://{address}/api/providers/dynamic/refresh-models"
+        ))
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body("refresh=true")
+        .send()
+        .await
+        .expect("submit form request");
+    assert_eq!(form.status(), reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let response = client
+        .post(format!(
+            "http://{address}/api/providers/dynamic/refresh-models"
+        ))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("refresh provider models");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let view: serde_json::Value = response.json().await.expect("provider view");
+    assert!(
+        view["models"]
+            .as_array()
+            .expect("models array")
+            .iter()
+            .any(|model| model["id"] == "new-model")
+    );
+    assert_eq!(state.config_revision.load(Ordering::Acquire), revision + 2);
+    let routes = state.model_routes.read().await;
+    assert_eq!(routes.get("new-model").map(String::as_str), Some("dynamic"));
+    assert!(!routes.contains_key("old-model"));
+    drop(routes);
+
+    management_server.abort();
+    let _ = management_server.await;
+    upstream_server.abort();
+    let _ = upstream_server.await;
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_model_refresh_failure_is_atomic() {
+    let (state, store_dir) = temporary_store_state("provider-refresh-failure");
+    state.config.write().expect("config lock").providers.insert(
+        "dynamic".into(),
+        ProviderConfig {
+            base_url: "http://127.0.0.1:1".into(),
+            enabled: true,
+            ..ProviderConfig::default()
+        },
+    );
+    state
+        .model_routes
+        .write()
+        .await
+        .insert("last-known-model".into(), "dynamic".into());
+
+    let error = refresh_provider_models(
+        State(state.clone()),
+        Path("dynamic".to_string()),
+        Json(serde_json::json!({})),
+    )
+    .await
+    .expect_err("unreachable provider must fail");
+    assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
+    assert!(error.message.contains("model refresh failed"));
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("last-known-model")
+            .map(String::as_str),
+        Some("dynamic")
+    );
+
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
+async fn provider_model_refresh_rejects_ineligible_providers() {
+    let state = test_state();
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "static".into(),
+            ProviderConfig {
+                base_url: "https://static.example/v1".into(),
+                enabled: true,
+                model_catalog_only: true,
+                ..ProviderConfig::default()
+            },
+        );
+        config.providers.insert(
+            "disabled".into(),
+            ProviderConfig {
+                base_url: "https://disabled.example/v1".into(),
+                enabled: false,
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    for (id, expected) in [
+        ("static", "static model catalog"),
+        ("disabled", "must be enabled"),
+    ] {
+        let error = refresh_provider_models(
+            State(state.clone()),
+            Path(id.to_string()),
+            Json(serde_json::json!({})),
+        )
+        .await
+        .expect_err("provider must be rejected");
+        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(error.message.contains(expected));
+    }
+}
+
+#[tokio::test]
 async fn provider_identity_edit_reassigns_live_routes_when_refetch_fails() {
     use crate::models::MutationRouteRefresh;
     use crate::models::refresh_model_routes_while_mutation_locked;
