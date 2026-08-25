@@ -2500,14 +2500,24 @@ async fn catalog_only_success_keeps_catalog_upstream_discovery_metadata() {
     let state = test_state(config);
     state.discovered_models.write().await.insert(
         "manual".into(),
-        BTreeMap::from([(
-            "upstream-model".into(),
-            json!({
-                "slug":"upstream-model",
-                "default_reasoning_level":"high",
-                "supported_reasoning_levels":[{"effort":"high"}]
-            }),
-        )]),
+        BTreeMap::from([
+            (
+                "manual/custom".into(),
+                json!({
+                    "slug":"manual/custom",
+                    "default_reasoning_level":"low",
+                    "supported_reasoning_levels":[{"effort":"low"}]
+                }),
+            ),
+            (
+                "upstream-model".into(),
+                json!({
+                    "slug":"upstream-model",
+                    "default_reasoning_level":"high",
+                    "supported_reasoning_levels":[{"effort":"high"}]
+                }),
+            ),
+        ]),
     );
 
     publish_model_discovery(
@@ -2519,6 +2529,10 @@ async fn catalog_only_success_keeps_catalog_upstream_discovery_metadata() {
     .await;
 
     let snapshots = state.discovered_models.read().await.clone();
+    assert_eq!(
+        snapshots["manual"]["manual/custom"]["default_reasoning_level"],
+        "low"
+    );
     assert_eq!(
         snapshots["manual"]["upstream-model"]["default_reasoning_level"],
         "high"
