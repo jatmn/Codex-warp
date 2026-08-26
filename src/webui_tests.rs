@@ -2646,6 +2646,30 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
             < request.find("loadAnalytics(").expect("load analytics")
     );
 
+    let provider_change = app
+        .split("$(\"#analytics-provider\").addEventListener(\"change\", () => {")
+        .nth(1)
+        .expect("analytics provider change handler")
+        .split("});")
+        .next()
+        .expect("analytics provider change body");
+    let reset_model_at = provider_change
+        .find("$(\"#analytics-model\").value = \"\";")
+        .expect("reset model after provider change");
+    let rebuild_models_at = provider_change
+        .find("fillAnalyticsFilters();")
+        .expect("rebuild models after provider change");
+    let request_at = provider_change
+        .find("requestAnalytics();")
+        .expect("persist and reload after provider change");
+    assert!(reset_model_at < rebuild_models_at && rebuild_models_at < request_at);
+    assert!(
+        app.contains("$(\"#analytics-range\").addEventListener(\"change\", requestAnalytics);")
+    );
+    assert!(
+        app.contains("$(\"#analytics-model\").addEventListener(\"change\", requestAnalytics);")
+    );
+
     let boot = app
         .split("async function boot()")
         .nth(1)
