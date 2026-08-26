@@ -443,6 +443,7 @@
         refreshBtn.textContent = "Refreshing...";
         status(`Refreshing models for ${provider.id}...`);
         let apiError = null;
+        let reloadError = null;
         try {
           await api(`/providers/${encodeURIComponent(provider.id)}/refresh-models`, {
             method: "POST",
@@ -450,22 +451,27 @@
           });
         } catch (error) {
           apiError = error;
-        } finally {
-          refreshingProviderIds.delete(provider.id);
         }
         try {
           await loadProviders({ refreshRoutes: false, updateStatus: false });
-          status(
-            apiError
-              ? `Error: ${formatErrorMessage(apiError)}`
-              : `Refreshed models for ${provider.id}`,
-          );
         } catch (error) {
-          refreshBtn.disabled = !provider.enabled;
-          refreshBtn.textContent = "Refresh";
+          reloadError = error;
+        } finally {
+          refreshingProviderIds.delete(provider.id);
+          renderProviders();
+        }
+        if (apiError && reloadError) {
           status(
-            `Refreshed models for ${provider.id}, but could not reload providers: ${formatErrorMessage(error)}`,
+            `Error: ${formatErrorMessage(apiError)}. Could not reload providers: ${formatErrorMessage(reloadError)}`,
           );
+        } else if (apiError) {
+          status(`Error: ${formatErrorMessage(apiError)}`);
+        } else if (reloadError) {
+          status(
+            `Refreshed models for ${provider.id}, but could not reload providers: ${formatErrorMessage(reloadError)}`,
+          );
+        } else {
+          status(`Refreshed models for ${provider.id}`);
         }
       });
       head.append(refreshBtn);
