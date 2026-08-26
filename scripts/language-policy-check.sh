@@ -7,32 +7,32 @@
 # Invariant: forbidden-ecosystem markers are denied by basename before any
 # suffix/path allowlist is consulted. Suffix classes that the tree only uses in
 # specific names or directories are not opened repo-wide (lockfiles are
-# Cargo.lock; YAML is under .github/; TOML is Cargo/config/deny/typos files).
+# Cargo.lock; YAML is under .github/; TOML is Cargo/deny/typos/codex-warp
+# plus configs/, configs/model-families/, and configs/tool-policies/).
 # Suffix allowlist never overrides a forbidden basename.
 set -euo pipefail
 
-# Return 0 if this path is one of the TOML files the tree actually uses.
-# Bash `case` globs treat `*` as matching `/`, so do not use configs/*.toml.
+# Return 0 if this path is an approved TOML location.
+# Approved paths: Cargo.toml, _typos.toml, deny.toml, codex-warp.toml,
+# configs/<file>.toml, configs/model-families/<file>.toml, and
+# configs/tool-policies/<file>.toml.
+# Bash `case` globs treat `*` as matching `/`, so strip known prefixes and
+# reject any remaining slash instead of using configs/*.toml.
 is_tracked_toml() {
   local path="$1"
+  local rest
   case "$path" in
     Cargo.toml | _typos.toml | deny.toml | codex-warp.toml) return 0 ;;
   esac
-  local rest="${path#configs/}"
+  rest="${path#configs/}"
   [ "$rest" != "$path" ] || return 1
   case "$rest" in
-    *.toml)
-      case "$rest" in
-        */*)
-          local nested="${rest#*/}"
-          case "$nested" in
-            */*) return 1 ;;
-            *.toml) return 0 ;;
-          esac
-          ;;
-        *) return 0 ;;
-      esac
-      ;;
+    model-families/*) rest="${rest#model-families/}" ;;
+    tool-policies/*) rest="${rest#tool-policies/}" ;;
+  esac
+  case "$rest" in
+    */*) return 1 ;;
+    *.toml) return 0 ;;
   esac
   return 1
 }
@@ -46,6 +46,7 @@ is_forbidden() {
   case "$base" in
     pyproject.toml | pixi.toml | hatch.toml | pdm.toml | uv.toml | \
     ruff.toml | poetry.toml | Pylock.toml | pylock.toml | setuptools.toml | \
+    black.toml | mypy.toml | isort.toml | pytest.toml | \
     Pipfile | Pipfile.lock | poetry.lock | uv.lock | pdm.lock | \
     requirements.txt | requirements.yml | requirements.yaml | \
     environment.yml | environment.yaml | \
@@ -107,7 +108,12 @@ self_test() {
   expect_forbidden "ruff.toml"
   expect_forbidden "Pylock.toml"
   expect_forbidden "tools/stray.toml"
+  expect_forbidden "black.toml"
+  expect_forbidden "configs/black.toml"
+  expect_forbidden "configs/a/new.toml"
   expect_forbidden "configs/a/b/c.toml"
+  expect_forbidden "configs/other-dir/foo.toml"
+  expect_forbidden "configs/model-families/nested/x.toml"
   expect_forbidden "poetry.lock"
   expect_forbidden "Pipfile"
   expect_forbidden "Pipfile.lock"
@@ -136,6 +142,7 @@ self_test() {
   expect_allowed "codex-warp.toml"
   expect_allowed "configs/openrouter.toml"
   expect_allowed "configs/model-families/qwen.toml"
+  expect_allowed "configs/tool-policies/github.toml"
   expect_allowed "deny.toml"
   expect_allowed ".github/workflows/ci.yml"
   expect_allowed ".github/dependabot.yml"
