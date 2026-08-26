@@ -242,8 +242,9 @@ ignore entries in `deny.toml` to hide a real license or git-source policy break.
 
 A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
 CLI smoke checks so Windows-only build breaks (AWS-LC / linker) show up before
-a release. Cargo caches are written only on `main`. Merge requires Source
-Checks, Windows, Incremental (PR diff), and cargo-deny.
+a release. Cargo caches are written only on `main`. Keep Source Checks,
+Windows, Incremental (PR diff), and cargo-deny as required status checks on
+`main`.
 
 ## Source Layout
 
