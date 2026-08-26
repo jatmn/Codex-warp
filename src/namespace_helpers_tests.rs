@@ -479,6 +479,44 @@ fn generated_namespace_alias_uses_a_free_numeric_suffix() {
 }
 
 #[test]
+fn implicit_runtime_alias_cannot_capture_a_later_namespace_child() {
+    let alpha = json!({
+        "type": "namespace",
+        "name": "alpha",
+        "tools": [{
+            "type": "function",
+            "name": "run",
+            "parameters": {"type": "object", "properties": {}}
+        }]
+    });
+    let beta = json!({
+        "type": "namespace",
+        "name": "beta",
+        "tools": [{
+            "type": "function",
+            "name": "alpha.run",
+            "parameters": {"type": "object", "properties": {}}
+        }]
+    });
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    let alpha_tools = expand_namespace_tool(&alpha, &mut used, &mut helpers);
+    let beta_tools = expand_namespace_tool(&beta, &mut used, &mut helpers);
+
+    assert_eq!(alpha_tools[0]["function"]["name"], "run");
+    assert_eq!(beta_tools[0]["function"]["name"], "beta.alpha.run");
+    assert_eq!(
+        helpers.rewrite_response_call("beta.alpha.run", "{}"),
+        RewrittenCall {
+            name: "alpha.run".to_string(),
+            namespace: Some("beta".to_string()),
+            arguments: "{}".to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
+}
+
+#[test]
 fn inserts_subagent_helper_instruction_once() {
     let mut used = BTreeSet::new();
     let mut helpers = NamespaceHelpers::default();
@@ -498,6 +536,41 @@ fn inserts_subagent_helper_instruction_once() {
             .unwrap()
             .starts_with("Sub-agent tool helpers:")
     );
+    assert!(
+        body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains(r#""spawn_agent" as "spawn_agent""#)
+    );
+}
+
+#[test]
+fn helper_instruction_uses_the_allocated_collision_alias() {
+    let mut used = BTreeSet::from(["spawn_agent".to_string()]);
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+    let mut body = json!({"messages": [{"role": "user", "content": "delegate"}]});
+
+    assert!(apply_subagent_helper_shim(&mut body, &helpers));
+    let instruction = body["messages"][0]["content"].as_str().unwrap();
+    assert!(instruction.contains(r#""spawn_agent" as "collaboration.spawn_agent""#));
+    assert!(!instruction.contains("call `spawn_agent` directly"));
+}
+
+#[test]
+fn responses_helper_instruction_is_alias_aware_and_idempotent() {
+    let mut used = BTreeSet::from(["spawn_agent".to_string()]);
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_responses_tool(&collaboration_namespace(), &mut used, &mut helpers);
+    let mut body = json!({"instructions": "You are a coding agent.", "input": "delegate"});
+
+    assert!(apply_subagent_helper_shim_to_responses(&mut body, &helpers));
+    assert!(!apply_subagent_helper_shim_to_responses(
+        &mut body, &helpers
+    ));
+    let instructions = body["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are a coding agent.\n\nSub-agent tool helpers:"));
+    assert!(instructions.contains(r#""spawn_agent" as "collaboration.spawn_agent""#));
 }
 
 #[test]

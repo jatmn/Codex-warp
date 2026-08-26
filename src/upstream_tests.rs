@@ -21,7 +21,6 @@ use crate::config::ProviderConfig;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
 use crate::guardian_compat::GUARDIAN_COMPAT_CLARIFICATION;
-use crate::namespace_helpers::SUBAGENT_HELPER_CLARIFICATION;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::AnalyticsRange;
@@ -564,6 +563,34 @@ async fn spawn_chat_script(
                         axum::http::StatusCode::from_u16(status).expect("status"),
                         Json(payload),
                     )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+    (format!("http://{addr}"), bodies, server)
+}
+
+async fn spawn_responses_capture() -> (String, Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>)
+{
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let app = axum::Router::new().route(
+        "/responses",
+        post({
+            let bodies = bodies.clone();
+            move |Json(body): Json<Value>| {
+                let bodies = bodies.clone();
+                async move {
+                    bodies.lock().expect("bodies lock").push(body);
+                    Json(json!({"id": "resp_test", "status": "completed"}))
                 }
             }
         }),
@@ -1317,8 +1344,10 @@ fn has_subagent_helper_clarification(body: &Value) -> bool {
         .is_some_and(|messages| {
             messages.iter().any(|message| {
                 message.get("role").and_then(Value::as_str) == Some("system")
-                    && message.get("content").and_then(Value::as_str)
-                        == Some(SUBAGENT_HELPER_CLARIFICATION)
+                    && message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("Sub-agent tool helpers:"))
             })
         })
 }
@@ -1363,6 +1392,57 @@ async fn namespace_request_receives_subagent_helper_clarification() {
     assert_eq!(request_event["guardian_compat_applied"], false);
     server.abort();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_namespace_request_receives_alias_aware_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut request = multi_agent_namespace_request(None);
+    request["tools"].as_array_mut().unwrap().push(json!({
+        "type": "function",
+        "name": "spawn_agent",
+        "description": "An unrelated ordinary function",
+        "parameters": {"type": "object", "properties": {}}
+    }));
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    let instructions = seen[0]["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are a coding agent.\n\nSub-agent tool helpers:"));
+    assert!(instructions.contains(r#""spawn_agent" as "multi_agent_v1.spawn_agent""#));
+    let names = seen[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["multi_agent_v1.spawn_agent", "spawn_agent"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_guardian_request_skips_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        multi_agent_namespace_request(Some("guardian:test")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["instructions"], "You are a coding agent.");
+    server.abort();
 }
 
 #[tokio::test]

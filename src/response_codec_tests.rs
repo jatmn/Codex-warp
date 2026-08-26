@@ -5793,7 +5793,7 @@ fn chat_completion_preserves_parallel_collaboration_calls_and_message_metadata()
 }
 
 #[test]
-fn custom_collaboration_call_does_not_claim_plaintext_function_arguments() {
+fn namespace_function_kind_survives_a_dotted_custom_tool_collision() {
     let namespace = json!({
         "type": "namespace",
         "name": "collaboration",
@@ -5821,10 +5821,41 @@ fn custom_collaboration_call_does_not_claim_plaintext_function_arguments() {
         &crate::config::ToolPolicyConfig::default(),
     );
 
-    assert_eq!(item["type"], "custom_tool_call");
+    assert_eq!(item["type"], "function_call");
     assert_eq!(item["namespace"], "collaboration");
     assert_eq!(item["name"], "send_message");
-    assert!(item.get("encrypted_function_args").is_none());
+    assert_eq!(item["encrypted_function_args"], json!([]));
+}
+
+#[test]
+fn ordinary_dotted_custom_tool_remains_custom_beside_namespace_child() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "send_message",
+            "parameters": {"type": "object", "properties": {}}
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    let mut used = BTreeSet::from(["collaboration.send_message".to_string()]);
+    expand_namespace_tool(&namespace, &mut used, &mut helpers);
+    let custom_tool_names = BTreeSet::from(["collaboration.send_message".to_string()]);
+
+    let item = tool_call_item(
+        "collaboration.send_message",
+        r#"{"input":"ordinary"}"#,
+        "call_custom",
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(item["type"], "custom_tool_call");
+    assert_eq!(item["name"], "collaboration.send_message");
+    assert!(item.get("namespace").is_none());
+    assert_eq!(item["input"], "ordinary");
 }
 
 #[test]

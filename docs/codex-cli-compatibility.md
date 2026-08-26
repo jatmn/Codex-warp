@@ -171,13 +171,17 @@ collapsed envelope
 `{ "tool": "spawn_agent", "arguments": { ... } }` that some models emit when
 they only saw a single `{namespace}_tool` function.
 
-For Chat Completions coding turns (not Guardian requests), Warp also inserts a
-short system clarification that sub-agent tools are ordinary functions and
-should be called directly. The clarification recommends starting multiple
-independent agents before waiting when Codex reports available slots and names
-the v1 and v2 messaging lifecycles. Codex remains responsible for the actual
-per-session concurrency limit, agent execution, message delivery, and result
-notifications; Warp only preserves their request and response protocol.
+For Chat Completions and compatible native Responses coding turns (not
+Guardian requests), Warp also inserts a short clarification that sub-agent
+tools are ordinary functions and lists the exact aliases advertised in that
+request. The clarification recommends starting multiple independent agents
+before waiting when Codex reports available slots and identifies the
+advertised messaging lifecycle. On Chat backends, Warp also translates Codex
+v2 `agent_message` task, update, and result items into user-role messages with
+their author and recipient context; encrypted content is explicitly marked as
+unavailable rather than silently discarded. Codex remains responsible for the
+actual per-session concurrency limit, agent execution, message delivery, and
+result notifications; Warp only preserves their request and response protocol.
 
 Empty namespaces still collapse to `{namespace}_tool` as a last-resort helper.
 

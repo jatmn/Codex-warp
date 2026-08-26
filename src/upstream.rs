@@ -25,6 +25,7 @@ use crate::http::endpoint_url;
 use crate::http::error_response;
 use crate::ids::generated_id;
 use crate::namespace_helpers::apply_subagent_helper_shim;
+use crate::namespace_helpers::apply_subagent_helper_shim_to_responses;
 use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::begin_session_model_update;
 use crate::provider::complete_session_model_update;
@@ -90,11 +91,19 @@ pub(crate) async fn proxy_native_responses(
     );
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
+    let guardian_request = is_guardian_request(&body);
     let native = normalize_responses_request(body, &selected.transform);
     let namespace_helpers = native.namespace_helpers;
-    let body = native.body;
+    let mut body = native.body;
+    let subagent_helpers_applied =
+        !guardian_request && apply_subagent_helper_shim_to_responses(&mut body, &namespace_helpers);
     let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
     let request_log_id = generated_id("dbg");
+    if subagent_helpers_applied {
+        state
+            .debug_log
+            .log(subagent_helper_debug_event(&request_log_id, true));
+    }
     state.debug_log.log_request(
         json!({
             "event": "upstream_request",
@@ -103,6 +112,7 @@ pub(crate) async fn proxy_native_responses(
             "provider_id": selected.id.clone(),
             "provider_name": provider_display_name(&selected.id, &selected.provider),
             "url": url,
+            "subagent_helpers_applied": subagent_helpers_applied,
             "request": request_debug_summary(&body)
         }),
         &body,

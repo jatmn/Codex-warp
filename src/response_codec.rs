@@ -3113,6 +3113,8 @@ fn morph_native_item(
         .get("arguments")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let source_is_custom =
+        custom_tool_names.contains(name) && !namespace_helpers.is_namespace_function_alias(name);
     let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
     let runtime_name = rewritten_runtime_name(&rewritten);
     apply_classified_call_to_native_item(
@@ -3120,7 +3122,7 @@ fn morph_native_item(
         classify_rewritten_call(
             &runtime_name,
             &rewritten.arguments,
-            custom_tool_names,
+            source_is_custom,
             tool_policy,
         ),
     );
@@ -3135,13 +3137,15 @@ fn tool_call_item(
     namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
+    let source_is_custom =
+        custom_tool_names.contains(name) && !namespace_helpers.is_namespace_function_alias(name);
     let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
     let runtime_name = rewritten_runtime_name(&rewritten);
     let mut item = classified_tool_call_item(
         &runtime_name,
         &rewritten.arguments,
         call_id,
-        custom_tool_names,
+        source_is_custom,
         tool_policy,
     );
     apply_rewritten_call_metadata(&mut item, &rewritten);
@@ -3185,10 +3189,10 @@ enum ClassifiedCall {
 fn classify_rewritten_call(
     name: &str,
     arguments: &str,
-    custom_tool_names: &BTreeSet<String>,
+    source_is_custom: bool,
     tool_policy: &ToolPolicyConfig,
 ) -> ClassifiedCall {
-    if custom_tool_names.contains(name) {
+    if source_is_custom {
         return ClassifiedCall::Custom {
             name: name.to_string(),
             input: custom_tool_input(arguments),
@@ -3240,10 +3244,10 @@ fn classified_tool_call_item(
     name: &str,
     arguments: &str,
     call_id: &str,
-    custom_tool_names: &BTreeSet<String>,
+    source_is_custom: bool,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
-    match classify_rewritten_call(name, arguments, custom_tool_names, tool_policy) {
+    match classify_rewritten_call(name, arguments, source_is_custom, tool_policy) {
         ClassifiedCall::Custom { name, input } => json!({
             "id": generated_id("ctc"),
             "type": "custom_tool_call",

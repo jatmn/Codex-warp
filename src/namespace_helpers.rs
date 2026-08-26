@@ -5,10 +5,12 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
-pub(crate) const SUBAGENT_HELPER_CLARIFICATION: &str = "\
+const SUBAGENT_HELPER_CLARIFICATION_PREFIX: &str = "\
 Sub-agent tool helpers:
 
-Codex sub-agent tools arrived as a Responses namespace and are exposed here as ordinary functions. To spawn a sub-agent, call `spawn_agent` directly with that function's parameters (for example `message`, plus `task_name` when the schema requires it). Independent agents run asynchronously, so start multiple useful agents before waiting when concurrency slots are available. Use the advertised messaging tools (`send_input` for v1, or `send_message` and `followup_task` for v2) for two-way communication, and use the advertised wait, interrupt, list, resume, or close tools as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
+Codex sub-agent tools arrived as a Responses namespace and are exposed here as ordinary functions. Call each helper exactly by its advertised function name and pass that function's parameters directly. ";
+
+const SUBAGENT_HELPER_CLARIFICATION_SUFFIX: &str = "Independent agents run asynchronously, so start multiple useful agents before waiting when concurrency slots are available. Use the advertised messaging helpers for two-way communication, and use the advertised wait, interrupt, list, resume, or close helpers as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RewrittenCall {
@@ -59,6 +61,33 @@ impl NamespaceHelpers {
     /// advertised tools.
     pub fn has_expanded_helpers(&self) -> bool {
         !self.aliases.is_empty()
+    }
+
+    pub(crate) fn is_namespace_function_alias(&self, name: &str) -> bool {
+        self.aliases.contains_key(name) || self.collapsed.contains_key(name)
+    }
+
+    fn subagent_helper_clarification(&self) -> String {
+        let aliases = self
+            .reverse
+            .iter()
+            .filter_map(|(runtime_name, visible_name)| {
+                let (namespace, child_name) = runtime_name.split_once('.')?;
+                matches!(namespace, "collaboration" | "multi_agent_v1")
+                    .then(|| format!("{} as {}", json!(child_name), json!(visible_name)))
+            })
+            .collect::<Vec<_>>();
+        let available = if aliases.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Available helper aliases for this request: {}. ",
+                aliases.join(", ")
+            )
+        };
+        format!(
+            "{SUBAGENT_HELPER_CLARIFICATION_PREFIX}{available}{SUBAGENT_HELPER_CLARIFICATION_SUFFIX}"
+        )
     }
 
     #[cfg(test)]
@@ -233,6 +262,9 @@ pub(crate) fn expand_namespace_tool(
             used_names,
         );
         used_names.insert(visible_name.clone());
+        if runtime_alias_available {
+            used_names.insert(runtime_name.clone());
+        }
         helpers.register_with_encrypted_arguments(
             visible_name.clone(),
             runtime_name,
@@ -282,6 +314,9 @@ pub(crate) fn expand_namespace_responses_tool(
             used_names,
         );
         used_names.insert(visible_name.clone());
+        if runtime_alias_available {
+            used_names.insert(runtime_name.clone());
+        }
         helpers.register_with_encrypted_arguments(
             visible_name.clone(),
             runtime_name,
@@ -302,13 +337,42 @@ pub(crate) fn apply_subagent_helper_shim(
     }
     let instruction = json!({
         "role": "system",
-        "content": SUBAGENT_HELPER_CLARIFICATION
+        "content": helpers.subagent_helper_clarification()
     });
     if let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) {
         insert_after_leading_system(messages, instruction);
         return true;
     }
     false
+}
+
+pub(crate) fn apply_subagent_helper_shim_to_responses(
+    body: &mut Value,
+    helpers: &NamespaceHelpers,
+) -> bool {
+    if !helpers.has_expanded_helpers() {
+        return false;
+    }
+    let clarification = helpers.subagent_helper_clarification();
+    let Some(map) = body.as_object_mut() else {
+        return false;
+    };
+    match map.get_mut("instructions") {
+        Some(Value::String(instructions)) => {
+            if instructions.contains(SUBAGENT_HELPER_CLARIFICATION_PREFIX) {
+                return false;
+            }
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str(&clarification);
+        }
+        Some(_) => return false,
+        None => {
+            map.insert("instructions".to_string(), Value::String(clarification));
+        }
+    }
+    true
 }
 
 pub(crate) fn subagent_helper_debug_event(request_log_id: &str, applied: bool) -> Value {
@@ -572,7 +636,9 @@ fn subagent_helper_already_applied(body: &Value) -> bool {
                     && message
                         .get("content")
                         .and_then(Value::as_str)
-                        .is_some_and(|content| content.starts_with("Sub-agent tool helpers:"))
+                        .is_some_and(|content| {
+                            content.starts_with(SUBAGENT_HELPER_CLARIFICATION_PREFIX)
+                        })
             })
         })
 }

@@ -143,6 +143,79 @@ fn string_input_becomes_user_chat_message() {
 }
 
 #[test]
+fn plaintext_agent_messages_preserve_task_and_mailbox_context() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {
+                "type": "agent_message",
+                "author": "/root",
+                "recipient": "/root/worker",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nReview the codec"
+                }]
+            },
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Message Type: FINAL_ANSWER\nPayload:\nThe codec is correct"
+                }]
+            }
+        ],
+        "stream": false
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"].as_str().unwrap().starts_with(
+        "Message from Codex agent \"/root\" to \"/root/worker\":\n\nMessage Type: NEW_TASK"
+    ));
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Review the codec")
+    );
+    assert!(messages[1]["content"].as_str().unwrap().starts_with(
+        "Message from Codex agent \"/root/worker\" to \"/root\":\n\nMessage Type: FINAL_ANSWER"
+    ));
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("The codec is correct")
+    );
+}
+
+#[test]
+fn encrypted_agent_message_is_not_silently_dropped() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [
+                {"type": "input_text", "text": "Message Type: NEW_TASK\nPayload:"},
+                {"type": "encrypted_content", "encrypted_content": "ciphertext"}
+            ]
+        }]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let content = transformed.body["messages"][0]["content"].as_str().unwrap();
+    assert!(content.contains("Message Type: NEW_TASK"));
+    assert!(content.contains("Encrypted inter-agent content omitted"));
+    assert!(!content.contains("ciphertext"));
+}
+
+#[test]
 fn assistant_reasoning_parts_are_not_preserved_by_default() {
     let request = json!({
         "model": "test-model",

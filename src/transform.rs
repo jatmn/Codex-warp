@@ -430,6 +430,13 @@ fn response_item_to_messages(
             }
             (vec![message], consumed_reasoning)
         }
+        Some("agent_message") => (
+            vec![json!({
+                "role": "user",
+                "content": agent_message_to_text(item),
+            })],
+            false,
+        ),
         Some("function_call_output") | Some("custom_tool_call_output") => {
             let call_id = item
                 .get("call_id")
@@ -479,6 +486,44 @@ fn response_item_to_messages(
         }
         _ => (Vec::new(), false),
     }
+}
+
+fn agent_message_to_text(item: &Value) -> String {
+    let author = item
+        .get("author")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown agent");
+    let recipient = item
+        .get("recipient")
+        .and_then(Value::as_str)
+        .unwrap_or("current agent");
+    let mut parts = Vec::new();
+    let mut encrypted_content = false;
+    if let Some(content) = item.get("content").and_then(Value::as_array) {
+        for part in content {
+            match part.get("type").and_then(Value::as_str) {
+                Some("input_text") => {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        parts.push(text.to_string());
+                    }
+                }
+                Some("encrypted_content") => encrypted_content = true,
+                _ => {}
+            }
+        }
+    }
+    if encrypted_content {
+        parts.push(
+            "[Encrypted inter-agent content omitted: this Chat Completions provider cannot decrypt Codex agent messages.]"
+                .to_string(),
+        );
+    }
+    let content = parts.join("\n");
+    format!(
+        "Message from Codex agent {} to {}:\n\n{content}",
+        json!(author),
+        json!(recipient)
+    )
 }
 
 fn is_assistant_tool_call_message(message: Option<&Value>) -> bool {
