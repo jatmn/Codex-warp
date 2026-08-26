@@ -7,6 +7,7 @@
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
   const ANALYTICS_FILTERS_KEY = "codex-warp-webui-analytics-filters";
+  const ANALYTICS_FILTERS_VERSION = 1;
   function readStoredToken() {
     try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
   }
@@ -1425,8 +1426,25 @@
     return [...select.options].some((option) => option.value === saved) ? saved : null;
   }
 
+  function retainStoredAnalyticsOptions(saved) {
+    if (saved.version !== ANALYTICS_FILTERS_VERSION) return;
+    if (typeof saved.provider === "string" && saved.provider) {
+      if (!analyticsProviderIds.includes(saved.provider)) {
+        analyticsProviderIds.push(saved.provider);
+      }
+    }
+    if (typeof saved.provider === "string" &&
+        typeof saved.model === "string" && saved.model) {
+      analyticsModelProvider = saved.provider;
+      if (!analyticsModelIds.includes(saved.model)) {
+        analyticsModelIds.push(saved.model);
+      }
+    }
+  }
+
   function writeAnalyticsFilters() {
     const filters = {
+      version: ANALYTICS_FILTERS_VERSION,
       range: $("#analytics-range").value,
       provider: $("#analytics-provider").value,
       model: $("#analytics-model").value,
@@ -1454,6 +1472,11 @@
     const provider = $("#analytics-provider");
     const model = $("#analytics-model");
     const before = [range.value, provider.value, model.value];
+    // Values written by this WebUI were valid user choices earlier in this
+    // browser session. Keep them available independently of the saved range's
+    // usage rows and of best-effort live provider discovery.
+    retainStoredAnalyticsOptions(saved);
+    fillAnalyticsFilters();
     range.value = analyticsOptionValue(range, saved.range) ?? range.value;
     const savedProvider = analyticsOptionValue(provider, saved.provider);
     if (savedProvider !== null) provider.value = savedProvider;

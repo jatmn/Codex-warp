@@ -2478,14 +2478,18 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let app = webui_js_source();
     assert!(app.contains("const ANALYTICS_FILTERS_KEY = \"codex-warp-webui-analytics-filters\";"));
+    assert!(app.contains("const ANALYTICS_FILTERS_VERSION = 1;"));
     assert!(app.contains("function readStoredAnalyticsFilters()"));
     assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
     assert!(app.contains("let analyticsFiltersToRestore = readStoredAnalyticsFilters();"));
     assert!(app.contains("function writeAnalyticsFilters()"));
+    assert!(app.contains("version: ANALYTICS_FILTERS_VERSION,"));
     assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
     assert!(app.contains("function storeAnalyticsFilters()"));
     assert!(app.contains("analyticsFiltersToRestore = null;"));
     assert!(app.contains("function analyticsOptionValue(select, saved)"));
+    assert!(app.contains("function retainStoredAnalyticsOptions(saved)"));
+    assert!(app.contains("if (saved.version !== ANALYTICS_FILTERS_VERSION) return;"));
     assert!(
         app.contains("[...select.options].some((option) => option.value === saved) ? saved : null")
     );
@@ -2498,13 +2502,25 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let provider_at = restore
         .find("if (savedProvider !== null) provider.value = savedProvider")
         .expect("restore provider");
-    let inventory_at = restore
+    let retain_at = restore
+        .find("retainStoredAnalyticsOptions(saved);")
+        .expect("retain stored session identities");
+    let provider_inventory_at = restore
         .find("fillAnalyticsFilters();")
-        .expect("rebuild model inventory");
+        .expect("rebuild provider inventory");
+    let model_inventory_at = restore[provider_at..]
+        .find("fillAnalyticsFilters();")
+        .expect("rebuild model inventory")
+        + provider_at;
     let model_at = restore
         .find("if (savedModel !== null) model.value = savedModel")
         .expect("restore model");
-    assert!(provider_at < inventory_at && inventory_at < model_at);
+    assert!(
+        retain_at < provider_inventory_at
+            && provider_inventory_at < provider_at
+            && provider_at < model_inventory_at
+            && model_inventory_at < model_at
+    );
     assert!(restore.contains("providerInventoryComplete"));
     assert!(restore.contains("modelInventoryComplete"));
     assert!(restore.contains("const providerMatches = savedProvider !== null;"));

@@ -77,6 +77,10 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
     `
       "use strict";
       const ANALYTICS_FILTERS_KEY = "codex-warp-webui-analytics-filters";
+      const ANALYTICS_FILTERS_VERSION = 1;
+      let analyticsProviderIds = [];
+      let analyticsModelIds = [];
+      let analyticsModelProvider = null;
       const $ = (selector) => globalThis.elements[selector];
       function fillAnalyticsFilters() { globalThis.fillHook(); }
       ${readHelperSource}
@@ -90,6 +94,13 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
         settleAnalyticsInventoryChange,
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
+        getInventory() {
+          return JSON.parse(JSON.stringify({
+            providerIds: analyticsProviderIds,
+            modelIds: analyticsModelIds,
+            modelProvider: analyticsModelProvider,
+          }));
+        },
       };
     `,
     context,
@@ -132,6 +143,7 @@ check("writes every active filter and tolerates blocked storage", () => {
   run.elements["#analytics-model"].options.push({ value: "m1" });
   run.filters.writeAnalyticsFilters();
   assert.deepEqual(parsedStorage(run), {
+    version: 1,
     range: "week",
     provider: "configured",
     model: "m1",
@@ -159,6 +171,7 @@ check("restores a valid provider before its model and persists the result", () =
   assert.equal(run.elements["#analytics-model"].value, "model-a");
   assert.equal(run.filters.getPending(), null);
   assert.deepEqual(parsedStorage(run), {
+    version: 1,
     range: "week",
     provider: "configured",
     model: "model-a",
@@ -168,6 +181,7 @@ check("restores a valid provider before its model and persists the result", () =
 check("initializes restoration from stored session values", () => {
   const run = runtime({
     stored: JSON.stringify({
+      version: 1,
       range: "week",
       provider: "configured",
       model: "model-a",
@@ -184,6 +198,38 @@ check("initializes restoration from stored session values", () => {
   assert.equal(run.elements["#analytics-provider"].value, "configured");
   assert.equal(run.elements["#analytics-model"].value, "model-a");
   assert.equal(run.filters.getPending(), null);
+});
+
+check("retains a session choice absent from range and discovery inventories", () => {
+  const run = runtime({
+    stored: JSON.stringify({
+      version: 1,
+      range: "1h",
+      provider: "historical-provider",
+      model: "historical-model",
+    }),
+  });
+  run.elements["#analytics-provider"].options = [{ value: "" }];
+  run.setFillHook(() => {
+    const inventory = run.filters.getInventory();
+    const provider = run.elements["#analytics-provider"];
+    const model = run.elements["#analytics-model"];
+    provider.options = ["", ...inventory.providerIds].map((value) => ({ value }));
+    model.options = inventory.modelProvider === provider.value
+      ? ["", ...inventory.modelIds].map((value) => ({ value }))
+      : [{ value: "" }];
+  });
+  assert.equal(run.filters.restoreAnalyticsFilters(), true);
+  assert.equal(run.elements["#analytics-range"].value, "1h");
+  assert.equal(run.elements["#analytics-provider"].value, "historical-provider");
+  assert.equal(run.elements["#analytics-model"].value, "historical-model");
+  assert.equal(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "1h",
+    provider: "historical-provider",
+    model: "historical-model",
+  });
 });
 
 check("defers historical ids until provider and model inventories arrive", () => {
@@ -283,6 +329,7 @@ check("persists fallback when provider discovery removes the active model", () =
   run.elements["#analytics-model"].value = "";
   assert.equal(run.filters.settleAnalyticsInventoryChange(true), true);
   assert.deepEqual(parsedStorage(run), {
+    version: 1,
     range: "24h",
     provider: "configured",
     model: "",
@@ -314,7 +361,12 @@ check("does not restore a shared model for an invalid provider", () => {
   assert.equal(run.elements["#analytics-provider"].value, "");
   assert.equal(run.elements["#analytics-model"].value, "");
   assert.equal(run.filters.getPending(), null);
-  assert.deepEqual(parsedStorage(run), { range: "24h", provider: "", model: "" });
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "24h",
+    provider: "",
+    model: "",
+  });
 });
 
 check("invalid saved ids fall back and overwrite stale storage", () => {
@@ -331,7 +383,12 @@ check("invalid saved ids fall back and overwrite stale storage", () => {
   assert.equal(run.elements["#analytics-provider"].value, "");
   assert.equal(run.elements["#analytics-model"].value, "");
   assert.equal(run.filters.getPending(), null);
-  assert.deepEqual(parsedStorage(run), { range: "24h", provider: "", model: "" });
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "24h",
+    provider: "",
+    model: "",
+  });
 });
 
 check("a user save cancels pending boot restoration", () => {
@@ -339,7 +396,12 @@ check("a user save cancels pending boot restoration", () => {
   run.filters.setPending({ range: "week", provider: "configured", model: "model-a" });
   run.filters.storeAnalyticsFilters();
   assert.equal(run.filters.getPending(), null);
-  assert.deepEqual(parsedStorage(run), { range: "1h", provider: "", model: "" });
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "1h",
+    provider: "",
+    model: "",
+  });
 });
 
 async function discoveryResult(fetch) {
