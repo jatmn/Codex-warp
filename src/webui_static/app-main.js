@@ -2916,11 +2916,23 @@
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.beginPath();
-      model.points.forEach((point, i) => {
+      let drawing = false;
+      model.points.forEach((point) => {
         const x = xAt(point.ts);
         const y = yAt(Charts.modelMetricValue(point, metric));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        // Cache rate is undefined when a bucket has no input. Connecting
+        // those zeros would paint a fake 0% dip (tooltips already say
+        // "no cache rate"). Count metrics still connect through zeros.
+        if (metric === "cache_rate" && !Charts.modelPointActive(point, metric)) {
+          drawing = false;
+          return;
+        }
+        if (!drawing) {
+          ctx.moveTo(x, y);
+          drawing = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
       });
       ctx.stroke();
     });

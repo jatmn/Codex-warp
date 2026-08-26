@@ -2565,7 +2565,10 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
         "drawModelUsageChart($(\"#chart-model-cache-rate\"), modelSeries, \"cache_rate\", range)"
     ));
     assert!(app.contains("[\"Cache rate\", cacheRateLabel]"));
-    assert!(app.contains("Charts.cacheRatePercent"));
+    assert!(app.contains("Charts.cacheRatePercent(d.cached_tokens, d.input_tokens)"));
+    assert!(
+        app.contains("if (metric === \"cache_rate\" && !Charts.modelPointActive(point, metric))")
+    );
     assert!(app.contains("function modelSeriesVisible("));
     let css = include_str!("webui_static/app.css");
     // Flex items default to min-width:auto (content), which blocks shrinking
