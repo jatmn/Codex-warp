@@ -6,6 +6,7 @@
 
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
+  const ANALYTICS_FILTERS_KEY = "codex-warp-webui-analytics-filters";
   function readStoredToken() {
     try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
   }
@@ -15,7 +16,18 @@
   function clearStoredToken() {
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* optional persistence */ }
   }
+  function readStoredAnalyticsFilters() {
+    try {
+      const raw = sessionStorage.getItem(ANALYTICS_FILTERS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
   let managementToken = readStoredToken();
+  let analyticsFiltersToRestore = readStoredAnalyticsFilters();
   let managementTokenPrompt = null;
   let providers = [];
   let providerTemplates = [];
@@ -1381,9 +1393,74 @@
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
   }
 
+  function analyticsOptionValue(select, saved) {
+    if (typeof saved !== "string") return null;
+    return [...select.options].some((option) => option.value === saved) ? saved : null;
+  }
+
+  function writeAnalyticsFilters() {
+    const filters = {
+      range: $("#analytics-range").value,
+      provider: $("#analytics-provider").value,
+      model: $("#analytics-model").value,
+    };
+    try {
+      sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters));
+    } catch {
+      /* optional persistence */
+    }
+  }
+
+  function storeAnalyticsFilters() {
+    // A user change wins over any still-pending boot restoration.
+    analyticsFiltersToRestore = null;
+    writeAnalyticsFilters();
+  }
+
+  function restoreAnalyticsFilters({
+    providerInventoryComplete = false,
+    modelInventoryComplete = false,
+  } = {}) {
+    const saved = analyticsFiltersToRestore;
+    if (!saved) return false;
+    const range = $("#analytics-range");
+    const provider = $("#analytics-provider");
+    const model = $("#analytics-model");
+    const before = [range.value, provider.value, model.value];
+    range.value = analyticsOptionValue(range, saved.range) ?? range.value;
+    const savedProvider = analyticsOptionValue(provider, saved.provider);
+    if (savedProvider !== null) provider.value = savedProvider;
+    // Provider selection controls the valid model inventory, so rebuild it
+    // before validating the stored model value.
+    fillAnalyticsFilters();
+    const savedModel = analyticsOptionValue(model, saved.model);
+    if (savedModel !== null) model.value = savedModel;
+
+    const providerResolved =
+      typeof saved.provider !== "string" ||
+      savedProvider !== null ||
+      providerInventoryComplete;
+    const providerMatches =
+      typeof saved.provider !== "string" || savedProvider !== null;
+    const modelResolved =
+      !providerMatches ||
+      typeof saved.model !== "string" ||
+      savedModel !== null ||
+      modelInventoryComplete;
+    if (providerResolved && modelResolved) {
+      // Replace malformed or stale values with the effective defaults so
+      // later reloads do not repeatedly attempt to restore them.
+      analyticsFiltersToRestore = null;
+      writeAnalyticsFilters();
+    }
+    const after = [range.value, provider.value, model.value];
+    return before.some((value, index) => value !== after[index]);
+  }
+
   let analyticsPending = { queued: false, fromPoll: true };
 
   function requestAnalytics() {
+    storeAnalyticsFilters();
     void loadAnalytics({ fromPoll: false });
   }
 
@@ -1444,6 +1521,19 @@
         analyticsModelProvider = provider;
       }
       fillAnalyticsFilters();
+      const restoredFilters = restoreAnalyticsFilters({
+        providerInventoryComplete: !provider,
+        modelInventoryComplete:
+          !model && analyticsModelProvider === $("#analytics-provider").value,
+      });
+      if (restoredFilters) {
+        // Historical provider/model ids appear only after analytics inventories
+        // arrive. Fetch again with the newly restored filter instead of
+        // briefly painting the unfiltered payload under restored controls.
+        analyticsPending.queued = true;
+        analyticsPending.fromPoll = reportFromPoll;
+        return;
+      }
       analyticsSnapshot = {
         data,
         range,
@@ -3493,6 +3583,7 @@
         loadProviders({ refreshRoutes: true, updateStatus: false }),
         loadProviderTemplates(),
       ]);
+      restoreAnalyticsFilters();
       bootComplete = true;
       await activateTabPolls(activeTab);
     } catch (e) {

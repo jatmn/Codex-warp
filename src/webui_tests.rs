@@ -2475,6 +2475,73 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
+    let app = webui_js_source();
+    assert!(app.contains("const ANALYTICS_FILTERS_KEY = \"codex-warp-webui-analytics-filters\";"));
+    assert!(app.contains("function readStoredAnalyticsFilters()"));
+    assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
+    assert!(app.contains("function writeAnalyticsFilters()"));
+    assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
+    assert!(app.contains("function storeAnalyticsFilters()"));
+    assert!(app.contains("analyticsFiltersToRestore = null;"));
+    assert!(app.contains("function analyticsOptionValue(select, saved)"));
+    assert!(
+        app.contains("[...select.options].some((option) => option.value === saved) ? saved : null")
+    );
+    assert!(!app.contains("localStorage"));
+
+    let restore = app
+        .split("function restoreAnalyticsFilters({")
+        .nth(1)
+        .expect("analytics restore helper");
+    let provider_at = restore
+        .find("if (savedProvider !== null) provider.value = savedProvider")
+        .expect("restore provider");
+    let inventory_at = restore
+        .find("fillAnalyticsFilters();")
+        .expect("rebuild model inventory");
+    let model_at = restore
+        .find("if (savedModel !== null) model.value = savedModel")
+        .expect("restore model");
+    assert!(provider_at < inventory_at && inventory_at < model_at);
+    assert!(restore.contains("providerInventoryComplete"));
+    assert!(restore.contains("modelInventoryComplete"));
+
+    let success = app
+        .split("const restoredFilters = restoreAnalyticsFilters({")
+        .nth(1)
+        .expect("staged analytics restoration");
+    assert!(success.contains("providerInventoryComplete: !provider"));
+    assert!(
+        success.contains("!model && analyticsModelProvider === $(\"#analytics-provider\").value")
+    );
+    assert!(success.contains("analyticsPending.queued = true;"));
+
+    let request = app
+        .split("function requestAnalytics()")
+        .nth(1)
+        .expect("analytics request helper");
+    assert!(
+        request
+            .find("storeAnalyticsFilters();")
+            .expect("persist filters")
+            < request.find("loadAnalytics(").expect("load analytics")
+    );
+
+    let boot = app
+        .split("async function boot()")
+        .nth(1)
+        .expect("boot helper");
+    assert!(
+        boot.find("restoreAnalyticsFilters();")
+            .expect("restore filters")
+            < boot
+                .find("activateTabPolls(activeTab)")
+                .expect("initial analytics poll")
+    );
+}
+
+#[test]
 fn webui_offers_provider_scoped_model_refresh() {
     let js = webui_js_source();
     assert!(js.contains("if (!provider.model_catalog_only)"));
