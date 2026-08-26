@@ -5885,7 +5885,10 @@ fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
                         {
                             "id": "call_ordinary",
                             "type": "function",
-                            "function": {"name": "collaboration.spawn_agent", "arguments": "{}"}
+                            "function": {
+                                "name": "collaboration.spawn_agent",
+                                "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}"
+                            }
                         },
                         {
                             "id": "call_runtime",
@@ -5906,6 +5909,10 @@ fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
     assert_eq!(output[0]["name"], "collaboration.spawn_agent");
     assert!(output[0].get("namespace").is_none());
     assert!(output[0].get("encrypted_function_args").is_none());
+    assert_eq!(
+        output[0]["arguments"],
+        "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}"
+    );
     assert_eq!(output[1]["name"], "spawn_agent");
     assert_eq!(output[1]["namespace"], "collaboration");
     assert_eq!(output[1]["encrypted_function_args"], json!([]));
@@ -5913,7 +5920,7 @@ fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
     let mut native_ordinary = json!({
         "type": "function_call",
         "name": "collaboration.spawn_agent",
-        "arguments": "{}",
+        "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}",
         "call_id": "native_ordinary"
     });
     morph_native_item(
@@ -5924,6 +5931,10 @@ fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
     );
     assert_eq!(native_ordinary["name"], "collaboration.spawn_agent");
     assert!(native_ordinary.get("namespace").is_none());
+    assert_eq!(
+        native_ordinary["arguments"],
+        "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}"
+    );
 
     let mut native_runtime = json!({
         "type": "function_call",

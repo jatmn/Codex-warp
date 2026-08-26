@@ -64,6 +64,21 @@ impl NamespaceHelpers {
             .any(|tool| matches!(tool.namespace.as_str(), "collaboration" | "multi_agent_v1"))
     }
 
+    /// Codex currently recognizes the empty plaintext-arguments marker for v2
+    /// messaging helpers only when their runtime namespace is `collaboration`.
+    pub fn incompatible_plaintext_subagent_namespace(&self) -> Option<&str> {
+        self.runtime_tools.values().find_map(|tool| {
+            (tool.namespace != "collaboration"
+                && tool.namespace != "multi_agent_v1"
+                && tool.encrypted_arguments
+                && matches!(
+                    tool.name.as_str(),
+                    "spawn_agent" | "send_message" | "followup_task"
+                ))
+            .then_some(tool.namespace.as_str())
+        })
+    }
+
     pub(crate) fn is_namespace_function_alias(&self, name: &str) -> bool {
         self.aliases.contains_key(name) || self.collapsed.contains_key(name)
     }
@@ -623,7 +638,7 @@ fn unwrap_registered_envelope(
 }
 
 fn is_registered_call_name(helpers: &NamespaceHelpers, name: &str) -> bool {
-    helpers.aliases.contains_key(name) || helpers.reverse.contains_key(name)
+    helpers.aliases.contains_key(name)
 }
 
 fn resolve_nested_runtime(helpers: &NamespaceHelpers, nested_tool: &str) -> Option<String> {

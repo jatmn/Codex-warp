@@ -128,10 +128,6 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                 } else if item.get("type").and_then(Value::as_str) == Some("agent_message")
                     && (pending_tool_calls.is_some() || !outstanding_tool_calls.is_empty())
                 {
-                    if let Some(message) = pending_tool_calls.take() {
-                        record_tool_call_ids(&message, &mut outstanding_tool_calls);
-                        messages.push(message);
-                    }
                     deferred_agent_messages.extend(item_messages);
                 } else {
                     if let Some(message) = pending_tool_calls.take() {
@@ -314,6 +310,10 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         .get("namespace")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
+    let flattened_namespace_call = namespace
+        .as_deref()
+        .is_some_and(|namespace| !namespace.is_empty() && namespace != "functions")
+        || helpers.is_namespace_function_alias(&raw_name);
     if is_custom {
         // Native custom_tool_call items already carry Responses `input`. Rewriting
         // through Chat Completions `{input: ...}` encoding would stringify or drop
@@ -337,7 +337,9 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         map.insert("name".to_string(), json!(name));
         map.insert("arguments".to_string(), json!(arguments));
         map.remove("namespace");
-        map.remove("encrypted_function_args");
+        if flattened_namespace_call {
+            map.remove("encrypted_function_args");
+        }
     }
 }
 

@@ -423,6 +423,16 @@ fn occupied_child_and_runtime_names_use_a_distinct_namespace_alias() {
             plaintext_encrypted_arguments: false,
         }
     );
+    let envelope = r#"{"tool":"spawn_agent","arguments":{"message":"ordinary"}}"#;
+    assert_eq!(
+        helpers.rewrite_response_call("collaboration.spawn_agent", envelope),
+        RewrittenCall {
+            name: "collaboration.spawn_agent".to_string(),
+            namespace: None,
+            arguments: envelope.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
     assert_eq!(
         helpers.rewrite_response_call("collaboration__spawn_agent", "{}"),
         RewrittenCall {
@@ -431,6 +441,19 @@ fn occupied_child_and_runtime_names_use_a_distinct_namespace_alias() {
             arguments: "{}".to_string(),
             plaintext_encrypted_arguments: true,
         }
+    );
+}
+
+#[test]
+fn custom_v2_namespace_is_reported_as_plaintext_incompatible() {
+    let mut namespace = collaboration_namespace();
+    namespace["name"] = json!("agents");
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(
+        helpers.incompatible_plaintext_subagent_namespace(),
+        Some("agents")
     );
 }
 

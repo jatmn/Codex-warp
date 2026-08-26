@@ -159,9 +159,8 @@ on) and keeps the original child description and parameter schema. Responses
 `encrypted` schema annotations are remembered but removed from the ordinary
 function schema sent to third-party providers because they are not standard
 JSON Schema keywords. If a child name is already present as a top-level
-function, Warp uses a dotted model-visible alias when available, or a distinct
-generated alias when the dotted spelling is itself an ordinary top-level
-function.
+function, Warp uses a provider-safe generated alias such as
+`collaboration__spawn_agent` (with a numeric suffix if necessary).
 
 On the way back to Codex, Warp restores the child name and namespace as
 separate fields. Message-bearing v2 calls also receive an empty
@@ -170,6 +169,14 @@ third-party backend returned plaintext arguments. Warp also unwraps the older
 collapsed envelope
 `{ "tool": "spawn_agent", "arguments": { ... } }` that some models emit when
 they only saw a single `{namespace}_tool` function.
+
+Plaintext v2 messaging currently requires Codex's default `collaboration`
+namespace. The pinned Codex protocol recognizes the empty plaintext marker
+only for that runtime namespace; a custom `multi_agent_v2.tool_namespace`
+would otherwise label plaintext tasks and updates as encrypted content. Warp
+rejects such requests with a compatibility error instead of silently dropping
+the child task or mailbox payload. Full custom-namespace support requires a
+corresponding Codex router change.
 
 For Chat Completions and compatible native Responses coding turns (not
 Guardian requests), Warp also inserts a short clarification that sub-agent

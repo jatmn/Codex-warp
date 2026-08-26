@@ -250,6 +250,40 @@ fn agent_messages_wait_until_all_outstanding_tool_outputs() {
 }
 
 #[test]
+fn interleaved_agent_message_does_not_split_parallel_tool_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(messages[1]["tool_call_id"], "call_1");
+    assert_eq!(messages[2]["tool_call_id"], "call_2");
+    assert_eq!(messages[3]["role"], "user");
+    assert!(
+        messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
 fn agent_messages_without_outstanding_calls_keep_their_input_order() {
     let request = json!({
         "model": "test-model",
@@ -991,7 +1025,8 @@ fn unknown_split_namespace_history_and_choice_keep_distinct_identity() {
             "call_id": "call_plugin",
             "namespace": "plugin",
             "name": "lookup",
-            "arguments": "{\"q\":\"x\"}"
+            "arguments": "{\"q\":\"x\"}",
+            "encrypted_function_args": ["q"]
         }],
         "tools": [{
             "type": "function",
@@ -1018,6 +1053,11 @@ fn unknown_split_namespace_history_and_choice_keep_distinct_identity() {
     let native = normalize_responses_request(request, &TransformConfig::default());
     assert_eq!(native.body["input"][0]["name"], "plugin.lookup");
     assert!(native.body["input"][0].get("namespace").is_none());
+    assert!(
+        native.body["input"][0]
+            .get("encrypted_function_args")
+            .is_none()
+    );
     assert_eq!(native.body["tool_choice"]["name"], "plugin.lookup");
     assert!(native.body["tool_choice"].get("namespace").is_none());
 }
@@ -1067,13 +1107,15 @@ fn ordinary_dotted_history_and_choice_survive_namespace_runtime_collision() {
             "type": "function_call",
             "call_id": "call_ordinary",
             "name": "collaboration.spawn_agent",
-            "arguments": "{}"
+            "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}",
+            "encrypted_function_args": ["payload"]
         }, {
             "type": "function_call",
             "call_id": "call_namespace",
             "namespace": "collaboration",
             "name": "spawn_agent",
-            "arguments": "{\"message\":\"review\"}"
+            "arguments": "{\"message\":\"review\"}",
+            "encrypted_function_args": []
         }],
         "tools": [{
             "type": "function",
@@ -1108,10 +1150,65 @@ fn ordinary_dotted_history_and_choice_survive_namespace_runtime_collision() {
 
     let native = normalize_responses_request(request, &TransformConfig::default());
     assert_eq!(native.body["input"][0]["name"], "collaboration.spawn_agent");
+    assert_eq!(
+        native.body["input"][0]["encrypted_function_args"],
+        json!(["payload"])
+    );
+    assert_eq!(
+        native.body["input"][0]["arguments"],
+        "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}"
+    );
     assert_eq!(native.body["input"][1]["name"], "spawn_agent");
+    assert!(
+        native.body["input"][1]
+            .get("encrypted_function_args")
+            .is_none()
+    );
     assert_eq!(
         native.body["tool_choice"]["name"],
         "collaboration.spawn_agent"
+    );
+}
+
+#[test]
+fn native_ordinary_encrypted_history_preserves_metadata_without_namespaces() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "ordinary",
+            "name": "secure_lookup",
+            "arguments": "{\"ciphertext\":\"opaque\"}",
+            "encrypted_function_args": ["ciphertext"]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        normalized.body["input"][0]["encrypted_function_args"],
+        json!(["ciphertext"])
+    );
+}
+
+#[test]
+fn native_functions_namespace_preserves_ordinary_encrypted_metadata() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "ordinary",
+            "namespace": "functions",
+            "name": "secure_lookup",
+            "arguments": "{\"ciphertext\":\"opaque\"}",
+            "encrypted_function_args": ["ciphertext"]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["name"], "secure_lookup");
+    assert_eq!(
+        normalized.body["input"][0]["encrypted_function_args"],
+        json!(["ciphertext"])
     );
 }
 
@@ -1187,7 +1284,8 @@ fn native_responses_replay_history_and_tool_choice_with_visible_names() {
             "type": "function_call",
             "call_id": "call_1",
             "name": "multi_agent_v1.spawn_agent",
-            "arguments": "{\"message\":\"review the diff\"}"
+            "arguments": "{\"message\":\"review the diff\"}",
+            "encrypted_function_args": []
         }],
         "tools": [{
             "type": "namespace",
@@ -1205,6 +1303,11 @@ fn native_responses_replay_history_and_tool_choice_with_visible_names() {
     let normalized = normalize_responses_request(request, &TransformConfig::default());
     assert_eq!(normalized.body["tools"][0]["name"], "spawn_agent");
     assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert!(
+        normalized.body["input"][0]
+            .get("encrypted_function_args")
+            .is_none()
+    );
     assert_eq!(
         normalized.body["input"][0]["arguments"],
         "{\"message\":\"review the diff\"}"
