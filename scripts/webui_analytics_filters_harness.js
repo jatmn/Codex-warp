@@ -405,18 +405,29 @@ check("a user save cancels pending boot restoration", () => {
   });
 });
 
-check("a new user save survives a same-page inventory rebuild", () => {
+check("sequential provider saves keep model inventories provider-scoped", () => {
   const run = runtime({
     range: "week",
-    provider: "configured",
-    model: "dynamic-model",
+    provider: "provider-a",
+    model: "model-a",
   });
-  run.elements["#analytics-model"].options.push({ value: "dynamic-model" });
+  run.elements["#analytics-provider"].options.push(
+    { value: "provider-a" },
+    { value: "provider-b" },
+  );
+  run.elements["#analytics-model"].options.push({ value: "model-a" });
+  run.filters.storeAnalyticsFilters();
+  run.elements["#analytics-provider"].value = "provider-b";
+  run.elements["#analytics-model"].options = [
+    { value: "" },
+    { value: "model-b" },
+  ];
+  run.elements["#analytics-model"].value = "model-b";
   run.filters.storeAnalyticsFilters();
   assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
-    providerIds: ["configured"],
-    modelIds: ["dynamic-model"],
-    modelProvider: "configured",
+    providerIds: ["provider-a", "provider-b"],
+    modelIds: ["model-b"],
+    modelProvider: "provider-b",
   });
   run.setFillHook(() => {
     const inventory = run.filters.getInventory();
@@ -438,13 +449,50 @@ check("a new user save survives a same-page inventory rebuild", () => {
   const inventoryChanged = run.filters.rebuildInventory();
   assert.equal(inventoryChanged, false);
   assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), false);
-  assert.equal(run.elements["#analytics-provider"].value, "configured");
-  assert.equal(run.elements["#analytics-model"].value, "dynamic-model");
+  assert.equal(run.elements["#analytics-provider"].value, "provider-b");
+  assert.equal(run.elements["#analytics-model"].value, "model-b");
   assert.deepEqual(parsedStorage(run), {
     version: 1,
     range: "week",
-    provider: "configured",
-    model: "dynamic-model",
+    provider: "provider-b",
+    model: "model-b",
+  });
+});
+
+check("a global model save survives a same-page inventory rebuild", () => {
+  const run = runtime({ range: "week", provider: "", model: "global-model" });
+  run.elements["#analytics-model"].options.push({ value: "global-model" });
+  run.filters.storeAnalyticsFilters();
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
+    providerIds: [],
+    modelIds: ["global-model"],
+    modelProvider: "",
+  });
+  run.setFillHook(() => {
+    const inventory = run.filters.getInventory();
+    const provider = run.elements["#analytics-provider"];
+    const model = run.elements["#analytics-model"];
+    const before = [provider.value, model.value];
+    provider.options = [{ value: "" }];
+    provider.value = "";
+    model.options = inventory.modelProvider === provider.value
+      ? ["", ...inventory.modelIds].map((value) => ({ value }))
+      : [{ value: "" }];
+    model.value = model.options.some((option) => option.value === before[1])
+      ? before[1]
+      : "";
+    return provider.value !== before[0] || model.value !== before[1];
+  });
+  const inventoryChanged = run.filters.rebuildInventory();
+  assert.equal(inventoryChanged, false);
+  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), false);
+  assert.equal(run.elements["#analytics-provider"].value, "");
+  assert.equal(run.elements["#analytics-model"].value, "global-model");
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "week",
+    provider: "",
+    model: "global-model",
   });
 });
 

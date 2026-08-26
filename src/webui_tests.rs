@@ -2496,6 +2496,21 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     );
     assert!(!app.contains("localStorage"));
 
+    let retain = app
+        .split("function retainStoredAnalyticsOptions(saved)")
+        .nth(1)
+        .expect("retain stored analytics options helper");
+    let reset_model_ids_at = retain
+        .find("analyticsModelIds = [];")
+        .expect("reset prior provider model inventory");
+    let set_model_provider_at = retain
+        .find("analyticsModelProvider = saved.provider;")
+        .expect("set retained model provider");
+    let retain_model_at = retain
+        .find("analyticsModelIds.push(saved.model);")
+        .expect("retain saved model");
+    assert!(reset_model_ids_at < set_model_provider_at && set_model_provider_at < retain_model_at);
+
     let store = app
         .split("function storeAnalyticsFilters()")
         .nth(1)

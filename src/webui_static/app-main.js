@@ -1435,6 +1435,9 @@
     }
     if (typeof saved.provider === "string" &&
         typeof saved.model === "string" && saved.model) {
+      if (analyticsModelProvider !== saved.provider) {
+        analyticsModelIds = [];
+      }
       analyticsModelProvider = saved.provider;
       if (!analyticsModelIds.includes(saved.model)) {
         analyticsModelIds.push(saved.model);
