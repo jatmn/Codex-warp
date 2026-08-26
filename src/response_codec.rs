@@ -3113,9 +3113,9 @@ fn morph_native_item(
         .get("arguments")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let source_is_custom =
-        custom_tool_names.contains(name) && !namespace_helpers.is_namespace_function_alias(name);
-    let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
+    let source_is_custom = custom_tool_names.contains(name)
+        && !namespace_helpers.is_expanded_namespace_function_alias(name);
+    let rewritten = rewrite_provider_call(namespace_helpers, name, arguments, source_is_custom);
     let runtime_name = rewritten_runtime_name(&rewritten);
     apply_classified_call_to_native_item(
         item,
@@ -3137,9 +3137,9 @@ fn tool_call_item(
     namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
-    let source_is_custom =
-        custom_tool_names.contains(name) && !namespace_helpers.is_namespace_function_alias(name);
-    let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
+    let source_is_custom = custom_tool_names.contains(name)
+        && !namespace_helpers.is_expanded_namespace_function_alias(name);
+    let rewritten = rewrite_provider_call(namespace_helpers, name, arguments, source_is_custom);
     let runtime_name = rewritten_runtime_name(&rewritten);
     let mut item = classified_tool_call_item(
         &runtime_name,
@@ -3150,6 +3150,23 @@ fn tool_call_item(
     );
     apply_rewritten_call_metadata(&mut item, &rewritten);
     item
+}
+
+fn rewrite_provider_call(
+    namespace_helpers: &NamespaceHelpers,
+    name: &str,
+    arguments: &str,
+    source_is_custom: bool,
+) -> RewrittenCall {
+    if source_is_custom {
+        return RewrittenCall {
+            name: name.to_string(),
+            namespace: None,
+            arguments: arguments.to_string(),
+            plaintext_encrypted_arguments: false,
+        };
+    }
+    namespace_helpers.rewrite_response_call(name, arguments)
 }
 
 fn rewritten_runtime_name(call: &RewrittenCall) -> String {

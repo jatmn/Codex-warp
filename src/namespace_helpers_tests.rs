@@ -194,6 +194,35 @@ fn encrypted_argument_detection_requires_an_explicit_true_annotation() {
 }
 
 #[test]
+fn duplicate_runtime_tools_retain_plaintext_encryption_requirement() {
+    let mut stale = collaboration_namespace();
+    stale["tools"][0]["parameters"]["properties"]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("encrypted");
+    let current = collaboration_namespace();
+    let mut helpers = NamespaceHelpers::default();
+    let mut used = BTreeSet::new();
+
+    expand_namespace_tool(&stale, &mut used, &mut helpers);
+    expand_namespace_tool(&current, &mut used, &mut helpers);
+
+    let rewritten = helpers.rewrite_response_call("spawn_agent", r#"{"message":"review"}"#);
+    assert_eq!(rewritten.namespace.as_deref(), Some("collaboration"));
+    assert!(rewritten.plaintext_encrypted_arguments);
+
+    let mut reverse_helpers = NamespaceHelpers::default();
+    let mut reverse_used = BTreeSet::new();
+    expand_namespace_tool(&current, &mut reverse_used, &mut reverse_helpers);
+    expand_namespace_tool(&stale, &mut reverse_used, &mut reverse_helpers);
+    assert!(
+        reverse_helpers
+            .rewrite_response_call("spawn_agent", r#"{"message":"review"}"#)
+            .plaintext_encrypted_arguments
+    );
+}
+
+#[test]
 fn schema_stripping_preserves_encrypted_property_names_and_data_values() {
     let namespace = json!({
         "type": "namespace",

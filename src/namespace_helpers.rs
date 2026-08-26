@@ -87,6 +87,10 @@ impl NamespaceHelpers {
         self.aliases.contains_key(name) || self.collapsed.contains_key(name)
     }
 
+    pub(crate) fn is_expanded_namespace_function_alias(&self, name: &str) -> bool {
+        self.aliases.contains_key(name)
+    }
+
     fn subagent_helper_clarification(&self) -> String {
         let aliases = self
             .reverse
@@ -138,6 +142,9 @@ impl NamespaceHelpers {
         if let Some((namespace, name)) = runtime_name.split_once('.') {
             self.runtime_tools
                 .entry(runtime_name.clone())
+                .and_modify(|tool| {
+                    tool.encrypted_arguments |= encrypted_arguments;
+                })
                 .or_insert_with(|| RuntimeTool {
                     namespace: namespace.to_string(),
                     name: name.to_string(),

@@ -148,6 +148,7 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                 }
             }
             if let Some(message) = pending_tool_calls.take() {
+                messages.append(&mut deferred_agent_messages);
                 messages.push(message);
             }
             messages.append(&mut deferred_agent_messages);
@@ -212,6 +213,9 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
 pub fn normalize_responses_request(request: Value, transform: &TransformConfig) -> NativeTransform {
     let mut request = request;
+    if !transform.preserve_native_agent_messages {
+        standardize_native_agent_messages(&mut request);
+    }
     apply_native_request_morphs(&mut request, transform);
     apply_reasoning_effort_none_value(&mut request, transform);
     apply_reasoning_effort_aliases(&mut request, transform);
@@ -239,11 +243,7 @@ pub fn normalize_responses_request(request: Value, transform: &TransformConfig) 
             }
         }
     }
-    rewrite_native_request_visible_calls(
-        &mut request,
-        &helpers,
-        transform.preserve_native_agent_messages,
-    );
+    rewrite_native_request_visible_calls(&mut request, &helpers);
     NativeTransform {
         body: request,
         namespace_helpers: helpers,
@@ -288,16 +288,10 @@ fn collect_custom_tool_names(
     }
 }
 
-fn rewrite_native_request_visible_calls(
-    request: &mut Value,
-    helpers: &NamespaceHelpers,
-    preserve_native_agent_messages: bool,
-) {
+fn standardize_native_agent_messages(request: &mut Value) {
     if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
         for item in input {
-            if !preserve_native_agent_messages
-                && item.get("type").and_then(Value::as_str) == Some("agent_message")
-            {
+            if item.get("type").and_then(Value::as_str) == Some("agent_message") {
                 *item = json!({
                     "type": "message",
                     "role": "user",
@@ -306,9 +300,15 @@ fn rewrite_native_request_visible_calls(
                         "text": agent_message_to_text(item),
                     }],
                 });
-            } else {
-                rewrite_native_function_call_item(item, helpers);
             }
+        }
+    }
+}
+
+fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
+    if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
+        for item in input {
+            rewrite_native_function_call_item(item, helpers);
         }
     }
     if let Some(choice) = request.get_mut("tool_choice") {

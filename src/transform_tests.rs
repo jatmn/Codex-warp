@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::RequestMorph;
 use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
 
@@ -273,6 +274,80 @@ fn native_agent_messages_are_preserved_exactly_when_provider_supports_them() {
 }
 
 #[test]
+fn native_agent_messages_are_standardized_before_input_morphs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{"type": "input_text", "text": "Review the codec"}]
+        }]
+    });
+    let renamed = normalize_responses_request(
+        request.clone(),
+        &TransformConfig {
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Rename,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+    assert!(renamed.body.get("input").is_none());
+    assert_eq!(renamed.body["payload"][0]["type"], "message");
+    assert!(
+        renamed.body["payload"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Review the codec")
+    );
+
+    let copied = normalize_responses_request(
+        request,
+        &TransformConfig {
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Copy,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+    assert_eq!(copied.body["input"][0]["type"], "message");
+    assert_eq!(copied.body["payload"][0]["type"], "message");
+}
+
+#[test]
+fn native_agent_message_preservation_precedes_input_rename_without_rewriting() {
+    let agent_message = json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}]
+    });
+    let normalized = normalize_responses_request(
+        json!({"model": "test-model", "input": [agent_message.clone()]}),
+        &TransformConfig {
+            preserve_native_agent_messages: true,
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Rename,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+
+    assert!(normalized.body.get("input").is_none());
+    assert_eq!(normalized.body["payload"][0], agent_message);
+}
+
+#[test]
 fn agent_messages_wait_until_all_outstanding_tool_outputs() {
     let request = json!({
         "model": "test-model",
@@ -338,6 +413,35 @@ fn interleaved_agent_message_does_not_split_parallel_tool_calls() {
             .unwrap()
             .contains("worker update")
     );
+}
+
+#[test]
+fn agent_message_precedes_an_unresolved_tool_call_at_end_of_history() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            }
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_1");
 }
 
 #[test]

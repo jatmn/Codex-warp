@@ -5859,6 +5859,53 @@ fn ordinary_dotted_custom_tool_remains_custom_beside_namespace_child() {
 }
 
 #[test]
+fn custom_tool_provenance_wins_over_synthetic_collapsed_alias() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {"type": "object", "properties": {}}
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+    let custom_tool_names = BTreeSet::from(["collaboration_tool".to_string()]);
+    let arguments = r#"{"tool":"spawn_agent","arguments":{"message":"ordinary custom input"}}"#;
+
+    let item = tool_call_item(
+        "collaboration_tool",
+        arguments,
+        "call_custom",
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert_eq!(item["type"], "custom_tool_call");
+    assert_eq!(item["name"], "collaboration_tool");
+    assert!(item.get("namespace").is_none());
+    assert_eq!(item["input"], arguments);
+
+    let mut native = json!({
+        "type": "function_call",
+        "name": "collaboration_tool",
+        "arguments": arguments,
+        "call_id": "native_custom"
+    });
+    morph_native_item(
+        &mut native,
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert_eq!(native["type"], "custom_tool_call");
+    assert_eq!(native["name"], "collaboration_tool");
+    assert!(native.get("namespace").is_none());
+    assert_eq!(native["input"], arguments);
+}
+
+#[test]
 fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
     let namespace = json!({
         "type": "namespace",
