@@ -434,8 +434,10 @@ The UI can:
 - manually refresh an enabled provider's dynamic upstream model catalog
 - chart token usage, prompts, and sessions over time with a line chart, plus
   token usage over time with a bar chart (global, per provider, and per model)
-- chart model usage over time with per-model lines for both sessions and
-  prompts (global, per provider, and per model)
+- chart model usage over time with per-model lines for sessions, prompts, and
+  cache rate (cached tokens as a percent of input tokens; global, per provider,
+  and per model)
+- show window-scoped average cache rate beside the other analytics summary cards
 - inspect token usage breakdowns with pie charts: provider usage (shown while
   All providers is selected), model usage per provider (shown while a provider
   filter is selected and All models is selected), and overall model usage

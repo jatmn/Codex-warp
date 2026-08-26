@@ -140,6 +140,7 @@ pub(crate) struct AnalyticsModelPoint {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
+    pub cached_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +156,7 @@ pub(crate) struct AnalyticsModelSeries {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
+    pub cached_tokens: i64,
     pub points: Vec<AnalyticsModelPoint>,
 }
 
@@ -1142,7 +1144,8 @@ impl Store {
                 {DISTINCT_SESSION_COUNT_SQL},
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(total_tokens), 0)
+                COALESCE(SUM(total_tokens), 0),
+                COALESCE(SUM(cached_tokens), 0)
              FROM usage_events
              {where_sql}
              GROUP BY bucket, model
@@ -1164,6 +1167,7 @@ impl Store {
                             input_tokens: row.get(4)?,
                             output_tokens: row.get(5)?,
                             total_tokens: row.get(6)?,
+                            cached_tokens: row.get(7)?,
                         },
                     ))
                 },
@@ -1192,29 +1196,8 @@ impl Store {
         }
         let model_series = by_model_map
             .into_iter()
-            .map(|(model, points)| AnalyticsModelSeries {
-                prompts: totals_by_model
-                    .get(&model)
-                    .map(|row| row.prompts)
-                    .unwrap_or(0),
-                sessions: totals_by_model
-                    .get(&model)
-                    .map(|row| row.sessions)
-                    .unwrap_or(0),
-                input_tokens: totals_by_model
-                    .get(&model)
-                    .map(|row| row.input_tokens)
-                    .unwrap_or(0),
-                output_tokens: totals_by_model
-                    .get(&model)
-                    .map(|row| row.output_tokens)
-                    .unwrap_or(0),
-                total_tokens: totals_by_model
-                    .get(&model)
-                    .map(|row| row.total_tokens)
-                    .unwrap_or(0),
-                model,
-                points: fill_series_gaps(
+            .map(|(model, points)| {
+                let points = fill_series_gaps(
                     points,
                     start,
                     end,
@@ -1227,8 +1210,38 @@ impl Store {
                         input_tokens: 0,
                         output_tokens: 0,
                         total_tokens: 0,
+                        cached_tokens: 0,
                     },
-                ),
+                );
+                // Cached tokens are additive across buckets, unlike distinct
+                // session counts, so the window total is the sum of the
+                // bucket series (including the zero-filled gaps).
+                let cached_tokens = points.iter().map(|point| point.cached_tokens).sum();
+                AnalyticsModelSeries {
+                    prompts: totals_by_model
+                        .get(&model)
+                        .map(|row| row.prompts)
+                        .unwrap_or(0),
+                    sessions: totals_by_model
+                        .get(&model)
+                        .map(|row| row.sessions)
+                        .unwrap_or(0),
+                    input_tokens: totals_by_model
+                        .get(&model)
+                        .map(|row| row.input_tokens)
+                        .unwrap_or(0),
+                    output_tokens: totals_by_model
+                        .get(&model)
+                        .map(|row| row.output_tokens)
+                        .unwrap_or(0),
+                    total_tokens: totals_by_model
+                        .get(&model)
+                        .map(|row| row.total_tokens)
+                        .unwrap_or(0),
+                    cached_tokens,
+                    model,
+                    points,
+                }
             })
             .collect();
 

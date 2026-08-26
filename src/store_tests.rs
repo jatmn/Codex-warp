@@ -254,6 +254,7 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(alpha_newest.sessions, 1);
     assert_eq!(alpha_newest.input_tokens, 20);
     assert_eq!(alpha_newest.total_tokens, 30);
+    assert_eq!(alpha_newest.cached_tokens, 4);
 
     let alpha_older = alpha
         .points
@@ -262,6 +263,7 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
         .expect("alpha bucket at base - 2h");
     assert_eq!(alpha_older.prompts, 1);
     assert_eq!(alpha_older.sessions, 1);
+    assert_eq!(alpha_older.cached_tokens, 2);
 
     // A gap bucket between the two alpha buckets is zero-filled.
     let alpha_gap = alpha
@@ -272,6 +274,7 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(alpha_gap.prompts, 0);
     assert_eq!(alpha_gap.sessions, 0);
     assert_eq!(alpha_gap.total_tokens, 0);
+    assert_eq!(alpha_gap.cached_tokens, 0);
 
     let beta_newest = beta
         .points
@@ -297,8 +300,36 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(alpha.input_tokens, 40);
     assert_eq!(alpha.output_tokens, 20);
     assert_eq!(alpha.total_tokens, 60);
+    assert_eq!(alpha.cached_tokens, 8);
     assert_eq!(beta.prompts, 1);
     assert_eq!(beta.sessions, 1);
+    assert_eq!(beta.cached_tokens, 2);
+
+    let json = serde_json::to_value(&summary).expect("serialize analytics summary");
+    let alpha_json = json["model_series"]
+        .as_array()
+        .expect("model_series array")
+        .iter()
+        .find(|series| series["model"] == "alpha/model")
+        .expect("alpha/model json");
+    assert_eq!(
+        alpha_json["cached_tokens"]
+            .as_i64()
+            .expect("series cached_tokens"),
+        8
+    );
+    let newest_json = alpha_json["points"]
+        .as_array()
+        .expect("alpha points")
+        .iter()
+        .find(|point| point["ts"].as_i64() == Some(alpha_newest.ts))
+        .expect("newest alpha json point");
+    assert_eq!(
+        newest_json["cached_tokens"]
+            .as_i64()
+            .expect("point cached_tokens"),
+        4
+    );
 
     // Provider and model filters constrain the per-model series too.
     let alpha_only = store
@@ -308,6 +339,7 @@ fn analytics_model_series_tracks_models_across_buckets_and_fills_gaps() {
     assert_eq!(alpha_only.model_series[0].model, "alpha/model");
     assert_eq!(alpha_only.model_series[0].prompts, 3);
     assert_eq!(alpha_only.model_series[0].sessions, 2);
+    assert_eq!(alpha_only.model_series[0].cached_tokens, 6);
     let model_only = store
         .analytics(AnalyticsRange::Last24Hours, None, Some("beta/model"))
         .unwrap();
