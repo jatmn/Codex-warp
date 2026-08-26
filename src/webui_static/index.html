@@ -97,6 +97,16 @@
           <div class="chart-legend" id="chart-model-prompts-legend"></div>
         </div>
         <div class="chart-box">
+          <h3 id="chart-model-cache-rate-title">Model cache rate</h3>
+          <div class="chart-wrap">
+            <canvas id="chart-model-cache-rate" width="800" height="220" aria-labelledby="chart-model-cache-rate-title"></canvas>
+            <div class="chart-tooltip" hidden></div>
+            <div class="chart-live visually-hidden" aria-live="polite"></div>
+            <p class="chart-fallback" hidden role="status">Charts failed to load.</p>
+          </div>
+          <div class="chart-legend" id="chart-model-cache-rate-legend"></div>
+        </div>
+        <div class="chart-box">
           <h3 id="chart-pie-provider-title">Provider usage</h3>
           <div class="chart-wrap">
             <canvas id="chart-pie-provider" data-chart-kind="pie" width="800" height="260" aria-labelledby="chart-pie-provider-title"></canvas>

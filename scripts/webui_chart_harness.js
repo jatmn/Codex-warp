@@ -821,6 +821,69 @@ check("modelPointActive is the shared zero-skip policy for dots, rings, and tool
   );
 });
 
+check("cacheRatePercent is cached tokens over input tokens", () => {
+  assert.equal(charts.cacheRatePercent(2, 10), 20);
+  assert.equal(charts.cacheRatePercent(0, 10), 0);
+  assert.equal(charts.cacheRatePercent(5, 0), 0);
+  assert.equal(charts.cacheRatePercent(5, null), 0);
+  assert.equal(charts.cacheRatePercent(-1, 10), 0);
+  assert.equal(charts.cacheRatePercent(15, 10), 150);
+  assert.equal(charts.roundedCacheRate(20.04), 20);
+  assert.equal(charts.roundedCacheRate(20.05), 20.1);
+  assert.equal(charts.formatCacheRate(20), "20%");
+  assert.equal(charts.formatCacheRate(20.05), "20.1%");
+  assert.equal(charts.formatCacheRate(0), "0%");
+  assert.equal(charts.modelMetricLabel("cache_rate"), "cache rate");
+  assert.equal(charts.modelMetricLabel("prompts"), "prompts");
+  assert.equal(
+    charts.modelMetricValue({ cached_tokens: 2, input_tokens: 10 }, "cache_rate"),
+    20,
+  );
+  assert.equal(
+    charts.modelMetricValue({ cached_tokens: 0, input_tokens: 10 }, "cache_rate"),
+    0,
+  );
+  assert.equal(
+    charts.modelMetricValue({ cached_tokens: 2, input_tokens: 0 }, "cache_rate"),
+    0,
+  );
+  assert.equal(
+    charts.modelPointActive({ cached_tokens: 0, input_tokens: 10 }, "cache_rate"),
+    true,
+  );
+  assert.equal(
+    charts.modelPointActive({ cached_tokens: 2, input_tokens: 0 }, "cache_rate"),
+    false,
+  );
+  const rates = [
+    { model: "alpha", points: [{ cached_tokens: 0, input_tokens: 10 }] },
+    { model: "beta", points: [{ cached_tokens: 4, input_tokens: 10 }] },
+    { model: "idle", points: [{ cached_tokens: 0, input_tokens: 0 }] },
+  ];
+  const payload = charts.modelTooltipPayload(rates, 0, "10:00", "cache_rate");
+  assert.deepEqual(
+    payload.rows.map((row) => row.key),
+    ["beta", "alpha"],
+  );
+  assert.equal(payload.rows[0].value, 40);
+  assert.equal(payload.rows[1].value, 0);
+  assert.equal(
+    charts.modelTooltipSummary(payload, "cache_rate", charts.formatCacheRate, 4),
+    "10:00: beta 40%, alpha 0%",
+  );
+  const empty = charts.modelTooltipPayload(
+    [{ model: "idle", points: [{ cached_tokens: 0, input_tokens: 0 }] }],
+    0,
+    "11:00",
+    "cache_rate",
+  );
+  assert.equal(empty.note, "No cache rate in this bucket");
+  assert.equal(
+    charts.modelTooltipSummary(empty, "cache_rate", charts.formatCacheRate, 4),
+    "11:00: no cache rate",
+  );
+});
+
 check("pieSharePercent is the single rounding used by labels and tooltip share", () => {
   assert.equal(charts.pieSharePercent(1, 3), 33.3);
   assert.equal(charts.pieSharePercent(1, 4), 25);

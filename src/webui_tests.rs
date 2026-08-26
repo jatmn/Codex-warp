@@ -2314,6 +2314,9 @@ async fn management_ui_serves_chart_math_javascript() {
     assert!(body.contains("reconcilePieHover"));
     assert!(body.contains("modelTooltipPayload"));
     assert!(body.contains("modelPointActive"));
+    assert!(body.contains("cacheRatePercent"));
+    assert!(body.contains("formatCacheRate"));
+    assert!(body.contains("modelMetricLabel"));
     assert!(body.contains("pieSharePercent"));
     assert!(body.contains("pieTooltipPayload"));
     assert!(body.contains("paletteIndexForKey"));
@@ -2530,7 +2533,7 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("Charts.retainPaletteKeys("));
     assert!(app.contains("Charts.effectivePieHoverIdx("));
     assert!(app.contains("Charts.chartNavigableCount"));
-    assert!(app.contains("modelTotal(series, metric) > 0"));
+    assert!(app.contains("modelSeriesVisible(series, metric)"));
     assert!(
         app.contains("const analyticsFiltersChanged = () =>"),
         "stale-filter comparison must live in one helper"
@@ -2557,6 +2560,16 @@ fn webui_app_includes_model_and_pie_chart_renderers() {
     assert!(app.contains("chart-pie-provider"));
     assert!(app.contains("chart-model-sessions"));
     assert!(app.contains("chart-model-prompts"));
+    assert!(app.contains("chart-model-cache-rate"));
+    assert!(app.contains(
+        "drawModelUsageChart($(\"#chart-model-cache-rate\"), modelSeries, \"cache_rate\", range)"
+    ));
+    assert!(app.contains("[\"Cache rate\", cacheRateLabel]"));
+    assert!(app.contains("Charts.cacheRatePercent(d.cached_tokens, d.input_tokens)"));
+    assert!(
+        app.contains("if (metric === \"cache_rate\" && !Charts.modelPointActive(point, metric))")
+    );
+    assert!(app.contains("function modelSeriesVisible("));
     let css = include_str!("webui_static/app.css");
     // Flex items default to min-width:auto (content), which blocks shrinking
     // so max-width + ellipsis never apply to long model ids.
@@ -2615,16 +2628,18 @@ async fn management_ui_index_loads_chart_math_before_app() {
     ));
     assert!(!body.contains("role=\"application\""));
     assert!(!body.contains("tabindex=\"0\""));
-    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 7);
-    assert_eq!(body.matches("role=\"status\"").count(), 7);
+    assert_eq!(body.matches("class=\"chart-fallback\"").count(), 8);
+    assert_eq!(body.matches("role=\"status\"").count(), 8);
     assert!(!body.contains("By provider"));
-    assert_eq!(body.matches("class=\"chart-live").count(), 7);
+    assert_eq!(body.matches("class=\"chart-live").count(), 8);
     assert!(body.contains("id=\"chart-model-sessions-title\">Model usage by sessions"));
     assert!(body.contains("id=\"chart-model-prompts-title\">Model usage by prompts"));
+    assert!(body.contains("id=\"chart-model-cache-rate-title\">Model cache rate"));
     assert!(body.contains("id=\"chart-pie-provider-title\">Provider usage"));
     assert!(body.contains("id=\"chart-pie-model-title\">Model usage overall"));
     assert!(body.contains("id=\"chart-pie-provider-models-title\">Model usage per provider"));
     assert!(body.contains("id=\"chart-model-sessions-legend\""));
+    assert!(body.contains("id=\"chart-model-cache-rate-legend\""));
     assert!(body.contains("id=\"chart-pie-provider-legend\""));
     assert_eq!(body.matches("data-chart-kind=\"pie\"").count(), 3);
 }

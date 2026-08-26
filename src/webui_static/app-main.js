@@ -1619,6 +1619,7 @@
     }
     drawModelUsageChart($("#chart-model-sessions"), modelSeries, "sessions", range);
     drawModelUsageChart($("#chart-model-prompts"), modelSeries, "prompts", range);
+    drawModelUsageChart($("#chart-model-cache-rate"), modelSeries, "cache_rate", range);
 
     // Gate pies on the filter state the response was fetched with, not the
     // live select values: a slow poll can otherwise render a response computed
@@ -1660,14 +1661,23 @@
 
   function renderAnalyticsCards(d) {
     const cards = $("#analytics-cards");
+    const cacheRate = Charts && Charts.cacheRatePercent
+      ? Charts.cacheRatePercent(d.cached_tokens, d.input_tokens)
+      : Number(d.input_tokens) > 0
+        ? (Math.max(0, Number(d.cached_tokens) || 0) / Number(d.input_tokens)) * 100
+        : 0;
+    const cacheRateLabel = Charts && Charts.formatCacheRate
+      ? Charts.formatCacheRate(cacheRate)
+      : `${Math.round(cacheRate * 10) / 10}%`;
     const items = [
-      ["Prompts", d.prompts],
-      ["Sessions", d.sessions],
-      ["Input tokens", d.input_tokens],
-      ["Output tokens", d.output_tokens],
-      ["Total tokens", d.total_tokens],
-      ["Cached tokens", d.cached_tokens],
-      ["Reasoning", d.reasoning_tokens],
+      ["Prompts", Number(d.prompts || 0).toLocaleString()],
+      ["Sessions", Number(d.sessions || 0).toLocaleString()],
+      ["Input tokens", Number(d.input_tokens || 0).toLocaleString()],
+      ["Output tokens", Number(d.output_tokens || 0).toLocaleString()],
+      ["Total tokens", Number(d.total_tokens || 0).toLocaleString()],
+      ["Cached tokens", Number(d.cached_tokens || 0).toLocaleString()],
+      ["Cache rate", cacheRateLabel],
+      ["Reasoning", Number(d.reasoning_tokens || 0).toLocaleString()],
     ];
     const fragment = document.createDocumentFragment();
     for (const [label, val] of items) {
@@ -1676,7 +1686,7 @@
       const caption = document.createElement("label");
       caption.textContent = label;
       const value = document.createElement("strong");
-      value.textContent = Number(val || 0).toLocaleString();
+      value.textContent = val;
       card.append(caption, value);
       fragment.append(card);
     }
@@ -1845,7 +1855,8 @@
     announceChartData(canvas, Charts ? Charts.liveRegionText(-1, "") : "");
   }
 
-  function tooltipRowsEl(rows) {
+  function tooltipRowsEl(rows, formatValue) {
+    const format = typeof formatValue === "function" ? formatValue : fmtInt;
     return rows.map(([label, value, color]) => {
       const row = document.createElement("div");
       row.className = "tt-row";
@@ -1860,7 +1871,7 @@
       key.append(document.createTextNode(label));
       const val = document.createElement("span");
       val.className = "tt-val";
-      val.textContent = fmtInt(value);
+      val.textContent = format(value);
       row.append(key, val);
       return row;
     });
@@ -1877,13 +1888,13 @@
     ];
   }
 
-  function tooltipEl(titleText, rows) {
+  function tooltipEl(titleText, rows, formatValue) {
     const frag = document.createDocumentFragment();
     const title = document.createElement("div");
     title.className = "tt-title";
     title.textContent = titleText;
     frag.append(title);
-    frag.append(...tooltipRowsEl(rows));
+    frag.append(...tooltipRowsEl(rows, formatValue));
     return frag;
   }
 
@@ -1934,6 +1945,7 @@
       $("#chart-bar"),
       $("#chart-model-sessions"),
       $("#chart-model-prompts"),
+      $("#chart-model-cache-rate"),
       $("#chart-pie-provider"),
       $("#chart-pie-model"),
       $("#chart-pie-provider-models"),
@@ -2021,7 +2033,7 @@
     announceChartData(canvas, Charts.liveRegionText(idx, tooltipSummary(row, state.labelStyle, state.hasCachedData)));
   }
 
-  function tooltipFromPayload(payload) {
+  function tooltipFromPayload(payload, formatValue) {
     const plan =
       Charts && Charts.tooltipRenderPlan
         ? Charts.tooltipRenderPlan(payload)
@@ -2034,9 +2046,16 @@
         ? identityColor(row.color.kind, row.color.key)
         : null,
     ]);
-    const frag = tooltipEl(plan.title, rows);
+    const frag = tooltipEl(plan.title, rows, formatValue);
     if (plan.note) frag.append(tooltipNoteRow(plan.note));
     return frag;
+  }
+
+  function modelMetricFormat(metric) {
+    if (metric === "cache_rate" && Charts && Charts.formatCacheRate) {
+      return Charts.formatCacheRate;
+    }
+    return fmtInt;
   }
 
   function modelTooltipView(models, idx, labelStyle, metric) {
@@ -2045,10 +2064,11 @@
     }
     const title = formatBucketLabel(models[0].points[idx].ts, labelStyle);
     const payload = Charts.modelTooltipPayload(models, idx, title, metric);
+    const format = modelMetricFormat(metric);
     return {
-      content: tooltipFromPayload(payload),
+      content: tooltipFromPayload(payload, format),
       summary: Charts.modelTooltipSummary
-        ? Charts.modelTooltipSummary(payload, metric, fmtInt, 4)
+        ? Charts.modelTooltipSummary(payload, metric, format, 4)
         : "",
     };
   }
@@ -2710,7 +2730,8 @@
       label.textContent = item.key;
       const value = document.createElement("span");
       value.className = "legend-value";
-      value.textContent = fmtInt(item.value);
+      const format = typeof item.format === "function" ? item.format : fmtInt;
+      value.textContent = format(item.value);
       chip.append(swatch, label, value);
       container.append(chip);
     }
@@ -2725,9 +2746,13 @@
   }
 
   function modelTotal(model, metric) {
-    // Prefer the backend's window-scoped total: bucket-scoped distinct
-    // session counts double-count sessions that span buckets, so summing
-    // bucket points would inflate the sessions legend.
+    // Cache rate is token-weighted over the window: cached / input, not a
+    // mean of per-bucket rates. Sessions still need the backend total because
+    // bucket-scoped distinct counts double-count sessions that span buckets.
+    if (metric === "cache_rate") {
+      const totals = model.totals || {};
+      return Charts.cacheRatePercent(totals.cached_tokens, totals.input_tokens);
+    }
     if (model.totals && model.totals[metric] != null) {
       const n = Number(model.totals[metric]);
       return Number.isFinite(n) ? n : 0;
@@ -2736,6 +2761,14 @@
       (sum, point) => sum + Charts.modelMetricValue(point, metric),
       0,
     );
+  }
+
+  function modelSeriesVisible(model, metric) {
+    if (metric === "cache_rate") {
+      const input = Number(model.totals && model.totals.input_tokens);
+      return Number.isFinite(input) && input > 0;
+    }
+    return modelTotal(model, metric) > 0;
   }
 
   // One line per model across the shared bucket window. Lines share the
@@ -2756,9 +2789,10 @@
           input_tokens: series.input_tokens || 0,
           output_tokens: series.output_tokens || 0,
           total_tokens: series.total_tokens || 0,
+          cached_tokens: series.cached_tokens || 0,
         },
       }))
-      .filter((series) => series.points.length && modelTotal(series, metric) > 0)
+      .filter((series) => series.points.length && modelSeriesVisible(series, metric))
       .sort((a, b) => modelTotal(b, metric) - modelTotal(a, metric));
     if (!models.length) {
       canvas.__chart = {
@@ -2772,7 +2806,14 @@
         labelStyle: "time",
       };
       if (legend) legend.innerHTML = "";
-      drawChartEmpty(ctx, w, h, "No model usage in this range.");
+      drawChartEmpty(
+        ctx,
+        w,
+        h,
+        metric === "cache_rate"
+          ? "No model cache rate in this range."
+          : "No model usage in this range.",
+      );
       dismissChartHoverUi(canvas);
       return;
     }
@@ -2836,11 +2877,21 @@
       ctx.stroke();
       ctx.fillStyle = colors.muted;
       ctx.textAlign = "right";
-      ctx.fillText(abbrev(tick), padL - 6, y);
+      ctx.fillText(
+        metric === "cache_rate" ? `${abbrev(tick)}%` : abbrev(tick),
+        padL - 6,
+        y,
+      );
     }
     ctx.fillStyle = colors.muted;
     ctx.textAlign = "center";
-    ctx.fillText(metric, padL, 10);
+    ctx.fillText(
+      metric === "cache_rate"
+        ? (Charts.modelMetricLabel ? Charts.modelMetricLabel(metric) : "cache rate")
+        : metric,
+      padL,
+      10,
+    );
 
     const n = buckets.length;
     // Thin the time labels to ~10 across any range width; label the first and
@@ -2865,11 +2916,23 @@
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.beginPath();
-      model.points.forEach((point, i) => {
+      let drawing = false;
+      model.points.forEach((point) => {
         const x = xAt(point.ts);
         const y = yAt(Charts.modelMetricValue(point, metric));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        // Cache rate is undefined when a bucket has no input. Connecting
+        // those zeros would paint a fake 0% dip (tooltips already say
+        // "no cache rate"). Count metrics still connect through zeros.
+        if (metric === "cache_rate" && !Charts.modelPointActive(point, metric)) {
+          drawing = false;
+          return;
+        }
+        if (!drawing) {
+          ctx.moveTo(x, y);
+          drawing = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
       });
       ctx.stroke();
     });
@@ -2891,6 +2954,7 @@
         key: model.model,
         color: identityColor("model", model.model),
         value: modelTotal(model, metric),
+        format: modelMetricFormat(metric),
       })),
     );
 

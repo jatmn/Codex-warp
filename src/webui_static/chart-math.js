@@ -661,8 +661,36 @@
   // Shared activity predicate for model-over-time paint, hover rings, and
   // tooltips. Gap-filled zeros (and non-finite values) are not usage: a
   // marker or tooltip row at that bucket would imply the model was used.
+  // Cache rate is a ratio, not a count: a bucket with input tokens and 0%
+  // cache is still a real measurement and must stay visible.
+  function cacheRatePercent(cached, input) {
+    const cachedTokens = Number(cached);
+    const inputTokens = Number(input);
+    if (!(inputTokens > 0) || !Number.isFinite(cachedTokens) || cachedTokens < 0) {
+      return 0;
+    }
+    return (cachedTokens / inputTokens) * 100;
+  }
+
+  function roundedCacheRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.round(n * 10) / 10;
+  }
+
+  function formatCacheRate(value) {
+    return `${roundedCacheRate(value)}%`;
+  }
+
+  function modelMetricLabel(metric) {
+    return metric === "cache_rate" ? "cache rate" : String(metric || "");
+  }
+
   function modelMetricValue(point, metric) {
     if (!point) return 0;
+    if (metric === "cache_rate") {
+      return cacheRatePercent(point.cached_tokens, point.input_tokens);
+    }
     const n = Number(point[metric]);
     // Same floor as pieRows: negatives and non-finite values are not usage.
     // Painting them would invert the Y scale or draw markers below the axis.
@@ -670,6 +698,10 @@
   }
 
   function modelPointActive(point, metric) {
+    if (metric === "cache_rate") {
+      const input = Number(point && point.input_tokens);
+      return Number.isFinite(input) && input > 0;
+    }
     return modelMetricValue(point, metric) > 0;
   }
 
@@ -700,7 +732,7 @@
         title,
         rows: [],
         present: 0,
-        note: `No ${metric} in this bucket`,
+        note: `No ${modelMetricLabel(metric)} in this bucket`,
       };
     }
     return {
@@ -738,7 +770,7 @@
     // `parts` is built from `shown`, so an empty `shown` is the only empty
     // summary path. Do not also test `parts.length` — that branch is dead.
     if (!shown.length) {
-      return `${payload.title}: no ${metric}`;
+      return `${payload.title}: no ${modelMetricLabel(metric)}`;
     }
     return `${payload.title}: ${parts.join(", ")}`;
   }
@@ -945,6 +977,10 @@
     effectivePieHoverIdx,
     modelMetricValue,
     modelPointActive,
+    modelMetricLabel,
+    cacheRatePercent,
+    roundedCacheRate,
+    formatCacheRate,
     modelTooltipPayload,
     modelTooltipSummary,
     pieSharePercent,
