@@ -1426,25 +1426,6 @@
     return [...select.options].some((option) => option.value === saved) ? saved : null;
   }
 
-  function retainStoredAnalyticsOptions(saved) {
-    if (saved.version !== ANALYTICS_FILTERS_VERSION) return;
-    if (typeof saved.provider === "string" && saved.provider) {
-      if (!analyticsProviderIds.includes(saved.provider)) {
-        analyticsProviderIds.push(saved.provider);
-      }
-    }
-    if (typeof saved.provider === "string" &&
-        typeof saved.model === "string" && saved.model) {
-      if (analyticsModelProvider !== saved.provider) {
-        analyticsModelIds = [];
-      }
-      analyticsModelProvider = saved.provider;
-      if (!analyticsModelIds.includes(saved.model)) {
-        analyticsModelIds.push(saved.model);
-      }
-    }
-  }
-
   function analyticsFiltersSnapshot() {
     return {
       version: ANALYTICS_FILTERS_VERSION,
@@ -1465,7 +1446,6 @@
   function storeAnalyticsFilters() {
     // A user change wins over any still-pending boot restoration.
     const filters = analyticsFiltersSnapshot();
-    retainStoredAnalyticsOptions(filters);
     analyticsFiltersToRestore = null;
     writeAnalyticsFilters(filters);
   }
@@ -1476,14 +1456,15 @@
   } = {}) {
     const saved = analyticsFiltersToRestore;
     if (!saved) return false;
+    if (saved.version !== ANALYTICS_FILTERS_VERSION) {
+      analyticsFiltersToRestore = null;
+      writeAnalyticsFilters();
+      return false;
+    }
     const range = $("#analytics-range");
     const provider = $("#analytics-provider");
     const model = $("#analytics-model");
     const before = [range.value, provider.value, model.value];
-    // Values written by this WebUI were valid user choices earlier in this
-    // browser session. Keep them available independently of the saved range's
-    // usage rows and of best-effort live provider discovery.
-    retainStoredAnalyticsOptions(saved);
     fillAnalyticsFilters();
     range.value = analyticsOptionValue(range, saved.range) ?? range.value;
     const savedProvider = analyticsOptionValue(provider, saved.provider);

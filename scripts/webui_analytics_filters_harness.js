@@ -136,6 +136,11 @@ function runtime({
         restoreAnalyticsFilters,
         settleAnalyticsInventoryChange,
         rebuildInventory() { return fillAnalyticsFilters(); },
+        setInventory({ providerIds = [], modelIds = [], modelProvider = null }) {
+          analyticsProviderIds = providerIds;
+          analyticsModelIds = modelIds;
+          analyticsModelProvider = modelProvider;
+        },
         setProviders(value) { providers = value; },
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
@@ -206,6 +211,7 @@ check("restores a valid provider before its model and persists the result", () =
       : [{ value: "" }];
   });
   run.filters.setPending({
+    version: 1,
     range: "week",
     provider: "configured",
     model: "model-a",
@@ -245,7 +251,7 @@ check("initializes restoration from stored session values", () => {
   assert.equal(run.filters.getPending(), null);
 });
 
-check("retains a session choice absent from range and discovery inventories", () => {
+check("restores a historical choice from actual analytics inventories", () => {
   const run = runtime({
     stored: JSON.stringify({
       version: 1,
@@ -255,6 +261,11 @@ check("retains a session choice absent from range and discovery inventories", ()
     }),
   });
   run.elements["#analytics-provider"].options = [{ value: "" }];
+  run.filters.setInventory({
+    providerIds: ["historical-provider"],
+    modelIds: ["historical-model"],
+    modelProvider: "historical-provider",
+  });
   run.setFillHook(() => {
     const inventory = run.filters.getInventory();
     const provider = run.elements["#analytics-provider"];
@@ -287,6 +298,7 @@ check("defers historical ids until provider and model inventories arrive", () =>
       : [{ value: "" }];
   });
   run.filters.setPending({
+    version: 1,
     range: "24h",
     provider: "historical-provider",
     model: "historical-model",
@@ -324,6 +336,7 @@ check("keeps a pending discovered model until provider discovery can add it", ()
       : [{ value: "" }];
   });
   run.filters.setPending({
+    version: 1,
     range: "24h",
     provider: "configured",
     model: "dynamic-model",
@@ -340,6 +353,7 @@ check("keeps a pending discovered model until provider discovery can add it", ()
 
 check("keeps a saved provider pending when its inventory failed", () => {
   const saved = {
+    version: 1,
     range: "24h",
     provider: "configured",
     model: "model-a",
@@ -359,6 +373,7 @@ check("keeps a saved provider pending when its inventory failed", () => {
 check("persists fallback when provider discovery removes the active model", () => {
   const run = runtime({
     stored: JSON.stringify({
+      version: 1,
       range: "24h",
       provider: "configured",
       model: "dynamic-model",
@@ -385,6 +400,7 @@ check("persists fallback when provider discovery removes the active model", () =
 check("does not restore a shared model for an invalid provider", () => {
   const run = runtime({
     stored: JSON.stringify({
+      version: 1,
       range: "24h",
       provider: "removed-provider",
       model: "shared-model",
@@ -414,9 +430,14 @@ check("does not restore a shared model for an invalid provider", () => {
   });
 });
 
-check("invalid saved ids fall back and overwrite stale storage", () => {
-  const run = runtime();
-  run.filters.setPending({ range: "invalid", provider: "gone", model: "gone" });
+check("versioned stale ids fall back and overwrite storage", () => {
+  const run = runtime({ productionFill: true });
+  run.filters.setPending({
+    version: 1,
+    range: "invalid",
+    provider: "gone",
+    model: "gone",
+  });
   assert.equal(
     run.filters.restoreAnalyticsFilters({
       providerInventoryComplete: true,
@@ -436,9 +457,39 @@ check("invalid saved ids fall back and overwrite stale storage", () => {
   });
 });
 
+check("unsupported storage versions fall back without restoring values", () => {
+  const run = runtime({
+    stored: JSON.stringify({
+      version: 999,
+      range: "week",
+      provider: "configured",
+      model: "model-a",
+    }),
+    providers: [{
+      id: "configured",
+      display_name: "Configured",
+      models: [{ id: "model-a", display_name: "Model A" }],
+    }],
+    productionFill: true,
+  });
+  assert.equal(run.filters.restoreAnalyticsFilters(), false);
+  assert.equal(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "24h",
+    provider: "",
+    model: "",
+  });
+});
+
 check("a user save cancels pending boot restoration", () => {
   const run = runtime({ range: "1h" });
-  run.filters.setPending({ range: "week", provider: "configured", model: "model-a" });
+  run.filters.setPending({
+    version: 1,
+    range: "week",
+    provider: "configured",
+    model: "model-a",
+  });
   run.filters.storeAnalyticsFilters();
   assert.equal(run.filters.getPending(), null);
   assert.deepEqual(parsedStorage(run), {
@@ -462,6 +513,11 @@ check("production fill preserves a saved selection across inventory rebuilds", (
   });
   run.elements["#analytics-model"].options.push({ value: "model-a" });
   run.elements["#analytics-model"].value = "model-a";
+  run.filters.setInventory({
+    providerIds: ["configured"],
+    modelIds: ["model-a"],
+    modelProvider: "configured",
+  });
   run.filters.storeAnalyticsFilters();
   run.filters.setProviders([{
     id: "configured",
@@ -494,8 +550,7 @@ check("production fill reports removed options and persists the fallback", () =>
   });
   run.elements["#analytics-model"].options.push({ value: "model-a" });
   run.elements["#analytics-model"].value = "model-a";
-  run.filters.writeAnalyticsFilters();
-  run.filters.setPending(null);
+  run.filters.storeAnalyticsFilters();
   run.filters.setProviders([]);
   const inventoryChanged = run.filters.rebuildInventory();
   assert.equal(inventoryChanged, true);
@@ -510,7 +565,7 @@ check("production fill reports removed options and persists the fallback", () =>
   });
 });
 
-check("sequential provider saves keep model inventories provider-scoped", () => {
+check("user saves do not manufacture analytics inventory", () => {
   const run = runtime({
     range: "week",
     provider: "provider-a",
@@ -530,63 +585,26 @@ check("sequential provider saves keep model inventories provider-scoped", () => 
   run.elements["#analytics-model"].value = "model-b";
   run.filters.storeAnalyticsFilters();
   assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
-    providerIds: ["provider-a", "provider-b"],
-    modelIds: ["model-b"],
-    modelProvider: "provider-b",
-  });
-  run.setFillHook(() => {
-    const inventory = run.filters.getInventory();
-    const provider = run.elements["#analytics-provider"];
-    const model = run.elements["#analytics-model"];
-    const before = [provider.value, model.value];
-    provider.options = ["", ...inventory.providerIds].map((value) => ({ value }));
-    provider.value = provider.options.some((option) => option.value === before[0])
-      ? before[0]
-      : "";
-    model.options = inventory.modelProvider === provider.value
-      ? ["", ...inventory.modelIds].map((value) => ({ value }))
-      : [{ value: "" }];
-    model.value = model.options.some((option) => option.value === before[1])
-      ? before[1]
-      : "";
-    return provider.value !== before[0] || model.value !== before[1];
-  });
-  const inventoryChanged = run.filters.rebuildInventory();
-  assert.equal(inventoryChanged, false);
-  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), false);
-  assert.equal(run.elements["#analytics-provider"].value, "provider-b");
-  assert.equal(run.elements["#analytics-model"].value, "model-b");
-  assert.deepEqual(parsedStorage(run), {
-    version: 1,
-    range: "week",
-    provider: "provider-b",
-    model: "model-b",
+    providerIds: [],
+    modelIds: [],
+    modelProvider: null,
   });
 });
 
 check("a global model save survives a same-page inventory rebuild", () => {
-  const run = runtime({ range: "week", provider: "", model: "global-model" });
+  const run = runtime({
+    range: "week",
+    provider: "",
+    model: "global-model",
+    productionFill: true,
+  });
   run.elements["#analytics-model"].options.push({ value: "global-model" });
+  run.filters.setInventory({ modelIds: ["global-model"], modelProvider: "" });
   run.filters.storeAnalyticsFilters();
   assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
     providerIds: [],
     modelIds: ["global-model"],
     modelProvider: "",
-  });
-  run.setFillHook(() => {
-    const inventory = run.filters.getInventory();
-    const provider = run.elements["#analytics-provider"];
-    const model = run.elements["#analytics-model"];
-    const before = [provider.value, model.value];
-    provider.options = [{ value: "" }];
-    provider.value = "";
-    model.options = inventory.modelProvider === provider.value
-      ? ["", ...inventory.modelIds].map((value) => ({ value }))
-      : [{ value: "" }];
-    model.value = model.options.some((option) => option.value === before[1])
-      ? before[1]
-      : "";
-    return provider.value !== before[0] || model.value !== before[1];
   });
   const inventoryChanged = run.filters.rebuildInventory();
   assert.equal(inventoryChanged, false);

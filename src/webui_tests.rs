@@ -2489,27 +2489,11 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(app.contains("function storeAnalyticsFilters()"));
     assert!(app.contains("analyticsFiltersToRestore = null;"));
     assert!(app.contains("function analyticsOptionValue(select, saved)"));
-    assert!(app.contains("function retainStoredAnalyticsOptions(saved)"));
-    assert!(app.contains("if (saved.version !== ANALYTICS_FILTERS_VERSION) return;"));
+    assert!(!app.contains("function retainStoredAnalyticsOptions(saved)"));
     assert!(
         app.contains("[...select.options].some((option) => option.value === saved) ? saved : null")
     );
     assert!(!app.contains("localStorage"));
-
-    let retain = app
-        .split("function retainStoredAnalyticsOptions(saved)")
-        .nth(1)
-        .expect("retain stored analytics options helper");
-    let reset_model_ids_at = retain
-        .find("analyticsModelIds = [];")
-        .expect("reset prior provider model inventory");
-    let set_model_provider_at = retain
-        .find("analyticsModelProvider = saved.provider;")
-        .expect("set retained model provider");
-    let retain_model_at = retain
-        .find("analyticsModelIds.push(saved.model);")
-        .expect("retain saved model");
-    assert!(reset_model_ids_at < set_model_provider_at && set_model_provider_at < retain_model_at);
 
     let store = app
         .split("function storeAnalyticsFilters()")
@@ -2518,20 +2502,13 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let snapshot_at = store
         .find("const filters = analyticsFiltersSnapshot();")
         .expect("capture selected filters");
-    let retain_saved_at = store
-        .find("retainStoredAnalyticsOptions(filters);")
-        .expect("retain newly saved session identities");
     let cancel_pending_at = store
         .find("analyticsFiltersToRestore = null;")
         .expect("cancel pending restoration");
     let persist_at = store
         .find("writeAnalyticsFilters(filters);")
         .expect("persist captured filters");
-    assert!(
-        snapshot_at < retain_saved_at
-            && retain_saved_at < cancel_pending_at
-            && cancel_pending_at < persist_at
-    );
+    assert!(snapshot_at < cancel_pending_at && cancel_pending_at < persist_at);
 
     let restore = app
         .split("function restoreAnalyticsFilters({")
@@ -2540,9 +2517,9 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let provider_at = restore
         .find("if (savedProvider !== null) provider.value = savedProvider")
         .expect("restore provider");
-    let retain_at = restore
-        .find("retainStoredAnalyticsOptions(saved);")
-        .expect("retain stored session identities");
+    let version_at = restore
+        .find("if (saved.version !== ANALYTICS_FILTERS_VERSION)")
+        .expect("reject unsupported analytics filter versions");
     let provider_inventory_at = restore
         .find("fillAnalyticsFilters();")
         .expect("rebuild provider inventory");
@@ -2554,7 +2531,7 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .find("if (savedModel !== null) model.value = savedModel")
         .expect("restore model");
     assert!(
-        retain_at < provider_inventory_at
+        version_at < provider_inventory_at
             && provider_inventory_at < provider_at
             && provider_at < model_inventory_at
             && model_inventory_at < model_at
