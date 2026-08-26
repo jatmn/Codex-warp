@@ -849,6 +849,46 @@ fn current_collaboration_history_replays_split_namespace_calls() {
 }
 
 #[test]
+fn unknown_split_namespace_history_and_choice_keep_distinct_identity() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_plugin",
+            "namespace": "plugin",
+            "name": "lookup",
+            "arguments": "{\"q\":\"x\"}"
+        }],
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "description": "Current ordinary lookup",
+            "parameters": {"type": "object", "properties": {}}
+        }],
+        "tool_choice": {
+            "type": "function",
+            "namespace": "plugin",
+            "name": "lookup"
+        },
+        "stream": true
+    });
+
+    let chat = responses_to_chat(request.clone(), &TransformConfig::default());
+    assert_eq!(
+        chat.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "plugin.lookup"
+    );
+    assert_eq!(chat.body["tool_choice"]["name"], "plugin.lookup");
+    assert!(chat.body["tool_choice"].get("namespace").is_none());
+
+    let native = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(native.body["input"][0]["name"], "plugin.lookup");
+    assert!(native.body["input"][0].get("namespace").is_none());
+    assert_eq!(native.body["tool_choice"]["name"], "plugin.lookup");
+    assert!(native.body["tool_choice"].get("namespace").is_none());
+}
+
+#[test]
 fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
     let request = json!({
         "model": "test-model",

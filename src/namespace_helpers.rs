@@ -63,7 +63,7 @@ impl NamespaceHelpers {
 
     #[cfg(test)]
     pub(crate) fn register(&mut self, visible_name: String, runtime_name: String) {
-        self.register_with_encrypted_arguments(visible_name, runtime_name, false);
+        self.register_with_encrypted_arguments(visible_name, runtime_name, false, true);
     }
 
     fn register_with_encrypted_arguments(
@@ -71,6 +71,7 @@ impl NamespaceHelpers {
         visible_name: String,
         runtime_name: String,
         encrypted_arguments: bool,
+        register_runtime_alias: bool,
     ) {
         self.reverse
             .entry(runtime_name.clone())
@@ -78,9 +79,11 @@ impl NamespaceHelpers {
         self.aliases
             .entry(visible_name)
             .or_insert_with(|| runtime_name.clone());
-        self.aliases
-            .entry(runtime_name.clone())
-            .or_insert_with(|| runtime_name.clone());
+        if register_runtime_alias {
+            self.aliases
+                .entry(runtime_name.clone())
+                .or_insert_with(|| runtime_name.clone());
+        }
         if let Some((namespace, name)) = runtime_name.split_once('.') {
             self.runtime_tools
                 .entry(runtime_name.clone())
@@ -104,7 +107,8 @@ impl NamespaceHelpers {
     }
 
     /// Model-visible call -> Codex runtime call.
-    pub fn rewrite_call(&self, name: &str, arguments: &str) -> (String, String) {
+    #[cfg(test)]
+    pub(crate) fn rewrite_call(&self, name: &str, arguments: &str) -> (String, String) {
         if let Some((runtime_name, inner_arguments)) =
             unwrap_registered_envelope(self, name, arguments)
         {
@@ -118,7 +122,21 @@ impl NamespaceHelpers {
 
     /// Model-visible call -> the split Responses namespace/name shape Codex routes.
     pub(crate) fn rewrite_response_call(&self, name: &str, arguments: &str) -> RewrittenCall {
-        let (runtime_name, arguments) = self.rewrite_call(name, arguments);
+        if let Some((runtime_name, arguments)) = unwrap_registered_envelope(self, name, arguments) {
+            return self.rewritten_registered_call(runtime_name, arguments);
+        }
+        if let Some(runtime_name) = self.aliases.get(name) {
+            return self.rewritten_registered_call(runtime_name.clone(), arguments.to_string());
+        }
+        RewrittenCall {
+            name: name.to_string(),
+            namespace: None,
+            arguments: arguments.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    }
+
+    fn rewritten_registered_call(&self, runtime_name: String, arguments: String) -> RewrittenCall {
         if let Some(runtime) = self.runtime_tools.get(&runtime_name) {
             return RewrittenCall {
                 name: runtime.name.clone(),
@@ -167,10 +185,12 @@ impl NamespaceHelpers {
         name: &str,
         arguments: &str,
     ) -> (String, String) {
-        let runtime_name = namespace
-            .map(|namespace| format!("{namespace}.{name}"))
-            .filter(|runtime_name| self.reverse.contains_key(runtime_name))
-            .unwrap_or_else(|| name.to_string());
+        let runtime_name = match namespace {
+            Some(namespace) if !namespace.is_empty() && namespace != "functions" => {
+                format!("{namespace}.{name}")
+            }
+            _ => name.to_string(),
+        };
         self.to_visible_call(&runtime_name, arguments)
     }
 }
@@ -204,16 +224,20 @@ pub(crate) fn expand_namespace_tool(
             .and_then(Value::as_str)
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
-        let visible_name = if used_names.contains(child_name) {
-            runtime_name.clone()
-        } else {
-            child_name.to_string()
-        };
+        let runtime_alias_available = !used_names.contains(&runtime_name);
+        let visible_name = namespace_visible_name(
+            namespace,
+            child_name,
+            &runtime_name,
+            runtime_alias_available,
+            used_names,
+        );
         used_names.insert(visible_name.clone());
         helpers.register_with_encrypted_arguments(
             visible_name.clone(),
             runtime_name,
             namespace_child_has_encrypted_arguments(&child),
+            runtime_alias_available,
         );
         expanded.push(namespace_child_to_chat_function(&child, &visible_name));
     }
@@ -249,16 +273,20 @@ pub(crate) fn expand_namespace_responses_tool(
             .and_then(Value::as_str)
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
-        let visible_name = if used_names.contains(child_name) {
-            runtime_name.clone()
-        } else {
-            child_name.to_string()
-        };
+        let runtime_alias_available = !used_names.contains(&runtime_name);
+        let visible_name = namespace_visible_name(
+            namespace,
+            child_name,
+            &runtime_name,
+            runtime_alias_available,
+            used_names,
+        );
         used_names.insert(visible_name.clone());
         helpers.register_with_encrypted_arguments(
             visible_name.clone(),
             runtime_name,
             namespace_child_has_encrypted_arguments(&child),
+            runtime_alias_available,
         );
         expanded.push(namespace_child_to_responses_function(&child, &visible_name));
     }
@@ -300,6 +328,29 @@ fn namespace_children(tool: &Value) -> Vec<Value> {
         .collect()
 }
 
+fn namespace_visible_name(
+    namespace: &str,
+    child_name: &str,
+    runtime_name: &str,
+    runtime_alias_available: bool,
+    used_names: &BTreeSet<String>,
+) -> String {
+    if !used_names.contains(child_name) {
+        return child_name.to_string();
+    }
+    if runtime_alias_available {
+        return runtime_name.to_string();
+    }
+    let base = format!("{namespace}__{child_name}");
+    if !used_names.contains(&base) {
+        return base;
+    }
+    (2..=used_names.len().saturating_add(2))
+        .map(|suffix| format!("{base}_{suffix}"))
+        .find(|candidate| !used_names.contains(candidate))
+        .expect("more candidate suffixes than used names guarantees a free namespace alias")
+}
+
 fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value {
     if child.get("type").and_then(Value::as_str) == Some("function")
         && child.get("function").is_some()
@@ -308,7 +359,9 @@ fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value 
         if let Some(map) = function.as_object_mut() {
             map.insert("name".to_string(), json!(visible_name));
         }
-        strip_encrypted_schema_annotations(&mut function);
+        if let Some(parameters) = function.get_mut("parameters") {
+            strip_encrypted_schema_annotations(parameters);
+        }
         return json!({"type": "function", "function": function});
     }
 
@@ -322,14 +375,18 @@ fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value 
             })
         }
     });
-    strip_encrypted_schema_annotations(&mut out);
+    if let Some(parameters) = out.pointer_mut("/function/parameters") {
+        strip_encrypted_schema_annotations(parameters);
+    }
     out
 }
 
 fn namespace_child_to_responses_function(child: &Value, visible_name: &str) -> Value {
     if child.get("function").is_some() {
         let mut function = child.get("function").cloned().unwrap_or_else(|| json!({}));
-        strip_encrypted_schema_annotations(&mut function);
+        if let Some(parameters) = function.get_mut("parameters") {
+            strip_encrypted_schema_annotations(parameters);
+        }
         let mut out = json!({
             "type": "function",
             "name": visible_name,
@@ -352,7 +409,9 @@ fn namespace_child_to_responses_function(child: &Value, visible_name: &str) -> V
         map.insert("name".to_string(), json!(visible_name));
         map.remove("tools");
     }
-    strip_encrypted_schema_annotations(&mut out);
+    if let Some(parameters) = out.get_mut("parameters") {
+        strip_encrypted_schema_annotations(parameters);
+    }
     out
 }
 
@@ -372,21 +431,56 @@ fn namespace_child_has_encrypted_arguments(child: &Value) -> bool {
 }
 
 fn strip_encrypted_schema_annotations(value: &mut Value) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                strip_encrypted_schema_annotations(value);
+    let Value::Object(map) = value else {
+        return;
+    };
+    if map.get("encrypted").is_some_and(Value::is_boolean) {
+        map.remove("encrypted");
+    }
+    for keyword in [
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ] {
+        if let Some(schema) = map.get_mut(keyword) {
+            match schema {
+                Value::Array(schemas) => {
+                    for schema in schemas {
+                        strip_encrypted_schema_annotations(schema);
+                    }
+                }
+                _ => strip_encrypted_schema_annotations(schema),
             }
         }
-        Value::Object(map) => {
-            if map.get("encrypted").is_some_and(Value::is_boolean) {
-                map.remove("encrypted");
-            }
-            for value in map.values_mut() {
-                strip_encrypted_schema_annotations(value);
+    }
+    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(schemas) = map.get_mut(keyword).and_then(Value::as_array_mut) {
+            for schema in schemas {
+                strip_encrypted_schema_annotations(schema);
             }
         }
-        _ => {}
+    }
+    for keyword in [
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    ] {
+        if let Some(schemas) = map.get_mut(keyword).and_then(Value::as_object_mut) {
+            for schema in schemas.values_mut() {
+                strip_encrypted_schema_annotations(schema);
+            }
+        }
     }
 }
 

@@ -5828,6 +5828,90 @@ fn custom_collaboration_call_does_not_claim_plaintext_function_arguments() {
 }
 
 #[test]
+fn ordinary_dotted_tool_and_namespace_child_route_distinctly() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    let mut used = BTreeSet::from(["collaboration.spawn_agent".to_string()]);
+    expand_namespace_tool(&namespace, &mut used, &mut helpers);
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_collision",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_ordinary",
+                            "type": "function",
+                            "function": {"name": "collaboration.spawn_agent", "arguments": "{}"}
+                        },
+                        {
+                            "id": "call_runtime",
+                            "type": "function",
+                            "function": {"name": "spawn_agent", "arguments": "{\"message\":\"review\"}"}
+                        }
+                    ]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    let output = value["output"].as_array().expect("output items");
+    assert_eq!(output[0]["name"], "collaboration.spawn_agent");
+    assert!(output[0].get("namespace").is_none());
+    assert!(output[0].get("encrypted_function_args").is_none());
+    assert_eq!(output[1]["name"], "spawn_agent");
+    assert_eq!(output[1]["namespace"], "collaboration");
+    assert_eq!(output[1]["encrypted_function_args"], json!([]));
+
+    let mut native_ordinary = json!({
+        "type": "function_call",
+        "name": "collaboration.spawn_agent",
+        "arguments": "{}",
+        "call_id": "native_ordinary"
+    });
+    morph_native_item(
+        &mut native_ordinary,
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert_eq!(native_ordinary["name"], "collaboration.spawn_agent");
+    assert!(native_ordinary.get("namespace").is_none());
+
+    let mut native_runtime = json!({
+        "type": "function_call",
+        "name": "spawn_agent",
+        "arguments": "{\"message\":\"review\"}",
+        "call_id": "native_runtime"
+    });
+    morph_native_item(
+        &mut native_runtime,
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+    assert_eq!(native_runtime["name"], "spawn_agent");
+    assert_eq!(native_runtime["namespace"], "collaboration");
+    assert_eq!(native_runtime["encrypted_function_args"], json!([]));
+}
+
+#[test]
 fn chat_completion_tool_policy_blocks_github_token_call_in_enforce_mode() {
     let mut config = load_config_layers(&[]).expect("default config loads");
     config.tool_policy.enabled = true;

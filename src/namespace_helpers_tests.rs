@@ -173,6 +173,56 @@ fn encrypted_argument_detection_requires_an_explicit_true_annotation() {
 }
 
 #[test]
+fn schema_stripping_preserves_encrypted_property_names_and_data_values() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "encrypted": true,
+                    "payload": {
+                        "type": "object",
+                        "default": {"encrypted": false},
+                        "properties": {
+                            "message": {"type": "string", "encrypted": true}
+                        }
+                    },
+                    "tuple": {
+                        "type": "array",
+                        "items": [{"type": "string", "encrypted": true}]
+                    }
+                },
+                "required": ["encrypted"]
+            }
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    let expanded = expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+    let parameters = &expanded[0]["function"]["parameters"];
+
+    assert_eq!(parameters["properties"]["encrypted"], true);
+    assert_eq!(
+        parameters["properties"]["payload"]["default"]["encrypted"],
+        false
+    );
+    assert_eq!(parameters["required"], json!(["encrypted"]));
+    assert!(
+        parameters["properties"]["payload"]["properties"]["message"]
+            .get("encrypted")
+            .is_none()
+    );
+    assert!(
+        parameters["properties"]["tuple"]["items"][0]
+            .get("encrypted")
+            .is_none()
+    );
+}
+
+#[test]
 fn unknown_dotted_call_is_not_assigned_to_a_registered_namespace() {
     let mut used = BTreeSet::new();
     let mut helpers = NamespaceHelpers::default();
@@ -221,6 +271,16 @@ fn unrelated_namespace_history_keeps_the_plain_function_name() {
 }
 
 #[test]
+fn unknown_non_default_namespace_history_keeps_its_flattened_identity() {
+    let helpers = NamespaceHelpers::default();
+
+    assert_eq!(
+        helpers.to_visible_call_with_namespace(Some("plugin"), "lookup", r#"{"q":"x"}"#),
+        ("plugin.lookup".to_string(), r#"{"q":"x"}"#.to_string())
+    );
+}
+
+#[test]
 fn keeps_collapsed_helper_when_namespace_has_no_children() {
     let tool = json!({
         "type": "namespace",
@@ -238,6 +298,30 @@ fn keeps_collapsed_helper_when_namespace_has_no_children() {
     );
     assert_eq!(name, "multi_agent_v1.spawn_agent");
     assert_eq!(arguments, r#"{"message":"go"}"#);
+}
+
+#[test]
+fn collapsed_helper_response_restores_split_namespace_shape() {
+    let tool = json!({
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "description": "Tools for spawning and managing sub-agents."
+    });
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&tool, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(
+        helpers.rewrite_response_call(
+            "multi_agent_v1_tool",
+            r#"{"tool":"spawn_agent","arguments":{"message":"go"}}"#,
+        ),
+        RewrittenCall {
+            name: "spawn_agent".to_string(),
+            namespace: Some("multi_agent_v1".to_string()),
+            arguments: r#"{"message":"go"}"#.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
 }
 
 #[test]
@@ -315,6 +399,83 @@ fn occupied_child_names_fall_back_to_namespaced_visible_name() {
         "multi_agent_v1.spawn_agent"
     );
     assert_eq!(expanded[1]["function"]["name"], "wait_agent");
+}
+
+#[test]
+fn occupied_child_and_runtime_names_use_a_distinct_namespace_alias() {
+    let mut used = BTreeSet::from([
+        "spawn_agent".to_string(),
+        "collaboration.spawn_agent".to_string(),
+    ]);
+    let mut helpers = NamespaceHelpers::default();
+    let expanded = expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(
+        expanded[0]["function"]["name"],
+        "collaboration__spawn_agent"
+    );
+    assert_eq!(
+        helpers.rewrite_response_call("collaboration.spawn_agent", "{}"),
+        RewrittenCall {
+            name: "collaboration.spawn_agent".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
+    assert_eq!(
+        helpers.rewrite_response_call("collaboration__spawn_agent", "{}"),
+        RewrittenCall {
+            name: "spawn_agent".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: "{}".to_string(),
+            plaintext_encrypted_arguments: true,
+        }
+    );
+}
+
+#[test]
+fn responses_expansion_does_not_claim_an_occupied_runtime_alias() {
+    let mut used = BTreeSet::from(["collaboration.spawn_agent".to_string()]);
+    let mut helpers = NamespaceHelpers::default();
+    let expanded =
+        expand_namespace_responses_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(expanded[0]["name"], "spawn_agent");
+    assert_eq!(
+        helpers.rewrite_response_call("collaboration.spawn_agent", "{}"),
+        RewrittenCall {
+            name: "collaboration.spawn_agent".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
+}
+
+#[test]
+fn generated_namespace_alias_uses_a_free_numeric_suffix() {
+    let mut used = BTreeSet::from([
+        "spawn_agent".to_string(),
+        "collaboration.spawn_agent".to_string(),
+        "collaboration__spawn_agent".to_string(),
+    ]);
+    let mut helpers = NamespaceHelpers::default();
+    let expanded = expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(
+        expanded[0]["function"]["name"],
+        "collaboration__spawn_agent_2"
+    );
+    assert_eq!(
+        helpers.rewrite_response_call("collaboration__spawn_agent_2", "{}"),
+        RewrittenCall {
+            name: "spawn_agent".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: "{}".to_string(),
+            plaintext_encrypted_arguments: true,
+        }
+    );
 }
 
 #[test]

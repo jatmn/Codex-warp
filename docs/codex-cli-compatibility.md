@@ -159,7 +159,9 @@ on) and keeps the original child description and parameter schema. Responses
 `encrypted` schema annotations are remembered but removed from the ordinary
 function schema sent to third-party providers because they are not standard
 JSON Schema keywords. If a child name is already present as a top-level
-function, Warp uses a dotted model-visible alias to avoid the collision.
+function, Warp uses a dotted model-visible alias when available, or a distinct
+generated alias when the dotted spelling is itself an ordinary top-level
+function.
 
 On the way back to Codex, Warp restores the child name and namespace as
 separate fields. Message-bearing v2 calls also receive an empty
