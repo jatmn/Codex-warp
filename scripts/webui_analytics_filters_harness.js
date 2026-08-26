@@ -31,16 +31,38 @@ const discoveryHelperSource = sourceBetween(
   "async function refreshModelRoutes()",
   "async function loadProviders(",
 );
+const productionFillHelperSource = sourceBetween(
+  "function fillAnalyticsFilters()",
+  "function analyticsOptionValue(select, saved)",
+);
 const filterHelperSource = sourceBetween(
   "function analyticsOptionValue(select, saved)",
   "let analyticsPending =",
 );
 
 function select(value, values) {
-  return {
-    value,
+  let current = "";
+  const element = {
     options: values.map((optionValue) => ({ value: optionValue })),
+    append(option) {
+      this.options.push(option);
+    },
+    get innerHTML() {
+      return "";
+    },
+    set innerHTML(_markup) {
+      this.options = [{ value: "" }];
+      current = "";
+    },
+    get value() {
+      return current;
+    },
+    set value(next) {
+      current = this.options.some((option) => option.value === next) ? next : "";
+    },
   };
+  element.value = value;
+  return element;
 }
 
 function storage(initial = null) {
@@ -61,16 +83,36 @@ function storage(initial = null) {
   };
 }
 
-function runtime({ stored = null, range = "24h", provider = "", model = "" } = {}) {
+function runtime({
+  stored = null,
+  range = "24h",
+  provider = "",
+  model = "",
+  providers = [],
+  productionFill = false,
+} = {}) {
   const sessionStorage = storage(stored);
   const elements = {
     "#analytics-range": select(range, ["1h", "24h", "week"]),
-    "#analytics-provider": select(provider, ["", "configured"]),
-    "#analytics-model": select(model, [""]),
+    "#analytics-provider": select(
+      provider,
+      ["", "configured", ...(provider && provider !== "configured" ? [provider] : [])],
+    ),
+    "#analytics-model": select(model, ["", ...(model ? [model] : [])]),
   };
+  const fillSource = productionFill
+    ? productionFillHelperSource
+    : "function fillAnalyticsFilters() { return globalThis.fillHook(); }";
   const context = {
+    document: {
+      createElement(tag) {
+        assert.equal(tag, "option");
+        return { value: "", textContent: "" };
+      },
+    },
     elements,
     fillHook: () => {},
+    initialProviders: providers,
     sessionStorage,
   };
   vm.runInNewContext(
@@ -81,8 +123,9 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
       let analyticsProviderIds = [];
       let analyticsModelIds = [];
       let analyticsModelProvider = null;
+      let providers = globalThis.initialProviders;
       const $ = (selector) => globalThis.elements[selector];
-      function fillAnalyticsFilters() { return globalThis.fillHook(); }
+      ${fillSource}
       ${readHelperSource}
       ${restoreInitializerSource}
       ${filterHelperSource}
@@ -93,6 +136,7 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
         restoreAnalyticsFilters,
         settleAnalyticsInventoryChange,
         rebuildInventory() { return fillAnalyticsFilters(); },
+        setProviders(value) { providers = value; },
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
         getInventory() {
@@ -400,6 +444,67 @@ check("a user save cancels pending boot restoration", () => {
   assert.deepEqual(parsedStorage(run), {
     version: 1,
     range: "1h",
+    provider: "",
+    model: "",
+  });
+});
+
+check("production fill preserves a saved selection across inventory rebuilds", () => {
+  const run = runtime({
+    range: "week",
+    provider: "configured",
+    providers: [{
+      id: "configured",
+      display_name: "Configured",
+      models: [{ id: "model-a", display_name: "Model A" }],
+    }],
+    productionFill: true,
+  });
+  run.elements["#analytics-model"].options.push({ value: "model-a" });
+  run.elements["#analytics-model"].value = "model-a";
+  run.filters.storeAnalyticsFilters();
+  run.filters.setProviders([{
+    id: "configured",
+    display_name: "Configured",
+    models: [],
+  }]);
+  const inventoryChanged = run.filters.rebuildInventory();
+  assert.equal(inventoryChanged, false);
+  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), false);
+  assert.equal(run.elements["#analytics-provider"].value, "configured");
+  assert.equal(run.elements["#analytics-model"].value, "model-a");
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "week",
+    provider: "configured",
+    model: "model-a",
+  });
+});
+
+check("production fill reports removed options and persists the fallback", () => {
+  const run = runtime({
+    range: "week",
+    provider: "configured",
+    providers: [{
+      id: "configured",
+      display_name: "Configured",
+      models: [{ id: "model-a", display_name: "Model A" }],
+    }],
+    productionFill: true,
+  });
+  run.elements["#analytics-model"].options.push({ value: "model-a" });
+  run.elements["#analytics-model"].value = "model-a";
+  run.filters.writeAnalyticsFilters();
+  run.filters.setPending(null);
+  run.filters.setProviders([]);
+  const inventoryChanged = run.filters.rebuildInventory();
+  assert.equal(inventoryChanged, true);
+  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), true);
+  assert.equal(run.elements["#analytics-provider"].value, "");
+  assert.equal(run.elements["#analytics-model"].value, "");
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "week",
     provider: "",
     model: "",
   });
