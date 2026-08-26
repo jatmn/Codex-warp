@@ -183,12 +183,16 @@ Guardian requests), Warp also inserts a short clarification that sub-agent
 tools are ordinary functions and lists the exact aliases advertised in that
 request. The clarification recommends starting multiple independent agents
 before waiting when Codex reports available slots and identifies the
-advertised messaging lifecycle. On Chat backends, Warp also translates Codex
-v2 `agent_message` task, update, and result items into user-role messages with
-their author and recipient context; encrypted content is explicitly marked as
-unavailable rather than silently discarded. Codex remains responsible for the
-actual per-session concurrency limit, agent execution, message delivery, and
-result notifications; Warp only preserves their request and response protocol.
+advertised messaging lifecycle. By default, Warp translates Codex v2
+`agent_message` task, update, and result items into user-role messages with
+their author and recipient context on both Chat and native Responses backends;
+encrypted content is explicitly marked as unavailable rather than silently
+discarded. A native Responses provider that explicitly supports Codex agent
+items and their encrypted content can instead set
+`preserve_native_agent_messages = true` in its transform configuration. Chat
+conversion remains unconditional. Codex remains responsible for the actual
+per-session concurrency limit, agent execution, message delivery, and result
+notifications; Warp only preserves their request and response protocol.
 
 Empty namespaces still collapse to `{namespace}_tool` as a last-resort helper.
 

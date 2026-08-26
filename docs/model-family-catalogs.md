@@ -195,6 +195,7 @@ Transforms let a model entry override or adjust request translation.
 | `force_parallel_tool_calls` | Force `parallel_tool_calls` to a boolean value. |
 | `request_stream_options_include_usage` | Defaults to `false` for compatibility with gateways that reject `stream_options`. Enable it for providers that support `stream_options.include_usage`; when enabled, it is added if the caller did not supply `stream_options`. |
 | `preserve_reasoning_content_history` | Replay prior reasoning text into outbound assistant/tool-call `reasoning_content` fields for multi-turn tool use. |
+| `preserve_native_agent_messages` | Preserve Codex-native `agent_message` items, including opaque encrypted content, for Responses providers that explicitly support them. Defaults to standard user-message translation. |
 | `suppress_duplicate_tool_markup` | Suppress duplicate tool markup in streaming chat-completion content when native tool calls are present. |
 | `split_concatenated_tool_call_arguments` | For Chat Completions backends, split a malformed single tool call into distinct calls when its arguments consist entirely of two or more adjacent JSON objects and the response ends with a successful tool-call finish. Recovery is limited response-wide to 64 calls and 1 MiB of source argument text inspected for recovery. |
 

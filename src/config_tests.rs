@@ -1260,6 +1260,20 @@ fn transform_patch_can_enable_concatenated_tool_call_repair() {
 }
 
 #[test]
+fn transform_patch_can_preserve_native_agent_messages() {
+    let mut transform = TransformConfig::default();
+    assert!(!transform.preserve_native_agent_messages);
+
+    TransformConfigPatch {
+        preserve_native_agent_messages: Some(true),
+        ..TransformConfigPatch::default()
+    }
+    .apply_to(&mut transform);
+
+    assert!(transform.preserve_native_agent_messages);
+}
+
+#[test]
 fn hy3_patterns_do_not_overmatch_unrelated_hunyuan_models() {
     let config = load_config_layers(&[]).expect("default parses");
     // These should NOT match the hy3 family, which would otherwise inherit the

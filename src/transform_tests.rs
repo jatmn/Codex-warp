@@ -241,7 +241,35 @@ fn native_agent_messages_become_standard_responses_messages() {
     assert!(task.contains("Review the codec"));
     let encrypted = input[1]["content"][0]["text"].as_str().unwrap();
     assert!(encrypted.contains("Encrypted inter-agent content omitted"));
+    assert!(encrypted.contains("the selected provider cannot decrypt"));
+    assert!(!encrypted.contains("Chat Completions provider"));
     assert!(!encrypted.contains("ciphertext"));
+}
+
+#[test]
+fn native_agent_messages_are_preserved_exactly_when_provider_supports_them() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "id": "agent_msg_1",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [
+                {"type": "input_text", "text": "Public routing context"},
+                {"type": "encrypted_content", "encrypted_content": "ciphertext"}
+            ],
+            "internal_chat_message_metadata_passthrough": {"opaque": true}
+        }]
+    });
+    let transform = TransformConfig {
+        preserve_native_agent_messages: true,
+        ..TransformConfig::default()
+    };
+
+    let normalized = normalize_responses_request(request.clone(), &transform);
+
+    assert_eq!(normalized.body["input"], request["input"]);
 }
 
 #[test]

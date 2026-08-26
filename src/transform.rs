@@ -239,7 +239,11 @@ pub fn normalize_responses_request(request: Value, transform: &TransformConfig) 
             }
         }
     }
-    rewrite_native_request_visible_calls(&mut request, &helpers);
+    rewrite_native_request_visible_calls(
+        &mut request,
+        &helpers,
+        transform.preserve_native_agent_messages,
+    );
     NativeTransform {
         body: request,
         namespace_helpers: helpers,
@@ -284,10 +288,16 @@ fn collect_custom_tool_names(
     }
 }
 
-fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
+fn rewrite_native_request_visible_calls(
+    request: &mut Value,
+    helpers: &NamespaceHelpers,
+    preserve_native_agent_messages: bool,
+) {
     if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
         for item in input {
-            if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+            if !preserve_native_agent_messages
+                && item.get("type").and_then(Value::as_str) == Some("agent_message")
+            {
                 *item = json!({
                     "type": "message",
                     "role": "user",
@@ -549,7 +559,7 @@ fn agent_message_to_text(item: &Value) -> String {
     }
     if encrypted_content {
         parts.push(
-            "[Encrypted inter-agent content omitted: this Chat Completions provider cannot decrypt Codex agent messages.]"
+            "[Encrypted inter-agent content omitted: the selected provider cannot decrypt Codex agent messages.]"
                 .to_string(),
         );
     }

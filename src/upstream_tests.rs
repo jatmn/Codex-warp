@@ -1695,6 +1695,38 @@ async fn native_proxy_standardizes_agent_message_input() {
 }
 
 #[tokio::test]
+async fn native_proxy_preserves_agent_message_for_capable_provider() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let agent_message = json!({
+        "type": "agent_message",
+        "id": "agent_msg_1",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}],
+        "internal_chat_message_metadata_passthrough": {"opaque": true}
+    });
+    let request = json!({
+        "model": "test-model",
+        "stream": false,
+        "input": [agent_message.clone()]
+    });
+    let selected = SelectedProvider {
+        transform: TransformConfig {
+            preserve_native_agent_messages: true,
+            ..TransformConfig::default()
+        },
+        ..selected_provider_at(&base_url)
+    };
+
+    let response = proxy_native_responses(test_state(), selected, HeaderMap::new(), request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["input"][0], agent_message);
+    server.abort();
+}
+
+#[tokio::test]
 async fn native_guardian_request_skips_subagent_clarification() {
     let (base_url, bodies, server) = spawn_responses_capture().await;
     let response = proxy_native_responses(
