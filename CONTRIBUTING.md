@@ -51,6 +51,8 @@ helpers.
 
 If a task seems to require Python, discuss the need first. The expected answer
 will usually be Rust, shell, existing Cargo tooling, or no new tool at all.
+`scripts/source-checks.sh` rejects Python and other new implementation
+languages; do not add an exception to land a file.
 
 ## Pull Request Expectations
 

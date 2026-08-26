@@ -49,18 +49,17 @@ if ! bash scripts/git-hooks-harness.sh; then
   fail=1
 fi
 
+if ! bash scripts/language-policy-check.sh; then
+  fail=1
+fi
+
 if command -v node >/dev/null 2>&1; then
-  js_files=(
-    src/webui_static/theme-bootstrap.js
-    src/webui_static/chart-math.js
-    src/webui_static/footer-status.js
-    src/webui_static/app-main.js
-  )
-  for js in "${js_files[@]}"; do
+  while IFS= read -r js; do
+    [ -n "$js" ] || continue
     if ! node --check "$js"; then
       fail=1
     fi
-  done
+  done < <(git ls-files '*.js')
 
   if ! node scripts/webui_chart_harness.js; then
     fail=1

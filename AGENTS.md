@@ -200,14 +200,16 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 `scripts/ci-preflight.sh` explicitly runs the non-Windows CI gates in this
 order: `cargo update --workspace --locked`; `typos`;
 `SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs
-whitespace/prose, Web UI JavaScript, chart harness, and crate-wide Clippy);
+whitespace/prose, language policy, tracked JavaScript, chart harness, and
+crate-wide Clippy);
 `cargo test --locked`; `cargo build --locked`;
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
 `--help` smoke checks; `git diff --check`; conditional Rust-diff
 `cargo mutants -o <temporary-dir> --no-shuffle -vV --in-diff ... -- --locked`;
 `cargo deny check bans licenses sources`; and `cargo audit`. The Windows job is
 the sole excluded CI check. `cargo audit` still runs locally, but its advisory
-result is non-blocking because CI marks it `continue-on-error`.
+result is non-blocking because pull-request CI marks it `continue-on-error`.
+Weekly and manual advisory runs fail closed.
 
 When asserting JSON or other structured values, check that the field exists.
 Do not hide a missing key with `unwrap_or(0)`, `unwrap_or("")`, or similar
@@ -286,8 +288,8 @@ warning in a file you changed means this pass was skipped or incomplete.
 Before you call implementation or a local review done:
 
 1. Run `bash scripts/source-checks.sh`. Fix every failure (`cargo fmt`, `typos`,
-   trailing whitespace, lowercase docs contractions such as `i'll`, JavaScript
-   syntax, chart harness).
+   trailing whitespace, lowercase docs contractions such as `i'll`, language
+   policy, JavaScript syntax, chart harness).
 2. Read the Clippy output from that script. The script fails on any Clippy
    warning (`-D warnings`). Those are defects to fix or an explicit, justified
    `allow` with a comment. Do not leave them for the next review round. Do not

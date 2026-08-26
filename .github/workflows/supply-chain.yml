@@ -1,6 +1,10 @@
 name: Supply Chain
 
 on:
+  workflow_dispatch:
+  schedule:
+    # Off-peak Monday; catch advisories that landed between PRs.
+    - cron: "23 11 * * 1"
   pull_request:
   push:
     branches: [main]
@@ -12,7 +16,7 @@ on:
 
 concurrency:
   group: supply-chain-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 permissions:
   contents: read
@@ -21,24 +25,44 @@ jobs:
   cargo-deny:
     name: cargo-deny (bans licenses sources)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+        with:
+          tool: cargo-deny
 
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
-        with:
-          command: check bans licenses sources
-          rust-version: stable
+        run: cargo deny check bans licenses sources
 
   cargo-audit:
     name: cargo-audit (advisories)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # A newly published advisory must not freeze every unrelated PR.
-    continue-on-error: true
+    # Weekly/manual runs fail closed so the advisory is visible.
+    continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+    permissions:
+      contents: read
+      checks: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Security audit
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
