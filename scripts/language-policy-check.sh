@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Reject Python and other new implementation languages before review.
-# Allowed tree today: Rust, TOML, Markdown, shell, JavaScript, HTML, CSS, YAML.
+# Allowlist matches the tracked tree: Rust, TOML, Markdown, shell, JavaScript,
+# HTML, CSS, YAML, Cargo.lock, and a short list of extensionless repo files.
 set -euo pipefail
 
 is_forbidden() {
   local path="$1"
   local base="${path##*/}"
-  case "$path" in
-    *.py | *.pyi | *.pyw | *.pyc) return 0 ;;
-    *.go | *.rb | *.php | *.java | *.kt | *.kts | *.scala | *.cs | *.swift | *.ts | *.tsx | *.jsx | *.vue)
-      return 0
-      ;;
-  esac
+
+  # These reuse allowed suffixes (.toml, .lock) but are Python project files.
   case "$base" in
-    requirements.txt | Pipfile | poetry.lock | pyproject.toml | setup.py | setup.cfg | tox.ini | conftest.py)
+    pyproject.toml | poetry.lock | Pipfile | requirements.txt | setup.py | setup.cfg | tox.ini | conftest.py)
       return 0
       ;;
   esac
-  return 1
+
+  case "$path" in
+    *.rs | *.toml | *.md | *.sh | *.js | *.yml | *.yaml | *.html | *.css | *.lock) return 1 ;;
+    LICENSE | NOTICE | .gitignore | .github/CODEOWNERS | .githooks/pre-commit | .githooks/pre-push | .githooks/pre-applypatch)
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 self_test() {
@@ -37,14 +41,26 @@ self_test() {
   expect_forbidden "scripts/foo.py"
   expect_forbidden "src/conftest.py"
   expect_forbidden "pyproject.toml"
+  expect_forbidden "poetry.lock"
   expect_forbidden "src/app.ts"
   expect_forbidden "tools/helper.go"
+  expect_forbidden "src/tool.c"
+  expect_forbidden "src/tool.cpp"
+  expect_forbidden "src/tool"
+  expect_forbidden "scripts/helper"
   expect_allowed "src/main.rs"
   expect_allowed "scripts/source-checks.sh"
   expect_allowed "src/webui_static/app-main.js"
   expect_allowed "codex-warp.toml"
   expect_allowed ".github/workflows/ci.yml"
   expect_allowed "docs/development.md"
+  expect_allowed "LICENSE"
+  expect_allowed "NOTICE"
+  expect_allowed ".gitignore"
+  expect_allowed ".github/CODEOWNERS"
+  expect_allowed ".githooks/pre-commit"
+  expect_allowed "Cargo.lock"
+  expect_allowed "_typos.toml"
   if [ "$fail" -ne 0 ]; then
     echo "language-policy-check: self-test failed" >&2
     exit 1
