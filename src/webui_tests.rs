@@ -2638,7 +2638,10 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let request = app
         .split("function requestAnalytics()")
         .nth(1)
-        .expect("analytics request helper");
+        .expect("analytics request helper")
+        .split("$(\"#analytics-provider\").addEventListener")
+        .next()
+        .expect("analytics request helper body");
     assert!(
         request
             .find("storeAnalyticsFilters();")
