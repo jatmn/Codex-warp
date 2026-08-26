@@ -23,6 +23,10 @@ const readHelperSource = sourceBetween(
   "function readStoredAnalyticsFilters()",
   "let managementToken =",
 );
+const restoreInitializerSource = sourceBetween(
+  "let analyticsFiltersToRestore = readStoredAnalyticsFilters();",
+  "let managementTokenPrompt =",
+);
 const filterHelperSource = sourceBetween(
   "function analyticsOptionValue(select, saved)",
   "let analyticsPending =",
@@ -70,15 +74,16 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
       "use strict";
       const ANALYTICS_FILTERS_KEY = "codex-warp-webui-analytics-filters";
       const $ = (selector) => globalThis.elements[selector];
-      let analyticsFiltersToRestore = null;
       function fillAnalyticsFilters() { globalThis.fillHook(); }
       ${readHelperSource}
+      ${restoreInitializerSource}
       ${filterHelperSource}
       globalThis.filters = {
         readStoredAnalyticsFilters,
         writeAnalyticsFilters,
         storeAnalyticsFilters,
         restoreAnalyticsFilters,
+        settleAnalyticsInventoryChange,
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
       };
@@ -156,6 +161,27 @@ check("restores a valid provider before its model and persists the result", () =
   });
 });
 
+check("initializes restoration from stored session values", () => {
+  const run = runtime({
+    stored: JSON.stringify({
+      range: "week",
+      provider: "configured",
+      model: "model-a",
+    }),
+  });
+  run.setFillHook(() => {
+    run.elements["#analytics-model"].options =
+      run.elements["#analytics-provider"].value === "configured"
+        ? [{ value: "" }, { value: "model-a" }]
+        : [{ value: "" }];
+  });
+  assert.equal(run.filters.restoreAnalyticsFilters(), true);
+  assert.equal(run.elements["#analytics-range"].value, "week");
+  assert.equal(run.elements["#analytics-provider"].value, "configured");
+  assert.equal(run.elements["#analytics-model"].value, "model-a");
+  assert.equal(run.filters.getPending(), null);
+});
+
 check("defers historical ids until provider and model inventories arrive", () => {
   const run = runtime();
   let modelAvailable = false;
@@ -212,6 +238,74 @@ check("keeps a pending discovered model until provider discovery can add it", ()
   discovered = true;
   assert.equal(run.filters.restoreAnalyticsFilters(), true);
   assert.equal(run.elements["#analytics-model"].value, "dynamic-model");
+});
+
+check("keeps a saved provider pending when its inventory failed", () => {
+  const saved = {
+    range: "24h",
+    provider: "configured",
+    model: "model-a",
+  };
+  const run = runtime({ stored: JSON.stringify(saved) });
+  run.elements["#analytics-provider"].options = [{ value: "" }];
+  assert.equal(
+    run.filters.restoreAnalyticsFilters({ providerInventoryComplete: false }),
+    false,
+  );
+  assert.notEqual(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), saved);
+});
+
+check("persists fallback when provider discovery removes the active model", () => {
+  const run = runtime({
+    stored: JSON.stringify({
+      range: "24h",
+      provider: "configured",
+      model: "dynamic-model",
+    }),
+  });
+  run.setFillHook(() => {
+    run.elements["#analytics-model"].options = [
+      { value: "" },
+      { value: "dynamic-model" },
+    ];
+  });
+  assert.equal(run.filters.restoreAnalyticsFilters(), true);
+  run.elements["#analytics-model"].value = "";
+  assert.equal(run.filters.settleAnalyticsInventoryChange(true), true);
+  assert.deepEqual(parsedStorage(run), {
+    range: "24h",
+    provider: "configured",
+    model: "",
+  });
+  assert.equal(run.filters.settleAnalyticsInventoryChange(false), false);
+});
+
+check("does not restore a shared model for an invalid provider", () => {
+  const run = runtime({
+    stored: JSON.stringify({
+      range: "24h",
+      provider: "removed-provider",
+      model: "shared-model",
+    }),
+  });
+  run.setFillHook(() => {
+    run.elements["#analytics-model"].options = [
+      { value: "" },
+      { value: "shared-model" },
+    ];
+  });
+  assert.equal(
+    run.filters.restoreAnalyticsFilters({
+      providerInventoryComplete: true,
+      modelInventoryComplete: true,
+    }),
+    false,
+  );
+  assert.equal(run.elements["#analytics-provider"].value, "");
+  assert.equal(run.elements["#analytics-model"].value, "");
+  assert.equal(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), { range: "24h", provider: "", model: "" });
 });
 
 check("invalid saved ids fall back and overwrite stale storage", () => {

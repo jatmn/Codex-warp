@@ -35,6 +35,7 @@
   let analyticsProviderIds = [];
   let analyticsModelIds = [];
   let analyticsModelProvider = null;
+  let providerInventoryLoaded = false;
   let providerDiscoveryInFlight = false;
   let analyticsTimer = null;
   let analyticsInFlight = false;
@@ -304,6 +305,7 @@
     // a stalled upstream must not block the controls needed to disable it.
     try {
       providers = await api("/providers");
+      providerInventoryLoaded = true;
     } catch (error) {
       if (refreshRoutes) providerDiscoveryInFlight = false;
       throw error;
@@ -320,7 +322,9 @@
           try {
             providers = await api("/providers");
             renderProviders();
-            fillAnalyticsFilters();
+            refreshRestoredAnalytics(
+              settleAnalyticsInventoryChange(fillAnalyticsFilters()),
+            );
           } catch {
             // The already-rendered local management view remains usable.
           }
@@ -1366,6 +1370,8 @@
   function fillAnalyticsFilters() {
     const provSel = $("#analytics-provider");
     const cur = provSel.value;
+    const modelSel = $("#analytics-model");
+    const mcur = modelSel.value;
     provSel.innerHTML = "<option value=''>All providers</option>";
     for (const p of providers) {
       const o = document.createElement("option");
@@ -1382,8 +1388,6 @@
       }
     }
     provSel.value = cur;
-    const modelSel = $("#analytics-model");
-    const mcur = modelSel.value;
     modelSel.innerHTML = "<option value=''>All models</option>";
     const seen = new Set();
     const prov = providers.find((p) => p.id === provSel.value);
@@ -1407,6 +1411,7 @@
       }
     }
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
+    return provSel.value !== cur || modelSel.value !== mcur;
   }
 
   function analyticsOptionValue(select, saved) {
@@ -1449,15 +1454,16 @@
     // Provider selection controls the valid model inventory, so rebuild it
     // before validating the stored model value.
     fillAnalyticsFilters();
-    const savedModel = analyticsOptionValue(model, saved.model);
+    const providerMatches = savedProvider !== null;
+    const savedModel = providerMatches
+      ? analyticsOptionValue(model, saved.model)
+      : null;
     if (savedModel !== null) model.value = savedModel;
 
     const providerResolved =
       typeof saved.provider !== "string" ||
       savedProvider !== null ||
       providerInventoryComplete;
-    const providerMatches =
-      typeof saved.provider !== "string" || savedProvider !== null;
     const modelResolved =
       !providerMatches ||
       typeof saved.model !== "string" ||
@@ -1471,6 +1477,12 @@
     }
     const after = [range.value, provider.value, model.value];
     return before.some((value, index) => value !== after[index]);
+  }
+
+  function settleAnalyticsInventoryChange(filtersChanged) {
+    if (!filtersChanged || analyticsFiltersToRestore) return false;
+    writeAnalyticsFilters();
+    return true;
   }
 
   let analyticsPending = { queued: false, fromPoll: true };
@@ -1544,7 +1556,7 @@
       }
       fillAnalyticsFilters();
       const restoredFilters = restoreAnalyticsFilters({
-        providerInventoryComplete: !provider,
+        providerInventoryComplete: providerInventoryLoaded && !provider,
         modelInventoryComplete:
           !providerDiscoveryInFlight &&
           !model &&

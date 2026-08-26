@@ -2480,6 +2480,7 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(app.contains("const ANALYTICS_FILTERS_KEY = \"codex-warp-webui-analytics-filters\";"));
     assert!(app.contains("function readStoredAnalyticsFilters()"));
     assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
+    assert!(app.contains("let analyticsFiltersToRestore = readStoredAnalyticsFilters();"));
     assert!(app.contains("function writeAnalyticsFilters()"));
     assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
     assert!(app.contains("function storeAnalyticsFilters()"));
@@ -2506,13 +2507,16 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(provider_at < inventory_at && inventory_at < model_at);
     assert!(restore.contains("providerInventoryComplete"));
     assert!(restore.contains("modelInventoryComplete"));
+    assert!(restore.contains("const providerMatches = savedProvider !== null;"));
+    assert!(restore.contains("const savedModel = providerMatches"));
+    assert!(app.contains("let providerInventoryLoaded = false;"));
     assert!(app.contains("let providerDiscoveryInFlight = false;"));
 
     let success = app
         .split("const restoredFilters = restoreAnalyticsFilters({")
         .nth(1)
         .expect("staged analytics restoration");
-    assert!(success.contains("providerInventoryComplete: !provider"));
+    assert!(success.contains("providerInventoryComplete: providerInventoryLoaded && !provider"));
     assert!(success.contains("!providerDiscoveryInFlight &&"));
     assert!(success.contains("analyticsModelProvider === $(\"#analytics-provider\").value"));
     assert!(success.contains("analyticsPending.queued = true;"));
@@ -2527,6 +2531,9 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let provider_request = providers
         .find("providers = await api(\"/providers\")")
         .expect("provider request");
+    let provider_inventory = providers
+        .find("providerInventoryLoaded = true;")
+        .expect("provider inventory success");
     let provider_restore = providers
         .find("refreshRestoredAnalytics(restoreAnalyticsFilters());")
         .expect("restore after provider inventory");
@@ -2540,7 +2547,12 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let late_restore = providers
         .find("refreshRestoredAnalytics(restoreAnalyticsFilters({")
         .expect("restore after discovery");
-    assert!(discovery_start < provider_request && provider_request < provider_restore);
+    assert!(providers.contains("settleAnalyticsInventoryChange(fillAnalyticsFilters())"));
+    assert!(
+        discovery_start < provider_request
+            && provider_request < provider_inventory
+            && provider_inventory < provider_restore
+    );
     assert!(provider_restore < discovery_end && discovery_end < late_restore);
 
     let request = app
