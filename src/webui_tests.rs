@@ -2472,6 +2472,42 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn webui_offers_provider_scoped_model_refresh() {
+    let js = webui_js_source();
+    assert!(js.contains("if (!provider.model_catalog_only)"));
+    assert!(js.contains("/refresh-models`"));
+    assert!(js.contains("refreshBtn.disabled = !provider.enabled"));
+    assert!(js.contains("const refreshingProviderIds = new Set();"));
+    assert!(js.contains("refreshingProviderIds.has(provider.id)"));
+
+    let handler = js
+        .split("refreshBtn.addEventListener(\"click\"")
+        .nth(1)
+        .expect("refresh click handler");
+    let load_at = handler
+        .find("loadProviders({ refreshRoutes: false, updateStatus: false })")
+        .expect("reload after refresh");
+    let delete_at = handler
+        .find("refreshingProviderIds.delete(provider.id)")
+        .expect("clear in-flight id");
+    let remount_at = handler
+        .find("renderProviders()")
+        .expect("remount after clear");
+    assert!(
+        load_at < delete_at,
+        "in-flight id must outlive provider reload"
+    );
+    assert!(
+        delete_at < remount_at,
+        "cards must remount after the in-flight id is cleared"
+    );
+    assert!(handler.contains(
+        "Error: ${formatErrorMessage(apiError)}. Could not reload providers: ${formatErrorMessage(reloadError)}"
+    ));
+    assert!(handler.contains("but could not reload providers"));
+}
+
+#[test]
 fn webui_app_includes_model_and_pie_chart_renderers() {
     let app = include_str!("webui_static/app-main.js");
     assert!(app.contains("function drawModelUsageChart("));

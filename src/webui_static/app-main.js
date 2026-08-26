@@ -37,6 +37,7 @@
   let bootFooterHold = false;
   let tabEpoch = 0;
   const expandedProviderIds = new Set();
+  const refreshingProviderIds = new Set();
   const VALID_TABS = new Set(["analytics", "providers", "logs"]);
   function tabFromLocation() {
     const hash = location.hash.replace(/^#/, "");
@@ -411,16 +412,78 @@
   }
 
   function renderModels(provider, container) {
-    container.innerHTML = "";
+    container.replaceChildren();
     const models = provider.models || [];
-    if (!models.length) {
-      container.innerHTML = "<p class='models-label'>Models</p><p class='muted'>No models.</p>";
-      return;
-    }
+    const head = document.createElement("div");
+    head.className = "models-head";
     const label = document.createElement("p");
     label.className = "models-label";
     label.textContent = "Models";
-    container.append(label);
+    head.append(label);
+    if (!provider.model_catalog_only) {
+      const refreshBtn = document.createElement("button");
+      refreshBtn.type = "button";
+      refreshBtn.className = "btn small";
+      const isRefreshing = refreshingProviderIds.has(provider.id);
+      refreshBtn.textContent = isRefreshing ? "Refreshing..." : "Refresh";
+      refreshBtn.disabled = !provider.enabled || isRefreshing;
+      refreshBtn.title = provider.enabled
+        ? "Refresh models from the provider API"
+        : "Enable the provider before refreshing models";
+      refreshBtn.setAttribute(
+        "aria-label",
+        `Refresh models for ${provider.display_name || provider.id}`,
+      );
+      refreshBtn.addEventListener("click", async () => {
+        if (refreshingProviderIds.has(provider.id)) {
+          return;
+        }
+        refreshingProviderIds.add(provider.id);
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "Refreshing...";
+        status(`Refreshing models for ${provider.id}...`);
+        let apiError = null;
+        let reloadError = null;
+        try {
+          await api(`/providers/${encodeURIComponent(provider.id)}/refresh-models`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          });
+        } catch (error) {
+          apiError = error;
+        }
+        try {
+          await loadProviders({ refreshRoutes: false, updateStatus: false });
+        } catch (error) {
+          reloadError = error;
+        } finally {
+          refreshingProviderIds.delete(provider.id);
+          renderProviders();
+        }
+        if (apiError && reloadError) {
+          status(
+            `Error: ${formatErrorMessage(apiError)}. Could not reload providers: ${formatErrorMessage(reloadError)}`,
+          );
+        } else if (apiError) {
+          status(`Error: ${formatErrorMessage(apiError)}`);
+        } else if (reloadError) {
+          status(
+            `Refreshed models for ${provider.id}, but could not reload providers: ${formatErrorMessage(reloadError)}`,
+          );
+        } else {
+          status(`Refreshed models for ${provider.id}`);
+        }
+      });
+      head.append(refreshBtn);
+    }
+    container.append(head);
+    if (!models.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No models.";
+      container.append(empty);
+      return;
+    }
     for (const m of models) {
       const row = document.createElement("div");
       row.className = "model-row";
