@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Reject Python and other new implementation languages before review.
-# Allowlist matches the tracked tree: Rust, TOML, Markdown, shell, JavaScript,
-# HTML, CSS, GitHub YAML, Cargo.lock, and a short list of extensionless repo files.
+# Allowlist matches the tracked tree: Rust, Markdown, shell, JavaScript,
+# HTML, CSS, the TOML files this repo already uses, GitHub YAML, Cargo.lock,
+# and a short list of extensionless repo files.
 #
 # Invariant: forbidden-ecosystem markers are denied by basename before any
 # suffix/path allowlist is consulted. Suffix classes that the tree only uses in
-# one place are not opened repo-wide (lockfiles are Cargo.lock; YAML is under
-# .github/). Suffix allowlist never overrides a forbidden basename.
+# specific names or directories are not opened repo-wide (lockfiles are
+# Cargo.lock; YAML is under .github/; TOML is Cargo/config/deny/typos files).
+# Suffix allowlist never overrides a forbidden basename.
 set -euo pipefail
 
 is_forbidden() {
@@ -16,7 +18,8 @@ is_forbidden() {
   # Python/conda/pixi project and lock files, including names that reuse
   # allowed suffixes (.toml, .lock, .yml).
   case "$base" in
-    pyproject.toml | pixi.toml | \
+    pyproject.toml | pixi.toml | hatch.toml | pdm.toml | uv.toml | \
+    ruff.toml | poetry.toml | Pylock.toml | pylock.toml | setuptools.toml | \
     Pipfile | Pipfile.lock | poetry.lock | uv.lock | pdm.lock | \
     requirements.txt | requirements.yml | requirements.yaml | \
     environment.yml | environment.yaml | \
@@ -27,7 +30,9 @@ is_forbidden() {
   esac
 
   case "$path" in
-    *.rs | *.toml | *.md | *.sh | *.js | *.html | *.css) return 1 ;;
+    *.rs | *.md | *.sh | *.js | *.html | *.css) return 1 ;;
+    Cargo.toml | _typos.toml | deny.toml | codex-warp.toml) return 1 ;;
+    configs/*.toml | configs/*/*.toml) return 1 ;;
     LICENSE | NOTICE | .gitignore | .github/CODEOWNERS | .githooks/pre-commit | .githooks/pre-push | .githooks/pre-applypatch)
       return 1
       ;;
@@ -68,6 +73,12 @@ self_test() {
   expect_forbidden "tools/pyproject.toml"
   expect_forbidden "pixi.toml"
   expect_forbidden "tools/pixi.toml"
+  expect_forbidden "hatch.toml"
+  expect_forbidden "pdm.toml"
+  expect_forbidden "uv.toml"
+  expect_forbidden "ruff.toml"
+  expect_forbidden "Pylock.toml"
+  expect_forbidden "tools/stray.toml"
   expect_forbidden "poetry.lock"
   expect_forbidden "Pipfile"
   expect_forbidden "Pipfile.lock"
@@ -94,6 +105,9 @@ self_test() {
   expect_allowed "scripts/source-checks.sh"
   expect_allowed "src/webui_static/app-main.js"
   expect_allowed "codex-warp.toml"
+  expect_allowed "configs/openrouter.toml"
+  expect_allowed "configs/model-families/qwen.toml"
+  expect_allowed "deny.toml"
   expect_allowed ".github/workflows/ci.yml"
   expect_allowed ".github/dependabot.yml"
   expect_allowed "docs/development.md"

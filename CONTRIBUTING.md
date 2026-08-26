@@ -53,9 +53,10 @@ If a task seems to require Python, discuss the need first. The expected answer
 will usually be Rust, shell, existing Cargo tooling, or no new tool at all.
 `scripts/source-checks.sh` rejects Python and other new implementation
 languages; do not add an exception to land a file. The check allowlists the
-tracked tree: lockfiles other than `Cargo.lock` and YAML outside `.github/`
-are rejected, and Python/pixi TOML names are denied even though `*.toml` is
-allowed.
+tracked tree: lockfiles other than `Cargo.lock`, YAML outside `.github/`, and
+TOML outside Cargo/config/deny/typos files are rejected. Python/conda/pixi
+project names are also denied by basename so they cannot reuse an allowed
+suffix.
 
 ## Pull Request Expectations
 
