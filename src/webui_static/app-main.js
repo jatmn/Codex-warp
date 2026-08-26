@@ -311,8 +311,8 @@
       throw error;
     }
     renderProviders();
-    fillAnalyticsFilters();
-    refreshRestoredAnalytics(restoreAnalyticsFilters());
+    const inventoryChanged = settleAnalyticsInventoryChange(fillAnalyticsFilters());
+    refreshRestoredAnalytics(restoreAnalyticsFilters() || inventoryChanged);
     if (refreshRoutes) {
       // Mutations refresh routes server-side. Initial discovery is best-effort
       // background enrichment and republishes the provider view when complete.
@@ -1459,6 +1459,10 @@
       ? analyticsOptionValue(model, saved.model)
       : null;
     if (savedModel !== null) model.value = savedModel;
+    // Inventory completion describes the provider selected when restoration
+    // began. Switching providers requires a provider-scoped follow-up before
+    // a missing saved model can be declared stale.
+    const modelInventoryApplies = provider.value === before[1];
 
     const providerResolved =
       typeof saved.provider !== "string" ||
@@ -1468,7 +1472,7 @@
       !providerMatches ||
       typeof saved.model !== "string" ||
       savedModel !== null ||
-      modelInventoryComplete;
+      (modelInventoryComplete && modelInventoryApplies);
     if (providerResolved && modelResolved) {
       // Replace malformed or stale values with the effective defaults so
       // later reloads do not repeatedly attempt to restore them.

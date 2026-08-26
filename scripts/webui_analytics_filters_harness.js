@@ -201,7 +201,10 @@ check("defers historical ids until provider and model inventories arrive", () =>
 
   run.elements["#analytics-provider"].options.push({ value: "historical-provider" });
   assert.equal(
-    run.filters.restoreAnalyticsFilters({ providerInventoryComplete: true }),
+    run.filters.restoreAnalyticsFilters({
+      providerInventoryComplete: true,
+      modelInventoryComplete: true,
+    }),
     true,
   );
   assert.equal(run.elements["#analytics-provider"].value, "historical-provider");
@@ -253,6 +256,8 @@ check("keeps a saved provider pending when its inventory failed", () => {
     false,
   );
   assert.notEqual(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), saved);
+  assert.equal(run.filters.settleAnalyticsInventoryChange(true), false);
   assert.deepEqual(parsedStorage(run), saved);
 });
 

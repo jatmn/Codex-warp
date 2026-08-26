@@ -2509,6 +2509,8 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(restore.contains("modelInventoryComplete"));
     assert!(restore.contains("const providerMatches = savedProvider !== null;"));
     assert!(restore.contains("const savedModel = providerMatches"));
+    assert!(restore.contains("const modelInventoryApplies = provider.value === before[1];"));
+    assert!(restore.contains("(modelInventoryComplete && modelInventoryApplies)"));
     assert!(app.contains("let providerInventoryLoaded = false;"));
     assert!(app.contains("let providerDiscoveryInFlight = false;"));
 
@@ -2534,8 +2536,11 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let provider_inventory = providers
         .find("providerInventoryLoaded = true;")
         .expect("provider inventory success");
+    let provider_settle = providers
+        .find("const inventoryChanged = settleAnalyticsInventoryChange(fillAnalyticsFilters());")
+        .expect("settle provider inventory changes");
     let provider_restore = providers
-        .find("refreshRestoredAnalytics(restoreAnalyticsFilters());")
+        .find("refreshRestoredAnalytics(restoreAnalyticsFilters() || inventoryChanged);")
         .expect("restore after provider inventory");
     let discovery_finally = providers
         .find(".finally(() => {")
@@ -2547,11 +2552,18 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let late_restore = providers
         .find("refreshRestoredAnalytics(restoreAnalyticsFilters({")
         .expect("restore after discovery");
-    assert!(providers.contains("settleAnalyticsInventoryChange(fillAnalyticsFilters())"));
+    assert_eq!(
+        providers
+            .matches("settleAnalyticsInventoryChange(fillAnalyticsFilters())")
+            .count(),
+        2
+    );
+    assert!(providers.contains("restoreAnalyticsFilters() || inventoryChanged"));
     assert!(
         discovery_start < provider_request
             && provider_request < provider_inventory
-            && provider_inventory < provider_restore
+            && provider_inventory < provider_settle
+            && provider_settle < provider_restore
     );
     assert!(provider_restore < discovery_end && discovery_end < late_restore);
 
