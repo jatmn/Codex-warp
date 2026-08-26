@@ -27,6 +27,10 @@ const restoreInitializerSource = sourceBetween(
   "let analyticsFiltersToRestore = readStoredAnalyticsFilters();",
   "let managementTokenPrompt =",
 );
+const discoveryHelperSource = sourceBetween(
+  "async function refreshModelRoutes()",
+  "async function loadProviders(",
+);
 const filterHelperSource = sourceBetween(
   "function analyticsOptionValue(select, saved)",
   "let analyticsPending =",
@@ -338,4 +342,36 @@ check("a user save cancels pending boot restoration", () => {
   assert.deepEqual(parsedStorage(run), { range: "1h", provider: "", model: "" });
 });
 
-process.stdout.write("webui analytics filters harness: all checks passed\n");
+async function discoveryResult(fetch) {
+  const context = {
+    AbortController: class {
+      constructor() { this.signal = {}; }
+      abort() {}
+    },
+    clearTimeout() {},
+    fetch,
+    setTimeout() { return 1; },
+  };
+  vm.runInNewContext(
+    `${discoveryHelperSource}\n` +
+      "globalThis.refreshModelRoutes = refreshModelRoutes;",
+    context,
+  );
+  return context.refreshModelRoutes();
+}
+
+Promise.resolve()
+  .then(async () => {
+    assert.equal(await discoveryResult(async () => ({ ok: true })), true);
+    assert.equal(await discoveryResult(async () => ({ ok: false })), false);
+    assert.equal(
+      await discoveryResult(async () => { throw new Error("discovery unavailable"); }),
+      false,
+    );
+    process.stdout.write("ok accepts only successful model discovery responses\n");
+    process.stdout.write("webui analytics filters harness: all checks passed\n");
+  })
+  .catch((error) => {
+    process.exitCode = 1;
+    console.error(error);
+  });

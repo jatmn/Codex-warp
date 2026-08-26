@@ -36,6 +36,7 @@
   let analyticsModelIds = [];
   let analyticsModelProvider = null;
   let providerInventoryLoaded = false;
+  let providerModelInventoryLoaded = false;
   let providerDiscoveryInFlight = false;
   let analyticsTimer = null;
   let analyticsInFlight = false;
@@ -288,8 +289,8 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      await fetch("/v1/models", { signal: controller.signal });
-      return true;
+      const response = await fetch("/v1/models", { signal: controller.signal });
+      return response.ok;
     } catch {
       // Best-effort: populate server model_routes for discovered upstream models.
       return false;
@@ -300,7 +301,10 @@
 
   async function loadProviders({ refreshRoutes = true, updateStatus = true } = {}) {
     if (updateStatus) status("Loading providers…");
-    if (refreshRoutes) providerDiscoveryInFlight = true;
+    if (refreshRoutes) {
+      providerDiscoveryInFlight = true;
+      providerModelInventoryLoaded = false;
+    }
     // Local persisted/configured providers must render before live discovery:
     // a stalled upstream must not block the controls needed to disable it.
     try {
@@ -321,6 +325,7 @@
           if (!refreshed) return;
           try {
             providers = await api("/providers");
+            providerModelInventoryLoaded = true;
             renderProviders();
             refreshRestoredAnalytics(
               settleAnalyticsInventoryChange(fillAnalyticsFilters()),
@@ -333,6 +338,7 @@
           providerDiscoveryInFlight = false;
           refreshRestoredAnalytics(restoreAnalyticsFilters({
             modelInventoryComplete:
+              providerModelInventoryLoaded &&
               analyticsModelProvider === $("#analytics-provider").value,
           }));
         });
@@ -1562,6 +1568,7 @@
       const restoredFilters = restoreAnalyticsFilters({
         providerInventoryComplete: providerInventoryLoaded && !provider,
         modelInventoryComplete:
+          providerModelInventoryLoaded &&
           !providerDiscoveryInFlight &&
           !model &&
           analyticsModelProvider === $("#analytics-provider").value,

@@ -2512,13 +2512,16 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(restore.contains("const modelInventoryApplies = provider.value === before[1];"));
     assert!(restore.contains("(modelInventoryComplete && modelInventoryApplies)"));
     assert!(app.contains("let providerInventoryLoaded = false;"));
+    assert!(app.contains("let providerModelInventoryLoaded = false;"));
     assert!(app.contains("let providerDiscoveryInFlight = false;"));
+    assert!(app.contains("return response.ok;"));
 
     let success = app
         .split("const restoredFilters = restoreAnalyticsFilters({")
         .nth(1)
         .expect("staged analytics restoration");
     assert!(success.contains("providerInventoryComplete: providerInventoryLoaded && !provider"));
+    assert!(success.contains("providerModelInventoryLoaded &&"));
     assert!(success.contains("!providerDiscoveryInFlight &&"));
     assert!(success.contains("analyticsModelProvider === $(\"#analytics-provider\").value"));
     assert!(success.contains("analyticsPending.queued = true;"));
@@ -2528,8 +2531,11 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .nth(1)
         .expect("provider loader");
     let discovery_start = providers
-        .find("if (refreshRoutes) providerDiscoveryInFlight = true;")
+        .find("providerDiscoveryInFlight = true;")
         .expect("discovery start");
+    let discovery_inventory_reset = providers
+        .find("providerModelInventoryLoaded = false;")
+        .expect("discovery inventory reset");
     let provider_request = providers
         .find("providers = await api(\"/providers\")")
         .expect("provider request");
@@ -2545,6 +2551,9 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let discovery_finally = providers
         .find(".finally(() => {")
         .expect("discovery completion handler");
+    let discovery_inventory_loaded = providers
+        .find("providerModelInventoryLoaded = true;")
+        .expect("authoritative discovery inventory");
     let discovery_end = providers[discovery_finally..]
         .find("providerDiscoveryInFlight = false;")
         .expect("discovery completion")
@@ -2560,11 +2569,16 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     );
     assert!(providers.contains("restoreAnalyticsFilters() || inventoryChanged"));
     assert!(
-        discovery_start < provider_request
+        providers.contains("providerModelInventoryLoaded &&\n              analyticsModelProvider")
+    );
+    assert!(
+        discovery_start < discovery_inventory_reset
+            && discovery_inventory_reset < provider_request
             && provider_request < provider_inventory
             && provider_inventory < provider_settle
             && provider_settle < provider_restore
     );
+    assert!(provider_restore < discovery_inventory_loaded);
     assert!(provider_restore < discovery_end && discovery_end < late_restore);
 
     let request = app
