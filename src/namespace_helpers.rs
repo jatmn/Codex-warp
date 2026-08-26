@@ -59,23 +59,27 @@ impl NamespaceHelpers {
     /// True when at least one subagent namespace child was expanded into an ordinary
     /// function. Other namespaces and collapsed envelope fallbacks do not count.
     pub fn has_expanded_subagent_helpers(&self) -> bool {
-        self.runtime_tools
-            .values()
-            .any(|tool| matches!(tool.namespace.as_str(), "collaboration" | "multi_agent_v1"))
+        self.runtime_tools.values().any(is_subagent_runtime_tool)
     }
 
     /// Codex currently recognizes the empty plaintext-arguments marker for v2
     /// messaging helpers only when their runtime namespace is `collaboration`.
     pub fn incompatible_plaintext_subagent_namespace(&self) -> Option<&str> {
-        self.runtime_tools.values().find_map(|tool| {
-            (tool.namespace != "collaboration"
-                && tool.namespace != "multi_agent_v1"
-                && tool.encrypted_arguments
+        let mut signatures: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for tool in self.runtime_tools.values().filter(|tool| {
+            tool.encrypted_arguments
                 && matches!(
                     tool.name.as_str(),
                     "spawn_agent" | "send_message" | "followup_task"
-                ))
-            .then_some(tool.namespace.as_str())
+                )
+        }) {
+            signatures
+                .entry(tool.namespace.as_str())
+                .or_default()
+                .insert(tool.name.as_str());
+        }
+        signatures.into_iter().find_map(|(namespace, names)| {
+            (namespace != "collaboration" && names.len() == 3).then_some(namespace)
         })
     }
 
@@ -88,8 +92,10 @@ impl NamespaceHelpers {
             .reverse
             .iter()
             .filter_map(|(runtime_name, visible_name)| {
-                let (namespace, child_name) = runtime_name.split_once('.')?;
-                matches!(namespace, "collaboration" | "multi_agent_v1")
+                let (_, child_name) = runtime_name.split_once('.')?;
+                self.runtime_tools
+                    .get(runtime_name)
+                    .is_some_and(is_subagent_runtime_tool)
                     .then(|| format!("{} as {}", json!(child_name), json!(visible_name)))
             })
             .collect::<Vec<_>>();
@@ -252,6 +258,25 @@ impl NamespaceHelpers {
             );
         }
         self.to_visible_call(name, arguments)
+    }
+}
+
+fn is_subagent_runtime_tool(tool: &RuntimeTool) -> bool {
+    match tool.namespace.as_str() {
+        "collaboration" => matches!(
+            tool.name.as_str(),
+            "spawn_agent"
+                | "send_message"
+                | "followup_task"
+                | "wait_agent"
+                | "interrupt_agent"
+                | "list_agents"
+        ),
+        "multi_agent_v1" => matches!(
+            tool.name.as_str(),
+            "spawn_agent" | "send_input" | "resume_agent" | "wait_agent" | "close_agent"
+        ),
+        _ => false,
     }
 }
 

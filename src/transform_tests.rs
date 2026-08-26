@@ -216,6 +216,35 @@ fn encrypted_agent_message_is_not_silently_dropped() {
 }
 
 #[test]
+fn native_agent_messages_become_standard_responses_messages() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{"type": "input_text", "text": "Review the codec"}]
+        }, {
+            "type": "agent_message",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let input = normalized.body["input"].as_array().unwrap();
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[0]["role"], "user");
+    let task = input[0]["content"][0]["text"].as_str().unwrap();
+    assert!(task.contains("Message from Codex agent \"/root\" to \"/root/worker\""));
+    assert!(task.contains("Review the codec"));
+    let encrypted = input[1]["content"][0]["text"].as_str().unwrap();
+    assert!(encrypted.contains("Encrypted inter-agent content omitted"));
+    assert!(!encrypted.contains("ciphertext"));
+}
+
+#[test]
 fn agent_messages_wait_until_all_outstanding_tool_outputs() {
     let request = json!({
         "model": "test-model",

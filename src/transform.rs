@@ -287,7 +287,18 @@ fn collect_custom_tool_names(
 fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
     if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
         for item in input {
-            rewrite_native_function_call_item(item, helpers);
+            if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+                *item = json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": agent_message_to_text(item),
+                    }],
+                });
+            } else {
+                rewrite_native_function_call_item(item, helpers);
+            }
         }
     }
     if let Some(choice) = request.get_mut("tool_choice") {

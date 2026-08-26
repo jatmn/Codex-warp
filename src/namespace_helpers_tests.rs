@@ -71,6 +71,27 @@ fn collaboration_namespace() -> Value {
     })
 }
 
+fn encrypted_v2_namespace(namespace: &str) -> Value {
+    let tools = ["spawn_agent", "send_message", "followup_task"]
+        .into_iter()
+        .map(|name| {
+            json!({
+                "type": "function",
+                "name": name,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string", "encrypted": true}}
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "type": "namespace",
+        "name": namespace,
+        "tools": tools,
+    })
+}
+
 #[test]
 fn expands_namespace_children_to_ordinary_functions() {
     let mut used = BTreeSet::new();
@@ -446,14 +467,59 @@ fn occupied_child_and_runtime_names_use_a_distinct_namespace_alias() {
 
 #[test]
 fn custom_v2_namespace_is_reported_as_plaintext_incompatible() {
-    let mut namespace = collaboration_namespace();
-    namespace["name"] = json!("agents");
+    let namespace = encrypted_v2_namespace("agents");
     let mut helpers = NamespaceHelpers::default();
     expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
 
     assert_eq!(
         helpers.incompatible_plaintext_subagent_namespace(),
         Some("agents")
+    );
+}
+
+#[test]
+fn unrelated_encrypted_namespace_is_not_reported_as_v2() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "notifications",
+        "tools": [{
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {"secret": {"type": "string", "encrypted": true}}
+            }
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(helpers.incompatible_plaintext_subagent_namespace(), None);
+    assert!(!helpers.has_expanded_subagent_helpers());
+}
+
+#[test]
+fn partially_encrypted_same_name_family_is_not_reported_as_v2() {
+    let mut namespace = encrypted_v2_namespace("notifications");
+    namespace["tools"][2]["parameters"]["properties"]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("encrypted");
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(helpers.incompatible_plaintext_subagent_namespace(), None);
+}
+
+#[test]
+fn encrypted_v2_family_named_multi_agent_v1_is_incompatible() {
+    let namespace = encrypted_v2_namespace("multi_agent_v1");
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(
+        helpers.incompatible_plaintext_subagent_namespace(),
+        Some("multi_agent_v1")
     );
 }
 

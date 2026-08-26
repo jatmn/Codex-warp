@@ -95,9 +95,10 @@ pub(crate) async fn proxy_native_responses(
     // Probe a clone so alias-aware generated guidance can be inserted before the
     // forwarded request goes through the provider morph pipeline exactly once.
     let discovery = normalize_responses_request(body.clone(), &selected.transform);
-    if let Some(namespace) = discovery
-        .namespace_helpers
-        .incompatible_plaintext_subagent_namespace()
+    if !guardian_request
+        && let Some(namespace) = discovery
+            .namespace_helpers
+            .incompatible_plaintext_subagent_namespace()
     {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -168,9 +169,11 @@ pub(crate) async fn proxy_chat_responses(
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
     let chat_transform = responses_to_chat(body.clone(), &selected.transform);
-    if let Some(namespace) = chat_transform
-        .namespace_helpers
-        .incompatible_plaintext_subagent_namespace()
+    let guardian_request = is_guardian_request(&body);
+    if !guardian_request
+        && let Some(namespace) = chat_transform
+            .namespace_helpers
+            .incompatible_plaintext_subagent_namespace()
     {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -189,7 +192,7 @@ pub(crate) async fn proxy_chat_responses(
             .debug_log
             .log(guardian_compat_debug_event(&request_log_id, true));
     }
-    let subagent_helpers_applied = !is_guardian_request(&body)
+    let subagent_helpers_applied = !guardian_request
         && apply_subagent_helper_shim(&mut original_chat_body, &chat_transform.namespace_helpers);
     if subagent_helpers_applied {
         state
