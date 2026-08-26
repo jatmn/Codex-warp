@@ -1442,13 +1442,16 @@
     }
   }
 
-  function writeAnalyticsFilters() {
-    const filters = {
+  function analyticsFiltersSnapshot() {
+    return {
       version: ANALYTICS_FILTERS_VERSION,
       range: $("#analytics-range").value,
       provider: $("#analytics-provider").value,
       model: $("#analytics-model").value,
     };
+  }
+
+  function writeAnalyticsFilters(filters = analyticsFiltersSnapshot()) {
     try {
       sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters));
     } catch {
@@ -1458,8 +1461,10 @@
 
   function storeAnalyticsFilters() {
     // A user change wins over any still-pending boot restoration.
+    const filters = analyticsFiltersSnapshot();
+    retainStoredAnalyticsOptions(filters);
     analyticsFiltersToRestore = null;
-    writeAnalyticsFilters();
+    writeAnalyticsFilters(filters);
   }
 
   function restoreAnalyticsFilters({

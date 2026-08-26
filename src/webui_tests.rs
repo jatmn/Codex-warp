@@ -2482,7 +2482,8 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(app.contains("function readStoredAnalyticsFilters()"));
     assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
     assert!(app.contains("let analyticsFiltersToRestore = readStoredAnalyticsFilters();"));
-    assert!(app.contains("function writeAnalyticsFilters()"));
+    assert!(app.contains("function writeAnalyticsFilters(filters = analyticsFiltersSnapshot())"));
+    assert!(app.contains("function analyticsFiltersSnapshot()"));
     assert!(app.contains("version: ANALYTICS_FILTERS_VERSION,"));
     assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
     assert!(app.contains("function storeAnalyticsFilters()"));
@@ -2494,6 +2495,28 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         app.contains("[...select.options].some((option) => option.value === saved) ? saved : null")
     );
     assert!(!app.contains("localStorage"));
+
+    let store = app
+        .split("function storeAnalyticsFilters()")
+        .nth(1)
+        .expect("analytics store helper");
+    let snapshot_at = store
+        .find("const filters = analyticsFiltersSnapshot();")
+        .expect("capture selected filters");
+    let retain_saved_at = store
+        .find("retainStoredAnalyticsOptions(filters);")
+        .expect("retain newly saved session identities");
+    let cancel_pending_at = store
+        .find("analyticsFiltersToRestore = null;")
+        .expect("cancel pending restoration");
+    let persist_at = store
+        .find("writeAnalyticsFilters(filters);")
+        .expect("persist captured filters");
+    assert!(
+        snapshot_at < retain_saved_at
+            && retain_saved_at < cancel_pending_at
+            && cancel_pending_at < persist_at
+    );
 
     let restore = app
         .split("function restoreAnalyticsFilters({")

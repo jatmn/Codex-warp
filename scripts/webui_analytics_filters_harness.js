@@ -82,7 +82,7 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
       let analyticsModelIds = [];
       let analyticsModelProvider = null;
       const $ = (selector) => globalThis.elements[selector];
-      function fillAnalyticsFilters() { globalThis.fillHook(); }
+      function fillAnalyticsFilters() { return globalThis.fillHook(); }
       ${readHelperSource}
       ${restoreInitializerSource}
       ${filterHelperSource}
@@ -92,6 +92,7 @@ function runtime({ stored = null, range = "24h", provider = "", model = "" } = {
         storeAnalyticsFilters,
         restoreAnalyticsFilters,
         settleAnalyticsInventoryChange,
+        rebuildInventory() { return fillAnalyticsFilters(); },
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
         getInventory() {
@@ -401,6 +402,49 @@ check("a user save cancels pending boot restoration", () => {
     range: "1h",
     provider: "",
     model: "",
+  });
+});
+
+check("a new user save survives a same-page inventory rebuild", () => {
+  const run = runtime({
+    range: "week",
+    provider: "configured",
+    model: "dynamic-model",
+  });
+  run.elements["#analytics-model"].options.push({ value: "dynamic-model" });
+  run.filters.storeAnalyticsFilters();
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
+    providerIds: ["configured"],
+    modelIds: ["dynamic-model"],
+    modelProvider: "configured",
+  });
+  run.setFillHook(() => {
+    const inventory = run.filters.getInventory();
+    const provider = run.elements["#analytics-provider"];
+    const model = run.elements["#analytics-model"];
+    const before = [provider.value, model.value];
+    provider.options = ["", ...inventory.providerIds].map((value) => ({ value }));
+    provider.value = provider.options.some((option) => option.value === before[0])
+      ? before[0]
+      : "";
+    model.options = inventory.modelProvider === provider.value
+      ? ["", ...inventory.modelIds].map((value) => ({ value }))
+      : [{ value: "" }];
+    model.value = model.options.some((option) => option.value === before[1])
+      ? before[1]
+      : "";
+    return provider.value !== before[0] || model.value !== before[1];
+  });
+  const inventoryChanged = run.filters.rebuildInventory();
+  assert.equal(inventoryChanged, false);
+  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), false);
+  assert.equal(run.elements["#analytics-provider"].value, "configured");
+  assert.equal(run.elements["#analytics-model"].value, "dynamic-model");
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "week",
+    provider: "configured",
+    model: "dynamic-model",
   });
 });
 
