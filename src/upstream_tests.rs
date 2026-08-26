@@ -18,6 +18,8 @@ use crate::config::AppConfig;
 use crate::config::DebugConfig;
 use crate::config::ModelCatalogEntry;
 use crate::config::ProviderConfig;
+use crate::config::RequestMorph;
+use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
 use crate::guardian_compat::GUARDIAN_COMPAT_CLARIFICATION;
@@ -1417,14 +1419,74 @@ async fn native_namespace_request_receives_alias_aware_subagent_clarification() 
     let seen = bodies.lock().expect("bodies lock").clone();
     let instructions = seen[0]["instructions"].as_str().unwrap();
     assert!(instructions.starts_with("You are a coding agent.\n\nSub-agent tool helpers:"));
-    assert!(instructions.contains(r#""spawn_agent" as "multi_agent_v1.spawn_agent""#));
+    assert!(instructions.contains(r#""spawn_agent" as "multi_agent_v1__spawn_agent""#));
     let names = seen[0]["tools"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["multi_agent_v1.spawn_agent", "spawn_agent"]);
+    assert_eq!(names, vec!["multi_agent_v1__spawn_agent", "spawn_agent"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_unrelated_namespace_does_not_receive_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let request = json!({
+        "model": "test-model",
+        "stream": false,
+        "instructions": "Keep this instruction.",
+        "tools": [{
+            "type": "namespace",
+            "name": "plugin",
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["instructions"], "Keep this instruction.");
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_subagent_clarification_obeys_final_provider_morphs() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut selected = selected_provider_at(&base_url);
+    selected
+        .transform
+        .responses_request_morphs
+        .push(RequestMorph {
+            from: "instructions".to_string(),
+            to: None,
+            value: None,
+            kind: RequestMorphKind::Drop,
+        });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected,
+        HeaderMap::new(),
+        multi_agent_namespace_request(None),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert!(seen[0].get("instructions").is_none());
     server.abort();
 }
 

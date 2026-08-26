@@ -95,6 +95,8 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
         Some(Value::Array(input)) => {
             let mut pending_reasoning: Option<String> = None;
             let mut pending_tool_calls: Option<Value> = None;
+            let mut outstanding_tool_calls = BTreeSet::new();
+            let mut deferred_agent_messages = Vec::new();
             for item in input {
                 if transform.preserve_reasoning_content_history
                     && item.get("type").and_then(Value::as_str) == Some("reasoning")
@@ -123,16 +125,36 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                         }
                         merge_pending_tool_call_message(&mut pending_tool_calls, message);
                     }
-                } else {
+                } else if item.get("type").and_then(Value::as_str) == Some("agent_message")
+                    && (pending_tool_calls.is_some() || !outstanding_tool_calls.is_empty())
+                {
                     if let Some(message) = pending_tool_calls.take() {
+                        record_tool_call_ids(&message, &mut outstanding_tool_calls);
                         messages.push(message);
                     }
+                    deferred_agent_messages.extend(item_messages);
+                } else {
+                    if let Some(message) = pending_tool_calls.take() {
+                        record_tool_call_ids(&message, &mut outstanding_tool_calls);
+                        messages.push(message);
+                    }
+                    if matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    ) && let Some(call_id) = item.get("call_id").and_then(Value::as_str)
+                    {
+                        outstanding_tool_calls.remove(call_id);
+                    }
                     messages.extend(item_messages);
+                    if outstanding_tool_calls.is_empty() {
+                        messages.append(&mut deferred_agent_messages);
+                    }
                 }
             }
             if let Some(message) = pending_tool_calls.take() {
                 messages.push(message);
             }
+            messages.append(&mut deferred_agent_messages);
         }
         _ => {}
     }
@@ -551,6 +573,17 @@ fn merge_pending_tool_call_message(pending: &mut Option<Value>, mut message: Val
     }
 
     merge_reasoning_content(pending_message, message.get("reasoning_content"));
+}
+
+fn record_tool_call_ids(message: &Value, outstanding: &mut BTreeSet<String>) {
+    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        outstanding.extend(tool_calls.iter().filter_map(|tool_call| {
+            tool_call
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        }));
+    }
 }
 
 fn merge_reasoning_content(message: &mut Value, additional: Option<&Value>) {

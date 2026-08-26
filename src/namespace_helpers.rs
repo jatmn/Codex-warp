@@ -9,6 +9,7 @@ const SUBAGENT_HELPER_CLARIFICATION_PREFIX: &str = "\
 Sub-agent tool helpers:
 
 Codex sub-agent tools arrived as a Responses namespace and are exposed here as ordinary functions. Call each helper exactly by its advertised function name and pass that function's parameters directly. ";
+const SUBAGENT_HELPER_CLARIFICATION_MARKER: &str = "Sub-agent tool helpers:";
 
 const SUBAGENT_HELPER_CLARIFICATION_SUFFIX: &str = "Independent agents run asynchronously, so start multiple useful agents before waiting when concurrency slots are available. Use the advertised messaging helpers for two-way communication, and use the advertised wait, interrupt, list, resume, or close helpers as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
 
@@ -55,12 +56,12 @@ impl NamespaceHelpers {
         self.aliases.is_empty() && self.collapsed.is_empty()
     }
 
-    /// True when at least one namespace child was expanded into an ordinary function.
-    /// Collapsed `{namespace}_tool` fallbacks do not count: those still require the
-    /// envelope schema, so the expanded-helper clarification would contradict the
-    /// advertised tools.
-    pub fn has_expanded_helpers(&self) -> bool {
-        !self.aliases.is_empty()
+    /// True when at least one subagent namespace child was expanded into an ordinary
+    /// function. Other namespaces and collapsed envelope fallbacks do not count.
+    pub fn has_expanded_subagent_helpers(&self) -> bool {
+        self.runtime_tools
+            .values()
+            .any(|tool| matches!(tool.namespace.as_str(), "collaboration" | "multi_agent_v1"))
     }
 
     pub(crate) fn is_namespace_function_alias(&self, name: &str) -> bool {
@@ -132,7 +133,11 @@ impl NamespaceHelpers {
     }
 
     pub fn model_visible_name<'a>(&'a self, name: &'a str) -> &'a str {
-        self.reverse.get(name).map(String::as_str).unwrap_or(name)
+        if self.aliases.contains_key(name) {
+            self.reverse.get(name).map(String::as_str).unwrap_or(name)
+        } else {
+            name
+        }
     }
 
     /// Model-visible call -> Codex runtime call.
@@ -214,13 +219,24 @@ impl NamespaceHelpers {
         name: &str,
         arguments: &str,
     ) -> (String, String) {
-        let runtime_name = match namespace {
-            Some(namespace) if !namespace.is_empty() && namespace != "functions" => {
-                format!("{namespace}.{name}")
-            }
-            _ => name.to_string(),
-        };
-        self.to_visible_call(&runtime_name, arguments)
+        if let Some(namespace) = namespace
+            && !namespace.is_empty()
+            && namespace != "functions"
+        {
+            let runtime_name = format!("{namespace}.{name}");
+            let (runtime_name, arguments) =
+                unwrap_registered_envelope(self, &runtime_name, arguments)
+                    .unwrap_or((runtime_name, arguments.to_string()));
+            return (
+                self.reverse
+                    .get(&runtime_name)
+                    .map(String::as_str)
+                    .unwrap_or(&runtime_name)
+                    .to_string(),
+                arguments,
+            );
+        }
+        self.to_visible_call(name, arguments)
     }
 }
 
@@ -254,13 +270,7 @@ pub(crate) fn expand_namespace_tool(
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
         let runtime_alias_available = !used_names.contains(&runtime_name);
-        let visible_name = namespace_visible_name(
-            namespace,
-            child_name,
-            &runtime_name,
-            runtime_alias_available,
-            used_names,
-        );
+        let visible_name = namespace_visible_name(namespace, child_name, used_names);
         used_names.insert(visible_name.clone());
         if runtime_alias_available {
             used_names.insert(runtime_name.clone());
@@ -306,13 +316,7 @@ pub(crate) fn expand_namespace_responses_tool(
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
         let runtime_alias_available = !used_names.contains(&runtime_name);
-        let visible_name = namespace_visible_name(
-            namespace,
-            child_name,
-            &runtime_name,
-            runtime_alias_available,
-            used_names,
-        );
+        let visible_name = namespace_visible_name(namespace, child_name, used_names);
         used_names.insert(visible_name.clone());
         if runtime_alias_available {
             used_names.insert(runtime_name.clone());
@@ -332,7 +336,7 @@ pub(crate) fn apply_subagent_helper_shim(
     chat_body: &mut Value,
     helpers: &NamespaceHelpers,
 ) -> bool {
-    if !helpers.has_expanded_helpers() || subagent_helper_already_applied(chat_body) {
+    if !helpers.has_expanded_subagent_helpers() || subagent_helper_already_applied(chat_body) {
         return false;
     }
     let instruction = json!({
@@ -350,7 +354,7 @@ pub(crate) fn apply_subagent_helper_shim_to_responses(
     body: &mut Value,
     helpers: &NamespaceHelpers,
 ) -> bool {
-    if !helpers.has_expanded_helpers() {
+    if !helpers.has_expanded_subagent_helpers() {
         return false;
     }
     let clarification = helpers.subagent_helper_clarification();
@@ -359,7 +363,7 @@ pub(crate) fn apply_subagent_helper_shim_to_responses(
     };
     match map.get_mut("instructions") {
         Some(Value::String(instructions)) => {
-            if instructions.contains(SUBAGENT_HELPER_CLARIFICATION_PREFIX) {
+            if instructions.contains(SUBAGENT_HELPER_CLARIFICATION_MARKER) {
                 return false;
             }
             if !instructions.is_empty() {
@@ -395,17 +399,22 @@ fn namespace_children(tool: &Value) -> Vec<Value> {
 fn namespace_visible_name(
     namespace: &str,
     child_name: &str,
-    runtime_name: &str,
-    runtime_alias_available: bool,
     used_names: &BTreeSet<String>,
 ) -> String {
     if !used_names.contains(child_name) {
         return child_name.to_string();
     }
-    if runtime_alias_available {
-        return runtime_name.to_string();
-    }
-    let base = format!("{namespace}__{child_name}");
+    let safe_child_name = child_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let base = format!("{namespace}__{safe_child_name}");
     if !used_names.contains(&base) {
         return base;
     }
@@ -637,7 +646,7 @@ fn subagent_helper_already_applied(body: &Value) -> bool {
                         .get("content")
                         .and_then(Value::as_str)
                         .is_some_and(|content| {
-                            content.starts_with(SUBAGENT_HELPER_CLARIFICATION_PREFIX)
+                            content.starts_with(SUBAGENT_HELPER_CLARIFICATION_MARKER)
                         })
             })
         })

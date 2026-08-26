@@ -54,6 +54,7 @@ use crate::structured_output::structured_output_compat_event;
 use crate::transform::native_custom_tool_names;
 use crate::transform::normalize_responses_request;
 use crate::transform::responses_to_chat;
+use crate::transform_morph::apply_native_request_morphs;
 
 const NON_SSE_STREAM_BODY_MAX_BYTES: usize = 16 * 1024 * 1024;
 const NON_SSE_STREAM_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -97,6 +98,11 @@ pub(crate) async fn proxy_native_responses(
     let mut body = native.body;
     let subagent_helpers_applied =
         !guardian_request && apply_subagent_helper_shim_to_responses(&mut body, &namespace_helpers);
+    if subagent_helpers_applied {
+        // The generated compatibility instruction is provider input too, so it must
+        // obey the same final drop/rename policy as caller-provided instructions.
+        apply_native_request_morphs(&mut body, &selected.transform);
+    }
     let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
     let request_log_id = generated_id("dbg");
     if subagent_helpers_applied {

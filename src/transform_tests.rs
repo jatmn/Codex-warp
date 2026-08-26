@@ -216,6 +216,67 @@ fn encrypted_agent_message_is_not_silently_dropped() {
 }
 
 #[test]
+fn agent_messages_wait_until_all_outstanding_tool_outputs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(messages[1]["tool_call_id"], "call_1");
+    assert_eq!(messages[2]["tool_call_id"], "call_2");
+    assert_eq!(messages[3]["role"], "user");
+    assert!(
+        messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn agent_messages_without_outstanding_calls_keep_their_input_order() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [{"type": "input_text", "text": "worker update"}]
+        }, {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next request"}]
+        }]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(messages[1]["content"], "next request");
+}
+
+#[test]
 fn assistant_reasoning_parts_are_not_preserved_by_default() {
     let request = json!({
         "model": "test-model",
@@ -995,7 +1056,63 @@ fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
         .filter_map(|tool| tool["function"]["name"].as_str())
         .collect();
 
-    assert_eq!(names, vec!["multi_agent_v1.spawn_agent", "spawn_agent"]);
+    assert_eq!(names, vec!["multi_agent_v1__spawn_agent", "spawn_agent"]);
+}
+
+#[test]
+fn ordinary_dotted_history_and_choice_survive_namespace_runtime_collision() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_ordinary",
+            "name": "collaboration.spawn_agent",
+            "arguments": "{}"
+        }, {
+            "type": "function_call",
+            "call_id": "call_namespace",
+            "namespace": "collaboration",
+            "name": "spawn_agent",
+            "arguments": "{\"message\":\"review\"}"
+        }],
+        "tools": [{
+            "type": "function",
+            "name": "collaboration.spawn_agent",
+            "parameters": {"type": "object", "properties": {}}
+        }, {
+            "type": "namespace",
+            "name": "collaboration",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "tool_choice": {"type": "function", "name": "collaboration.spawn_agent"}
+    });
+
+    let chat = responses_to_chat(request.clone(), &TransformConfig::default());
+    let messages = chat.body["messages"].as_array().unwrap();
+    assert_eq!(
+        messages[0]["tool_calls"][0]["function"]["name"],
+        "collaboration.spawn_agent"
+    );
+    assert_eq!(
+        messages[0]["tool_calls"][1]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(
+        chat.body["tool_choice"]["name"],
+        "collaboration.spawn_agent"
+    );
+
+    let native = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(native.body["input"][0]["name"], "collaboration.spawn_agent");
+    assert_eq!(native.body["input"][1]["name"], "spawn_agent");
+    assert_eq!(
+        native.body["tool_choice"]["name"],
+        "collaboration.spawn_agent"
+    );
 }
 
 #[test]
