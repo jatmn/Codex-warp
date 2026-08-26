@@ -2561,11 +2561,21 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(app.contains("let providerDiscoveryInFlight = false;"));
     assert!(app.contains("let analyticsProviderInventoryLoaded = false;"));
     assert!(app.contains("let analyticsModelInventoryLoaded = false;"));
-    assert!(app.contains("!provider && Array.isArray(data.provider_ids)"));
-    assert!(app.contains("!model && Array.isArray(data.model_ids)"));
-    assert!(
-        app.contains("if (analyticsFiltersToRestore) qs.set(\"include_identities\", \"true\");")
-    );
+    let identity_update = app
+        .split("function updateAnalyticsIdentityInventories(data, provider, model)")
+        .nth(1)
+        .expect("identity inventory update helper")
+        .split("function analyticsNeedsIdentityInventories(provider)")
+        .next()
+        .expect("bounded identity inventory update helper");
+    assert!(identity_update.contains("Array.isArray(data.provider_ids)"));
+    assert!(identity_update.contains("(data.by_provider || [])"));
+    assert!(identity_update.contains("Array.isArray(data.model_ids)"));
+    assert!(identity_update.contains("(data.by_model || [])"));
+    assert!(identity_update.contains("analyticsProviderInventoryLoaded = true;"));
+    assert!(identity_update.contains("analyticsModelInventoryLoaded = false;"));
+    assert!(app.contains("if (analyticsNeedsIdentityInventories(provider))"));
+    assert!(app.contains("savedProvider !== provider &&"));
     assert!(app.contains("return response.ok;"));
 
     let success = app
@@ -2573,11 +2583,22 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .nth(1)
         .expect("staged analytics restoration");
     assert!(success.contains("providerInventoryLoaded && analyticsProviderInventoryLoaded"));
-    assert!(success.contains("providerModelInventoryLoaded &&"));
-    assert!(success.contains("analyticsModelInventoryLoaded &&"));
-    assert!(success.contains("!providerDiscoveryInFlight &&"));
-    assert!(success.contains("analyticsModelProvider === $(\"#analytics-provider\").value"));
+    assert!(success.contains("analyticsModelInventoryIsComplete(provider, model)"));
     assert!(success.contains("analyticsPending.queued = true;"));
+
+    let model_complete = app
+        .split("function analyticsModelInventoryIsComplete(provider, model)")
+        .nth(1)
+        .expect("model inventory completion helper")
+        .split("let analyticsPending =")
+        .next()
+        .expect("bounded model inventory completion helper");
+    assert!(model_complete.contains("Boolean(provider)"));
+    assert!(model_complete.contains("providerInventoryLoaded &&"));
+    assert!(model_complete.contains("!providers.some("));
+    assert!(model_complete.contains("providerModelInventoryLoaded ||"));
+    assert!(model_complete.contains("analyticsModelInventoryLoaded &&"));
+    assert!(model_complete.contains("!providerDiscoveryInFlight &&"));
 
     let providers = app
         .split("async function loadProviders(")
@@ -2626,11 +2647,7 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         2
     );
     assert!(providers.contains("restoreAnalyticsFilters() || inventoryChanged"));
-    assert!(
-        providers.contains(
-            "providerModelInventoryLoaded &&\n              analyticsModelInventoryLoaded"
-        )
-    );
+    assert!(providers.contains("modelInventoryComplete: analyticsModelInventoryIsComplete("));
     assert!(
         discovery_start < discovery_inventory_reset
             && discovery_inventory_reset < provider_request

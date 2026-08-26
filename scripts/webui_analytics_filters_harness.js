@@ -125,6 +125,9 @@ function runtime({
       let analyticsModelProvider = null;
       let analyticsProviderInventoryLoaded = false;
       let analyticsModelInventoryLoaded = false;
+      let providerInventoryLoaded = false;
+      let providerModelInventoryLoaded = false;
+      let providerDiscoveryInFlight = false;
       let providers = globalThis.initialProviders;
       const $ = (selector) => globalThis.elements[selector];
       ${fillSource}
@@ -138,6 +141,9 @@ function runtime({
         storeAnalyticsFilters,
         restoreAnalyticsFilters,
         settleAnalyticsInventoryChange,
+        updateAnalyticsIdentityInventories,
+        analyticsNeedsIdentityInventories,
+        analyticsModelInventoryIsComplete,
         rebuildInventory() { return fillAnalyticsFilters(); },
         setInventory({
           providerIds = [],
@@ -153,6 +159,15 @@ function runtime({
           analyticsModelInventoryLoaded = modelLoaded;
         },
         setProviders(value) { providers = value; },
+        setProviderInventoryState({
+          providerLoaded = false,
+          modelLoaded = false,
+          discoveryInFlight = false,
+        }) {
+          providerInventoryLoaded = providerLoaded;
+          providerModelInventoryLoaded = modelLoaded;
+          providerDiscoveryInFlight = discoveryInFlight;
+        },
         setPending(value) { analyticsFiltersToRestore = value; },
         getPending() { return analyticsFiltersToRestore; },
         getInventory() {
@@ -161,6 +176,12 @@ function runtime({
             modelIds: analyticsModelIds,
             modelProvider: analyticsModelProvider,
           }));
+        },
+        getInventoryLoaded() {
+          return {
+            provider: analyticsProviderInventoryLoaded,
+            model: analyticsModelInventoryLoaded,
+          };
         },
       };
     `,
@@ -666,6 +687,127 @@ check("inventory fallback waits for all-history identities", () => {
   assert.equal(run.elements["#analytics-model"].value, "model-a");
   assert.equal(run.filters.getPending(), null);
   assert.deepEqual(parsedStorage(run), previousFilters);
+});
+
+check("ordinary analytics breakdowns populate current-range filter options", () => {
+  const run = runtime({ productionFill: true });
+  run.filters.setPending(null);
+  run.filters.updateAnalyticsIdentityInventories({
+    by_provider: [{ key: "historical-provider" }],
+    by_model: [{ key: "historical-model" }],
+  }, "", "");
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
+    providerIds: ["historical-provider"],
+    modelIds: ["historical-model"],
+    modelProvider: "",
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventoryLoaded())), {
+    provider: false,
+    model: false,
+  });
+  run.filters.rebuildInventory();
+  assert.equal(
+    run.elements["#analytics-provider"].options.some(
+      (option) => option.value === "historical-provider",
+    ),
+    true,
+  );
+  assert.equal(
+    run.elements["#analytics-model"].options.some(
+      (option) => option.value === "historical-model",
+    ),
+    true,
+  );
+});
+
+check("authoritative identities survive later ordinary responses", () => {
+  const run = runtime();
+  run.filters.updateAnalyticsIdentityInventories({
+    provider_ids: ["historical-provider"],
+    model_ids: ["historical-model"],
+  }, "", "");
+  run.filters.updateAnalyticsIdentityInventories({
+    by_provider: [],
+    by_model: [],
+  }, "", "");
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventory())), {
+    providerIds: ["historical-provider"],
+    modelIds: ["historical-model"],
+    modelProvider: "",
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getInventoryLoaded())), {
+    provider: true,
+    model: true,
+  });
+});
+
+check("identity requests stop after the relevant scopes load", () => {
+  const run = runtime();
+  run.filters.setPending({
+    version: 1,
+    range: "24h",
+    provider: "historical-provider",
+    model: "historical-model",
+  });
+  assert.equal(run.filters.analyticsNeedsIdentityInventories(""), true);
+  run.filters.updateAnalyticsIdentityInventories({
+    provider_ids: ["historical-provider"],
+    model_ids: ["historical-model"],
+  }, "", "");
+  assert.equal(run.filters.analyticsNeedsIdentityInventories(""), false);
+  assert.equal(
+    run.filters.analyticsNeedsIdentityInventories("historical-provider"),
+    true,
+  );
+  run.filters.updateAnalyticsIdentityInventories({
+    provider_ids: ["historical-provider"],
+    model_ids: ["historical-model"],
+  }, "historical-provider", "");
+  assert.equal(
+    run.filters.analyticsNeedsIdentityInventories("historical-provider"),
+    false,
+  );
+
+  const configured = runtime({ provider: "configured" });
+  configured.filters.setPending({
+    version: 1,
+    range: "24h",
+    provider: "configured",
+    model: "missing-model",
+  });
+  assert.equal(
+    configured.filters.analyticsNeedsIdentityInventories("configured"),
+    true,
+  );
+  configured.filters.updateAnalyticsIdentityInventories({
+    provider_ids: ["configured"],
+    model_ids: ["other-model"],
+  }, "configured", "");
+  assert.equal(
+    configured.filters.analyticsNeedsIdentityInventories("configured"),
+    false,
+  );
+  assert.equal(configured.filters.getInventoryLoaded().provider, false);
+});
+
+check("deleted providers do not wait on failed live model discovery", () => {
+  const run = runtime({ provider: "historical-provider" });
+  run.filters.setProviderInventoryState({ providerLoaded: true });
+  run.filters.setInventory({
+    providerIds: ["historical-provider"],
+    modelIds: ["historical-model"],
+    modelProvider: "historical-provider",
+  });
+  assert.equal(
+    run.filters.analyticsModelInventoryIsComplete("historical-provider", ""),
+    true,
+  );
+  assert.equal(run.filters.analyticsModelInventoryIsComplete("", ""), false);
+  run.filters.setProviders([{ id: "historical-provider", models: [] }]);
+  assert.equal(
+    run.filters.analyticsModelInventoryIsComplete("historical-provider", ""),
+    false,
+  );
 });
 
 check("user saves do not manufacture analytics inventory", () => {

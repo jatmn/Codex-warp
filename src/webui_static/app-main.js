@@ -348,10 +348,10 @@
         .finally(() => {
           providerDiscoveryInFlight = false;
           refreshRestoredAnalytics(restoreAnalyticsFilters({
-            modelInventoryComplete:
-              providerModelInventoryLoaded &&
-              analyticsModelInventoryLoaded &&
-              analyticsModelProvider === $("#analytics-provider").value,
+            modelInventoryComplete: analyticsModelInventoryIsComplete(
+              $("#analytics-provider").value,
+              $("#analytics-model").value,
+            ),
           }));
         });
     }
@@ -1552,6 +1552,56 @@
     return true;
   }
 
+  function updateAnalyticsIdentityInventories(data, provider, model) {
+    if (!provider) {
+      if (Array.isArray(data.provider_ids)) {
+        analyticsProviderIds = data.provider_ids.map(String).filter(Boolean);
+        analyticsProviderInventoryLoaded = true;
+      } else if (!analyticsProviderInventoryLoaded) {
+        analyticsProviderIds = (data.by_provider || [])
+          .map((row) => String(row.key || ""))
+          .filter(Boolean);
+      }
+    }
+    if (!model) {
+      if (Array.isArray(data.model_ids)) {
+        analyticsModelIds = data.model_ids.map(String).filter(Boolean);
+        analyticsModelProvider = provider;
+        analyticsModelInventoryLoaded = true;
+      } else if (!analyticsModelInventoryLoaded || analyticsModelProvider !== provider) {
+        analyticsModelIds = (data.by_model || [])
+          .map((row) => String(row.key || ""))
+          .filter(Boolean);
+        analyticsModelProvider = provider;
+        analyticsModelInventoryLoaded = false;
+      }
+    }
+  }
+
+  function analyticsNeedsIdentityInventories(provider) {
+    const savedProvider = analyticsFiltersToRestore?.provider;
+    const providerInventoryNeeded =
+      typeof savedProvider === "string" &&
+      savedProvider !== provider &&
+      !analyticsProviderInventoryLoaded;
+    return Boolean(analyticsFiltersToRestore) &&
+      (providerInventoryNeeded ||
+        !analyticsModelInventoryLoaded ||
+        analyticsModelProvider !== provider);
+  }
+
+  function analyticsModelInventoryIsComplete(provider, model) {
+    const deletedProviderInventoryComplete =
+      Boolean(provider) &&
+      providerInventoryLoaded &&
+      !providers.some((configured) => configured.id === provider);
+    return (providerModelInventoryLoaded || deletedProviderInventoryComplete) &&
+      analyticsModelInventoryLoaded &&
+      !providerDiscoveryInFlight &&
+      !model &&
+      analyticsModelProvider === $("#analytics-provider").value;
+  }
+
   let analyticsPending = { queued: false, fromPoll: true };
 
   function refreshRestoredAnalytics(restoredFilters) {
@@ -1597,7 +1647,9 @@
     const qs = new URLSearchParams({ range });
     if (provider) qs.set("provider", provider);
     if (model) qs.set("model", model);
-    if (analyticsFiltersToRestore) qs.set("include_identities", "true");
+    if (analyticsNeedsIdentityInventories(provider)) {
+      qs.set("include_identities", "true");
+    }
     try {
       const data = await api(`/analytics?${qs}`);
       // Filters can change while this request is in flight (queued follow-up
@@ -1606,34 +1658,15 @@
       if (analyticsFiltersChanged()) {
         return;
       }
-      // Preserve provider identities from retained usage even after their live
-      // configuration is removed. Filtered responses omit this breakdown.
-      if (!provider && Array.isArray(data.provider_ids)) {
-        analyticsProviderIds = data.provider_ids
-          .map(String)
-          .filter(Boolean);
-        analyticsProviderInventoryLoaded = true;
-      }
-      // A model-filtered response deliberately omits the by-model breakdown.
-      // Keep the independent option inventory so the active filter survives
-      // this response and subsequent polling.
-      if (!model && Array.isArray(data.model_ids)) {
-        analyticsModelIds = data.model_ids
-          .map(String)
-          .filter(Boolean);
-        analyticsModelProvider = provider;
-        analyticsModelInventoryLoaded = true;
-      }
+      // All-history arrays are authoritative during restoration. Ordinary
+      // responses still contribute their current-range breakdown identities,
+      // preserving the filter options available before session persistence.
+      updateAnalyticsIdentityInventories(data, provider, model);
       fillAnalyticsFilters();
       const restoredFilters = restoreAnalyticsFilters({
         providerInventoryComplete:
           providerInventoryLoaded && analyticsProviderInventoryLoaded && !provider,
-        modelInventoryComplete:
-          providerModelInventoryLoaded &&
-          analyticsModelInventoryLoaded &&
-          !providerDiscoveryInFlight &&
-          !model &&
-          analyticsModelProvider === $("#analytics-provider").value,
+        modelInventoryComplete: analyticsModelInventoryIsComplete(provider, model),
       });
       if (restoredFilters) {
         // Historical provider/model ids appear only after analytics inventories
