@@ -291,13 +291,19 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         .and_then(Value::as_str)
         .unwrap_or("tool")
         .to_string();
+    let namespace = item
+        .get("namespace")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     if is_custom {
         // Native custom_tool_call items already carry Responses `input`. Rewriting
         // through Chat Completions `{input: ...}` encoding would stringify or drop
         // non-string payloads. Only the Codex runtime name needs to become visible.
-        let (name, _) = helpers.to_visible_call(&raw_name, "{}");
+        let (name, _) =
+            helpers.to_visible_call_with_namespace(namespace.as_deref(), &raw_name, "{}");
         if let Some(map) = item.as_object_mut() {
             map.insert("name".to_string(), json!(name));
+            map.remove("namespace");
         }
         return;
     }
@@ -306,10 +312,13 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         .and_then(Value::as_str)
         .unwrap_or("{}")
         .to_string();
-    let (name, arguments) = helpers.to_visible_call(&raw_name, &raw_arguments);
+    let (name, arguments) =
+        helpers.to_visible_call_with_namespace(namespace.as_deref(), &raw_name, &raw_arguments);
     if let Some(map) = item.as_object_mut() {
         map.insert("name".to_string(), json!(name));
         map.insert("arguments".to_string(), json!(arguments));
+        map.remove("namespace");
+        map.remove("encrypted_function_args");
     }
 }
 
@@ -319,13 +328,34 @@ fn rewrite_tool_choice_names(choice: &mut Value, helpers: &NamespaceHelpers) {
             *name = helpers.model_visible_name(name).to_string();
         }
         Value::Object(map) => {
+            let namespace = map
+                .remove("namespace")
+                .and_then(|namespace| namespace.as_str().map(ToOwned::to_owned));
             if let Some(Value::String(name)) = map.get_mut("name") {
-                *name = helpers.model_visible_name(name).to_string();
+                *name = helpers
+                    .to_visible_call_with_namespace(namespace.as_deref(), name, "{}")
+                    .0;
             }
-            if let Some(function) = map.get_mut("function")
-                && let Some(Value::String(name)) = function.get_mut("name")
-            {
-                *name = helpers.model_visible_name(name).to_string();
+            if let Some(function) = map.get_mut("function") {
+                let function_namespace = function
+                    .as_object_mut()
+                    .and_then(|function| function.remove("namespace"))
+                    .and_then(|namespace| namespace.as_str().map(ToOwned::to_owned));
+                if let Some(name) = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                {
+                    function["name"] = json!(
+                        helpers
+                            .to_visible_call_with_namespace(
+                                function_namespace.as_deref().or(namespace.as_deref()),
+                                &name,
+                                "{}",
+                            )
+                            .0
+                    );
+                }
             }
             if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
                 for tool in tools {
@@ -427,7 +457,12 @@ fn response_item_to_messages(
             } else {
                 chat_function_arguments_string(item.get("arguments"))
             };
-            let (name, arguments) = namespace_helpers.to_visible_call(raw_name, &raw_arguments);
+            let namespace = item.get("namespace").and_then(Value::as_str);
+            let (name, arguments) = namespace_helpers.to_visible_call_with_namespace(
+                namespace,
+                raw_name,
+                &raw_arguments,
+            );
             let arguments = ensure_json_object_argument_string(&arguments);
             let mut message = json!({
                 "role": "assistant",

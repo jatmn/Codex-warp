@@ -14,6 +14,7 @@ use crate::config::DebugConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
 use crate::namespace_helpers::NamespaceHelpers;
+use crate::namespace_helpers::expand_namespace_tool;
 use crate::provider::begin_session_model_update;
 use crate::provider::remember_session_model;
 use crate::provider::resolve_auto_review_model;
@@ -5675,11 +5676,155 @@ fn chat_completion_rewrites_spawn_agent_helper_to_namespaced_runtime() {
     );
 
     assert_eq!(value["output"][0]["type"], "function_call");
-    assert_eq!(value["output"][0]["name"], "multi_agent_v1.spawn_agent");
+    assert_eq!(value["output"][0]["name"], "spawn_agent");
+    assert_eq!(value["output"][0]["namespace"], "multi_agent_v1");
     assert_eq!(
         value["output"][0]["arguments"],
         "{\"message\":\"review the diff\"}"
     );
+}
+
+#[test]
+fn chat_completion_preserves_parallel_collaboration_calls_and_message_metadata() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [
+            {
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "encrypted": true},
+                        "task_name": {"type": "string"}
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "name": "send_message",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string"},
+                        "message": {"type": "string", "encrypted": true}
+                    }
+                }
+            }
+        ]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+    let value = chat_json_to_responses_with_policy(
+        json!({
+            "id": "gen_parallel",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_spawn_one",
+                            "type": "function",
+                            "function": {
+                                "name": "spawn_agent",
+                                "arguments": "{\"message\":\"review contracts\",\"task_name\":\"contracts\"}"
+                            }
+                        },
+                        {
+                            "id": "call_spawn_two",
+                            "type": "function",
+                            "function": {
+                                "name": "spawn_agent",
+                                "arguments": "{\"message\":\"review tests\",\"task_name\":\"tests\"}"
+                            }
+                        },
+                        {
+                            "id": "call_message",
+                            "type": "function",
+                            "function": {
+                                "name": "send_message",
+                                "arguments": "{\"target\":\"/root/contracts\",\"message\":\"also inspect replay\"}"
+                            }
+                        }
+                    ]
+                }
+            }]
+        }),
+        &BTreeSet::new(),
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+        None,
+    );
+
+    let output = value["output"].as_array().expect("output items");
+    assert_eq!(output.len(), 3);
+    assert_eq!(
+        output
+            .iter()
+            .map(|item| (
+                item["namespace"].as_str(),
+                item["name"].as_str(),
+                item["call_id"].as_str(),
+                item["encrypted_function_args"].as_array().map(Vec::len),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Some("collaboration"),
+                Some("spawn_agent"),
+                Some("call_spawn_one"),
+                Some(0),
+            ),
+            (
+                Some("collaboration"),
+                Some("spawn_agent"),
+                Some("call_spawn_two"),
+                Some(0),
+            ),
+            (
+                Some("collaboration"),
+                Some("send_message"),
+                Some("call_message"),
+                Some(0),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn custom_collaboration_call_does_not_claim_plaintext_function_arguments() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "encrypted": true}
+                }
+            }
+        }]
+    });
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+    let custom_tool_names = BTreeSet::from(["collaboration.send_message".to_string()]);
+
+    let item = tool_call_item(
+        "send_message",
+        r#"{"message":"hello"}"#,
+        "call_message",
+        &custom_tool_names,
+        &helpers,
+        &crate::config::ToolPolicyConfig::default(),
+    );
+
+    assert_eq!(item["type"], "custom_tool_call");
+    assert_eq!(item["namespace"], "collaboration");
+    assert_eq!(item["name"], "send_message");
+    assert!(item.get("encrypted_function_args").is_none());
 }
 
 #[test]
@@ -5889,7 +6034,8 @@ fn native_morph_rewrites_namespace_helper_before_custom_tool_classification() {
     );
 
     assert_eq!(value["item"]["type"], "function_call");
-    assert_eq!(value["item"]["name"], "multi_agent_v1.spawn_agent");
+    assert_eq!(value["item"]["name"], "spawn_agent");
+    assert_eq!(value["item"]["namespace"], "multi_agent_v1");
     assert_eq!(
         value["item"]["arguments"],
         "{\"message\":\"review the diff\"}"
@@ -5915,7 +6061,8 @@ fn native_sse_rewrites_namespace_helper_before_custom_tool_classification() {
         &helpers,
         &crate::config::ToolPolicyConfig::default(),
     );
-    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"name\":\"spawn_agent\""));
+    assert!(morphed.contains("\"namespace\":\"multi_agent_v1\""));
     assert!(morphed.contains("\"type\":\"function_call\""));
     assert!(morphed.contains("\"id\":\"item_1\""));
     assert!(!morphed.contains("custom_tool_call"));
@@ -5940,7 +6087,8 @@ fn native_sse_rewrites_tool_call_items_like_function_calls() {
         &helpers,
         &crate::config::ToolPolicyConfig::default(),
     );
-    assert!(morphed.contains("\"name\":\"multi_agent_v1.spawn_agent\""));
+    assert!(morphed.contains("\"name\":\"spawn_agent\""));
+    assert!(morphed.contains("\"namespace\":\"multi_agent_v1\""));
     assert!(morphed.contains("\"type\":\"function_call\""));
     assert!(morphed.contains("\"id\":\"item_1\""));
     assert!(!morphed.contains("\"type\":\"tool_call\""));
@@ -6803,13 +6951,14 @@ async fn chat_stream_rewrites_spawn_agent_helper_to_namespaced_runtime() {
         .await,
     );
     assert!(events.iter().any(|event| {
-        event.contains("\"name\":\"multi_agent_v1.spawn_agent\"")
+        event.contains("\"name\":\"spawn_agent\"")
+            && event.contains("\"namespace\":\"multi_agent_v1\"")
             && event.contains("\"arguments\":\"{\\\"message\\\":\\\"review\\\"}\"")
     }));
     assert!(
         !events
             .iter()
-            .any(|event| event.contains("\"name\":\"spawn_agent\""))
+            .any(|event| event.contains("\"name\":\"multi_agent_v1.spawn_agent\""))
     );
 }
 

@@ -772,6 +772,83 @@ fn expands_multi_agent_namespace_into_spawn_agent_helpers() {
 }
 
 #[test]
+fn current_collaboration_history_replays_split_namespace_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_spawn",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": "{\"message\":\"review\",\"task_name\":\"reviewer\"}",
+                "encrypted_function_args": []
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_spawn",
+                "output": "{\"task_name\":\"/root/reviewer\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_message",
+                "namespace": "collaboration",
+                "name": "send_message",
+                "arguments": "{\"target\":\"/root/reviewer\",\"message\":\"check replay\"}",
+                "encrypted_function_args": []
+            }
+        ],
+        "tools": [{
+            "type": "namespace",
+            "name": "collaboration",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "encrypted": true},
+                            "task_name": {"type": "string"}
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "send_message",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string"},
+                            "message": {"type": "string", "encrypted": true}
+                        }
+                    }
+                }
+            ]
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[0]["tool_calls"][0]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(messages[1]["role"], "tool");
+    assert_eq!(
+        messages[2]["tool_calls"][0]["function"]["name"],
+        "send_message"
+    );
+    assert!(
+        transformed.body["tools"][0]["function"]["parameters"]["properties"]["message"]
+            .get("encrypted")
+            .is_none()
+    );
+}
+
+#[test]
 fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
     let request = json!({
         "model": "test-model",

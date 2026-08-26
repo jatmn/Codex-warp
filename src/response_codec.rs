@@ -18,6 +18,7 @@ use crate::debug_log::DebugLog;
 use crate::debug_log::text_fingerprint;
 use crate::ids::generated_id;
 use crate::namespace_helpers::NamespaceHelpers;
+use crate::namespace_helpers::RewrittenCall;
 use crate::namespace_helpers::is_custom_tool_call_type;
 use crate::namespace_helpers::is_function_call_type;
 use crate::provider::complete_session_model_update;
@@ -3112,11 +3113,18 @@ fn morph_native_item(
         .get("arguments")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let (name, arguments) = namespace_helpers.rewrite_call(name, arguments);
+    let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
+    let runtime_name = rewritten_runtime_name(&rewritten);
     apply_classified_call_to_native_item(
         item,
-        classify_rewritten_call(&name, &arguments, custom_tool_names, tool_policy),
+        classify_rewritten_call(
+            &runtime_name,
+            &rewritten.arguments,
+            custom_tool_names,
+            tool_policy,
+        ),
     );
+    apply_rewritten_call_metadata(item, &rewritten);
 }
 
 fn tool_call_item(
@@ -3127,8 +3135,45 @@ fn tool_call_item(
     namespace_helpers: &NamespaceHelpers,
     tool_policy: &ToolPolicyConfig,
 ) -> Value {
-    let (name, arguments) = namespace_helpers.rewrite_call(name, arguments);
-    classified_tool_call_item(&name, &arguments, call_id, custom_tool_names, tool_policy)
+    let rewritten = namespace_helpers.rewrite_response_call(name, arguments);
+    let runtime_name = rewritten_runtime_name(&rewritten);
+    let mut item = classified_tool_call_item(
+        &runtime_name,
+        &rewritten.arguments,
+        call_id,
+        custom_tool_names,
+        tool_policy,
+    );
+    apply_rewritten_call_metadata(&mut item, &rewritten);
+    item
+}
+
+fn rewritten_runtime_name(call: &RewrittenCall) -> String {
+    call.namespace.as_ref().map_or_else(
+        || call.name.clone(),
+        |namespace| format!("{namespace}.{}", call.name),
+    )
+}
+
+fn apply_rewritten_call_metadata(item: &mut Value, call: &RewrittenCall) {
+    let item_type = item.get("type").and_then(Value::as_str);
+    let is_function = is_function_call_type(item_type);
+    let is_custom = is_custom_tool_call_type(item_type);
+    if matches!((is_function, is_custom), (false, false)) {
+        return;
+    }
+    let Some(map) = item.as_object_mut() else {
+        return;
+    };
+    map.insert("name".to_string(), json!(call.name));
+    if let Some(namespace) = &call.namespace {
+        map.insert("namespace".to_string(), json!(namespace));
+    } else {
+        map.remove("namespace");
+    }
+    if call.plaintext_encrypted_arguments && is_function {
+        map.insert("encrypted_function_args".to_string(), json!([]));
+    }
 }
 
 enum ClassifiedCall {

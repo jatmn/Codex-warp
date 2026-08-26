@@ -29,6 +29,48 @@ fn multi_agent_namespace() -> Value {
     })
 }
 
+fn collaboration_namespace() -> Value {
+    json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "description": "Tools for spawning and managing sub-agents.",
+        "tools": [
+            {
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "encrypted": true},
+                        "task_name": {"type": "string"}
+                    },
+                    "required": ["message", "task_name"]
+                }
+            },
+            {
+                "type": "function",
+                "name": "send_message",
+                "description": "Send a message to an agent.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string"},
+                        "message": {"type": "string", "encrypted": true}
+                    },
+                    "required": ["target", "message"]
+                }
+            },
+            {
+                "type": "function",
+                "name": "wait_agent",
+                "description": "Wait for agents.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        ]
+    })
+}
+
 #[test]
 fn expands_namespace_children_to_ordinary_functions() {
     let mut used = BTreeSet::new();
@@ -48,6 +90,133 @@ fn expands_namespace_children_to_ordinary_functions() {
             "multi_agent_v1.spawn_agent".to_string(),
             r#"{"message":"review the diff"}"#.to_string()
         )
+    );
+}
+
+#[test]
+fn restores_current_codex_namespace_shape_and_plaintext_marker() {
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    let expanded = expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(expanded.len(), 3);
+    assert!(
+        expanded[0]["function"]["parameters"]["properties"]["message"]
+            .get("encrypted")
+            .is_none()
+    );
+    assert_eq!(
+        helpers.rewrite_response_call(
+            "spawn_agent",
+            r#"{"message":"review","task_name":"reviewer"}"#,
+        ),
+        RewrittenCall {
+            name: "spawn_agent".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: r#"{"message":"review","task_name":"reviewer"}"#.to_string(),
+            plaintext_encrypted_arguments: true,
+        }
+    );
+    assert_eq!(
+        helpers.rewrite_response_call("wait_agent", r#"{"timeout_ms":30000}"#),
+        RewrittenCall {
+            name: "wait_agent".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: r#"{"timeout_ms":30000}"#.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
+}
+
+#[test]
+fn encrypted_argument_detection_requires_an_explicit_true_annotation() {
+    let namespace = json!({
+        "type": "namespace",
+        "name": "collaboration",
+        "tools": [{
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "allOf": [{"type": "string", "encrypted": true}],
+                        "encrypted": true
+                    }
+                }
+            }
+        }]
+    });
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    let expanded = expand_namespace_tool(&namespace, &mut used, &mut helpers);
+
+    assert_eq!(
+        helpers.rewrite_response_call("send_message", r#"{"message":"hello"}"#),
+        RewrittenCall {
+            name: "send_message".to_string(),
+            namespace: Some("collaboration".to_string()),
+            arguments: r#"{"message":"hello"}"#.to_string(),
+            plaintext_encrypted_arguments: true,
+        }
+    );
+    assert!(
+        expanded[0]["function"]["parameters"]["properties"]["message"]
+            .get("encrypted")
+            .is_none()
+    );
+    assert!(
+        expanded[0]["function"]["parameters"]["properties"]["message"]["allOf"][0]
+            .get("encrypted")
+            .is_none()
+    );
+}
+
+#[test]
+fn unknown_dotted_call_is_not_assigned_to_a_registered_namespace() {
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(
+        helpers.rewrite_response_call("unrelated.lookup", r#"{"q":"x"}"#),
+        RewrittenCall {
+            name: "unrelated.lookup".to_string(),
+            namespace: None,
+            arguments: r#"{"q":"x"}"#.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    );
+}
+
+#[test]
+fn current_codex_split_namespace_history_replays_visible_child() {
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(
+        helpers.to_visible_call_with_namespace(
+            Some("collaboration"),
+            "send_message",
+            r#"{"target":"/root/reviewer","message":"check callers"}"#,
+        ),
+        (
+            "send_message".to_string(),
+            r#"{"target":"/root/reviewer","message":"check callers"}"#.to_string(),
+        )
+    );
+}
+
+#[test]
+fn unrelated_namespace_history_keeps_the_plain_function_name() {
+    let mut used = BTreeSet::new();
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&collaboration_namespace(), &mut used, &mut helpers);
+
+    assert_eq!(
+        helpers.to_visible_call_with_namespace(Some("functions"), "shell", r#"{"cmd":"pwd"}"#),
+        ("shell".to_string(), r#"{"cmd":"pwd"}"#.to_string())
     );
 }
 
