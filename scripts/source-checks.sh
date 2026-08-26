@@ -39,7 +39,7 @@ if [ "$trailing_whitespace" -ne 0 ]; then
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "source-checks: node is required for docs prose, JS syntax, and the chart harness" >&2
+  echo "source-checks: node is required for docs prose, JS syntax, and WebUI harnesses" >&2
   fail=1
 elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
@@ -62,6 +62,10 @@ if command -v node >/dev/null 2>&1; then
   done < <(git ls-files '*.js')
 
   if ! node scripts/webui_chart_harness.js; then
+    fail=1
+  fi
+
+  if ! node scripts/webui_analytics_filters_harness.js; then
     fail=1
   fi
 fi

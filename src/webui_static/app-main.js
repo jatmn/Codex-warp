@@ -6,6 +6,8 @@
 
   const API = "/api";
   const TOKEN_KEY = "codex-warp-webui-token";
+  const ANALYTICS_FILTERS_KEY = "codex-warp-webui-analytics-filters";
+  const ANALYTICS_FILTERS_VERSION = 1;
   function readStoredToken() {
     try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
   }
@@ -15,7 +17,23 @@
   function clearStoredToken() {
     try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* optional persistence */ }
   }
+  function readStoredAnalyticsFilters() {
+    try {
+      const raw = sessionStorage.getItem(ANALYTICS_FILTERS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed?.version === ANALYTICS_FILTERS_VERSION &&
+        typeof parsed.range === "string" &&
+        typeof parsed.provider === "string" &&
+        typeof parsed.model === "string"
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  }
   let managementToken = readStoredToken();
+  let analyticsFiltersToRestore = readStoredAnalyticsFilters();
   let managementTokenPrompt = null;
   let providers = [];
   let providerTemplates = [];
@@ -290,7 +308,7 @@
     // a stalled upstream must not block the controls needed to disable it.
     providers = await api("/providers");
     renderProviders();
-    fillAnalyticsFilters();
+    refreshRestoredAnalytics(reconcileAnalyticsFiltersAfterInventory());
     if (refreshRoutes) {
       // Mutations refresh routes server-side. Initial discovery is best-effort
       // background enrichment and republishes the provider view when complete.
@@ -299,7 +317,7 @@
         try {
           providers = await api("/providers");
           renderProviders();
-          fillAnalyticsFilters();
+          refreshRestoredAnalytics(reconcileAnalyticsFiltersAfterInventory());
         } catch {
           // The already-rendered local management view remains usable.
         }
@@ -1381,19 +1399,104 @@
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
   }
 
+  function analyticsOptionValue(select, saved) {
+    if (typeof saved !== "string") return null;
+    return [...select.options].some((option) => option.value === saved) ? saved : null;
+  }
+
+  function analyticsFiltersSnapshot() {
+    return {
+      version: ANALYTICS_FILTERS_VERSION,
+      range: $("#analytics-range").value,
+      provider: $("#analytics-provider").value,
+      model: $("#analytics-model").value,
+    };
+  }
+
+  function writeAnalyticsFilters(filters = analyticsFiltersSnapshot()) {
+    try {
+      sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters));
+    } catch {
+      /* optional persistence */
+    }
+  }
+
+  function storeAnalyticsFilters(changedFilter = null) {
+    let filters = analyticsFiltersSnapshot();
+    if (changedFilter === "range" &&
+        analyticsFiltersToRestore?.version === ANALYTICS_FILTERS_VERSION) {
+      // Range is available synchronously, while provider/model options can be
+      // waiting on their normal option rebuilds. Changing only range must not
+      // reject those untouched pending selections.
+      filters = {
+        ...analyticsFiltersToRestore,
+        version: ANALYTICS_FILTERS_VERSION,
+        range: filters.range,
+      };
+      analyticsFiltersToRestore = filters;
+      writeAnalyticsFilters(filters);
+      return;
+    }
+    // Provider/model changes are authoritative user choices. A provider
+    // change also deliberately resets its dependent model before this call.
+    analyticsFiltersToRestore = null;
+    writeAnalyticsFilters(filters);
+  }
+
+  function restoreAnalyticsFilters() {
+    const saved = analyticsFiltersToRestore;
+    if (!saved) return false;
+    const range = $("#analytics-range");
+    const provider = $("#analytics-provider");
+    const model = $("#analytics-model");
+    const before = [range.value, provider.value, model.value];
+    fillAnalyticsFilters();
+    range.value = analyticsOptionValue(range, saved.range) ?? range.value;
+    const savedProvider = analyticsOptionValue(provider, saved.provider);
+    if (savedProvider !== null) provider.value = savedProvider;
+    // Provider selection controls the valid model inventory, so rebuild it
+    // before validating the stored model value.
+    fillAnalyticsFilters();
+    const providerMatches = savedProvider !== null;
+    const savedModel = providerMatches
+      ? analyticsOptionValue(model, saved.model)
+      : null;
+    if (savedModel !== null) model.value = savedModel;
+    if (analyticsOptionValue(range, saved.range) !== null &&
+        savedProvider !== null &&
+        savedModel !== null) {
+      analyticsFiltersToRestore = null;
+      writeAnalyticsFilters();
+    }
+    const after = [range.value, provider.value, model.value];
+    return before.some((value, index) => value !== after[index]);
+  }
+
+  function reconcileAnalyticsFiltersAfterInventory() {
+    fillAnalyticsFilters();
+    return restoreAnalyticsFilters();
+  }
+
   let analyticsPending = { queued: false, fromPoll: true };
 
-  function requestAnalytics() {
+  function refreshRestoredAnalytics(restoredFilters) {
+    if (restoredFilters && bootComplete && activeTab === "analytics") {
+      void loadAnalytics({ fromPoll: true });
+    }
+  }
+
+  function requestAnalytics(changedFilter) {
+    storeAnalyticsFilters(changedFilter);
     void loadAnalytics({ fromPoll: false });
   }
 
   $("#analytics-provider").addEventListener("change", () => {
     $("#analytics-model").value = "";
     fillAnalyticsFilters();
-    requestAnalytics();
+    requestAnalytics("provider");
   });
-  $("#analytics-range").addEventListener("change", requestAnalytics);
-  $("#analytics-model").addEventListener("change", requestAnalytics);
+  $("#analytics-range").addEventListener("change", () => requestAnalytics("range"));
+  $("#analytics-model").addEventListener("change", () => requestAnalytics("model"));
 
   async function loadAnalytics({ fromPoll = false } = {}) {
     if (analyticsInFlight) {
@@ -1427,23 +1530,26 @@
       if (analyticsFiltersChanged()) {
         return;
       }
-      // Preserve provider identities from retained usage even after their live
-      // configuration is removed. Filtered responses omit this breakdown.
+      // Filtered responses omit the selected dimension's breakdown. Preserve
+      // that option inventory until the user selects a different scope.
       if (!provider) {
         analyticsProviderIds = (data.by_provider || [])
           .map((row) => row.key)
           .filter(Boolean);
       }
-      // A model-filtered response deliberately omits the by-model breakdown.
-      // Keep the independent option inventory so the active filter survives
-      // this response and subsequent polling.
       if (!model) {
         analyticsModelIds = (data.by_model || [])
           .map((row) => row.key)
           .filter(Boolean);
         analyticsModelProvider = provider;
       }
-      fillAnalyticsFilters();
+      if (reconcileAnalyticsFiltersAfterInventory()) {
+        // A newly available saved option changed the effective filters. Fetch
+        // again instead of painting this response under different controls.
+        analyticsPending.queued = true;
+        analyticsPending.fromPoll = reportFromPoll;
+        return;
+      }
       analyticsSnapshot = {
         data,
         range,
@@ -3488,6 +3594,10 @@
   async function boot() {
     showTabPanel(tabFromLocation());
     status("Loading…");
+    // Range and any already-present defaults can restore even when an
+    // unrelated boot dependency fails. Provider loading retries restoration
+    // as soon as its option inventory becomes available.
+    restoreAnalyticsFilters();
     try {
       await Promise.all([
         loadProviders({ refreshRoutes: true, updateStatus: false }),

@@ -2475,6 +2475,88 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 }
 
 #[test]
+fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
+    let app = webui_js_source();
+    assert!(app.contains("const ANALYTICS_FILTERS_KEY = \"codex-warp-webui-analytics-filters\";"));
+    assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
+    assert!(app.contains("let analyticsFiltersToRestore = readStoredAnalyticsFilters();"));
+    assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
+    assert!(!app.contains("localStorage"));
+    assert!(!app.contains("include_identities"));
+    assert!(!app.contains("InventoryComplete"));
+    assert!(!app.contains("InventoryLoaded"));
+
+    let providers = app
+        .split("async function loadProviders(")
+        .nth(1)
+        .expect("provider loader")
+        .split("function renderProviders()")
+        .next()
+        .expect("bounded provider loader");
+    assert_eq!(
+        providers
+            .matches("reconcileAnalyticsFiltersAfterInventory()")
+            .count(),
+        2
+    );
+
+    let request = app
+        .split("function requestAnalytics(changedFilter)")
+        .nth(1)
+        .expect("analytics request helper")
+        .split("$(\"#analytics-provider\").addEventListener")
+        .next()
+        .expect("analytics request helper body");
+    assert!(
+        request
+            .find("storeAnalyticsFilters(changedFilter);")
+            .expect("persist filters")
+            < request.find("loadAnalytics(").expect("load analytics")
+    );
+
+    let provider_change = app
+        .split("$(\"#analytics-provider\").addEventListener(\"change\", () => {")
+        .nth(1)
+        .expect("analytics provider change handler")
+        .split("});")
+        .next()
+        .expect("analytics provider change body");
+    let reset_model_at = provider_change
+        .find("$(\"#analytics-model\").value = \"\";")
+        .expect("reset model after provider change");
+    let rebuild_models_at = provider_change
+        .find("fillAnalyticsFilters();")
+        .expect("rebuild models after provider change");
+    let request_at = provider_change
+        .find("requestAnalytics(\"provider\");")
+        .expect("persist and reload after provider change");
+    assert!(reset_model_at < rebuild_models_at && rebuild_models_at < request_at);
+    assert!(app.contains(
+        "$(\"#analytics-range\").addEventListener(\"change\", () => requestAnalytics(\"range\"));"
+    ));
+    assert!(app.contains(
+        "$(\"#analytics-model\").addEventListener(\"change\", () => requestAnalytics(\"model\"));"
+    ));
+    assert!(app.contains("if (reconcileAnalyticsFiltersAfterInventory())"));
+
+    let boot = app
+        .split("async function boot()")
+        .nth(1)
+        .expect("boot helper");
+    let early_restore = boot
+        .find("restoreAnalyticsFilters();")
+        .expect("restore filters before boot dependencies");
+    let boot_dependencies = boot.find("try {").expect("boot dependency block");
+    let initial_poll = boot
+        .find("activateTabPolls(activeTab)")
+        .expect("initial analytics poll");
+    assert!(early_restore < boot_dependencies && boot_dependencies < initial_poll);
+
+    let source_checks = include_str!("../scripts/source-checks.sh");
+    assert!(source_checks.contains("node scripts/webui_analytics_filters_harness.js"));
+}
+
+#[test]
 fn webui_offers_provider_scoped_model_refresh() {
     let js = webui_js_source();
     assert!(js.contains("if (!provider.model_catalog_only)"));
