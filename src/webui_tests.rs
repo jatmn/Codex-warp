@@ -2506,16 +2506,42 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(provider_at < inventory_at && inventory_at < model_at);
     assert!(restore.contains("providerInventoryComplete"));
     assert!(restore.contains("modelInventoryComplete"));
+    assert!(app.contains("let providerDiscoveryInFlight = false;"));
 
     let success = app
         .split("const restoredFilters = restoreAnalyticsFilters({")
         .nth(1)
         .expect("staged analytics restoration");
     assert!(success.contains("providerInventoryComplete: !provider"));
-    assert!(
-        success.contains("!model && analyticsModelProvider === $(\"#analytics-provider\").value")
-    );
+    assert!(success.contains("!providerDiscoveryInFlight &&"));
+    assert!(success.contains("analyticsModelProvider === $(\"#analytics-provider\").value"));
     assert!(success.contains("analyticsPending.queued = true;"));
+
+    let providers = app
+        .split("async function loadProviders(")
+        .nth(1)
+        .expect("provider loader");
+    let discovery_start = providers
+        .find("if (refreshRoutes) providerDiscoveryInFlight = true;")
+        .expect("discovery start");
+    let provider_request = providers
+        .find("providers = await api(\"/providers\")")
+        .expect("provider request");
+    let provider_restore = providers
+        .find("refreshRestoredAnalytics(restoreAnalyticsFilters());")
+        .expect("restore after provider inventory");
+    let discovery_finally = providers
+        .find(".finally(() => {")
+        .expect("discovery completion handler");
+    let discovery_end = providers[discovery_finally..]
+        .find("providerDiscoveryInFlight = false;")
+        .expect("discovery completion")
+        + discovery_finally;
+    let late_restore = providers
+        .find("refreshRestoredAnalytics(restoreAnalyticsFilters({")
+        .expect("restore after discovery");
+    assert!(discovery_start < provider_request && provider_request < provider_restore);
+    assert!(provider_restore < discovery_end && discovery_end < late_restore);
 
     let request = app
         .split("function requestAnalytics()")
@@ -2532,13 +2558,17 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .split("async function boot()")
         .nth(1)
         .expect("boot helper");
-    assert!(
-        boot.find("restoreAnalyticsFilters();")
-            .expect("restore filters")
-            < boot
-                .find("activateTabPolls(activeTab)")
-                .expect("initial analytics poll")
-    );
+    let early_restore = boot
+        .find("restoreAnalyticsFilters();")
+        .expect("restore filters before boot dependencies");
+    let boot_dependencies = boot.find("try {").expect("boot dependency block");
+    let initial_poll = boot
+        .find("activateTabPolls(activeTab)")
+        .expect("initial analytics poll");
+    assert!(early_restore < boot_dependencies && boot_dependencies < initial_poll);
+
+    let source_checks = include_str!("../scripts/source-checks.sh");
+    assert!(source_checks.contains("node scripts/webui_analytics_filters_harness.js"));
 }
 
 #[test]

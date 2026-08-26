@@ -35,6 +35,7 @@
   let analyticsProviderIds = [];
   let analyticsModelIds = [];
   let analyticsModelProvider = null;
+  let providerDiscoveryInFlight = false;
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
@@ -298,24 +299,39 @@
 
   async function loadProviders({ refreshRoutes = true, updateStatus = true } = {}) {
     if (updateStatus) status("Loading providers…");
+    if (refreshRoutes) providerDiscoveryInFlight = true;
     // Local persisted/configured providers must render before live discovery:
     // a stalled upstream must not block the controls needed to disable it.
-    providers = await api("/providers");
+    try {
+      providers = await api("/providers");
+    } catch (error) {
+      if (refreshRoutes) providerDiscoveryInFlight = false;
+      throw error;
+    }
     renderProviders();
     fillAnalyticsFilters();
+    refreshRestoredAnalytics(restoreAnalyticsFilters());
     if (refreshRoutes) {
       // Mutations refresh routes server-side. Initial discovery is best-effort
       // background enrichment and republishes the provider view when complete.
-      void refreshModelRoutes().then(async (refreshed) => {
-        if (!refreshed) return;
-        try {
-          providers = await api("/providers");
-          renderProviders();
-          fillAnalyticsFilters();
-        } catch {
-          // The already-rendered local management view remains usable.
-        }
-      });
+      void refreshModelRoutes()
+        .then(async (refreshed) => {
+          if (!refreshed) return;
+          try {
+            providers = await api("/providers");
+            renderProviders();
+            fillAnalyticsFilters();
+          } catch {
+            // The already-rendered local management view remains usable.
+          }
+        })
+        .finally(() => {
+          providerDiscoveryInFlight = false;
+          refreshRestoredAnalytics(restoreAnalyticsFilters({
+            modelInventoryComplete:
+              analyticsModelProvider === $("#analytics-provider").value,
+          }));
+        });
     }
   }
 
@@ -1459,6 +1475,12 @@
 
   let analyticsPending = { queued: false, fromPoll: true };
 
+  function refreshRestoredAnalytics(restoredFilters) {
+    if (restoredFilters && bootComplete && activeTab === "analytics") {
+      void loadAnalytics({ fromPoll: true });
+    }
+  }
+
   function requestAnalytics() {
     storeAnalyticsFilters();
     void loadAnalytics({ fromPoll: false });
@@ -1524,7 +1546,9 @@
       const restoredFilters = restoreAnalyticsFilters({
         providerInventoryComplete: !provider,
         modelInventoryComplete:
-          !model && analyticsModelProvider === $("#analytics-provider").value,
+          !providerDiscoveryInFlight &&
+          !model &&
+          analyticsModelProvider === $("#analytics-provider").value,
       });
       if (restoredFilters) {
         // Historical provider/model ids appear only after analytics inventories
@@ -3578,12 +3602,15 @@
   async function boot() {
     showTabPanel(tabFromLocation());
     status("Loading…");
+    // Range and any already-present defaults can restore even when an
+    // unrelated boot dependency fails. Provider loading retries restoration
+    // as soon as its option inventory becomes available.
+    restoreAnalyticsFilters();
     try {
       await Promise.all([
         loadProviders({ refreshRoutes: true, updateStatus: false }),
         loadProviderTemplates(),
       ]);
-      restoreAnalyticsFilters();
       bootComplete = true;
       await activateTabPolls(activeTab);
     } catch (e) {
