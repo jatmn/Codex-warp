@@ -481,6 +481,7 @@ struct AnalyticsQuery {
     range: Option<String>,
     provider: Option<String>,
     model: Option<String>,
+    include_identities: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3011,9 +3012,16 @@ async fn get_analytics(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let summary = store
+    let mut summary = store
         .analytics(range, provider, model)
         .map_err(|err| ApiError::internal(err.to_string()))?;
+    if query.include_identities.unwrap_or(false) {
+        let (provider_ids, model_ids) = store
+            .analytics_identity_inventories(provider)
+            .map_err(|err| ApiError::internal(err.to_string()))?;
+        summary.provider_ids = Some(provider_ids);
+        summary.model_ids = Some(model_ids);
+    }
     Ok(Json(summary))
 }
 

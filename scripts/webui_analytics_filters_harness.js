@@ -123,6 +123,8 @@ function runtime({
       let analyticsProviderIds = [];
       let analyticsModelIds = [];
       let analyticsModelProvider = null;
+      let analyticsProviderInventoryLoaded = false;
+      let analyticsModelInventoryLoaded = false;
       let providers = globalThis.initialProviders;
       const $ = (selector) => globalThis.elements[selector];
       ${fillSource}
@@ -131,15 +133,24 @@ function runtime({
       ${filterHelperSource}
       globalThis.filters = {
         readStoredAnalyticsFilters,
+        analyticsFiltersSnapshot,
         writeAnalyticsFilters,
         storeAnalyticsFilters,
         restoreAnalyticsFilters,
         settleAnalyticsInventoryChange,
         rebuildInventory() { return fillAnalyticsFilters(); },
-        setInventory({ providerIds = [], modelIds = [], modelProvider = null }) {
+        setInventory({
+          providerIds = [],
+          modelIds = [],
+          modelProvider = null,
+          providerLoaded = true,
+          modelLoaded = true,
+        }) {
           analyticsProviderIds = providerIds;
           analyticsModelIds = modelIds;
           analyticsModelProvider = modelProvider;
+          analyticsProviderInventoryLoaded = providerLoaded;
+          analyticsModelInventoryLoaded = modelLoaded;
         },
         setProviders(value) { providers = value; },
         setPending(value) { analyticsFiltersToRestore = value; },
@@ -482,7 +493,7 @@ check("unsupported storage versions fall back without restoring values", () => {
   });
 });
 
-check("a user save cancels pending boot restoration", () => {
+check("a range change preserves untouched pending provider and model", () => {
   const run = runtime({ range: "1h" });
   run.filters.setPending({
     version: 1,
@@ -490,12 +501,46 @@ check("a user save cancels pending boot restoration", () => {
     provider: "configured",
     model: "model-a",
   });
-  run.filters.storeAnalyticsFilters();
+  run.filters.storeAnalyticsFilters("range");
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getPending())), {
+    version: 1,
+    range: "1h",
+    provider: "configured",
+    model: "model-a",
+  });
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "1h",
+    provider: "configured",
+    model: "model-a",
+  });
+  run.setFillHook(() => {
+    run.elements["#analytics-model"].options =
+      run.elements["#analytics-provider"].value === "configured"
+        ? [{ value: "" }, { value: "model-a" }]
+        : [{ value: "" }];
+  });
+  assert.equal(run.filters.restoreAnalyticsFilters(), true);
+  assert.equal(run.elements["#analytics-provider"].value, "configured");
+  assert.equal(run.elements["#analytics-model"].value, "model-a");
+  assert.equal(run.filters.getPending(), null);
+});
+
+check("an explicit provider change cancels pending restoration", () => {
+  const run = runtime({ range: "1h" });
+  run.filters.setPending({
+    version: 1,
+    range: "week",
+    provider: "historical-provider",
+    model: "historical-model",
+  });
+  run.elements["#analytics-provider"].value = "configured";
+  run.filters.storeAnalyticsFilters("provider");
   assert.equal(run.filters.getPending(), null);
   assert.deepEqual(parsedStorage(run), {
     version: 1,
     range: "1h",
-    provider: "",
+    provider: "configured",
     model: "",
   });
 });
@@ -551,10 +596,15 @@ check("production fill reports removed options and persists the fallback", () =>
   run.elements["#analytics-model"].options.push({ value: "model-a" });
   run.elements["#analytics-model"].value = "model-a";
   run.filters.storeAnalyticsFilters();
+  const previousFilters = JSON.parse(JSON.stringify(run.filters.analyticsFiltersSnapshot()));
   run.filters.setProviders([]);
+  run.filters.setInventory({ modelProvider: "" });
   const inventoryChanged = run.filters.rebuildInventory();
   assert.equal(inventoryChanged, true);
-  assert.equal(run.filters.settleAnalyticsInventoryChange(inventoryChanged), true);
+  assert.equal(
+    run.filters.settleAnalyticsInventoryChange(inventoryChanged, previousFilters),
+    true,
+  );
   assert.equal(run.elements["#analytics-provider"].value, "");
   assert.equal(run.elements["#analytics-model"].value, "");
   assert.deepEqual(parsedStorage(run), {
@@ -563,6 +613,59 @@ check("production fill reports removed options and persists the fallback", () =>
     provider: "",
     model: "",
   });
+});
+
+check("inventory fallback waits for all-history identities", () => {
+  const run = runtime({
+    range: "1h",
+    provider: "configured",
+    providers: [{
+      id: "configured",
+      display_name: "Configured",
+      models: [{ id: "model-a", display_name: "Model A" }],
+    }],
+    productionFill: true,
+  });
+  run.elements["#analytics-model"].options.push({ value: "model-a" });
+  run.elements["#analytics-model"].value = "model-a";
+  run.filters.storeAnalyticsFilters();
+  const previousFilters = JSON.parse(JSON.stringify(run.filters.analyticsFiltersSnapshot()));
+  run.filters.setProviders([]);
+  const inventoryChanged = run.filters.rebuildInventory();
+  assert.equal(inventoryChanged, true);
+  assert.equal(
+    run.filters.settleAnalyticsInventoryChange(inventoryChanged, previousFilters),
+    true,
+  );
+  assert.deepEqual(parsedStorage(run), previousFilters);
+  assert.deepEqual(JSON.parse(JSON.stringify(run.filters.getPending())), previousFilters);
+
+  run.filters.setInventory({
+    providerIds: ["configured"],
+    modelProvider: "",
+  });
+  assert.equal(
+    run.filters.restoreAnalyticsFilters({ providerInventoryComplete: true }),
+    true,
+  );
+  assert.equal(run.elements["#analytics-provider"].value, "configured");
+  assert.notEqual(run.filters.getPending(), null);
+
+  run.filters.setInventory({
+    providerIds: ["configured"],
+    modelIds: ["model-a"],
+    modelProvider: "configured",
+  });
+  assert.equal(
+    run.filters.restoreAnalyticsFilters({
+      providerInventoryComplete: true,
+      modelInventoryComplete: true,
+    }),
+    true,
+  );
+  assert.equal(run.elements["#analytics-model"].value, "model-a");
+  assert.equal(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), previousFilters);
 });
 
 check("user saves do not manufacture analytics inventory", () => {

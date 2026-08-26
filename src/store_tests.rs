@@ -114,6 +114,83 @@ fn store_records_usage_and_aggregates_ranges() {
 }
 
 #[test]
+fn analytics_identity_inventories_cover_all_retained_usage() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-analytics-identities-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("test.db")).unwrap();
+
+    for (provider_id, model) in [
+        ("historical-provider", "historical-model"),
+        ("current-provider", "current-model"),
+    ] {
+        store
+            .record_usage(&UsageEvent {
+                provider_id: provider_id.into(),
+                model: model.into(),
+                session_key: Some(format!("session-{provider_id}")),
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+            })
+            .unwrap();
+    }
+    let historical_ts = now_ms() - 2 * 3_600_000;
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "UPDATE usage_events SET ts = ?1 WHERE provider_id = ?2",
+            rusqlite::params![historical_ts, "historical-provider"],
+        )
+        .unwrap();
+    }
+
+    let summary = store
+        .analytics(AnalyticsRange::Last1Hour, None, None)
+        .unwrap();
+    assert_eq!(
+        summary
+            .by_provider
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["current-provider"]
+    );
+    let (provider_ids, model_ids) = store.analytics_identity_inventories(None).unwrap();
+    assert_eq!(
+        provider_ids,
+        vec!["current-provider", "historical-provider"]
+    );
+    assert_eq!(model_ids, vec!["current-model", "historical-model"]);
+
+    let historical = store
+        .analytics(AnalyticsRange::Last1Hour, Some("historical-provider"), None)
+        .unwrap();
+    assert!(historical.by_model.is_empty());
+    let (provider_ids, model_ids) = store
+        .analytics_identity_inventories(Some("historical-provider"))
+        .unwrap();
+    assert_eq!(model_ids, vec!["historical-model"]);
+    assert_eq!(
+        provider_ids,
+        vec!["current-provider", "historical-provider"]
+    );
+
+    let json = serde_json::to_value(&summary).expect("serialize analytics summary");
+    assert!(json.get("provider_ids").is_none());
+    assert!(json.get("model_ids").is_none());
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn anonymous_session_identity_cannot_collide_with_a_supplied_key() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-session-identity-test-{}",
