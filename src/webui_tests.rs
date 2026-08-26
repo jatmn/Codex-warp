@@ -2478,127 +2478,13 @@ fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
 fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     let app = webui_js_source();
     assert!(app.contains("const ANALYTICS_FILTERS_KEY = \"codex-warp-webui-analytics-filters\";"));
-    assert!(app.contains("const ANALYTICS_FILTERS_VERSION = 1;"));
-    assert!(app.contains("function readStoredAnalyticsFilters()"));
     assert!(app.contains("sessionStorage.getItem(ANALYTICS_FILTERS_KEY)"));
     assert!(app.contains("let analyticsFiltersToRestore = readStoredAnalyticsFilters();"));
-    assert!(app.contains("function writeAnalyticsFilters(filters = analyticsFiltersSnapshot())"));
-    assert!(app.contains("function analyticsFiltersSnapshot()"));
-    assert!(app.contains("version: ANALYTICS_FILTERS_VERSION,"));
     assert!(app.contains("sessionStorage.setItem(ANALYTICS_FILTERS_KEY, JSON.stringify(filters))"));
-    assert!(app.contains("function storeAnalyticsFilters(changedFilter = null)"));
-    assert!(app.contains("analyticsFiltersToRestore = null;"));
-    assert!(app.contains("function analyticsOptionValue(select, saved)"));
-    assert!(!app.contains("function retainStoredAnalyticsOptions(saved)"));
-    assert!(
-        app.contains("[...select.options].some((option) => option.value === saved) ? saved : null")
-    );
     assert!(!app.contains("localStorage"));
-
-    let store = app
-        .split("function storeAnalyticsFilters(changedFilter = null)")
-        .nth(1)
-        .expect("analytics store helper")
-        .split("function restoreAnalyticsFilters({")
-        .next()
-        .expect("bounded analytics store helper");
-    let snapshot_at = store
-        .find("let filters = analyticsFiltersSnapshot();")
-        .expect("capture selected filters");
-    let range_merge_at = store
-        .find("changedFilter === \"range\"")
-        .expect("range-only pending merge");
-    let keep_pending_at = store
-        .find("analyticsFiltersToRestore = filters;")
-        .expect("keep merged pending filters");
-    let cancel_pending_at = store
-        .find("analyticsFiltersToRestore = null;")
-        .expect("cancel pending restoration");
-    let merged_persist_at = store
-        .find("writeAnalyticsFilters(filters);")
-        .expect("persist merged filters");
-    assert!(
-        snapshot_at < range_merge_at
-            && range_merge_at < keep_pending_at
-            && keep_pending_at < merged_persist_at
-            && merged_persist_at < cancel_pending_at
-    );
-
-    let restore = app
-        .split("function restoreAnalyticsFilters({")
-        .nth(1)
-        .expect("analytics restore helper");
-    let provider_at = restore
-        .find("if (savedProvider !== null) provider.value = savedProvider")
-        .expect("restore provider");
-    let version_at = restore
-        .find("if (saved.version !== ANALYTICS_FILTERS_VERSION)")
-        .expect("reject unsupported analytics filter versions");
-    let provider_inventory_at = restore
-        .find("fillAnalyticsFilters();")
-        .expect("rebuild provider inventory");
-    let model_inventory_at = restore[provider_at..]
-        .find("fillAnalyticsFilters();")
-        .expect("rebuild model inventory")
-        + provider_at;
-    let model_at = restore
-        .find("if (savedModel !== null) model.value = savedModel")
-        .expect("restore model");
-    assert!(
-        version_at < provider_inventory_at
-            && provider_inventory_at < provider_at
-            && provider_at < model_inventory_at
-            && model_inventory_at < model_at
-    );
-    assert!(restore.contains("providerInventoryComplete"));
-    assert!(restore.contains("modelInventoryComplete"));
-    assert!(restore.contains("const providerMatches = savedProvider !== null;"));
-    assert!(restore.contains("const savedModel = providerMatches"));
-    assert!(restore.contains("const modelInventoryApplies = provider.value === before[1];"));
-    assert!(restore.contains("(modelInventoryComplete && modelInventoryApplies)"));
-    assert!(app.contains("let providerInventoryLoaded = false;"));
-    assert!(app.contains("let providerModelInventoryLoaded = false;"));
-    assert!(app.contains("let providerDiscoveryInFlight = false;"));
-    assert!(app.contains("let analyticsProviderInventoryLoaded = false;"));
-    assert!(app.contains("let analyticsModelInventoryLoaded = false;"));
-    let identity_update = app
-        .split("function updateAnalyticsIdentityInventories(data, provider, model)")
-        .nth(1)
-        .expect("identity inventory update helper")
-        .split("function analyticsNeedsIdentityInventories(provider)")
-        .next()
-        .expect("bounded identity inventory update helper");
-    assert!(identity_update.contains("Array.isArray(data.provider_ids)"));
-    assert!(identity_update.contains("(data.by_provider || [])"));
-    assert!(identity_update.contains("Array.isArray(data.model_ids)"));
-    assert!(identity_update.contains("(data.by_model || [])"));
-    assert!(identity_update.contains("analyticsProviderInventoryLoaded = true;"));
-    assert!(identity_update.contains("analyticsModelInventoryLoaded = false;"));
-    assert!(app.contains("if (analyticsNeedsIdentityInventories(provider))"));
-    assert!(app.contains("savedProvider !== provider &&"));
-    assert!(app.contains("return response.ok;"));
-
-    let success = app
-        .split("const restoredFilters = restoreAnalyticsFilters({")
-        .nth(1)
-        .expect("staged analytics restoration");
-    assert!(success.contains("providerInventoryLoaded && analyticsProviderInventoryLoaded"));
-    assert!(success.contains("analyticsModelInventoryIsComplete(provider, model)"));
-    assert!(success.contains("analyticsPending.queued = true;"));
-
-    let model_complete = app
-        .split("function analyticsModelInventoryIsComplete(provider, model)")
-        .nth(1)
-        .expect("model inventory completion helper")
-        .split("let analyticsPending =")
-        .next()
-        .expect("bounded model inventory completion helper");
-    assert!(model_complete.contains("Boolean(provider)"));
-    assert!(model_complete.contains("providerInventoryLoaded &&"));
-    assert!(model_complete.contains("!providers.some("));
-    assert!(model_complete.contains("providerModelInventoryLoaded ||"));
-    assert!(model_complete.contains("analyticsModelInventoryLoaded &&"));
-    assert!(model_complete.contains("!providerDiscoveryInFlight &&"));
+    assert!(!app.contains("include_identities"));
+    assert!(!app.contains("InventoryComplete"));
+    assert!(!app.contains("InventoryLoaded"));
 
     let providers = app
         .split("async function loadProviders(")
@@ -2607,56 +2493,12 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .split("function renderProviders()")
         .next()
         .expect("bounded provider loader");
-    let discovery_start = providers
-        .find("providerDiscoveryInFlight = true;")
-        .expect("discovery start");
-    let discovery_inventory_reset = providers
-        .find("providerModelInventoryLoaded = false;")
-        .expect("discovery inventory reset");
-    let provider_request = providers
-        .find("providers = await api(\"/providers\")")
-        .expect("provider request");
-    let provider_inventory = providers
-        .find("providerInventoryLoaded = true;")
-        .expect("provider inventory success");
-    let provider_settle = providers
-        .find("const inventoryChanged = settleAnalyticsInventoryChange(")
-        .expect("settle provider inventory changes");
-    let provider_restore = providers
-        .find("refreshRestoredAnalytics(restoreAnalyticsFilters() || inventoryChanged);")
-        .expect("restore after provider inventory");
-    let discovery_finally = providers
-        .find(".finally(() => {")
-        .expect("discovery completion handler");
-    let discovery_inventory_loaded = providers
-        .find("providerModelInventoryLoaded = true;")
-        .expect("authoritative discovery inventory");
-    let discovery_end = providers[discovery_finally..]
-        .find("providerDiscoveryInFlight = false;")
-        .expect("discovery completion")
-        + discovery_finally;
-    let late_restore = providers
-        .find("refreshRestoredAnalytics(restoreAnalyticsFilters({")
-        .expect("restore after discovery");
     assert_eq!(
-        providers.matches("settleAnalyticsInventoryChange(").count(),
+        providers
+            .matches("reconcileAnalyticsFiltersAfterInventory()")
+            .count(),
         2
     );
-    assert_eq!(
-        providers.matches("const filtersBeforeInventory =").count(),
-        2
-    );
-    assert!(providers.contains("restoreAnalyticsFilters() || inventoryChanged"));
-    assert!(providers.contains("modelInventoryComplete: analyticsModelInventoryIsComplete("));
-    assert!(
-        discovery_start < discovery_inventory_reset
-            && discovery_inventory_reset < provider_request
-            && provider_request < provider_inventory
-            && provider_inventory < provider_settle
-            && provider_settle < provider_restore
-    );
-    assert!(provider_restore < discovery_inventory_loaded);
-    assert!(provider_restore < discovery_end && discovery_end < late_restore);
 
     let request = app
         .split("function requestAnalytics(changedFilter)")
@@ -2695,6 +2537,7 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
     assert!(app.contains(
         "$(\"#analytics-model\").addEventListener(\"change\", () => requestAnalytics(\"model\"));"
     ));
+    assert!(app.contains("if (reconcileAnalyticsFiltersAfterInventory())"));
 
     let boot = app
         .split("async function boot()")
@@ -3252,127 +3095,6 @@ async fn set_provider_enabled_recreates_vanished_managed_overlay() {
         .expect("recreated overlay json");
     assert!(json.contains("secret-key"));
     assert!(!state.read_config().providers["managed"].enabled);
-
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn analytics_identity_inventories_are_returned_only_when_requested() {
-    let (state, dir) = temporary_store_state("analytics-identities");
-    state
-        .store
-        .as_ref()
-        .expect("store")
-        .record_usage(&crate::store::UsageEvent {
-            provider_id: "historical-provider".into(),
-            model: "historical-model".into(),
-            session_key: Some("historical-session".into()),
-            input_tokens: 1,
-            output_tokens: 1,
-            total_tokens: 2,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-        })
-        .unwrap();
-    state
-        .store
-        .as_ref()
-        .expect("store")
-        .record_usage(&crate::store::UsageEvent {
-            provider_id: "historical-provider".into(),
-            model: "other-model".into(),
-            session_key: Some("historical-other-session".into()),
-            input_tokens: 13,
-            output_tokens: 21,
-            total_tokens: 34,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-        })
-        .unwrap();
-    state
-        .store
-        .as_ref()
-        .expect("store")
-        .record_usage(&crate::store::UsageEvent {
-            provider_id: "other-provider".into(),
-            model: "other-model".into(),
-            session_key: Some("other-session".into()),
-            input_tokens: 3,
-            output_tokens: 5,
-            total_tokens: 8,
-            cached_tokens: 0,
-            reasoning_tokens: 0,
-        })
-        .unwrap();
-
-    let Json(ordinary) = get_analytics(
-        State(state.clone()),
-        Query(AnalyticsQuery {
-            range: Some("1h".into()),
-            provider: None,
-            model: None,
-            include_identities: None,
-        }),
-    )
-    .await
-    .expect("ordinary analytics");
-    assert!(ordinary.provider_ids.is_none());
-    assert!(ordinary.model_ids.is_none());
-
-    let Json(with_identities_disabled) = get_analytics(
-        State(state.clone()),
-        Query(AnalyticsQuery {
-            range: Some("1h".into()),
-            provider: None,
-            model: None,
-            include_identities: Some(false),
-        }),
-    )
-    .await
-    .expect("analytics with identities disabled");
-    assert!(with_identities_disabled.provider_ids.is_none());
-    assert!(with_identities_disabled.model_ids.is_none());
-
-    let Json(with_identities) = get_analytics(
-        State(state.clone()),
-        Query(AnalyticsQuery {
-            range: Some("1h".into()),
-            provider: None,
-            model: None,
-            include_identities: Some(true),
-        }),
-    )
-    .await
-    .expect("analytics with identities");
-    assert_eq!(
-        with_identities.provider_ids,
-        Some(vec!["historical-provider".into(), "other-provider".into()])
-    );
-    assert_eq!(
-        with_identities.model_ids,
-        Some(vec!["historical-model".into(), "other-model".into()])
-    );
-
-    let Json(provider_scoped) = get_analytics(
-        State(state),
-        Query(AnalyticsQuery {
-            range: Some("1h".into()),
-            provider: Some("historical-provider".into()),
-            model: Some("historical-model".into()),
-            include_identities: Some(true),
-        }),
-    )
-    .await
-    .expect("provider-scoped analytics with identities");
-    assert_eq!(provider_scoped.prompts, 1);
-    assert_eq!(
-        provider_scoped.provider_ids,
-        Some(vec!["historical-provider".into(), "other-provider".into()])
-    );
-    assert_eq!(
-        provider_scoped.model_ids,
-        Some(vec!["historical-model".into(), "other-model".into()])
-    );
 
     let _ = std::fs::remove_dir_all(dir);
 }

@@ -172,16 +172,6 @@ pub(crate) struct AnalyticsSummary {
     pub reasoning_tokens: i64,
     pub by_provider: Vec<AnalyticsBreakdown>,
     pub by_model: Vec<AnalyticsBreakdown>,
-    /// Provider ids present anywhere in retained usage, independent of the
-    /// selected time range and filters. The Web UI uses this only to validate
-    /// a saved filter after refresh.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_ids: Option<Vec<String>>,
-    /// Model ids present anywhere in retained usage. When a provider filter is
-    /// active this inventory is scoped to that provider, but it remains
-    /// independent of the selected time range and model filter.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model_ids: Option<Vec<String>>,
     /// Model breakdown ignoring the provider filter. The provider-scoped
     /// `by_model` feeds the per-provider pie; this field keeps the "model
     /// usage overall" pie global even while a provider filter is active.
@@ -1266,8 +1256,6 @@ impl Store {
             reasoning_tokens: reasoning,
             by_provider,
             by_model,
-            provider_ids: None,
-            model_ids: None,
             by_model_overall,
             series: fill_series_gaps(
                 series,
@@ -1287,37 +1275,6 @@ impl Store {
             ),
             model_series,
         })
-    }
-
-    pub(crate) fn analytics_identity_inventories(
-        &self,
-        provider_id: Option<&str>,
-    ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
-        let db = self.db.lock().expect("sqlite lock poisoned");
-        let provider_ids = {
-            let mut stmt = db.prepare(
-                "SELECT DISTINCT provider_id FROM usage_events
-                 WHERE provider_id <> '' ORDER BY provider_id",
-            )?;
-            stmt.query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let model_ids = if let Some(provider_id) = provider_id {
-            let mut stmt = db.prepare(
-                "SELECT DISTINCT model FROM usage_events
-                 WHERE provider_id = ?1 AND model <> '' ORDER BY model",
-            )?;
-            stmt.query_map(params![provider_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            let mut stmt = db.prepare(
-                "SELECT DISTINCT model FROM usage_events
-                 WHERE model <> '' ORDER BY model",
-            )?;
-            stmt.query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        Ok((provider_ids, model_ids))
     }
 
     pub(crate) fn provider_is_managed(&self, provider_id: &str) -> anyhow::Result<bool> {

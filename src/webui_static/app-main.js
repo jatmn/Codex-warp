@@ -20,11 +20,16 @@
   function readStoredAnalyticsFilters() {
     try {
       const raw = sessionStorage.getItem(ANALYTICS_FILTERS_KEY);
-      if (!raw) return {};
+      if (!raw) return null;
       const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      return parsed?.version === ANALYTICS_FILTERS_VERSION &&
+        typeof parsed.range === "string" &&
+        typeof parsed.provider === "string" &&
+        typeof parsed.model === "string"
+        ? parsed
+        : null;
     } catch {
-      return {};
+      return null;
     }
   }
   let managementToken = readStoredToken();
@@ -36,11 +41,6 @@
   let analyticsProviderIds = [];
   let analyticsModelIds = [];
   let analyticsModelProvider = null;
-  let analyticsProviderInventoryLoaded = false;
-  let analyticsModelInventoryLoaded = false;
-  let providerInventoryLoaded = false;
-  let providerModelInventoryLoaded = false;
-  let providerDiscoveryInFlight = false;
   let analyticsTimer = null;
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
@@ -292,8 +292,8 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await fetch("/v1/models", { signal: controller.signal });
-      return response.ok;
+      await fetch("/v1/models", { signal: controller.signal });
+      return true;
     } catch {
       // Best-effort: populate server model_routes for discovered upstream models.
       return false;
@@ -304,56 +304,24 @@
 
   async function loadProviders({ refreshRoutes = true, updateStatus = true } = {}) {
     if (updateStatus) status("Loading providers…");
-    if (refreshRoutes) {
-      providerDiscoveryInFlight = true;
-      providerModelInventoryLoaded = false;
-    }
     // Local persisted/configured providers must render before live discovery:
     // a stalled upstream must not block the controls needed to disable it.
-    try {
-      providers = await api("/providers");
-      providerInventoryLoaded = true;
-    } catch (error) {
-      if (refreshRoutes) providerDiscoveryInFlight = false;
-      throw error;
-    }
+    providers = await api("/providers");
     renderProviders();
-    const filtersBeforeInventory = analyticsFiltersSnapshot();
-    const inventoryChanged = settleAnalyticsInventoryChange(
-      fillAnalyticsFilters(),
-      filtersBeforeInventory,
-    );
-    refreshRestoredAnalytics(restoreAnalyticsFilters() || inventoryChanged);
+    refreshRestoredAnalytics(reconcileAnalyticsFiltersAfterInventory());
     if (refreshRoutes) {
       // Mutations refresh routes server-side. Initial discovery is best-effort
       // background enrichment and republishes the provider view when complete.
-      void refreshModelRoutes()
-        .then(async (refreshed) => {
-          if (!refreshed) return;
-          try {
-            providers = await api("/providers");
-            providerModelInventoryLoaded = true;
-            renderProviders();
-            const filtersBeforeInventory = analyticsFiltersSnapshot();
-            refreshRestoredAnalytics(
-              settleAnalyticsInventoryChange(
-                fillAnalyticsFilters(),
-                filtersBeforeInventory,
-              ),
-            );
-          } catch {
-            // The already-rendered local management view remains usable.
-          }
-        })
-        .finally(() => {
-          providerDiscoveryInFlight = false;
-          refreshRestoredAnalytics(restoreAnalyticsFilters({
-            modelInventoryComplete: analyticsModelInventoryIsComplete(
-              $("#analytics-provider").value,
-              $("#analytics-model").value,
-            ),
-          }));
-        });
+      void refreshModelRoutes().then(async (refreshed) => {
+        if (!refreshed) return;
+        try {
+          providers = await api("/providers");
+          renderProviders();
+          refreshRestoredAnalytics(reconcileAnalyticsFiltersAfterInventory());
+        } catch {
+          // The already-rendered local management view remains usable.
+        }
+      });
     }
   }
 
@@ -1388,8 +1356,6 @@
   function fillAnalyticsFilters() {
     const provSel = $("#analytics-provider");
     const cur = provSel.value;
-    const modelSel = $("#analytics-model");
-    const mcur = modelSel.value;
     provSel.innerHTML = "<option value=''>All providers</option>";
     for (const p of providers) {
       const o = document.createElement("option");
@@ -1406,6 +1372,8 @@
       }
     }
     provSel.value = cur;
+    const modelSel = $("#analytics-model");
+    const mcur = modelSel.value;
     modelSel.innerHTML = "<option value=''>All models</option>";
     const seen = new Set();
     const prov = providers.find((p) => p.id === provSel.value);
@@ -1429,7 +1397,6 @@
       }
     }
     modelSel.value = [...modelSel.options].some((o) => o.value === mcur) ? mcur : "";
-    return provSel.value !== cur || modelSel.value !== mcur;
   }
 
   function analyticsOptionValue(select, saved) {
@@ -1459,8 +1426,8 @@
     if (changedFilter === "range" &&
         analyticsFiltersToRestore?.version === ANALYTICS_FILTERS_VERSION) {
       // Range is available synchronously, while provider/model options can be
-      // waiting on provider discovery or retained-usage inventories. Changing
-      // only range must not reject those untouched pending selections.
+      // waiting on their normal option rebuilds. Changing only range must not
+      // reject those untouched pending selections.
       filters = {
         ...analyticsFiltersToRestore,
         version: ANALYTICS_FILTERS_VERSION,
@@ -1476,17 +1443,9 @@
     writeAnalyticsFilters(filters);
   }
 
-  function restoreAnalyticsFilters({
-    providerInventoryComplete = false,
-    modelInventoryComplete = false,
-  } = {}) {
+  function restoreAnalyticsFilters() {
     const saved = analyticsFiltersToRestore;
     if (!saved) return false;
-    if (saved.version !== ANALYTICS_FILTERS_VERSION) {
-      analyticsFiltersToRestore = null;
-      writeAnalyticsFilters();
-      return false;
-    }
     const range = $("#analytics-range");
     const provider = $("#analytics-provider");
     const model = $("#analytics-model");
@@ -1503,23 +1462,9 @@
       ? analyticsOptionValue(model, saved.model)
       : null;
     if (savedModel !== null) model.value = savedModel;
-    // Inventory completion describes the provider selected when restoration
-    // began. Switching providers requires a provider-scoped follow-up before
-    // a missing saved model can be declared stale.
-    const modelInventoryApplies = provider.value === before[1];
-
-    const providerResolved =
-      typeof saved.provider !== "string" ||
-      savedProvider !== null ||
-      providerInventoryComplete;
-    const modelResolved =
-      !providerMatches ||
-      typeof saved.model !== "string" ||
-      savedModel !== null ||
-      (modelInventoryComplete && modelInventoryApplies);
-    if (providerResolved && modelResolved) {
-      // Replace malformed or stale values with the effective defaults so
-      // later reloads do not repeatedly attempt to restore them.
+    if (analyticsOptionValue(range, saved.range) !== null &&
+        savedProvider !== null &&
+        savedModel !== null) {
       analyticsFiltersToRestore = null;
       writeAnalyticsFilters();
     }
@@ -1527,79 +1472,9 @@
     return before.some((value, index) => value !== after[index]);
   }
 
-  function settleAnalyticsInventoryChange(filtersChanged, previousFilters = null) {
-    if (!filtersChanged || analyticsFiltersToRestore) return false;
-    const filters = analyticsFiltersSnapshot();
-    if (previousFilters) {
-      const providerFellBack = previousFilters.provider !== filters.provider;
-      const modelFellBack = previousFilters.model !== filters.model;
-      const providerNeedsInventory =
-        providerFellBack && !analyticsProviderInventoryLoaded;
-      const modelNeedsInventory =
-        !providerFellBack &&
-        modelFellBack &&
-        (!analyticsModelInventoryLoaded ||
-          analyticsModelProvider !== previousFilters.provider);
-      if (providerNeedsInventory || modelNeedsInventory) {
-        analyticsFiltersToRestore = previousFilters;
-        // Fetch the authoritative retained-usage inventory immediately when
-        // Analytics is active, but keep the prior stored snapshot until that
-        // inventory proves the identity valid or stale.
-        return true;
-      }
-    }
-    writeAnalyticsFilters();
-    return true;
-  }
-
-  function updateAnalyticsIdentityInventories(data, provider, model) {
-    if (!provider) {
-      if (Array.isArray(data.provider_ids)) {
-        analyticsProviderIds = data.provider_ids.map(String).filter(Boolean);
-        analyticsProviderInventoryLoaded = true;
-      } else if (!analyticsProviderInventoryLoaded) {
-        analyticsProviderIds = (data.by_provider || [])
-          .map((row) => String(row.key || ""))
-          .filter(Boolean);
-      }
-    }
-    if (!model) {
-      if (Array.isArray(data.model_ids)) {
-        analyticsModelIds = data.model_ids.map(String).filter(Boolean);
-        analyticsModelProvider = provider;
-        analyticsModelInventoryLoaded = true;
-      } else if (!analyticsModelInventoryLoaded || analyticsModelProvider !== provider) {
-        analyticsModelIds = (data.by_model || [])
-          .map((row) => String(row.key || ""))
-          .filter(Boolean);
-        analyticsModelProvider = provider;
-        analyticsModelInventoryLoaded = false;
-      }
-    }
-  }
-
-  function analyticsNeedsIdentityInventories(provider) {
-    const savedProvider = analyticsFiltersToRestore?.provider;
-    const providerInventoryNeeded =
-      typeof savedProvider === "string" &&
-      savedProvider !== provider &&
-      !analyticsProviderInventoryLoaded;
-    return Boolean(analyticsFiltersToRestore) &&
-      (providerInventoryNeeded ||
-        !analyticsModelInventoryLoaded ||
-        analyticsModelProvider !== provider);
-  }
-
-  function analyticsModelInventoryIsComplete(provider, model) {
-    const deletedProviderInventoryComplete =
-      Boolean(provider) &&
-      providerInventoryLoaded &&
-      !providers.some((configured) => configured.id === provider);
-    return (providerModelInventoryLoaded || deletedProviderInventoryComplete) &&
-      analyticsModelInventoryLoaded &&
-      !providerDiscoveryInFlight &&
-      !model &&
-      analyticsModelProvider === $("#analytics-provider").value;
+  function reconcileAnalyticsFiltersAfterInventory() {
+    fillAnalyticsFilters();
+    return restoreAnalyticsFilters();
   }
 
   let analyticsPending = { queued: false, fromPoll: true };
@@ -1647,9 +1522,6 @@
     const qs = new URLSearchParams({ range });
     if (provider) qs.set("provider", provider);
     if (model) qs.set("model", model);
-    if (analyticsNeedsIdentityInventories(provider)) {
-      qs.set("include_identities", "true");
-    }
     try {
       const data = await api(`/analytics?${qs}`);
       // Filters can change while this request is in flight (queued follow-up
@@ -1658,20 +1530,22 @@
       if (analyticsFiltersChanged()) {
         return;
       }
-      // All-history arrays are authoritative during restoration. Ordinary
-      // responses still contribute their current-range breakdown identities,
-      // preserving the filter options available before session persistence.
-      updateAnalyticsIdentityInventories(data, provider, model);
-      fillAnalyticsFilters();
-      const restoredFilters = restoreAnalyticsFilters({
-        providerInventoryComplete:
-          providerInventoryLoaded && analyticsProviderInventoryLoaded && !provider,
-        modelInventoryComplete: analyticsModelInventoryIsComplete(provider, model),
-      });
-      if (restoredFilters) {
-        // Historical provider/model ids appear only after analytics inventories
-        // arrive. Fetch again with the newly restored filter instead of
-        // briefly painting the unfiltered payload under restored controls.
+      // Filtered responses omit the selected dimension's breakdown. Preserve
+      // that option inventory until the user selects a different scope.
+      if (!provider) {
+        analyticsProviderIds = (data.by_provider || [])
+          .map((row) => row.key)
+          .filter(Boolean);
+      }
+      if (!model) {
+        analyticsModelIds = (data.by_model || [])
+          .map((row) => row.key)
+          .filter(Boolean);
+        analyticsModelProvider = provider;
+      }
+      if (reconcileAnalyticsFiltersAfterInventory()) {
+        // A newly available saved option changed the effective filters. Fetch
+        // again instead of painting this response under different controls.
         analyticsPending.queued = true;
         analyticsPending.fromPoll = reportFromPoll;
         return;
