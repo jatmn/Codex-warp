@@ -11,6 +11,32 @@
 # Suffix allowlist never overrides a forbidden basename.
 set -euo pipefail
 
+# Return 0 if this path is one of the TOML files the tree actually uses.
+# Bash `case` globs treat `*` as matching `/`, so do not use configs/*.toml.
+is_tracked_toml() {
+  local path="$1"
+  case "$path" in
+    Cargo.toml | _typos.toml | deny.toml | codex-warp.toml) return 0 ;;
+  esac
+  local rest="${path#configs/}"
+  [ "$rest" != "$path" ] || return 1
+  case "$rest" in
+    *.toml)
+      case "$rest" in
+        */*)
+          local nested="${rest#*/}"
+          case "$nested" in
+            */*) return 1 ;;
+            *.toml) return 0 ;;
+          esac
+          ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
 is_forbidden() {
   local path="$1"
   local base="${path##*/}"
@@ -31,12 +57,14 @@ is_forbidden() {
 
   case "$path" in
     *.rs | *.md | *.sh | *.js | *.html | *.css) return 1 ;;
-    Cargo.toml | _typos.toml | deny.toml | codex-warp.toml) return 1 ;;
-    configs/*.toml | configs/*/*.toml) return 1 ;;
     LICENSE | NOTICE | .gitignore | .github/CODEOWNERS | .githooks/pre-commit | .githooks/pre-push | .githooks/pre-applypatch)
       return 1
       ;;
   esac
+
+  if is_tracked_toml "$path"; then
+    return 1
+  fi
 
   case "$base" in
     Cargo.lock) return 1 ;;
@@ -79,6 +107,7 @@ self_test() {
   expect_forbidden "ruff.toml"
   expect_forbidden "Pylock.toml"
   expect_forbidden "tools/stray.toml"
+  expect_forbidden "configs/a/b/c.toml"
   expect_forbidden "poetry.lock"
   expect_forbidden "Pipfile"
   expect_forbidden "Pipfile.lock"
