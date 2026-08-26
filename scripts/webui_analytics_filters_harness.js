@@ -293,4 +293,22 @@ check("an explicit provider choice cancels pending restoration", () => {
   });
 });
 
+check("an explicit model choice cancels pending restoration", () => {
+  const run = runtime({ provider: "configured", model: "model-a" });
+  run.filters.setPending({
+    version: 1,
+    range: "week",
+    provider: "configured",
+    model: "old-model",
+  });
+  run.filters.storeAnalyticsFilters("model");
+  assert.equal(run.filters.getPending(), null);
+  assert.deepEqual(parsedStorage(run), {
+    version: 1,
+    range: "24h",
+    provider: "configured",
+    model: "model-a",
+  });
+});
+
 process.stdout.write("webui analytics filters harness: all checks passed\n");
