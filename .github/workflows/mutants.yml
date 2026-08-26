@@ -2,11 +2,6 @@ name: Mutants
 
 on:
   pull_request:
-    paths:
-      - "**/*.rs"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/mutants.yml"
 
 concurrency:
   group: mutants-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -28,36 +23,41 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
-
-      - name: Install cargo-mutants
-        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
-        with:
-          tool: cargo-mutants
+          persist-credentials: false
 
       - name: Diff against base
+        id: rust-diff
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           git fetch --no-tags origin "$BASE_SHA"
           git diff "$BASE_SHA...HEAD" -- "*.rs" | tee git.diff
-          if [ ! -s git.diff ]; then
+          if [ -s git.diff ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
             echo "No Rust diff; skipping mutants"
           fi
 
+      - name: Install Rust
+        if: steps.rust-diff.outputs.needed == 'true'
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
+
+      - name: Cache Cargo
+        if: steps.rust-diff.outputs.needed == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+
+      - name: Install cargo-mutants
+        if: steps.rust-diff.outputs.needed == 'true'
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+        with:
+          tool: cargo-mutants
+
       - name: Mutate changed code
-        run: |
-          if [ ! -s git.diff ]; then
-            exit 0
-          fi
-          cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked
+        if: steps.rust-diff.outputs.needed == 'true'
+        run: cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked
 
       - name: Upload mutants.out
         if: always()

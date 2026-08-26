@@ -185,14 +185,16 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 
 The preflight runs every Linux CI check explicitly: `cargo update --workspace
 --locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
-Web UI JavaScript syntax, chart harness, and crate-wide Clippy); `cargo test
+language policy, tracked JavaScript syntax, chart harness, and crate-wide
+Clippy); `cargo test
 --locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
 --locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
 --check`; conditional Rust-diff `cargo mutants -o <temporary-dir> --no-shuffle
 -vV --in-diff ... -- --locked`; `cargo deny check bans licenses sources`; and
 `cargo audit`.
-The Windows job is intentionally excluded. `cargo audit` runs but remains
-non-blocking, matching the CI workflow's `continue-on-error` policy.
+The Windows job is intentionally excluded. `cargo audit` runs locally as
+non-blocking, matching pull-request CI. Weekly and manual advisory runs fail
+closed.
 
 The chart harness covers `chart-math.js` policy (ticks, hover identity, keyboard
 ownership, pointer reclaim only on hit, paint only with a measured CSS width,
@@ -216,27 +218,33 @@ The Linux CI job performs:
   `Cargo.toml`
 - `typos` spell check (`_typos.toml`)
 - `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
-  capitalization, Web UI JavaScript syntax and chart harness, crate-wide
-  Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
+  capitalization, language policy, tracked JavaScript syntax and chart harness,
+  crate-wide Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
 - `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`
 - CLI smoke checks for `codex-warp --version` and `codex-warp --help`
 - `git diff --check`
 
-Pull requests that touch Rust also run
+Every pull request reports an incremental mutants status. When the PR has a
+Rust diff it runs
 `cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked`
-against the PR base SHA. Surviving mutants on changed lines are a test-quality
+against the PR base SHA; otherwise the job succeeds without installing the
+mutants toolchain. Surviving mutants on changed lines are a test-quality
 finding, not a request to add extra unrelated tests.
 
 A separate supply-chain workflow runs `cargo-deny` (licenses, crate bans, and
-crate sources) and `cargo-audit`. Advisory failures are non-blocking so a new
-CVE does not freeze unrelated work. Do not add `_typos.toml`-style ignore
-entries in `deny.toml` to hide a real license or git-source policy break.
+crate sources) and `cargo-audit` on pull requests, dependency-file pushes to
+`main`, a weekly schedule, and manual dispatch. Advisory failures are
+non-blocking on pull requests so a new CVE does not freeze unrelated work.
+Scheduled and manual advisory runs fail closed. Do not add `_typos.toml`-style
+ignore entries in `deny.toml` to hide a real license or git-source policy break.
 
 A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
 CLI smoke checks so Windows-only build breaks (AWS-LC / linker) show up before
-a release. Cargo caches are written only on `main`.
+a release. Cargo caches are written only on `main`. Keep Source Checks,
+Windows, Incremental (PR diff), and cargo-deny as required status checks on
+`main`.
 
 ## Source Layout
 
