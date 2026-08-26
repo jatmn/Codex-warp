@@ -201,7 +201,9 @@ The main transform knobs are:
   `stream_options.include_usage = true` for local token analytics.
 - `transform.preserve_native_agent_messages`: defaults to `false`, translating
   Codex-only `agent_message` history into standard user messages for compatible
-  Responses gateways. Set it to `true` only when the native Responses provider
+  Responses gateways. Converted messages wait for outstanding call/output
+  batches instead of inserting a user message between a call and its result.
+  Set it to `true` only when the native Responses provider
   explicitly accepts Codex `agent_message` items and their encrypted content.
 
 Supported request morph kinds:

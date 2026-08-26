@@ -289,19 +289,80 @@ fn collect_custom_tool_names(
 }
 
 fn standardize_native_agent_messages(request: &mut Value) {
-    if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
-        for item in input {
-            if item.get("type").and_then(Value::as_str) == Some("agent_message") {
-                *item = json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "input_text",
-                        "text": agent_message_to_text(item),
-                    }],
-                });
+    let Some(Value::Array(input)) = request.get_mut("input") else {
+        return;
+    };
+    let original = std::mem::take(input);
+    let mut output = Vec::with_capacity(original.len());
+    let mut pending_calls = Vec::new();
+    let mut outstanding_tool_calls = BTreeSet::new();
+    let mut deferred_agent_messages = Vec::new();
+    for item in original {
+        if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+            let converted = standardized_native_agent_message(&item);
+            if pending_calls.is_empty() && outstanding_tool_calls.is_empty() {
+                output.push(converted);
+            } else {
+                deferred_agent_messages.push(converted);
             }
+            continue;
         }
+        let item_type = item.get("type").and_then(Value::as_str);
+        if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) {
+            pending_calls.push(item);
+            continue;
+        }
+        flush_native_pending_calls(&mut pending_calls, &mut outstanding_tool_calls, &mut output);
+        if is_native_tool_output(&item)
+            && let Some(call_id) = native_tool_call_id(&item)
+        {
+            outstanding_tool_calls.remove(call_id);
+        }
+        output.push(item);
+        if outstanding_tool_calls.is_empty() {
+            output.append(&mut deferred_agent_messages);
+        }
+    }
+    if !pending_calls.is_empty() {
+        output.append(&mut deferred_agent_messages);
+        output.append(&mut pending_calls);
+    }
+    output.append(&mut deferred_agent_messages);
+    *input = output;
+}
+
+fn standardized_native_agent_message(item: &Value) -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": agent_message_to_text(item),
+        }],
+    })
+}
+
+fn is_native_tool_output(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call_output" | "custom_tool_call_output")
+    )
+}
+
+fn native_tool_call_id(item: &Value) -> Option<&str> {
+    item.get("call_id").and_then(Value::as_str)
+}
+
+fn flush_native_pending_calls(
+    pending_calls: &mut Vec<Value>,
+    outstanding_tool_calls: &mut BTreeSet<String>,
+    output: &mut Vec<Value>,
+) {
+    for call in pending_calls.drain(..) {
+        if let Some(call_id) = native_tool_call_id(&call) {
+            outstanding_tool_calls.insert(call_id.to_string());
+        }
+        output.push(call);
     }
 }
 

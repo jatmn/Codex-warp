@@ -471,6 +471,170 @@ fn agent_messages_without_outstanding_calls_keep_their_input_order() {
     assert_eq!(messages[1]["content"], "next request");
 }
 
+fn native_input_types(body: &serde_json::Value) -> Vec<&str> {
+    body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item.get("type").and_then(Value::as_str))
+        .collect()
+}
+
+#[test]
+fn native_agent_messages_wait_until_all_outstanding_tool_outputs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
+            "message"
+        ]
+    );
+    assert_eq!(normalized.body["input"][4]["role"], "user");
+    assert!(
+        normalized.body["input"][4]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn native_interleaved_agent_message_does_not_split_parallel_tool_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
+            "message"
+        ]
+    );
+    assert_eq!(normalized.body["input"][0]["call_id"], "call_1");
+    assert_eq!(normalized.body["input"][1]["call_id"], "call_2");
+    assert!(
+        normalized.body["input"][4]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn native_agent_message_precedes_an_unresolved_tool_call_at_end_of_history() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            }
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        ["message", "function_call"]
+    );
+    assert!(
+        normalized.body["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(normalized.body["input"][1]["call_id"], "call_1");
+}
+
+#[test]
+fn native_agent_message_is_released_only_by_matching_tool_output() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "call_id": "call_1",
+                "content": [{"type": "input_text", "text": "not an output"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "next request"}]
+            }
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let input = normalized.body["input"].as_array().unwrap();
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "message",
+            "function_call_output",
+            "message",
+            "message"
+        ]
+    );
+    assert_eq!(input[1]["content"][0]["text"], "not an output");
+    assert!(
+        input[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(input[4]["content"][0]["text"], "next request");
+}
+
 #[test]
 fn assistant_reasoning_parts_are_not_preserved_by_default() {
     let request = json!({

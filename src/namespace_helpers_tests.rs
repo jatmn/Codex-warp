@@ -72,6 +72,44 @@ fn collaboration_namespace() -> Value {
 }
 
 fn encrypted_v2_namespace(namespace: &str) -> Value {
+    json!({
+        "type": "namespace",
+        "name": namespace,
+        "description": "Tools for spawning and managing sub-agents.",
+        "tools": encrypted_v2_namespace_tools(true),
+    })
+}
+
+fn encrypted_v2_namespace_tools(encrypt_messaging: bool) -> Vec<Value> {
+    let messaging = ["spawn_agent", "send_message", "followup_task"]
+        .into_iter()
+        .map(|name| {
+            let mut message = json!({"type": "string"});
+            if encrypt_messaging {
+                message["encrypted"] = json!(true);
+            }
+            json!({
+                "type": "function",
+                "name": name,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": message}
+                }
+            })
+        });
+    let control = ["wait_agent", "interrupt_agent", "list_agents"]
+        .into_iter()
+        .map(|name| {
+            json!({
+                "type": "function",
+                "name": name,
+                "parameters": {"type": "object", "properties": {}}
+            })
+        });
+    messaging.chain(control).collect()
+}
+
+fn encrypted_v2_name_collision_namespace() -> Value {
     let tools = ["spawn_agent", "send_message", "followup_task"]
         .into_iter()
         .map(|name| {
@@ -87,7 +125,8 @@ fn encrypted_v2_namespace(namespace: &str) -> Value {
         .collect::<Vec<_>>();
     json!({
         "type": "namespace",
-        "name": namespace,
+        "name": "plugin_mailbox",
+        "description": "Plugin mailbox helpers.",
         "tools": tools,
     })
 }
@@ -549,6 +588,43 @@ fn encrypted_v2_family_named_multi_agent_v1_is_incompatible() {
     assert_eq!(
         helpers.incompatible_plaintext_subagent_namespace(),
         Some("multi_agent_v1")
+    );
+}
+
+#[test]
+fn encrypted_v2_name_collision_without_codex_provenance_is_not_reported() {
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(
+        &encrypted_v2_name_collision_namespace(),
+        &mut BTreeSet::new(),
+        &mut helpers,
+    );
+
+    assert_eq!(helpers.incompatible_plaintext_subagent_namespace(), None);
+}
+
+#[test]
+fn full_v2_family_without_codex_description_is_not_reported() {
+    let mut namespace = encrypted_v2_namespace("agents");
+    namespace.as_object_mut().unwrap().remove("description");
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_tool(&namespace, &mut BTreeSet::new(), &mut helpers);
+
+    assert_eq!(helpers.incompatible_plaintext_subagent_namespace(), None);
+}
+
+#[test]
+fn responses_expansion_reports_custom_v2_provenance() {
+    let mut helpers = NamespaceHelpers::default();
+    expand_namespace_responses_tool(
+        &encrypted_v2_namespace("agents"),
+        &mut BTreeSet::new(),
+        &mut helpers,
+    );
+
+    assert_eq!(
+        helpers.incompatible_plaintext_subagent_namespace(),
+        Some("agents")
     );
 }
 

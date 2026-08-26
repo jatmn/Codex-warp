@@ -13,6 +13,11 @@ const SUBAGENT_HELPER_CLARIFICATION_MARKER: &str = "Sub-agent tool helpers:";
 
 const SUBAGENT_HELPER_CLARIFICATION_SUFFIX: &str = "Independent agents run asynchronously, so start multiple useful agents before waiting when concurrency slots are available. Use the advertised messaging helpers for two-way communication, and use the advertised wait, interrupt, list, resume, or close helpers as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
 
+/// Codex `MultiAgentV2NamespaceOverride` always stamps this namespace description.
+const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
+const MULTI_AGENT_V2_ENCRYPTED_TOOLS: [&str; 3] = ["followup_task", "send_message", "spawn_agent"];
+const MULTI_AGENT_V2_CONTROL_TOOLS: [&str; 3] = ["interrupt_agent", "list_agents", "wait_agent"];
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RewrittenCall {
     pub name: String,
@@ -40,6 +45,8 @@ pub struct NamespaceHelpers {
     collapsed: BTreeMap<String, String>,
     /// Registered runtime calls keyed by the legacy dotted spelling.
     runtime_tools: BTreeMap<String, RuntimeTool>,
+    /// Namespace descriptions observed while expanding Responses namespace tools.
+    namespace_descriptions: BTreeMap<String, String>,
 }
 
 /// Native backends may emit `tool_call` for the same payload as Responses `function_call`.
@@ -65,22 +72,43 @@ impl NamespaceHelpers {
     /// Codex currently recognizes the empty plaintext-arguments marker for v2
     /// messaging helpers only when their runtime namespace is `collaboration`.
     pub fn incompatible_plaintext_subagent_namespace(&self) -> Option<&str> {
-        let mut signatures: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for tool in self.runtime_tools.values().filter(|tool| {
-            tool.encrypted_arguments
-                && matches!(
-                    tool.name.as_str(),
-                    "spawn_agent" | "send_message" | "followup_task"
-                )
-        }) {
-            signatures
-                .entry(tool.namespace.as_str())
+        let mut names_by_namespace: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut encrypted_by_namespace: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for runtime in self.runtime_tools.values() {
+            names_by_namespace
+                .entry(runtime.namespace.as_str())
                 .or_default()
-                .insert(tool.name.as_str());
+                .insert(runtime.name.as_str());
+            if runtime.encrypted_arguments
+                && MULTI_AGENT_V2_ENCRYPTED_TOOLS.contains(&runtime.name.as_str())
+            {
+                encrypted_by_namespace
+                    .entry(runtime.namespace.as_str())
+                    .or_default()
+                    .insert(runtime.name.as_str());
+            }
         }
-        signatures.into_iter().find_map(|(namespace, names)| {
-            (namespace != "collaboration" && names.len() == 3).then_some(namespace)
-        })
+        names_by_namespace
+            .into_iter()
+            .find_map(|(namespace, names)| {
+                if namespace == "collaboration"
+                    || self
+                        .namespace_descriptions
+                        .get(namespace)
+                        .map(String::as_str)
+                        != Some(MULTI_AGENT_V2_NAMESPACE_DESCRIPTION)
+                {
+                    return None;
+                }
+                let encrypted = encrypted_by_namespace.get(namespace)?;
+                let has_encrypted_family = MULTI_AGENT_V2_ENCRYPTED_TOOLS
+                    .iter()
+                    .all(|name| encrypted.contains(name));
+                let has_control_family = MULTI_AGENT_V2_CONTROL_TOOLS
+                    .iter()
+                    .all(|name| names.contains(name));
+                (has_encrypted_family && has_control_family).then_some(namespace)
+            })
     }
 
     pub(crate) fn is_namespace_function_alias(&self, name: &str) -> bool {
@@ -158,6 +186,15 @@ impl NamespaceHelpers {
 
     pub fn register_collapsed(&mut self, helper_name: String, namespace: String) {
         self.collapsed.insert(helper_name, namespace);
+    }
+
+    fn record_namespace_description(&mut self, namespace: &str, description: &str) {
+        if description.is_empty() {
+            return;
+        }
+        self.namespace_descriptions
+            .entry(namespace.to_string())
+            .or_insert_with(|| description.to_string());
     }
 
     pub fn model_visible_name<'a>(&'a self, name: &'a str) -> &'a str {
@@ -296,6 +333,12 @@ pub(crate) fn expand_namespace_tool(
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("namespace");
+    helpers.record_namespace_description(
+        namespace,
+        tool.get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
     let children = namespace_children(tool);
     if children.is_empty() {
         let helper_name = format!("{namespace}_tool");
@@ -342,6 +385,12 @@ pub(crate) fn expand_namespace_responses_tool(
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("namespace");
+    helpers.record_namespace_description(
+        namespace,
+        tool.get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
     let children = namespace_children(tool);
     if children.is_empty() {
         let helper_name = format!("{namespace}_tool");

@@ -175,8 +175,13 @@ namespace. The pinned Codex protocol recognizes the empty plaintext marker
 only for that runtime namespace; a custom `multi_agent_v2.tool_namespace`
 would otherwise label plaintext tasks and updates as encrypted content. Warp
 rejects such requests with a compatibility error instead of silently dropping
-the child task or mailbox payload. Full custom-namespace support requires a
-corresponding Codex router change.
+the child task or mailbox payload. Rejection requires definitive MultiAgentV2
+provenance: Codex's namespace description `Tools for spawning and managing
+sub-agents.` plus the full v2 helper family (`spawn_agent`, `send_message`,
+`followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) with
+encrypted messaging arguments. An unrelated dynamic namespace that happens to
+reuse the three encrypted messaging names is forwarded. Full custom-namespace
+support requires a corresponding Codex router change.
 
 For Chat Completions and compatible native Responses coding turns (not
 Guardian requests), Warp also inserts a short clarification that sub-agent
@@ -187,7 +192,11 @@ advertised messaging lifecycle. By default, Warp translates Codex v2
 `agent_message` task, update, and result items into user-role messages with
 their author and recipient context on both Chat and native Responses backends;
 encrypted content is explicitly marked as unavailable rather than silently
-discarded. A native Responses provider that explicitly supports Codex agent
+discarded. Converted native messages use the same call/output batch-ordering
+protection as Chat Completions: they wait until outstanding function or custom
+tool outputs are present, stay outside a parallel call batch, and precede a
+trailing unresolved call rather than splitting it from its output. A native
+Responses provider that explicitly supports Codex agent
 items and their encrypted content can instead set
 `preserve_native_agent_messages = true` in its transform configuration. Chat
 conversion remains unconditional. Codex remains responsible for the actual

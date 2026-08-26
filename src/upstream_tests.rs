@@ -1343,22 +1343,87 @@ fn multi_agent_namespace_request(prompt_cache_key: Option<&str>) -> Value {
 fn custom_v2_namespace_request(namespace: &str) -> Value {
     let mut request = multi_agent_namespace_request(None);
     request["tools"][0]["name"] = json!(namespace);
-    request["tools"][0]["tools"][0]["parameters"]["properties"]["message"]["encrypted"] =
-        json!(true);
-    for name in ["send_message", "followup_task"] {
-        request["tools"][0]["tools"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "type": "function",
-                "name": name,
-                "parameters": {
-                    "type": "object",
-                    "properties": {"message": {"type": "string", "encrypted": true}}
-                }
-            }));
-    }
+    request["tools"][0]["tools"] = json!([
+        {
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "followup_task",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "wait_agent",
+            "parameters": {"type": "object", "properties": {}}
+        },
+        {
+            "type": "function",
+            "name": "interrupt_agent",
+            "parameters": {"type": "object", "properties": {}}
+        },
+        {
+            "type": "function",
+            "name": "list_agents",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    ]);
     request
+}
+
+fn encrypted_v2_name_collision_request() -> Value {
+    json!({
+        "model": "test-model",
+        "stream": false,
+        "tools": [{
+            "type": "namespace",
+            "name": "plugin_mailbox",
+            "description": "Plugin mailbox helpers.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "send_message",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "followup_task",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                }
+            ]
+        }],
+        "input": "deliver a plugin message"
+    })
 }
 
 fn unrelated_encrypted_namespace_request() -> Value {
@@ -1634,6 +1699,34 @@ async fn unrelated_encrypted_namespace_is_forwarded_on_both_wire_paths() {
         selected_provider_at(&chat_url),
         HeaderMap::new(),
         unrelated_encrypted_namespace_request(),
+    )
+    .await;
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    assert_eq!(chat_bodies.lock().expect("bodies lock").len(), 1);
+    native_server.abort();
+    chat_server.abort();
+}
+
+#[tokio::test]
+async fn encrypted_v2_name_collision_is_forwarded_on_both_wire_paths() {
+    let (native_url, native_bodies, native_server) = spawn_responses_capture().await;
+    let native_response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&native_url),
+        HeaderMap::new(),
+        encrypted_v2_name_collision_request(),
+    )
+    .await;
+    assert_eq!(native_response.status(), StatusCode::OK);
+    assert_eq!(native_bodies.lock().expect("bodies lock").len(), 1);
+
+    let (chat_url, chat_bodies, chat_server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let chat_response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&chat_url),
+        HeaderMap::new(),
+        encrypted_v2_name_collision_request(),
     )
     .await;
     assert_eq!(chat_response.status(), StatusCode::OK);
