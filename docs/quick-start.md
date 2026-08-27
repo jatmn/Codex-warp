@@ -78,6 +78,8 @@ second terminal for the remaining steps.
 
 Confirm that the process is healthy:
 
+### Linux And macOS
+
 ```bash
 curl -sS http://127.0.0.1:8787/health
 # ok
@@ -89,9 +91,27 @@ Then inspect the model catalog:
 curl -sS http://127.0.0.1:8787/v1/models
 ```
 
+### Windows PowerShell
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/health
+# ok
+
+Invoke-RestMethod http://127.0.0.1:8787/v1/models
+```
+
 If the health check works but the model request fails, check the API key name,
-the selected profile, and the terminal running Warp. Use
-`RUST_LOG=codex_warp=debug` when starting Warp for more diagnostic output.
+the selected profile, and the terminal running Warp. For more diagnostic
+output, set the debug environment variable before restarting Warp with the
+selected profile:
+
+```bash
+export RUST_LOG=codex_warp=debug
+```
+
+```powershell
+$env:RUST_LOG = "codex_warp=debug"
+```
 
 ## 4. Configure Codex
 

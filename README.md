@@ -128,6 +128,22 @@ Model-family catalogs currently cover DeepSeek, MiniMax, Moonshot AI, Qwen,
 xAI, Xiaomi, Z.ai, and Tencent Hunyuan 3. See
 [`configs/model-families/`](configs/model-families/) for exact model entries.
 
+## OpenRouter App Attribution
+
+Warp automatically adds OpenRouter app-attribution headers when a configured
+destination is `openrouter.ai` or one of its subdomains, including regional API
+hosts:
+
+- `HTTP-Referer`: `https://github.com/jatmn/Codex-warp`
+- `X-OpenRouter-Title`: `Codex Warp`
+- `X-Title`: `Codex Warp` (compatibility alias)
+- `X-OpenRouter-Categories`: `cli-agent,programming-app`
+
+These headers identify Codex Warp only for requests sent through OpenRouter.
+To attribute traffic to your own project, override any of these values under
+the OpenRouter profile's `[provider.headers]` or `[providers.<id>.headers]`
+table. Explicitly configured headers take precedence over the defaults.
+
 ## Optional Web UI
 
 Enable the local management UI in `codex-warp.toml`:
