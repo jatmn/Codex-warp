@@ -146,20 +146,21 @@ if you want a mixed catalog.
 
 ### Windows Codex Auth
 
-Windows does not provide `printf` by default. Use the zero-argument `hostname`
-command instead; its output is only a nonsecret placeholder for the local
-proxy:
+Windows does not provide `printf` by default. Use PowerShell to print the same
+fixed, nonsecret placeholder as the Linux and macOS configuration:
 
 ```toml
 [model_providers.codex-warp.auth]
-command = "hostname"
+command = "powershell"
+args = ["-NoProfile", "-Command", "Write-Output codex-warp-local"]
 refresh_interval_ms = 0
 ```
 
 ## 5. Use Codex
 
-Restart Codex after changing its configuration. In Codex Desktop, reopen the
-app and select one of the models returned by Warp's `/v1/models` endpoint. With
+Restart Codex after changing its configuration. In Codex Desktop, fully quit
+and reopen the app so its managed app-server daemon rebuilds the model manager,
+then select one of the models returned by Warp's `/v1/models` endpoint. With
 Codex CLI, select a returned model and start a session normally:
 
 ```bash
@@ -207,21 +208,39 @@ cat /tmp/codex-warp-hello.txt
 
 ```powershell
 $outputPath = Join-Path $env:TEMP "codex-warp-hello.txt"
+$smokeHome = Join-Path $env:TEMP ("codex-warp-smoke-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $smokeHome | Out-Null
 
-codex exec `
-  --ignore-user-config `
-  --skip-git-repo-check `
-  -C $env:TEMP `
-  -m MODEL_ID_FROM_CATALOG `
-  -c 'model_provider="codex-warp"' `
-  -c 'model_providers.codex-warp.name="Codex Warp"' `
-  -c 'model_providers.codex-warp.base_url="http://127.0.0.1:8787/v1"' `
-  -c 'model_providers.codex-warp.wire_api="responses"' `
-  -c 'model_providers.codex-warp.auth.command="hostname"' `
-  -c 'model_providers.codex-warp.auth.refresh_interval_ms=0' `
-  -s read-only `
-  --output-last-message $outputPath `
-  'Respond with exactly one word: hello'
+@'
+model_provider = "codex-warp"
+
+[model_providers.codex-warp]
+name = "Codex Warp"
+base_url = "http://127.0.0.1:8787/v1"
+wire_api = "responses"
+
+[model_providers.codex-warp.auth]
+command = "powershell"
+args = ["-NoProfile", "-Command", "Write-Output codex-warp-local"]
+refresh_interval_ms = 0
+'@ | Set-Content -Path (Join-Path $smokeHome "config.toml") -Encoding Ascii
+
+$previousCodexHome = $env:CODEX_HOME
+
+try {
+  $env:CODEX_HOME = $smokeHome
+
+  codex exec `
+    --skip-git-repo-check `
+    -C $env:TEMP `
+    -m MODEL_ID_FROM_CATALOG `
+    -s read-only `
+    --output-last-message $outputPath `
+    'Respond with exactly one word: hello'
+} finally {
+  $env:CODEX_HOME = $previousCodexHome
+  Remove-Item -Recurse -Force $smokeHome
+}
 
 Get-Content $outputPath
 # hello

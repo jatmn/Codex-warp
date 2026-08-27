@@ -90,7 +90,9 @@ stays in Codex Warp's environment and is never added to the Codex provider
 entry.
 
 Restart Codex, select a model exposed by your gateway, and use Codex normally.
-Warp serves the live model catalog at `http://127.0.0.1:8787/v1/models`.
+For Codex Desktop, fully quit and reopen the app so its managed app-server
+daemon rebuilds the model manager. Warp serves the live model catalog at
+`http://127.0.0.1:8787/v1/models`.
 
 > [!NOTE]
 > The `printf` token command is for Linux and macOS. The
@@ -185,8 +187,9 @@ non-streaming Chat Completions conversion, function and namespace tool calls,
 structured output fallbacks, configurable request morphs, and local provider
 management. Multimodal image and file request translation is not implemented.
 
-No built-in profile connects to a provider without explicit configuration and
-credentials.
+Built-in profiles stay disabled until you select them explicitly. Selecting a
+profile allows Warp to contact its configured upstream, so set any required
+credential before starting Warp.
 
 ## Project Status And Safety
 
