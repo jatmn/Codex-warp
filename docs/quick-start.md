@@ -151,6 +151,8 @@ the adapted request upstream.
 This isolated check ignores the rest of your user configuration. Replace
 `MODEL_ID_FROM_CATALOG` with a model ID returned by `/v1/models`:
 
+### Linux And macOS
+
 ```bash
 codex exec \
   --ignore-user-config \
@@ -173,6 +175,31 @@ Expected result:
 
 ```bash
 cat /tmp/codex-warp-hello.txt
+# hello
+```
+
+### Windows PowerShell
+
+```powershell
+$outputPath = Join-Path $env:TEMP "codex-warp-hello.txt"
+
+codex exec `
+  --ignore-user-config `
+  --skip-git-repo-check `
+  -C $env:TEMP `
+  -m MODEL_ID_FROM_CATALOG `
+  -c 'model_provider="codex-warp"' `
+  -c 'model_providers.codex-warp.name="Codex Warp"' `
+  -c 'model_providers.codex-warp.base_url="http://127.0.0.1:8787/v1"' `
+  -c 'model_providers.codex-warp.wire_api="responses"' `
+  -c 'model_providers.codex-warp.auth.command="powershell"' `
+  -c 'model_providers.codex-warp.auth.args=["-NoProfile", "-Command", "Write-Output codex-warp-local"]' `
+  -c 'model_providers.codex-warp.auth.refresh_interval_ms=0' `
+  -s read-only `
+  --output-last-message $outputPath `
+  'Respond with exactly one word: hello'
+
+Get-Content $outputPath
 # hello
 ```
 
