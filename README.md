@@ -47,6 +47,11 @@ For platform-specific prerequisites, see the
 
 ### 2. Start A Provider
 
+The condensed commands below use Bash on Linux and macOS. On Windows
+PowerShell, use the matching [provider startup](docs/quick-start.md#2-choose-a-provider)
+and [proxy check](docs/quick-start.md#3-check-the-proxy) commands in the full
+quick start, then return here for Codex configuration.
+
 ```bash
 export OPENROUTER_API_KEY="..."
 ./target/release/codex-warp --config configs/openrouter.toml
