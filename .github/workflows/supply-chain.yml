@@ -26,30 +26,63 @@ jobs:
     name: cargo-deny (bans licenses sources)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      supply_chain: ${{ steps.scope.outputs.supply_chain }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Classify Changes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            classifier="$(mktemp)"
+            trap 'rm -f "$classifier"' EXIT
+            if git show "$BASE_SHA:scripts/ci-change-scope.sh" > "$classifier" 2>/dev/null; then
+              scope_output="$(bash "$classifier" "$BASE_SHA...$HEAD_SHA")"
+            else
+              scope_output=$'full_ci=true\nsupply_chain=true'
+            fi
+          else
+            scope_output=$'full_ci=true\nsupply_chain=true'
+          fi
+          mapfile -t scope_lines <<< "$scope_output"
+          [ "${#scope_lines[@]}" -eq 2 ]
+          case "${scope_lines[0]}" in full_ci=true | full_ci=false) ;; *) exit 1 ;; esac
+          case "${scope_lines[1]}" in supply_chain=true | supply_chain=false) ;; *) exit 1 ;; esac
+          printf '%s\n%s\n' "${scope_lines[0]}" "${scope_lines[1]}" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
+        if: steps.scope.outputs.supply_chain == 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
 
       - name: Cache Cargo
+        if: steps.scope.outputs.supply_chain == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-deny
+        if: steps.scope.outputs.supply_chain == 'true'
         uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
         with:
           tool: cargo-deny
 
       - name: cargo-deny
+        if: steps.scope.outputs.supply_chain == 'true'
         run: cargo deny check bans licenses sources
 
   cargo-audit:
     name: cargo-audit (advisories)
+    needs: cargo-deny
+    if: ${{ !cancelled() && needs.cargo-deny.outputs.supply_chain == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # A newly published advisory must not freeze every unrelated PR.

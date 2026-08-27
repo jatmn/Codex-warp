@@ -20,6 +20,8 @@ jobs:
     name: Source Checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      full_ci: ${{ steps.scope.outputs.full_ci }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -27,37 +29,82 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Classify Changes
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          classifier="$(mktemp)"
+          trap 'rm -f "$classifier"' EXIT
+          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ] && \
+             git show "$BASE_SHA:scripts/ci-change-scope.sh" > "$classifier" 2>/dev/null; then
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              scope_output="$(bash "$classifier" "$BASE_SHA...$HEAD_SHA")"
+            else
+              scope_output="$(bash "$classifier" "$BASE_SHA..$HEAD_SHA")"
+            fi
+          elif [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            scope_output=$'full_ci=true\nsupply_chain=true'
+          else
+            scope_output=$'full_ci=true\nsupply_chain=true'
+          fi
+          mapfile -t scope_lines <<< "$scope_output"
+          [ "${#scope_lines[@]}" -eq 2 ]
+          case "${scope_lines[0]}" in full_ci=true | full_ci=false) ;; *) exit 1 ;; esac
+          case "${scope_lines[1]}" in supply_chain=true | supply_chain=false) ;; *) exit 1 ;; esac
+          printf '%s\n%s\n' "${scope_lines[0]}" "${scope_lines[1]}" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
+        if: steps.scope.outputs.full_ci == 'true'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
         with:
           components: rustfmt, clippy
 
       - name: Cache Cargo
+        if: steps.scope.outputs.full_ci == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Lockfile
+        if: steps.scope.outputs.full_ci == 'true'
         run: cargo update --workspace --locked
 
       - name: Spell Check
         uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
+        with:
+          files: . .github/pull_request_template.md
+
+      - name: Documentation Checks
+        if: steps.scope.outputs.full_ci != 'true'
+        run: DOCS_CHECKS_SKIP_TYPOS=1 bash scripts/docs-checks.sh
+
+      - name: Change Scope Harness
+        if: steps.scope.outputs.full_ci != 'true'
+        run: bash scripts/ci-change-scope-harness.sh
 
       - name: Source Checks
+        if: steps.scope.outputs.full_ci == 'true'
         run: SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh
 
       - name: Test
+        if: steps.scope.outputs.full_ci == 'true'
         run: cargo test --locked
 
       - name: Build
+        if: steps.scope.outputs.full_ci == 'true'
         run: cargo build --locked
 
       - name: Docs
+        if: steps.scope.outputs.full_ci == 'true'
         run: cargo doc --locked --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
       - name: CLI Smoke
+        if: steps.scope.outputs.full_ci == 'true'
         run: |
           target/debug/codex-warp --version
           target/debug/codex-warp --help
@@ -77,6 +124,8 @@ jobs:
 
   windows:
     name: Windows
+    needs: source
+    if: ${{ !cancelled() && needs.source.result == 'success' && needs.source.outputs.full_ci == 'true' }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
