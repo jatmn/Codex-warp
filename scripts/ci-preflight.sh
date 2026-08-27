@@ -68,7 +68,7 @@ echo 'ci-preflight: cargo update --workspace --locked'
 cargo update --workspace --locked
 
 echo 'ci-preflight: typos'
-typos
+typos . .github/pull_request_template.md
 
 echo 'ci-preflight: SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh'
 SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh

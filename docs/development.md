@@ -211,8 +211,17 @@ git diff --check
 
 ## Continuous Integration
 
-GitHub Actions runs the source gate on pushes to `main` and on pull requests.
-The Linux CI job performs:
+GitHub Actions classifies each push to `main` and pull request before starting
+platform toolchains. Documentation-only changes still run spelling, prose,
+whitespace, and change-scope regression checks, then report the required Source
+Checks status without installing Rust. Mixed changes and paths outside the
+explicit documentation allowlist fail safe by running the full Linux and
+Windows suites. Pull requests are classified with the script from the immutable
+base revision, so a classifier change cannot weaken its own scope decision; a
+missing or invalid base classifier fails closed. Workflow changes remain
+security-sensitive and require normal branch protection and review.
+
+For changes that require full CI, the Linux job performs:
 
 - `cargo update --workspace --locked` so `Cargo.lock` stays in sync with
   `Cargo.toml`
@@ -233,18 +242,21 @@ against the PR base SHA; otherwise the job succeeds without installing the
 mutants toolchain. Surviving mutants on changed lines are a test-quality
 finding, not a request to add extra unrelated tests.
 
-A separate supply-chain workflow runs `cargo-deny` (licenses, crate bans, and
-crate sources) and `cargo-audit` on pull requests, dependency-file pushes to
-`main`, a weekly schedule, and manual dispatch. Advisory failures are
-non-blocking on pull requests so a new CVE does not freeze unrelated work.
-Scheduled and manual advisory runs fail closed. Do not add `_typos.toml`-style
+A separate supply-chain workflow always reports its required cargo-deny status
+on pull requests, but installs its toolchain and runs `cargo-deny` plus
+`cargo-audit` only when `Cargo.toml`, `Cargo.lock`, `deny.toml`, or the
+supply-chain workflow changes. Dependency-file pushes to `main`, weekly
+schedules, and manual dispatches run the full checks. Advisory failures are
+non-blocking on pull requests so a new CVE does not freeze unrelated work;
+scheduled and manual advisory runs fail closed. Do not add `_typos.toml`-style
 ignore entries in `deny.toml` to hide a real license or git-source policy break.
 
 A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
-CLI smoke checks so Windows-only build breaks (AWS-LC / linker) show up before
-a release. Cargo caches are written only on `main`. Keep Source Checks,
-Windows, Incremental (PR diff), and cargo-deny as required status checks on
-`main`.
+CLI smoke checks for full-CI changes so Windows-only build breaks (AWS-LC /
+linker) show up before a release. Documentation-only changes report Windows as
+skipped-success without allocating a Windows runner. Cargo caches are written
+only on `main`. Keep Source Checks, Windows, Incremental (PR diff), and
+cargo-deny as required status checks on `main`.
 
 ## Source Layout
 

@@ -17,31 +17,11 @@ if ! cargo fmt --check; then
   fail=1
 fi
 
-if [ "$skip_typos" != "1" ]; then
-  if ! command -v typos >/dev/null 2>&1; then
-    echo "source-checks: install typos with: cargo install typos-cli --locked" >&2
-    fail=1
-  elif ! typos; then
-    fail=1
-  fi
-fi
-
-docs_files=(README.md AGENTS.md CONTRIBUTING.md SECURITY.md docs)
-trailing_whitespace=0
-while IFS= read -r -d '' doc; do
-  if grep -nIHE '[[:blank:]]$' "$doc"; then
-    trailing_whitespace=1
-  fi
-done < <(find -P "${docs_files[@]}" -type f -print0)
-if [ "$trailing_whitespace" -ne 0 ]; then
-  echo "source-checks: trailing whitespace in docs" >&2
+if ! DOCS_CHECKS_SKIP_TYPOS="$skip_typos" bash scripts/docs-checks.sh; then
   fail=1
 fi
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "source-checks: node is required for docs prose, JS syntax, and WebUI harnesses" >&2
-  fail=1
-elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
+if ! bash scripts/ci-change-scope-harness.sh; then
   fail=1
 fi
 

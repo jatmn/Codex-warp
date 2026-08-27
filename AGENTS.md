@@ -200,8 +200,8 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 `scripts/ci-preflight.sh` explicitly runs the non-Windows CI gates in this
 order: `cargo update --workspace --locked`; `typos`;
 `SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs
-whitespace/prose, language policy, tracked JavaScript, chart harness, and
-crate-wide Clippy);
+whitespace/prose, CI change-scope regression coverage, language policy,
+tracked JavaScript, chart harness, and crate-wide Clippy);
 `cargo test --locked`; `cargo build --locked`;
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
 `--help` smoke checks; `git diff --check`; conditional Rust-diff
