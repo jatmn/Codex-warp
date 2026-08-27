@@ -1744,6 +1744,68 @@ fn create_named_template_catalog_preserves_earliest_colliding_route_owner() {
 }
 
 #[test]
+fn create_named_template_catalog_does_not_preseed_disabled_colliding_owner() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-disabled-colliding-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = |enabled: bool| ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = |enabled: bool| ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared(enabled)],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog(
+                "z_owner",
+                &provider(true),
+                &provider(true).model_catalog,
+                false,
+            )
+            .unwrap();
+        store
+            .create_provider_with_catalog(
+                "a_duplicate",
+                &provider(false),
+                &provider(false).model_catalog,
+                true,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("z_owner")
+    );
+    let duplicate = config
+        .providers
+        .get("a_duplicate")
+        .expect("duplicate overlay restored");
+    assert!(!duplicate.model_catalog[0].enabled);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn apply_overlays_corrupt_model_overlay_preserves_disabled_models() {
     use rusqlite::params;
 

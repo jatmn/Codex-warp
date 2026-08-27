@@ -759,7 +759,7 @@ impl Store {
                 params![provider_id],
             )?;
             for entry in catalog {
-                if preserve_colliding_route_owners {
+                if preserve_colliding_route_owners && entry.enabled {
                     let owner = db.query_row(
                         "SELECT provider_id FROM model_overlays
                          WHERE model_id = ?1 AND enabled = 1 AND COALESCE(removed, 0) = 0
