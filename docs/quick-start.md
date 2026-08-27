@@ -1,52 +1,125 @@
 # Quick Start
 
-This guide gets Codex Warp running locally with one upstream provider.
+This guide takes Codex Warp from a fresh checkout to a working Codex session
+with one upstream provider.
 
-## Table Of Contents
+## Before You Start
 
-- [1. Build](#1-build)
-- [2. Choose A Provider](#2-choose-a-provider)
-- [3. Configure Codex](#3-configure-codex)
-- [4. Check Models](#4-check-models)
-- [5. Smoke Test](#5-smoke-test)
+You need:
 
-## 1. Build
+- Codex Desktop or Codex CLI
+- Git and a stable Rust toolchain
+- CMake and a C/C++ build toolchain
+- an API key for an OpenAI-compatible provider
+
+If you use Codex Desktop, the CLI is not required for normal sessions. The
+smoke test in step 6 is an optional CLI-only verification.
+
+See the [developer build guide](development.md) for exact Linux, macOS, and
+Windows prerequisites.
+
+## 1. Download And Build
 
 ```bash
-cargo build
+git clone https://github.com/jatmn/Codex-warp.git
+cd Codex-warp
+cargo build --release
 ```
 
-The binary will be at:
+The resulting binary is:
 
-```bash
-target/debug/codex-warp
-```
+- Linux and macOS: `target/release/codex-warp`
+- Windows: `target\release\codex-warp.exe`
+
+Keep the repository's `codex-warp.toml` and `configs/` directory available when
+you run the binary. The runtime configuration is not embedded in the
+executable.
 
 ## 2. Choose A Provider
 
-Use an existing profile:
+Codex Warp includes ready-made profiles. Export the matching API key and pass
+the profile with `--config`.
+
+OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="..."
+./target/release/codex-warp --config configs/openrouter.toml
+```
+
+Moonshot Kimi Code:
+
+```bash
+export KIMICODE_API_KEY="..."
+./target/release/codex-warp --config configs/moonshot-kimicode.toml
+```
+
+Xiaomi Token Plan:
 
 ```bash
 export XIAOMI_TOKEN_PLAN_API_KEY="..."
-target/debug/codex-warp --config configs/xiaomi-token-plan.toml
+./target/release/codex-warp --config configs/xiaomi-token-plan.toml
 ```
 
-Or point at a provider quickly without editing config:
+On Windows PowerShell, set an environment variable for the current terminal
+like this:
+
+```powershell
+$env:OPENROUTER_API_KEY = "..."
+.\target\release\codex-warp.exe --config configs\openrouter.toml
+```
+
+For another gateway, copy
+[`configs/openai-compatible.toml`](../configs/openai-compatible.toml), then set
+its `base_url`, `api_key_env`, and endpoint behavior. Provider credentials
+belong in Codex Warp, not in Codex's local-provider entry.
+
+Warp starts on `http://127.0.0.1:8787` by default. Leave it running and use a
+second terminal for the remaining steps.
+
+## 3. Check The Proxy
+
+Confirm that the process is healthy:
+
+### Linux And macOS
 
 ```bash
-target/debug/codex-warp --destination https://provider.example/v1
+curl -sS http://127.0.0.1:8787/health
+# ok
 ```
 
-`--destination` only overrides the upstream URL. For providers that need an API
-key, use a Codex Warp provider config with `api_key_env`; upstream credentials
-belong in Codex Warp, not in Codex's `model_providers.codex-warp` entry.
+Then inspect the model catalog:
 
-For a reusable custom provider, copy or edit
-[`configs/openai-compatible.toml`](../configs/openai-compatible.toml).
+```bash
+curl -sS http://127.0.0.1:8787/v1/models
+```
 
-## 3. Configure Codex
+### Windows PowerShell
 
-Point Codex at the local proxy as a Responses provider:
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/health
+# ok
+
+Invoke-RestMethod http://127.0.0.1:8787/v1/models
+```
+
+If the health check works but the model request fails, check the API key name,
+the selected profile, and the terminal running Warp. For more diagnostic
+output, set the debug environment variable before restarting Warp with the
+selected profile:
+
+```bash
+export RUST_LOG=codex_warp=debug
+```
+
+```powershell
+$env:RUST_LOG = "codex_warp=debug"
+```
+
+## 4. Configure Codex
+
+Codex reads personal settings from `~/.codex/config.toml`. Add the following
+provider definition:
 
 ```toml
 model_provider = "codex-warp"
@@ -55,7 +128,6 @@ model_provider = "codex-warp"
 name = "Codex Warp"
 base_url = "http://127.0.0.1:8787/v1"
 wire_api = "responses"
-requires_openai_auth = false
 
 [model_providers.codex-warp.auth]
 command = "printf"
@@ -63,43 +135,60 @@ args = ["codex-warp-local"]
 refresh_interval_ms = 0
 ```
 
-Codex Warp uses its own provider config for upstream keys. Do not set
-`model_catalog_json` or a Codex-side `env_key` on the `codex-warp` provider:
-the `auth` block above is a local refresh shim that makes current Codex CLI
-auto-populate models from the proxy's `/v1/models` endpoint. Provider
-credentials still belong only in Codex Warp gateway configs.
+The command prints a nonsecret placeholder bearer token for the local proxy.
+Warp owns the real upstream credential through the provider profile's
+`api_key_env`. Do not add the upstream key, `model_catalog_json`, or a
+Codex-side `env_key` to this entry.
 
-Warp's default `[config] hide_codex_builtin_models = true` keeps Codex's bundled
-GPT models out of that auto-populated picker. Leave it enabled for Codex Warp
-gateway-only instances.
+Warp's default `hide_codex_builtin_models = true` keeps Codex's bundled models
+out of the gateway-only model picker. Change that setting in `codex-warp.toml`
+if you want a mixed catalog.
 
-## 4. Check Models
+### Windows Codex Auth
 
-In another terminal:
+Windows does not provide `printf` by default. Use PowerShell to print the same
+fixed, nonsecret placeholder as the Linux and macOS configuration:
 
-```bash
-curl -sS http://127.0.0.1:8787/v1/models
+```toml
+[model_providers.codex-warp.auth]
+command = "powershell"
+args = ["-NoProfile", "-Command", "Write-Output codex-warp-local"]
+refresh_interval_ms = 0
 ```
 
-When a provider returns a plain OpenAI-compatible list such as
-`{"object":"list","data":[{"id":"mimo-v2.5"}]}`, Codex Warp synthesizes the
-richer Codex model metadata needed by Codex CLI.
+## 5. Use Codex
 
-## 5. Smoke Test
+Restart Codex after changing its configuration. In Codex Desktop, fully quit
+and reopen the app so its managed app-server daemon rebuilds the model manager,
+then select one of the models returned by Warp's `/v1/models` endpoint. With
+Codex CLI, select a returned model and start a session normally:
 
-Run a one-word Codex check:
+```bash
+codex
+```
+
+Codex sends Responses-shaped requests to the local proxy. Warp selects the
+configured gateway, applies provider and model-family transforms, and forwards
+the adapted request upstream.
+
+## 6. Run A Smoke Test
+
+This optional check requires Codex CLI and ignores the rest of your user
+configuration. Desktop-only users can skip it after completing step 5. Replace
+`MODEL_ID_FROM_CATALOG` with a model ID returned by `/v1/models`:
+
+### Linux And macOS
 
 ```bash
 codex exec \
   --ignore-user-config \
   --skip-git-repo-check \
   -C /tmp \
-  -m mimo-v2.5 \
+  -m MODEL_ID_FROM_CATALOG \
   -c 'model_provider="codex-warp"' \
   -c 'model_providers.codex-warp.name="Codex Warp"' \
   -c 'model_providers.codex-warp.base_url="http://127.0.0.1:8787/v1"' \
   -c 'model_providers.codex-warp.wire_api="responses"' \
-  -c 'model_providers.codex-warp.requires_openai_auth=false' \
   -c 'model_providers.codex-warp.auth.command="printf"' \
   -c 'model_providers.codex-warp.auth.args=["codex-warp-local"]' \
   -c 'model_providers.codex-warp.auth.refresh_interval_ms=0' \
@@ -108,11 +197,62 @@ codex exec \
   'Respond with exactly one word: hello'
 ```
 
-Expected:
+Expected result:
 
 ```bash
 cat /tmp/codex-warp-hello.txt
 # hello
 ```
 
-See [live testing](live-testing.md) for a fuller checklist.
+### Windows PowerShell
+
+```powershell
+$outputPath = Join-Path $env:TEMP "codex-warp-hello.txt"
+$smokeHome = Join-Path $env:TEMP ("codex-warp-smoke-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $smokeHome | Out-Null
+
+@'
+model_provider = "codex-warp"
+
+[model_providers.codex-warp]
+name = "Codex Warp"
+base_url = "http://127.0.0.1:8787/v1"
+wire_api = "responses"
+
+[model_providers.codex-warp.auth]
+command = "powershell"
+args = ["-NoProfile", "-Command", "Write-Output codex-warp-local"]
+refresh_interval_ms = 0
+'@ | Set-Content -Path (Join-Path $smokeHome "config.toml") -Encoding Ascii
+
+$previousCodexHome = $env:CODEX_HOME
+
+try {
+  $env:CODEX_HOME = $smokeHome
+
+  codex exec `
+    --skip-git-repo-check `
+    -C $env:TEMP `
+    -m MODEL_ID_FROM_CATALOG `
+    -s read-only `
+    --output-last-message $outputPath `
+    'Respond with exactly one word: hello'
+} finally {
+  $env:CODEX_HOME = $previousCodexHome
+  Remove-Item -Recurse -Force $smokeHome
+}
+
+Get-Content $outputPath
+# hello
+```
+
+See [live testing](live-testing.md) for provider-specific checks and failure
+diagnosis.
+
+## Next Steps
+
+- Load multiple gateways: [configuration guide](configuration.md)
+- Add a custom gateway: [provider catalogs](provider-catalogs.md)
+- Tune model capabilities: [model-family catalogs](model-family-catalogs.md)
+- Enable the management UI: [Web UI and analytics](configuration.md#web-ui-and-analytics)
+- Configure tool-call rules: [tool approval policy](tool-approval-policy.md)

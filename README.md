@@ -1,78 +1,75 @@
+<div align="center">
+
 # Codex Warp
 
-Codex Warp is a tiny Rust proxy that lets Codex Desktop, Codex CLI, and other
-Codex clients talk to OpenAI-compatible providers through a local Responses API
-surface.
+**Use OpenAI-compatible models and gateways with Codex.**
 
-Codex sends Responses-shaped requests with tools, streaming, metadata, and
-newer tool types such as `custom`. Many third-party providers only expose
-`/v1/chat/completions`, or they expose partial Responses support. Codex Warp
-translates those requests with editable TOML config so provider quirks can be
-fixed without recompiling.
+[![CI](https://github.com/jatmn/Codex-warp/actions/workflows/ci.yml/badge.svg)](https://github.com/jatmn/Codex-warp/actions/workflows/ci.yml)
+[![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](Cargo.toml)
+[![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
 
-## Table Of Contents
+[Quick start](docs/quick-start.md) · [Configuration](docs/configuration.md) · [Provider profiles](docs/provider-catalogs.md) · [Contributing](CONTRIBUTING.md)
 
-- [What It Does](#what-it-does)
-- [Quick Start](#quick-start)
-- [Key Features](#key-features)
-- [Built-In Gateway Profiles](#built-in-gateway-profiles)
-- [Supported Model Families](#supported-model-families)
-- [More Docs](#more-docs)
-- [Current Scope](#current-scope)
-- [Affiliation](#affiliation)
-- [License](#license)
+</div>
 
-## What It Does
+Codex Warp is a small, local Rust proxy for Codex Desktop, Codex CLI, and other
+Codex clients. It exposes the Responses API that Codex expects and translates
+requests for providers that implement OpenAI-compatible Chat Completions or
+partial Responses support.
 
-Codex Warp sits between Codex and an upstream OpenAI-compatible provider. Codex
-continues to use the Responses API shape it expects, while Warp adapts the
-request, model catalog, stream events, and provider-specific fields on the way
-through.
-
-It is meant for provider compatibility work that should live in config instead
-of client patches:
-
-- local `/v1/responses` and `/v1/models` endpoints for Codex
-- one or many upstream OpenAI-compatible gateways
-- merged upstream and local model catalogs for Codex model selection
-- model-family metadata for reasoning, tools, context windows, modalities, and
-  provider-local auto-review routing
-- editable request/tool morphs for chat-completions and Responses backends
-- continue guard (enabled by default) for chat-completions models that stop mid-task
-- optional tool approval policy loaded from TOML
-- optional local Web UI for provider/model toggles, SQLite usage analytics, and log viewing
-- sanitized debug logging and upstream `User-Agent` reporting
-
-## Quick Start
-
-Build the proxy:
-
-```bash
-cargo build
+```text
+Codex Desktop / CLI  ──Responses API──▶  Codex Warp  ──provider API──▶  Model gateway
+                                          │
+                                          └── TOML compatibility rules
 ```
 
-Start it with a provider profile:
+Provider quirks live in editable TOML instead of client patches or hard-coded
+forks. Warp adapts tools, streaming events, model metadata, reasoning fields,
+and other request differences on the way through.
+
+## Get Started
+
+You need [Rust](https://rustup.rs/), CMake, a C/C++ build toolchain, Codex, and
+an API key for an upstream provider. The commands below use OpenRouter as an
+example; other ready-made profiles are listed under
+[`configs/`](configs/).
+
+### 1. Build Codex Warp
 
 ```bash
-export XIAOMI_TOKEN_PLAN_API_KEY="..."
-target/debug/codex-warp --config configs/xiaomi-token-plan.toml
+git clone https://github.com/jatmn/Codex-warp.git
+cd Codex-warp
+cargo build --release
 ```
 
-For Moonshot KimiCode:
+For platform-specific prerequisites, see the
+[Linux, macOS, and Windows build guide](docs/development.md).
+
+### 2. Start A Provider
+
+The condensed commands below use Bash on Linux and macOS. On Windows
+PowerShell, follow the full quick start through
+[provider startup](docs/quick-start.md#2-choose-a-provider),
+[proxy checks](docs/quick-start.md#3-check-the-proxy), and
+[Windows Codex auth](docs/quick-start.md#windows-codex-auth), then continue at
+[Use Codex](docs/quick-start.md#5-use-codex).
 
 ```bash
-export KIMICODE_API_KEY="..."
-target/debug/codex-warp --config configs/moonshot-kimicode.toml
+export OPENROUTER_API_KEY="..."
+./target/release/codex-warp --config configs/openrouter.toml
 ```
 
-For OpenCode Go:
+Warp listens on `http://127.0.0.1:8787` by default. Check it from another
+terminal:
 
 ```bash
-export OPENCODE_GO_API_KEY="..."
-target/debug/codex-warp --config configs/opencode-go.toml
+curl -sS http://127.0.0.1:8787/health
+# ok
 ```
 
-Point Codex at the local proxy:
+### 3. Point Codex At Warp
+
+Add this to `~/.codex/config.toml`:
 
 ```toml
 model_provider = "codex-warp"
@@ -81,7 +78,6 @@ model_provider = "codex-warp"
 name = "Codex Warp"
 base_url = "http://127.0.0.1:8787/v1"
 wire_api = "responses"
-requires_openai_auth = false
 
 [model_providers.codex-warp.auth]
 command = "printf"
@@ -89,189 +85,130 @@ args = ["codex-warp-local"]
 refresh_interval_ms = 0
 ```
 
-Codex Warp owns the upstream provider credentials in its gateway config. The
-Codex-side auth block above is only a local refresh shim so Codex
-auto-populates models from the proxy.
+The command-backed token is only a local placeholder. Your real provider key
+stays in Codex Warp's environment and is never added to the Codex provider
+entry.
 
-Confirm the proxy can load models:
+Restart Codex, select a model exposed by your gateway, and use Codex normally.
+For Codex Desktop, fully quit and reopen the app so its managed app-server
+daemon rebuilds the model manager. Warp serves the live model catalog at
+`http://127.0.0.1:8787/v1/models`.
 
-```bash
-curl -sS http://127.0.0.1:8787/v1/models
-```
+> [!NOTE]
+> The `printf` token command is for Linux and macOS. The
+> [full quick start](docs/quick-start.md#windows-codex-auth) includes a Windows
+> equivalent, custom-provider setup, and a smoke test.
 
-## Key Features
+## Why Codex Warp?
 
-**Config-Driven Provider Compatibility**
+- **Responses compatibility** — translates Responses requests to
+  Chat Completions when a gateway does not implement the full Responses API.
+- **Config-driven fixes** — request, tool, and provider behavior is controlled
+  with composable TOML profiles.
+- **Live model discovery** — merges upstream catalogs with local metadata so
+  Codex receives model names, context limits, reasoning modes, modalities, and
+  tool capabilities.
+- **Agent-session resilience** — converts streaming and non-streaming tool
+  calls, expands namespace tools used by subagents, and can recover from
+  premature text-only stops.
+- **Local operations** — optional Web UI, SQLite usage analytics, process logs,
+  and sanitized debug events stay on your machine.
+- **Policy controls** — optional TOML rules can attach approval hints, request
+  escalation without a reusable prefix, or deny selected downstream tool calls.
 
-Provider profiles, model-family metadata, request transforms, tool transforms,
-and tool approval rules are plain TOML under [`configs/`](configs/). The
-baseline [`codex-warp.toml`](codex-warp.toml) loads model-family metadata and
-tool policy rules, but it does not connect to any upstream provider by default.
+## Provider Profiles
 
-**Merged Model Catalogs**
+| Provider | Profile | API key variable |
+| --- | --- | --- |
+| ClinePass | [`configs/clinepass.toml`](configs/clinepass.toml) | `CLINEPASS_API_KEY` |
+| Hicap | [`configs/hicap.toml`](configs/hicap.toml) | `HICAP_API_KEY` |
+| Moonshot Kimi Code | [`configs/moonshot-kimicode.toml`](configs/moonshot-kimicode.toml) | `KIMICODE_API_KEY` |
+| OpenCode Go | [`configs/opencode-go.toml`](configs/opencode-go.toml) | `OPENCODE_GO_API_KEY` |
+| OpenRouter | [`configs/openrouter.toml`](configs/openrouter.toml) | `OPENROUTER_API_KEY` |
+| Xiaomi Token Plan | [`configs/xiaomi-token-plan.toml`](configs/xiaomi-token-plan.toml) | `XIAOMI_TOKEN_PLAN_API_KEY` |
+| Any OpenAI-compatible provider | [`configs/openai-compatible.toml`](configs/openai-compatible.toml) | You choose |
 
-Warp merges upstream `/models` responses with local catalog entries, then adds
-the Codex metadata the client needs for model selection. Provider profiles can
-override exact model metadata when a gateway reports something unusual.
+Profiles are disabled until you pass one with `--config` or include it from
+`codex-warp.toml`. You can load multiple providers and route models by provider
+prefix. See [provider catalogs](docs/provider-catalogs.md) for the profile
+format and [configuration](docs/configuration.md) for merge and routing rules.
 
-**Continue Guard**
-
-Some chat-completions providers finish with text like `Now let me check...`
-instead of issuing the next tool call. The continue guard detects that case and
-asks Codex to continue the same turn with `end_turn = false`, so long agent
-sessions keep working instead of pausing for a manual `continue`. The guard is
-enabled by default across chat-completions providers (SSE and non-stream JSON);
-use the CLI flags only to
-tune it for a specific session:
-
-```bash
-target/debug/codex-warp \
-  --config configs/clinepass.toml \
-  --continue-guard-mode observe
-```
-
-The guard is conservative: it only acts when the provider finishes with
-`finish_reason = "stop"` (or omits / empties `finish_reason` on a text-only JSON
-completion), no tool call was emitted, and the assistant text
-looks like it intended to keep working. A fully completed `update_plan`
-suppresses the guard unless later tool work shows the plan snapshot is stale;
-sessions that never call `update_plan` are still covered. `max_followups`
-limits consecutive text-only stops per session; the counter resets when the
-last request `input` item is completed tool work, so mid-task pauses are
-handled without allowing unproductive loops to run away. See the
-[configuration guide](docs/configuration.md#continue-guard) for observe mode
-and follow-up limits.
-
-**Tool Approval Policy**
-
-Warp can load tool approval rules from TOML and apply them before tool calls
-reach Codex. Use this to add approval hints for known-safe commands, force a
-manual prompt for interactive or sensitive commands, or deny requests that
-should never be sent to the client.
-
-**Notice:** tool approval policy can affect what Codex is told to approve,
-prompt for, or block. Review every rule before enabling it. You are responsible
-for your own policy configuration and use it at your own risk.
-
-See the [tool approval policy guide](docs/tool-approval-policy.md) for the rule
-format and the [configuration guide](docs/configuration.md#tool-approval-policy)
-for deployment examples.
-
-**Local Web UI**
-
-Warp can serve a lightweight management UI at `/ui/` on the same listen address.
-It is disabled by default; set `[webui] enabled = true` to turn it on. Use it to
-add or edit providers and models, toggle them with switches, chart
-token/session and model usage over time from a local SQLite database, inspect
-provider and model usage breakdowns, and view or change logging from the Logs
-tab. See the
-[configuration guide](docs/configuration.md#web-ui-and-analytics).
-
-## Built-In Gateway Profiles
-
-| Profile | File | Purpose | Enabled by default |
-| --- | --- | --- | --- |
-| OpenAI-compatible template | [`configs/openai-compatible.toml`](configs/openai-compatible.toml) | Copy or edit for any provider with OpenAI-style auth and endpoints. | No |
-| ClinePass | [`configs/clinepass.toml`](configs/clinepass.toml) | Ready profile for ClinePass with a local documented model catalog. | No |
-| Hicap | [`configs/hicap.toml`](configs/hicap.toml) | Ready profile for Hicap with live model discovery, a local catalog fallback, and the required integration tag. | No |
-| Moonshot KimiCode | [`configs/moonshot-kimicode.toml`](configs/moonshot-kimicode.toml) | Ready profile for Moonshot KimiCode subscription keys with a local Kimi model catalog fallback. | No |
-| OpenCode Go | [`configs/opencode-go.toml`](configs/opencode-go.toml) | Ready profile for OpenCode Go subscription keys, limited to its OpenAI-compatible chat-completions models. | No |
-| Xiaomi Token Plan | [`configs/xiaomi-token-plan.toml`](configs/xiaomi-token-plan.toml) | Ready profile for `https://token-plan-sgp.xiaomimimo.com/v1`. | No |
-| OpenRouter | [`configs/openrouter.toml`](configs/openrouter.toml) | Ready profile for OpenRouter; app attribution headers are attached to OpenRouter requests. | No |
-| Destination override | `--destination https://provider.example/v1` | Quick one-off target without editing provider config. | Only when passed |
+Model-family catalogs currently cover DeepSeek, MiniMax, Moonshot AI, Qwen,
+xAI, Xiaomi, Z.ai, and Tencent Hunyuan 3. See
+[`configs/model-families/`](configs/model-families/) for exact model entries.
 
 ## OpenRouter App Attribution
 
-Codex Warp automatically attaches [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution)
-headers to requests whose configured destination host is `openrouter.ai` or a
-subdomain of it, including OpenRouter's regional API hosts. This applies across
-its API paths (`/chat/completions`, native `/responses`, `/models`, and other
-OpenRouter endpoints). It does not report traffic sent to another gateway:
-OpenRouter creates attribution from requests it receives, so only traffic
-routed through OpenRouter can appear in its app rankings and analytics.
+Warp automatically adds OpenRouter app-attribution headers when a configured
+destination is `openrouter.ai` or one of its subdomains, including regional API
+hosts:
 
 - `HTTP-Referer`: `https://github.com/jatmn/Codex-warp`
 - `X-OpenRouter-Title`: `Codex Warp`
-- `X-Title`: `Codex Warp` (backwards-compatible alias)
+- `X-Title`: `Codex Warp` (compatibility alias)
 - `X-OpenRouter-Categories`: `cli-agent,programming-app`
 
-These are Codex Warp's own identity values. To override any of them for an
-OpenRouter provider, set the header under that provider's `[provider.headers]`
-or `[providers.<id>.headers]` section — user-supplied headers always take
-precedence over the automatic ones. Explicit headers for other providers are
-still forwarded unchanged.
+These headers identify Codex Warp only for requests sent through OpenRouter.
+To attribute traffic to your own project, override any of these values under
+the OpenRouter profile's `[provider.headers]` or `[providers.<id>.headers]`
+table. Explicitly configured headers take precedence over the defaults.
 
-Note: `HTTP-Referer` is Codex Warp's public GitHub URL, so traffic sent through
-OpenRouter is attributed under that identity in OpenRouter's public rankings.
-To attribute traffic to your own project instead, override `HTTP-Referer` (and
-the other headers) under `[provider.headers]` or `[providers.<id>.headers]`.
+## Optional Web UI
 
-## Supported Model Families
+Enable the local management UI in `codex-warp.toml`:
 
-| Parent brand | Catalog | Examples covered |
-| --- | --- | --- |
-| DeepSeek | [`configs/model-families/deepseek.toml`](configs/model-families/deepseek.toml) | `deepseek-v3.2`, `deepseek-v3.2-speciale`, `deepseek-v4-flash`, `deepseek-v4-pro` |
-| MiniMax | [`configs/model-families/minimax.toml`](configs/model-families/minimax.toml) | `minimax-m2.5`, `minimax-m2.7`, `minimax-m3` |
-| Moonshot AI | [`configs/model-families/moonshot-ai.toml`](configs/model-families/moonshot-ai.toml) | `kimi-k2`, `kimi-k2-0905`, `kimi-k2.5`, `kimi-k2.6`, `kimi-k2.6-code`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-for-coding` |
-| Alibaba Cloud | [`configs/model-families/qwen.toml`](configs/model-families/qwen.toml) | `qwen3.6-35b-a3b`; conservative broad defaults for `qwen3.6*` and `qwen3.7*` |
-| xAI | [`configs/model-families/x-ai.toml`](configs/model-families/x-ai.toml) | `grok-4.3`, `grok-4.5`, `grok-4.6`, `grok-build-0.1` |
-| Xiaomi | [`configs/model-families/xiaomi.toml`](configs/model-families/xiaomi.toml) | `mimo-v2.5`, `mimo-v2.5-pro` |
-| Z.ai | [`configs/model-families/z-ai.toml`](configs/model-families/z-ai.toml) | `glm-5`, `glm-5.1`, `glm-5.2`, `glm-5.3` |
-| Tencent Hunyuan 3 (Hy3) | [`configs/model-families/hy3.toml`](configs/model-families/hy3.toml) | `hy3`, `hy3:free`, `hicap/hy3`, `hicap/hy3:free`, `tencent/hy3`, `tencent/hy3:free` |
+```toml
+[webui]
+enabled = true
+```
 
-## More Docs
+Then open `http://127.0.0.1:8787/ui/` to manage providers and models, inspect
+usage analytics, and view logs. Remote binding has additional authentication
+requirements; read [Web UI and analytics](docs/configuration.md#web-ui-and-analytics)
+before exposing it beyond localhost.
 
-- [Quick start](docs/quick-start.md)
-- [Contributing](CONTRIBUTING.md)
-- [Configuration guide](docs/configuration.md)
-- [Developer build guide](docs/development.md)
-- [Provider catalogs](docs/provider-catalogs.md)
-- [Model-family catalogs](docs/model-family-catalogs.md)
-- [Codex client compatibility](docs/codex-cli-compatibility.md)
-- [Tool approval policy](docs/tool-approval-policy.md)
-- [Live testing](docs/live-testing.md)
-- [Legal notices](docs/legal-notices.md)
+## Documentation
 
-## Current Scope
+| If you want to... | Read... |
+| --- | --- |
+| Complete the first setup | [Quick start](docs/quick-start.md) |
+| Configure providers, routing, transforms, logging, or the Web UI | [Configuration guide](docs/configuration.md) |
+| Add or update a gateway profile | [Provider catalogs](docs/provider-catalogs.md) |
+| Add model metadata and capabilities | [Model-family catalogs](docs/model-family-catalogs.md) |
+| Understand Codex client behavior | [Codex compatibility](docs/codex-cli-compatibility.md) |
+| Configure tool-call approval rules | [Tool approval policy](docs/tool-approval-policy.md) |
+| Test against a live upstream | [Live testing](docs/live-testing.md) |
+| Build or contribute | [Development guide](docs/development.md) and [contributing](CONTRIBUTING.md) |
 
-Implemented now:
+## Scope
 
-- `POST /v1/responses` and `/responses`
-- `GET /v1/models` and `/models`
-- streaming chat-completions text to Responses SSE
-- streaming chat-completions function calls to Responses `function_call` output
-  items, including expansion of Codex `namespace` tools such as
-  `multi_agent_v1` and `collaboration` into ordinary functions
-- non-streaming chat-completions response conversion
-- editable TOML provider headers, auth, endpoint paths, model metadata, and
-  tool/request morphs
-- continue guard (enabled by default) for premature chat-completions stops
-- sanitized debug logging that redacts obvious API keys and provider tokens even
-  when full bodies or raw stream frames are enabled
-- opt-in tool approval policy for GitHub CLI approval hints, escalation
-  requests without reusable prefixes, and token-disclosure blocking
-- upstream `User-Agent` reporting as `codex-warp/<version>`
-- GitHub Actions CI for format, tests, build, CLI smoke, and whitespace checks
+Codex Warp currently handles `/v1/responses`, `/v1/models`, streaming and
+non-streaming Chat Completions conversion, function and namespace tool calls,
+structured output fallbacks, configurable request morphs, and local provider
+management. Multimodal image and file request translation is not implemented.
 
-Still intentionally small:
+Built-in profiles stay disabled until you select them explicitly. Selecting a
+profile allows Warp to contact its configured upstream, so set any required
+credential before starting Warp.
 
-- no multimodal image/file request translation yet
-- no built-in provider profile auto-connects without user config
-
-## Affiliation
+## Project Status And Safety
 
 Codex Warp is an independent project and is not affiliated with, endorsed by,
-sponsored by, or approved by OpenAI. References to OpenAI, Codex, ChatGPT, the
-OpenAI API, Responses API, or related product names are for descriptive
-compatibility purposes only. Those names may be trademarks, service marks,
-product names, or other protected names owned by OpenAI or its affiliates.
+sponsored by, or approved by OpenAI. Provider APIs and Codex compatibility can
+change; review configuration changes and keep credentials out of checked-in
+files.
+
+Tool approval policy changes what Codex is told to approve, prompt for, or
+block. Review every rule before enabling it. You are responsible for your own
+policy configuration and use it at your own risk.
 
 ## License
 
 Codex Warp is licensed under the Apache License 2.0 with the Commons Clause
 License Condition v1.0. Personal use, internal business use, modification, and
-distribution are allowed under the license terms, but selling or reselling the
+distribution are allowed under the license terms. Selling or reselling the
 software, including paid hosted services whose value substantially comes from
 Codex Warp, requires a separate license from jatmn.
 
-See [`NOTICE`](NOTICE) for attribution, non-affiliation, and trademark notices.
+See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE) for the complete terms,
+attribution, non-affiliation, and trademark notices.
