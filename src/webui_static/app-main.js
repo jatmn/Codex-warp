@@ -887,6 +887,8 @@
         String(fd.get("chat_completions_path") || "").trim() || "/chat/completions",
       models_path: String(fd.get("models_path") || "").trim() || "/models",
       model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
+      request_stream_options_include_usage:
+        providerForm.querySelector("[name=request_stream_options_include_usage]").checked,
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
     };
     try {
@@ -907,6 +909,7 @@
               name: body.name,
               ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
               ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
+              request_stream_options_include_usage: body.request_stream_options_include_usage,
               enabled: body.enabled,
               ...(headers ? { headers } : {}),
             };
@@ -934,6 +937,7 @@
             models_path: body.models_path,
             ...(headers ? { headers } : {}),
             model_catalog_only: body.model_catalog_only,
+            request_stream_options_include_usage: body.request_stream_options_include_usage,
             enabled: body.enabled,
           }),
         });
@@ -1208,6 +1212,8 @@
         p.chat_completions_path || "/chat/completions";
       providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
+      providerForm.querySelector("[name=request_stream_options_include_usage]").checked =
+        !!p.request_stream_options_include_usage;
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
       if (allowCustomHeaders) {
         applyProviderHeaders(p.headers);

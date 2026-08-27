@@ -1682,6 +1682,10 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     let preserved_metadata = existing.model_metadata.clone();
     let preserved_transform = existing.transform.clone();
     let preserved_disabled_models = existing.disabled_models.clone();
+    // Older overlays omit this field (None). Keep the TOML/runtime value until a
+    // Web UI edit explicitly stores true/false.
+    let preserved_request_stream_options_include_usage =
+        existing.request_stream_options_include_usage;
     let preserved_api_key = if overlay.api_key.is_none() {
         existing.api_key.clone()
     } else {
@@ -1716,6 +1720,10 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
     existing.model_metadata = preserved_metadata;
     existing.transform = preserved_transform;
     existing.disabled_models = preserved_disabled_models;
+    if existing.request_stream_options_include_usage.is_none() {
+        existing.request_stream_options_include_usage =
+            preserved_request_stream_options_include_usage;
+    }
 }
 
 fn strip_sensitive_provider_headers(provider: &mut ProviderConfig) {

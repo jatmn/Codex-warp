@@ -2509,3 +2509,27 @@ fn debug_overlay_accepts_unset_tracing_filter_with_pinned_fallback() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn merge_provider_overlay_preserves_request_stream_options_include_usage_when_omitted() {
+    let mut existing = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        request_stream_options_include_usage: Some(true),
+        ..ProviderConfig::default()
+    };
+    let overlay = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        request_stream_options_include_usage: None,
+        ..ProviderConfig::default()
+    };
+    super::merge_provider_overlay(&mut existing, &overlay);
+    assert_eq!(existing.request_stream_options_include_usage, Some(true));
+
+    let overlay = ProviderConfig {
+        base_url: "https://example.test/v1".to_string(),
+        request_stream_options_include_usage: Some(false),
+        ..ProviderConfig::default()
+    };
+    super::merge_provider_overlay(&mut existing, &overlay);
+    assert_eq!(existing.request_stream_options_include_usage, Some(false));
+}

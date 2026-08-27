@@ -199,6 +199,14 @@ The main transform knobs are:
   a provider that documents `stream_options.include_usage`; requests that do
   not already include `stream_options` then receive
   `stream_options.include_usage = true` for local token analytics.
+
+- `providers.<id>.request_stream_options_include_usage`: optional provider-level
+  override for the same stream-usage injection. When set, it wins over the
+  baseline and provider `transform` value after model-family patches are
+  applied. Use this for managed Web UI providers (or TOML providers that should
+  keep the shared baseline morphs) when the gateway only emits chat-stream
+  token usage if `stream_options.include_usage` is true. Leave unset to inherit
+  the transform default.
 - `transform.preserve_native_agent_messages`: defaults to `false`, translating
   Codex-only `agent_message` history into standard user messages for compatible
   Responses gateways. Converted messages wait for outstanding call/output
