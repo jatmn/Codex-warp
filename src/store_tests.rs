@@ -1782,12 +1782,7 @@ fn create_named_template_catalog_preserves_owner_at_minimum_route_order() {
             .unwrap();
         }
         store
-            .create_provider_with_catalog(
-                "duplicate",
-                &provider(),
-                &provider().model_catalog,
-                true,
-            )
+            .create_provider_with_catalog("duplicate", &provider(), &provider().model_catalog, true)
             .unwrap();
     }
 

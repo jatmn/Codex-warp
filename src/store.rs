@@ -1507,11 +1507,10 @@ fn now_ms() -> i64 {
 /// in ascending order, so the most recent mutation wins for overlapping aliases
 /// as well as for enabled route claims after reopening the store.
 fn next_route_order(db: &Connection) -> anyhow::Result<i64> {
-    let maximum: Option<i64> = db.query_row(
-        "SELECT MAX(route_order) FROM model_overlays",
-        [],
-        |row| row.get(0),
-    )?;
+    let maximum: Option<i64> =
+        db.query_row("SELECT MAX(route_order) FROM model_overlays", [], |row| {
+            row.get(0)
+        })?;
     match maximum {
         Some(order) => order
             .checked_add(1)
@@ -1528,8 +1527,10 @@ fn normalize_route_orders(db: &Connection) -> anyhow::Result<()> {
             "SELECT provider_id, model_id FROM model_overlays
              ORDER BY route_order ASC, provider_id ASC, model_id ASC",
         )?;
-        stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
     };
     let count = i64::try_from(rows.len()).map_err(|_| anyhow!("too many model route rows"))?;
     let start = 1_i64
