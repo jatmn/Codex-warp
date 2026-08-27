@@ -453,7 +453,7 @@ struct ProviderView {
     chat_completions_path: String,
     models_path: String,
     model_catalog_only: bool,
-    /// True when `id` matches a bundled named example template.
+    /// True when the provider still matches a bundled named example snapshot.
     named_template: bool,
     models: Vec<ModelView>,
 }
@@ -1267,10 +1267,55 @@ fn build_provider_view(
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),
         model_catalog_only: provider.model_catalog_only,
-        named_template: bundled_provider_templates().iter().any(|template| {
-            template.key != "custom" && !template.id.is_empty() && template.id == id
-        }),
+        named_template: provider_matches_named_template(id, provider),
         models: build_model_views(state, id, provider, routed_models, discovered),
+    }
+}
+
+/// Named-template instances keep the bundled gateway snapshot even when a
+/// duplicate instance needs a suffixed id. Match the snapshot rather than only
+/// the id so later duplicate instances retain the template-owned edit locks.
+fn provider_matches_named_template(id: &str, provider: &ProviderConfig) -> bool {
+    bundled_provider_templates().iter().any(|template| {
+        template.key != "custom"
+            && !template.id.is_empty()
+            && (template.id == id || named_template_snapshot_matches(template, provider))
+    })
+}
+
+fn named_template_snapshot_matches(
+    template: &crate::provider_templates::ProviderTemplate,
+    provider: &ProviderConfig,
+) -> bool {
+    let snapshot = &template.provider;
+    let template_catalog = (
+        &snapshot.model_catalog,
+        &snapshot.model_metadata,
+        &snapshot.transform,
+    );
+    let provider_catalog = (
+        &provider.model_catalog,
+        &provider.model_metadata,
+        &provider.transform,
+    );
+    snapshot.base_url == provider.base_url
+        && snapshot.auth_header == provider.auth_header
+        && snapshot.auth_scheme == provider.auth_scheme
+        && snapshot.responses_path == provider.responses_path
+        && snapshot.chat_completions_path == provider.chat_completions_path
+        && snapshot.models_path == provider.models_path
+        && snapshot.model_catalog_only == provider.model_catalog_only
+        && serialized_values_equal(template_catalog, provider_catalog)
+        && snapshot
+            .headers
+            .iter()
+            .all(|(name, value)| provider.headers.get(name) == Some(value))
+}
+
+fn serialized_values_equal<T: Serialize>(left: T, right: T) -> bool {
+    match (serde_json::to_value(left), serde_json::to_value(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -1580,6 +1625,16 @@ fn unique_provider_id(state: &AppState, base_id: &str) -> String {
     candidate
 }
 
+fn unique_named_template_provider_id(state: &AppState, template_id: &str) -> String {
+    let taken = template_id == PRIMARY_PROVIDER_ID
+        || state.read_config().providers.contains_key(template_id);
+    if taken {
+        unique_provider_id(state, template_id)
+    } else {
+        template_id.to_string()
+    }
+}
+
 /// TOML owns credentials for a TOML-backed provider. Those overlays never
 /// persist `api_key`, and `api_key_env` is restored from TOML on restart, so a
 /// Web UI mutation cannot be distinguished from a stale snapshot after the
@@ -1698,6 +1753,18 @@ fn apply_named_template_credentials(provider: &mut ProviderConfig, fields: &Prov
         OptionalPatch::Absent => {}
         OptionalPatch::Clear => provider.headers.clear(),
         OptionalPatch::Set(headers) => provider.headers = headers.clone(),
+    }
+}
+
+/// The friendly name is operator-owned, including on bundled named templates.
+fn apply_named_template_name(provider: &mut ProviderConfig, fields: &ProviderPersist) {
+    match &fields.name {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.name = None,
+        OptionalPatch::Set(name) => {
+            let trimmed = name.trim();
+            provider.name = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
     }
 }
 
@@ -2038,8 +2105,9 @@ async fn create_provider(
             }
             (id, provider)
         } else {
-            // Named example profiles always use the bundled provider id + snapshot.
-            let id = template.id.clone();
+            // The first instance keeps the bundled id; duplicate instances get
+            // a suffixed id so they can hold a second credential.
+            let id = unique_named_template_provider_id(&state, &template.id);
             validate_provider_id(&id)?;
             if id == PRIMARY_PROVIDER_ID {
                 return Err(ApiError::bad_request("cannot create default provider id"));
@@ -2047,6 +2115,7 @@ async fn create_provider(
             let mut provider = template.provider;
             provider.enabled = fields.enabled.unwrap_or(true);
             reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
+            apply_named_template_name(&mut provider, &fields);
             apply_named_template_credentials(&mut provider, &fields);
             (id, provider)
         }
@@ -2215,9 +2284,7 @@ async fn update_provider(
     // Disabling uses the same epoch: live ownership must be gone before the
     // disabled config is visible, otherwise selection can fall through to
     // another provider while this owner's routes are still published.
-    let mut identity_routes = if (snapshot.enabled && previous_enabled && refresh_discovery)
-        || (previous_enabled && !snapshot.enabled)
-    {
+    let mut identity_routes = if previous_enabled && (refresh_discovery || !snapshot.enabled) {
         Some(state.model_routes.write().await)
     } else {
         None

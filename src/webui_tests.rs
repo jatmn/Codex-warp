@@ -907,6 +907,51 @@ fn bundled_named_provider_view_sets_named_template() {
 }
 
 #[test]
+fn named_template_view_matches_suffixed_duplicate_snapshot() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    let state = test_state();
+    let mut duplicate = template.provider.clone();
+    duplicate.name = Some("Work key".into());
+    duplicate.api_key = Some("secret-key".into());
+
+    let view = build_provider_view(&state, "opencode_go-2", &duplicate, &[], &BTreeMap::new());
+
+    assert!(view.named_template);
+    assert_eq!(view.name.as_deref(), Some("Work key"));
+    assert!(view.has_inline_api_key);
+}
+
+#[test]
+fn named_template_view_ignores_operator_changes_for_template_match() {
+    let template = find_provider_template("hicap").expect("bundled template");
+    let state = test_state();
+    let mut changed = template.provider.clone();
+    changed.name = Some("Custom label".into());
+    changed.enabled = false;
+    changed.api_key = Some("secret-key".into());
+    changed.headers.insert("X-Extra".into(), "1".into());
+
+    let unchanged = build_provider_view(&state, "other-hicap", &changed, &[], &BTreeMap::new());
+    assert!(unchanged.named_template);
+
+    changed.base_url = "https://changed.example/v1".into();
+    let changed_view = build_provider_view(&state, "other-hicap", &changed, &[], &BTreeMap::new());
+    assert!(!changed_view.named_template);
+
+    let mut different_catalog = template.provider.clone();
+    different_catalog.name = Some("Same endpoint".into());
+    different_catalog.model_catalog.pop();
+    let catalog_view = build_provider_view(
+        &state,
+        "other-hicap",
+        &different_catalog,
+        &[],
+        &BTreeMap::new(),
+    );
+    assert!(!catalog_view.named_template);
+}
+
+#[test]
 fn normalize_provider_api_key_fields_keeps_unset_env_name() {
     const NAME: &str = "CODEXWARP_MISSING_API_KEY_ENV_0001";
     let mut fields =
@@ -2415,7 +2460,12 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("function looksLikeEnvVarDraft("));
     assert!(app.contains("function looksLikeMaskedApiKeyPreview("));
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
-    assert!(app.contains("nameInput.readOnly = isNamed"));
+    assert!(app.contains("nameInput.readOnly = false"));
+    assert!(app.contains("baseUrlInput.readOnly = isNamed"));
+    assert!(
+        app.contains("template: template.key,\n              id: template.id,\n              name: body.name,"),
+        "named-template creates must submit the editable friendly name"
+    );
     assert!(app.contains("function maskApiKey("));
     assert!(app.contains("function looksLikeEnvVarName("));
     assert!(app.contains("function credentialPatch("));
@@ -2933,6 +2983,68 @@ async fn create_provider_honors_nonempty_custom_template() {
     assert_eq!(view.base_url, "https://generated.example/v1");
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn named_template_create_allows_duplicate_instances_and_names() {
+    let (state, store_dir) = temporary_store_state("named-template-duplicate-instances");
+    let fields = |name: &'static str, api_key: &'static str| ProviderPersist {
+        name: OptionalPatch::Set(name.into()),
+        base_url: None,
+        enabled: Some(true),
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set(api_key.into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+    };
+
+    let (_, Json(primary)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("opencode_go".into()),
+            fields: fields("Primary OpenCode", "primary-secret"),
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("first named-template instance");
+    assert_eq!(primary.id, "opencode_go");
+    assert_eq!(primary.name.as_deref(), Some("Primary OpenCode"));
+
+    let (_, Json(secondary)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("opencode_go".into()),
+            fields: fields("Backup OpenCode", "backup-secret"),
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("duplicate named-template instance");
+    assert_eq!(secondary.id, "opencode_go-2");
+    assert_eq!(secondary.name.as_deref(), Some("Backup OpenCode"));
+    assert!(secondary.named_template);
+
+    let config = state.read_config();
+    let primary_provider = config.providers.get("opencode_go").expect("primary");
+    let secondary_provider = config.providers.get("opencode_go-2").expect("secondary");
+    assert_eq!(primary_provider.api_key.as_deref(), Some("primary-secret"));
+    assert_eq!(secondary_provider.api_key.as_deref(), Some("backup-secret"));
+    assert_eq!(
+        serde_json::to_value(&primary_provider.model_catalog).expect("serialize primary catalog"),
+        serde_json::to_value(&secondary_provider.model_catalog)
+            .expect("serialize secondary catalog")
+    );
+    drop(config);
+
+    let _ = std::fs::remove_dir_all(store_dir);
 }
 
 #[tokio::test]

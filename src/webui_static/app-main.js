@@ -904,6 +904,7 @@
           : {
               template: template.key,
               id: template.id,
+              name: body.name,
               ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
               ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
               enabled: body.enabled,
@@ -1079,12 +1080,13 @@
     const identity = $("#provider-identity-fields");
     const advanced = $("#provider-advanced");
     const idInput = providerForm.querySelector("[name=id]");
-    const nameInput = providerForm.querySelector("[name=name]");
     const baseUrlInput = providerForm.querySelector("[name=base_url]");
-    identity.classList.toggle("template-locked", isNamed);
+    const nameInput = providerForm.querySelector("[name=name]");
+    identity.classList.remove("template-locked");
     advanced.hidden = isNamed;
     baseUrlInput.readOnly = isNamed;
-    nameInput.readOnly = isNamed;
+    baseUrlInput.classList.toggle("template-locked", isNamed);
+    nameInput.readOnly = false;
     ["auth_header", "auth_scheme", "responses_path", "chat_completions_path", "models_path"]
       .forEach((name) => {
         providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
