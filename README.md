@@ -48,9 +48,11 @@ For platform-specific prerequisites, see the
 ### 2. Start A Provider
 
 The condensed commands below use Bash on Linux and macOS. On Windows
-PowerShell, use the matching [provider startup](docs/quick-start.md#2-choose-a-provider)
-and [proxy check](docs/quick-start.md#3-check-the-proxy) commands in the full
-quick start, then return here for Codex configuration.
+PowerShell, follow the full quick start through
+[provider startup](docs/quick-start.md#2-choose-a-provider),
+[proxy checks](docs/quick-start.md#3-check-the-proxy), and
+[Windows Codex auth](docs/quick-start.md#windows-codex-auth), then continue at
+[Use Codex](docs/quick-start.md#5-use-codex).
 
 ```bash
 export OPENROUTER_API_KEY="..."
@@ -109,8 +111,8 @@ Warp serves the live model catalog at `http://127.0.0.1:8787/v1/models`.
   premature text-only stops.
 - **Local operations** — optional Web UI, SQLite usage analytics, process logs,
   and sanitized debug events stay on your machine.
-- **Policy controls** — optional TOML rules can attach approval hints, require
-  manual review, or deny selected downstream tool calls.
+- **Policy controls** — optional TOML rules can attach approval hints, request
+  escalation without a reusable prefix, or deny selected downstream tool calls.
 
 ## Provider Profiles
 
