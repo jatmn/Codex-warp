@@ -907,24 +907,35 @@ fn bundled_named_provider_view_sets_named_template() {
 }
 
 #[test]
-fn named_template_view_matches_suffixed_duplicate_snapshot() {
+fn named_template_view_uses_persisted_suffixed_duplicate_provenance() {
     let template = find_provider_template("opencode_go").expect("bundled template");
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("named-template-duplicate-provenance");
     let mut duplicate = template.provider.clone();
     duplicate.name = Some("Work key".into());
     duplicate.api_key = Some("secret-key".into());
+    duplicate.model_catalog.pop();
+    duplicate.template_key = Some("opencode_go".into());
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .create_provider_with_catalog("opencode_go-2", &duplicate, &duplicate.model_catalog, false)
+        .unwrap();
 
     let view = build_provider_view(&state, "opencode_go-2", &duplicate, &[], &BTreeMap::new());
 
     assert!(view.named_template);
+    assert_eq!(view.template_key.as_deref(), Some("opencode_go"));
     assert_eq!(view.name.as_deref(), Some("Work key"));
     assert!(view.has_inline_api_key);
+
+    let _ = std::fs::remove_dir_all(store_dir);
 }
 
 #[test]
-fn named_template_view_ignores_operator_changes_for_template_match() {
+fn manual_provider_snapshot_does_not_capture_named_template_classification() {
     let template = find_provider_template("hicap").expect("bundled template");
-    let state = test_state();
+    let (state, store_dir) = temporary_store_state("manual-provider-template-snapshot");
     let mut changed = template.provider.clone();
     changed.name = Some("Custom label".into());
     changed.enabled = false;
@@ -932,23 +943,60 @@ fn named_template_view_ignores_operator_changes_for_template_match() {
     changed.headers.insert("X-Extra".into(), "1".into());
 
     let unchanged = build_provider_view(&state, "other-hicap", &changed, &[], &BTreeMap::new());
-    assert!(unchanged.named_template);
+    assert!(!unchanged.named_template);
+    assert!(unchanged.template_key.is_none());
 
     changed.base_url = "https://changed.example/v1".into();
     let changed_view = build_provider_view(&state, "other-hicap", &changed, &[], &BTreeMap::new());
     assert!(!changed_view.named_template);
 
-    let mut different_catalog = template.provider.clone();
-    different_catalog.name = Some("Same endpoint".into());
-    different_catalog.model_catalog.pop();
-    let catalog_view = build_provider_view(
-        &state,
-        "other-hicap",
-        &different_catalog,
-        &[],
-        &BTreeMap::new(),
-    );
-    assert!(!catalog_view.named_template);
+    let _ = std::fs::remove_dir_all(store_dir);
+}
+
+#[test]
+fn toml_backed_provider_cannot_claim_template_provenance_from_overlay() {
+    let template = find_provider_template("opencode_go").expect("bundled template");
+    let (state, store_dir) = temporary_store_state("toml-template-provenance");
+    let mut overlay = template.provider.clone();
+    overlay.template_key = Some("opencode_go".into());
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "opencode_go-2".into(),
+            ProviderConfig {
+                base_url: "https://toml.example/v1".into(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    state
+        .store
+        .as_ref()
+        .expect("store present")
+        .upsert_provider_overlay("opencode_go-2", Some(true), false, false, Some(&overlay))
+        .unwrap();
+    {
+        let mut config = state.config.write().expect("config lock");
+        state
+            .store
+            .as_ref()
+            .expect("store present")
+            .apply_overlays_with_tracing_fallback(&mut config, None)
+            .unwrap();
+    }
+    let provider = state
+        .config
+        .write()
+        .expect("config lock")
+        .providers
+        .get("opencode_go-2")
+        .cloned()
+        .expect("provider");
+    assert!(provider.template_key.is_none());
+    let view = build_provider_view(&state, "opencode_go-2", &provider, &[], &BTreeMap::new());
+    assert!(!view.named_template);
+
+    let _ = std::fs::remove_dir_all(store_dir);
 }
 
 #[test]
@@ -2461,6 +2509,10 @@ fn provider_form_matches_credential_and_header_ownership() {
     assert!(app.contains("function looksLikeMaskedApiKeyPreview("));
     assert!(app.contains("name: String(fd.get(\"name\") || \"\").trim() || null"));
     assert!(app.contains("nameInput.readOnly = false"));
+    assert!(
+        app.contains("template.key === provider.template_key"),
+        "suffixed named-template instances must identify their source template"
+    );
     assert!(app.contains("baseUrlInput.readOnly = isNamed"));
     assert!(
         app.contains("template: template.key,\n              id: template.id,\n              name: body.name,"),
@@ -2887,7 +2939,7 @@ async fn delete_provider_returns_no_content_and_drops_managed_overlay() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     let state = state_with_store(store);
     {
@@ -3032,9 +3084,21 @@ async fn named_template_create_allows_duplicate_instances_and_names() {
     assert_eq!(secondary.name.as_deref(), Some("Backup OpenCode"));
     assert!(secondary.named_template);
 
-    let config = state.read_config();
-    let primary_provider = config.providers.get("opencode_go").expect("primary");
-    let secondary_provider = config.providers.get("opencode_go-2").expect("secondary");
+    let (primary_provider, secondary_provider) = {
+        let config = state.read_config();
+        (
+            config
+                .providers
+                .get("opencode_go")
+                .expect("primary")
+                .clone(),
+            config
+                .providers
+                .get("opencode_go-2")
+                .expect("secondary")
+                .clone(),
+        )
+    };
     assert_eq!(primary_provider.api_key.as_deref(), Some("primary-secret"));
     assert_eq!(secondary_provider.api_key.as_deref(), Some("backup-secret"));
     assert_eq!(
@@ -3042,7 +3106,72 @@ async fn named_template_create_allows_duplicate_instances_and_names() {
         serde_json::to_value(&secondary_provider.model_catalog)
             .expect("serialize secondary catalog")
     );
-    drop(config);
+    assert_eq!(
+        primary_provider.template_key.as_deref(),
+        Some("opencode_go")
+    );
+    assert_eq!(
+        secondary_provider.template_key.as_deref(),
+        Some("opencode_go")
+    );
+    let shared_model_id = primary_provider
+        .model_catalog
+        .first()
+        .expect("bundled catalog model")
+        .id
+        .clone();
+    let shared_upstream_id = primary_provider
+        .model_catalog
+        .first()
+        .expect("bundled catalog model")
+        .upstream_id
+        .clone()
+        .expect("bundled catalog model maps to an upstream id");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get(&shared_model_id).map(String::as_str),
+        Some("opencode_go"),
+        "adding a duplicate must not silently reroute existing bare model requests"
+    );
+    drop(routes);
+    let exact_prefix = format!("opencode_go-2/{shared_upstream_id}");
+    let normalized_prefix = format!("opencode-go-2/{shared_upstream_id}");
+    {
+        let config = state.read_config();
+        assert_eq!(
+            crate::config::provider_id_for_config_model(&config, &exact_prefix).as_deref(),
+            Some("opencode_go-2")
+        );
+        assert_eq!(
+            crate::config::provider_id_for_config_model(&config, &normalized_prefix).as_deref(),
+            Some("opencode_go-2")
+        );
+    }
+    let mut upstream_body = serde_json::json!({ "model": exact_prefix });
+    crate::upstream::rewrite_model_for_upstream(
+        &state.read_config(),
+        "opencode_go-2",
+        &secondary_provider,
+        &mut upstream_body,
+    );
+    assert_eq!(upstream_body["model"], shared_upstream_id);
+
+    drop(state);
+    let reopened_store =
+        crate::store::Store::open(&store_dir.join("overlay.db")).expect("reopen store");
+    let mut restored_config = crate::config::AppConfig::default();
+    reopened_store
+        .apply_overlays_with_tracing_fallback(&mut restored_config, None)
+        .unwrap();
+    let restored_seeds = reopened_store.enabled_model_route_seeds().unwrap();
+    let restored_routes =
+        crate::models::route_seeds_from_config_and_rows(&restored_config, &restored_seeds);
+    assert_eq!(
+        restored_routes.get(&shared_model_id).map(String::as_str),
+        Some("opencode_go"),
+        "restart must replay the same shared bare-slug owner"
+    );
 
     let _ = std::fs::remove_dir_all(store_dir);
 }
@@ -3058,7 +3187,7 @@ async fn provider_identity_edit_clears_prior_discovery_snapshot() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     let state = state_with_store(store);
     state
@@ -3117,7 +3246,7 @@ async fn set_provider_enabled_keeps_existing_managed_overlay_json() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     store
         .debug_set_provider_overlay_json(
@@ -3178,7 +3307,7 @@ async fn set_provider_enabled_recreates_vanished_managed_overlay() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     store
         .debug_delete_overlay_row_keep_memory("managed")
@@ -4963,7 +5092,7 @@ async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destina
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     {
         let mut config = state.config.write().expect("config lock");
@@ -5062,7 +5191,7 @@ async fn provider_disable_routing_epoch_evicts_live_routes_before_config_is_visi
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     {
         let mut config = state.config.write().expect("config lock");
@@ -5158,7 +5287,7 @@ async fn set_provider_enabled_disable_evicts_live_routes_in_same_epoch() {
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     {
         let mut config = state.config.write().expect("config lock");
@@ -5237,7 +5366,7 @@ async fn update_disabled_provider_identity_does_not_wait_for_route_epoch() {
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     {
         let mut config = state.config.write().expect("config lock");
@@ -5304,7 +5433,7 @@ async fn set_provider_enabled_true_does_not_wait_for_route_epoch() {
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     {
         let mut config = state.config.write().expect("config lock");
@@ -5352,7 +5481,7 @@ async fn update_provider_enable_change_reconciles_catalog_routes() {
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     state
         .config
@@ -5435,7 +5564,7 @@ async fn update_disabled_provider_identity_does_not_refresh_route_seeds() {
         .store
         .as_ref()
         .expect("store present")
-        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("dynamic", &provider, &provider.model_catalog, false)
         .expect("persist provider");
     state
         .config
@@ -6348,7 +6477,7 @@ async fn delete_model_removes_managed_overlay_model() {
         .store
         .as_ref()
         .unwrap()
-        .create_provider_with_catalog("example", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("example", &provider, &provider.model_catalog, false)
         .unwrap();
 
     {

@@ -933,7 +933,7 @@ fn missing_overlay_row_stays_managed_for_this_process() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     assert!(
         store.provider_overlay_exists("managed").unwrap(),
@@ -979,7 +979,7 @@ fn delete_provider_overlay_drops_row_and_managed_memory() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     store.delete_provider_overlay("managed").unwrap();
     assert!(!store.provider_overlay_exists("managed").unwrap());
@@ -1599,7 +1599,7 @@ fn create_provider_with_catalog_persists_provider_and_models() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("newprov", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("newprov", &provider, &provider.model_catalog, false)
         .unwrap();
     assert!(store.provider_is_managed("newprov").unwrap());
     let seeds = store.enabled_model_route_seeds().unwrap();
@@ -1648,7 +1648,7 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog, false)
         .unwrap();
 
     let mut config = AppConfig::default();
@@ -1687,6 +1687,58 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
         .unwrap()
     };
     assert_eq!(leftover, 0);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn create_named_template_catalog_preserves_earliest_colliding_route_owner() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-preserves-routes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = || ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared.clone()],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog("z_owner", &provider(), &provider().model_catalog, false)
+            .unwrap();
+        store
+            .create_provider_with_catalog(
+                "a_duplicate",
+                &provider(),
+                &provider().model_catalog,
+                true,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("z_owner")
+    );
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1847,7 +1899,7 @@ fn delete_managed_model_catalog_entry_updates_provider_and_removes_model_overlay
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog, false)
         .unwrap();
     let mut snapshot = provider.clone();
     snapshot.suppress_catalog_model("drop", None);
@@ -1913,7 +1965,7 @@ fn persist_managed_overlay_disable_updates_provider_and_disables_model_overlay()
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog, false)
         .unwrap();
     store
         .set_model_enabled("managed", "overlay-only", true)

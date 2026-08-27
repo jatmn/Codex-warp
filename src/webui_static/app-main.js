@@ -1139,6 +1139,7 @@
   function findTemplateForProvider(provider) {
     if (!provider) return null;
     return (
+      providerTemplates.find((template) => template.key === provider.template_key) ||
       providerTemplates.find((template) => template.id === provider.id) ||
       providerTemplates.find((template) => template.key === "custom")
     );

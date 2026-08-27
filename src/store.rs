@@ -734,6 +734,7 @@ impl Store {
         provider_id: &str,
         provider: &ProviderConfig,
         catalog: &[ModelCatalogEntry],
+        preserve_colliding_route_owners: bool,
     ) -> anyhow::Result<()> {
         let config_json =
             provider_overlay_config_json(provider, true).context("serialize provider overlay")?;
@@ -758,6 +759,49 @@ impl Store {
                 params![provider_id],
             )?;
             for entry in catalog {
+                if preserve_colliding_route_owners {
+                    let owner = db.query_row(
+                        "SELECT provider_id FROM model_overlays
+                         WHERE model_id = ?1 AND enabled = 1 AND COALESCE(removed, 0) = 0
+                         ORDER BY route_order ASC, provider_id ASC LIMIT 1",
+                        params![entry.id],
+                        |row| row.get::<_, String>(0),
+                    );
+                    if let Ok(owner) = owner
+                        && owner != provider_id
+                    {
+                        let catalog_json = serde_json::to_string(entry)?;
+                        let existing_order = db.query_row(
+                            "SELECT route_order FROM model_overlays
+                             WHERE provider_id = ?1 AND model_id = ?2",
+                            params![owner, entry.id],
+                            |row| row.get::<_, i64>(0),
+                        )?;
+                        db.execute(
+                            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
+                             VALUES (?1, ?2, ?3, 1, ?4, 0, ?5)
+                             ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                                enabled = excluded.enabled,
+                                managed = 1,
+                                catalog_json = excluded.catalog_json,
+                                removed = 0,
+                                route_order = excluded.route_order",
+                            params![
+                                provider_id,
+                                entry.id,
+                                i64::from(entry.enabled),
+                                catalog_json,
+                                // Overlay replay is ascending and the latest
+                                // claim wins. Legacy rows can start at zero,
+                                // so subtraction (rather than saturation) is
+                                // needed to seed this duplicate strictly before
+                                // the existing owner.
+                                existing_order - 1
+                            ],
+                        )?;
+                        continue;
+                    }
+                }
                 let catalog_json = serde_json::to_string(entry)?;
                 let route_order = next_route_order(&db)?;
                 db.execute(
@@ -1625,6 +1669,7 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
         }
     }
     *existing = overlay.clone();
+    existing.template_key = None;
     existing.api_key = preserved_api_key;
     existing.api_key_env = preserved_api_key_env;
     existing.headers = preserved_headers;

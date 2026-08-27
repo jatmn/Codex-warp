@@ -238,6 +238,12 @@ pub struct DebugConfig {
 #[serde(default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
+    /// Bundled named-template key that created this provider. This is
+    /// creation provenance, not a user-facing identity; managed named
+    /// instances retain it when their operator-owned label or model catalog
+    /// changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_key: Option<String>,
     pub base_url: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -262,6 +268,7 @@ impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
             name: None,
+            template_key: None,
             base_url: String::new(),
             enabled: true,
             api_key: None,

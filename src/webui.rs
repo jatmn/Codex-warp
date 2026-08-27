@@ -453,7 +453,10 @@ struct ProviderView {
     chat_completions_path: String,
     models_path: String,
     model_catalog_only: bool,
-    /// True when the provider still matches a bundled named example snapshot.
+    /// Bundled named-template key retained by managed duplicate instances.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template_key: Option<String>,
+    /// True when persisted provenance or a legacy bundled id names a template.
     named_template: bool,
     models: Vec<ModelView>,
 }
@@ -1267,56 +1270,26 @@ fn build_provider_view(
         chat_completions_path: provider.chat_completions_path.clone(),
         models_path: provider.models_path.clone(),
         model_catalog_only: provider.model_catalog_only,
-        named_template: provider_matches_named_template(id, provider),
+        template_key: provider
+            .template_key
+            .clone()
+            .filter(|_| provider_matches_named_template(state, id, provider)),
+        named_template: provider_matches_named_template(state, id, provider),
         models: build_model_views(state, id, provider, routed_models, discovered),
     }
 }
 
-/// Named-template instances keep the bundled gateway snapshot even when a
-/// duplicate instance needs a suffixed id. Match the snapshot rather than only
-/// the id so later duplicate instances retain the template-owned edit locks.
-fn provider_matches_named_template(id: &str, provider: &ProviderConfig) -> bool {
+/// Classification uses persisted creation provenance for managed instances,
+/// including duplicate ids, rather than mutable snapshot coincidence. The
+/// exact bundled-id path preserves legacy TOML-backed profile behavior.
+fn provider_matches_named_template(state: &AppState, id: &str, provider: &ProviderConfig) -> bool {
     bundled_provider_templates().iter().any(|template| {
         template.key != "custom"
             && !template.id.is_empty()
-            && (template.id == id || named_template_snapshot_matches(template, provider))
+            && (template.id == id
+                || (provider_is_managed(state, id)
+                    && provider.template_key.as_deref() == Some(template.key.as_str())))
     })
-}
-
-fn named_template_snapshot_matches(
-    template: &crate::provider_templates::ProviderTemplate,
-    provider: &ProviderConfig,
-) -> bool {
-    let snapshot = &template.provider;
-    let template_catalog = (
-        &snapshot.model_catalog,
-        &snapshot.model_metadata,
-        &snapshot.transform,
-    );
-    let provider_catalog = (
-        &provider.model_catalog,
-        &provider.model_metadata,
-        &provider.transform,
-    );
-    snapshot.base_url == provider.base_url
-        && snapshot.auth_header == provider.auth_header
-        && snapshot.auth_scheme == provider.auth_scheme
-        && snapshot.responses_path == provider.responses_path
-        && snapshot.chat_completions_path == provider.chat_completions_path
-        && snapshot.models_path == provider.models_path
-        && snapshot.model_catalog_only == provider.model_catalog_only
-        && serialized_values_equal(template_catalog, provider_catalog)
-        && snapshot
-            .headers
-            .iter()
-            .all(|(name, value)| provider.headers.get(name) == Some(value))
-}
-
-fn serialized_values_equal<T: Serialize>(left: T, right: T) -> bool {
-    match (serde_json::to_value(left), serde_json::to_value(right)) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
 }
 
 impl ProviderPersist {
@@ -2113,6 +2086,7 @@ async fn create_provider(
                 return Err(ApiError::bad_request("cannot create default provider id"));
             }
             let mut provider = template.provider;
+            provider.template_key = Some(template.key.to_string());
             provider.enabled = fields.enabled.unwrap_or(true);
             reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_name(&mut provider, &fields);
@@ -2177,7 +2151,12 @@ async fn create_provider(
     let mut seeds = state.model_route_seeds.write().await;
 
     store
-        .create_provider_with_catalog(&provider_id, &provider, &provider.model_catalog)
+        .create_provider_with_catalog(
+            &provider_id,
+            &provider,
+            &provider.model_catalog,
+            provider.template_key.is_some(),
+        )
         .map_err(|err| ApiError::internal(err.to_string()))?;
 
     {
