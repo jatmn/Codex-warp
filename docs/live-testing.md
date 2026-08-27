@@ -86,7 +86,6 @@ codex exec \
   -c 'model_providers.codex-warp.name="Codex Warp"' \
   -c 'model_providers.codex-warp.base_url="http://127.0.0.1:8787/v1"' \
   -c 'model_providers.codex-warp.wire_api="responses"' \
-  -c 'model_providers.codex-warp.requires_openai_auth=false' \
   -c 'model_providers.codex-warp.auth.command="printf"' \
   -c 'model_providers.codex-warp.auth.args=["codex-warp-local"]' \
   -c 'model_providers.codex-warp.auth.refresh_interval_ms=0' \
