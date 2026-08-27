@@ -95,6 +95,8 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
         Some(Value::Array(input)) => {
             let mut pending_reasoning: Option<String> = None;
             let mut pending_tool_calls: Option<Value> = None;
+            let mut outstanding_tool_calls = BTreeSet::new();
+            let mut deferred_agent_messages = Vec::new();
             for item in input {
                 if transform.preserve_reasoning_content_history
                     && item.get("type").and_then(Value::as_str) == Some("reasoning")
@@ -123,16 +125,33 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
                         }
                         merge_pending_tool_call_message(&mut pending_tool_calls, message);
                     }
+                } else if item.get("type").and_then(Value::as_str) == Some("agent_message")
+                    && (pending_tool_calls.is_some() || !outstanding_tool_calls.is_empty())
+                {
+                    deferred_agent_messages.extend(item_messages);
                 } else {
                     if let Some(message) = pending_tool_calls.take() {
+                        record_tool_call_ids(&message, &mut outstanding_tool_calls);
                         messages.push(message);
                     }
+                    if matches!(
+                        item.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    ) && let Some(call_id) = item.get("call_id").and_then(Value::as_str)
+                    {
+                        outstanding_tool_calls.remove(call_id);
+                    }
                     messages.extend(item_messages);
+                    if outstanding_tool_calls.is_empty() {
+                        messages.append(&mut deferred_agent_messages);
+                    }
                 }
             }
             if let Some(message) = pending_tool_calls.take() {
+                messages.append(&mut deferred_agent_messages);
                 messages.push(message);
             }
+            messages.append(&mut deferred_agent_messages);
         }
         _ => {}
     }
@@ -194,6 +213,9 @@ pub fn responses_to_chat(request: Value, transform: &TransformConfig) -> ChatTra
 
 pub fn normalize_responses_request(request: Value, transform: &TransformConfig) -> NativeTransform {
     let mut request = request;
+    if !transform.preserve_native_agent_messages {
+        standardize_native_agent_messages(&mut request);
+    }
     apply_native_request_morphs(&mut request, transform);
     apply_reasoning_effort_none_value(&mut request, transform);
     apply_reasoning_effort_aliases(&mut request, transform);
@@ -266,10 +288,85 @@ fn collect_custom_tool_names(
     }
 }
 
-fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
-    if helpers.is_empty() {
+fn standardize_native_agent_messages(request: &mut Value) {
+    let Some(Value::Array(input)) = request.get_mut("input") else {
         return;
+    };
+    let original = std::mem::take(input);
+    let mut output = Vec::with_capacity(original.len());
+    let mut pending_calls = Vec::new();
+    let mut outstanding_tool_calls = BTreeSet::new();
+    let mut deferred_agent_messages = Vec::new();
+    for item in original {
+        if item.get("type").and_then(Value::as_str) == Some("agent_message") {
+            let converted = standardized_native_agent_message(&item);
+            if pending_calls.is_empty() && outstanding_tool_calls.is_empty() {
+                output.push(converted);
+            } else {
+                deferred_agent_messages.push(converted);
+            }
+            continue;
+        }
+        let item_type = item.get("type").and_then(Value::as_str);
+        if is_function_call_type(item_type) || is_custom_tool_call_type(item_type) {
+            pending_calls.push(item);
+            continue;
+        }
+        flush_native_pending_calls(&mut pending_calls, &mut outstanding_tool_calls, &mut output);
+        if is_native_tool_output(&item)
+            && let Some(call_id) = native_tool_call_id(&item)
+        {
+            outstanding_tool_calls.remove(call_id);
+        }
+        output.push(item);
+        if outstanding_tool_calls.is_empty() {
+            output.append(&mut deferred_agent_messages);
+        }
     }
+    if !pending_calls.is_empty() {
+        output.append(&mut deferred_agent_messages);
+        output.append(&mut pending_calls);
+    }
+    output.append(&mut deferred_agent_messages);
+    *input = output;
+}
+
+fn standardized_native_agent_message(item: &Value) -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": agent_message_to_text(item),
+        }],
+    })
+}
+
+fn is_native_tool_output(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call_output" | "custom_tool_call_output")
+    )
+}
+
+fn native_tool_call_id(item: &Value) -> Option<&str> {
+    item.get("call_id").and_then(Value::as_str)
+}
+
+fn flush_native_pending_calls(
+    pending_calls: &mut Vec<Value>,
+    outstanding_tool_calls: &mut BTreeSet<String>,
+    output: &mut Vec<Value>,
+) {
+    for call in pending_calls.drain(..) {
+        if let Some(call_id) = native_tool_call_id(&call) {
+            outstanding_tool_calls.insert(call_id.to_string());
+        }
+        output.push(call);
+    }
+}
+
+fn rewrite_native_request_visible_calls(request: &mut Value, helpers: &NamespaceHelpers) {
     if let Some(input) = request.get_mut("input").and_then(Value::as_array_mut) {
         for item in input {
             rewrite_native_function_call_item(item, helpers);
@@ -291,13 +388,23 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         .and_then(Value::as_str)
         .unwrap_or("tool")
         .to_string();
+    let namespace = item
+        .get("namespace")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let flattened_namespace_call = namespace
+        .as_deref()
+        .is_some_and(|namespace| !namespace.is_empty() && namespace != "functions")
+        || helpers.is_namespace_function_alias(&raw_name);
     if is_custom {
         // Native custom_tool_call items already carry Responses `input`. Rewriting
         // through Chat Completions `{input: ...}` encoding would stringify or drop
         // non-string payloads. Only the Codex runtime name needs to become visible.
-        let (name, _) = helpers.to_visible_call(&raw_name, "{}");
+        let (name, _) =
+            helpers.to_visible_call_with_namespace(namespace.as_deref(), &raw_name, "{}");
         if let Some(map) = item.as_object_mut() {
             map.insert("name".to_string(), json!(name));
+            map.remove("namespace");
         }
         return;
     }
@@ -306,10 +413,15 @@ fn rewrite_native_function_call_item(item: &mut Value, helpers: &NamespaceHelper
         .and_then(Value::as_str)
         .unwrap_or("{}")
         .to_string();
-    let (name, arguments) = helpers.to_visible_call(&raw_name, &raw_arguments);
+    let (name, arguments) =
+        helpers.to_visible_call_with_namespace(namespace.as_deref(), &raw_name, &raw_arguments);
     if let Some(map) = item.as_object_mut() {
         map.insert("name".to_string(), json!(name));
         map.insert("arguments".to_string(), json!(arguments));
+        map.remove("namespace");
+        if flattened_namespace_call {
+            map.remove("encrypted_function_args");
+        }
     }
 }
 
@@ -319,13 +431,34 @@ fn rewrite_tool_choice_names(choice: &mut Value, helpers: &NamespaceHelpers) {
             *name = helpers.model_visible_name(name).to_string();
         }
         Value::Object(map) => {
+            let namespace = map
+                .remove("namespace")
+                .and_then(|namespace| namespace.as_str().map(ToOwned::to_owned));
             if let Some(Value::String(name)) = map.get_mut("name") {
-                *name = helpers.model_visible_name(name).to_string();
+                *name = helpers
+                    .to_visible_call_with_namespace(namespace.as_deref(), name, "{}")
+                    .0;
             }
-            if let Some(function) = map.get_mut("function")
-                && let Some(Value::String(name)) = function.get_mut("name")
-            {
-                *name = helpers.model_visible_name(name).to_string();
+            if let Some(function) = map.get_mut("function") {
+                let function_namespace = function
+                    .as_object_mut()
+                    .and_then(|function| function.remove("namespace"))
+                    .and_then(|namespace| namespace.as_str().map(ToOwned::to_owned));
+                if let Some(name) = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+                {
+                    function["name"] = json!(
+                        helpers
+                            .to_visible_call_with_namespace(
+                                function_namespace.as_deref().or(namespace.as_deref()),
+                                &name,
+                                "{}",
+                            )
+                            .0
+                    );
+                }
             }
             if let Some(tools) = map.get_mut("tools").and_then(Value::as_array_mut) {
                 for tool in tools {
@@ -403,6 +536,13 @@ fn response_item_to_messages(
             }
             (vec![message], consumed_reasoning)
         }
+        Some("agent_message") => (
+            vec![json!({
+                "role": "user",
+                "content": agent_message_to_text(item),
+            })],
+            false,
+        ),
         Some("function_call_output") | Some("custom_tool_call_output") => {
             let call_id = item
                 .get("call_id")
@@ -427,7 +567,12 @@ fn response_item_to_messages(
             } else {
                 chat_function_arguments_string(item.get("arguments"))
             };
-            let (name, arguments) = namespace_helpers.to_visible_call(raw_name, &raw_arguments);
+            let namespace = item.get("namespace").and_then(Value::as_str);
+            let (name, arguments) = namespace_helpers.to_visible_call_with_namespace(
+                namespace,
+                raw_name,
+                &raw_arguments,
+            );
             let arguments = ensure_json_object_argument_string(&arguments);
             let mut message = json!({
                 "role": "assistant",
@@ -447,6 +592,44 @@ fn response_item_to_messages(
         }
         _ => (Vec::new(), false),
     }
+}
+
+fn agent_message_to_text(item: &Value) -> String {
+    let author = item
+        .get("author")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown agent");
+    let recipient = item
+        .get("recipient")
+        .and_then(Value::as_str)
+        .unwrap_or("current agent");
+    let mut parts = Vec::new();
+    let mut encrypted_content = false;
+    if let Some(content) = item.get("content").and_then(Value::as_array) {
+        for part in content {
+            match part.get("type").and_then(Value::as_str) {
+                Some("input_text") => {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        parts.push(text.to_string());
+                    }
+                }
+                Some("encrypted_content") => encrypted_content = true,
+                _ => {}
+            }
+        }
+    }
+    if encrypted_content {
+        parts.push(
+            "[Encrypted inter-agent content omitted: the selected provider cannot decrypt Codex agent messages.]"
+                .to_string(),
+        );
+    }
+    let content = parts.join("\n");
+    format!(
+        "Message from Codex agent {} to {}:\n\n{content}",
+        json!(author),
+        json!(recipient)
+    )
 }
 
 fn is_assistant_tool_call_message(message: Option<&Value>) -> bool {
@@ -474,6 +657,17 @@ fn merge_pending_tool_call_message(pending: &mut Option<Value>, mut message: Val
     }
 
     merge_reasoning_content(pending_message, message.get("reasoning_content"));
+}
+
+fn record_tool_call_ids(message: &Value, outstanding: &mut BTreeSet<String>) {
+    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        outstanding.extend(tool_calls.iter().filter_map(|tool_call| {
+            tool_call
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        }));
+    }
 }
 
 fn merge_reasoning_content(message: &mut Value, additional: Option<&Value>) {

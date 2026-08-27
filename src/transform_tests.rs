@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::RequestMorph;
 use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
 
@@ -140,6 +141,498 @@ fn string_input_becomes_user_chat_message() {
 
     assert_eq!(transformed.body["messages"][0]["role"], "user");
     assert_eq!(transformed.body["messages"][0]["content"], "hello");
+}
+
+#[test]
+fn plaintext_agent_messages_preserve_task_and_mailbox_context() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {
+                "type": "agent_message",
+                "author": "/root",
+                "recipient": "/root/worker",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nReview the codec"
+                }]
+            },
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Message Type: FINAL_ANSWER\nPayload:\nThe codec is correct"
+                }]
+            }
+        ],
+        "stream": false
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"].as_str().unwrap().starts_with(
+        "Message from Codex agent \"/root\" to \"/root/worker\":\n\nMessage Type: NEW_TASK"
+    ));
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Review the codec")
+    );
+    assert!(messages[1]["content"].as_str().unwrap().starts_with(
+        "Message from Codex agent \"/root/worker\" to \"/root\":\n\nMessage Type: FINAL_ANSWER"
+    ));
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("The codec is correct")
+    );
+}
+
+#[test]
+fn encrypted_agent_message_is_not_silently_dropped() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [
+                {"type": "input_text", "text": "Message Type: NEW_TASK\nPayload:"},
+                {"type": "encrypted_content", "encrypted_content": "ciphertext"}
+            ]
+        }]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let content = transformed.body["messages"][0]["content"].as_str().unwrap();
+    assert!(content.contains("Message Type: NEW_TASK"));
+    assert!(content.contains("Encrypted inter-agent content omitted"));
+    assert!(!content.contains("ciphertext"));
+}
+
+#[test]
+fn native_agent_messages_become_standard_responses_messages() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{"type": "input_text", "text": "Review the codec"}]
+        }, {
+            "type": "agent_message",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let input = normalized.body["input"].as_array().unwrap();
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[0]["role"], "user");
+    let task = input[0]["content"][0]["text"].as_str().unwrap();
+    assert!(task.contains("Message from Codex agent \"/root\" to \"/root/worker\""));
+    assert!(task.contains("Review the codec"));
+    let encrypted = input[1]["content"][0]["text"].as_str().unwrap();
+    assert!(encrypted.contains("Encrypted inter-agent content omitted"));
+    assert!(encrypted.contains("the selected provider cannot decrypt"));
+    assert!(!encrypted.contains("Chat Completions provider"));
+    assert!(!encrypted.contains("ciphertext"));
+}
+
+#[test]
+fn native_agent_messages_are_preserved_exactly_when_provider_supports_them() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "id": "agent_msg_1",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [
+                {"type": "input_text", "text": "Public routing context"},
+                {"type": "encrypted_content", "encrypted_content": "ciphertext"}
+            ],
+            "internal_chat_message_metadata_passthrough": {"opaque": true}
+        }]
+    });
+    let transform = TransformConfig {
+        preserve_native_agent_messages: true,
+        ..TransformConfig::default()
+    };
+
+    let normalized = normalize_responses_request(request.clone(), &transform);
+
+    assert_eq!(normalized.body["input"], request["input"]);
+}
+
+#[test]
+fn native_agent_messages_are_standardized_before_input_morphs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{"type": "input_text", "text": "Review the codec"}]
+        }]
+    });
+    let renamed = normalize_responses_request(
+        request.clone(),
+        &TransformConfig {
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Rename,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+    assert!(renamed.body.get("input").is_none());
+    assert_eq!(renamed.body["payload"][0]["type"], "message");
+    assert!(
+        renamed.body["payload"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Review the codec")
+    );
+
+    let copied = normalize_responses_request(
+        request,
+        &TransformConfig {
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Copy,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+    assert_eq!(copied.body["input"][0]["type"], "message");
+    assert_eq!(copied.body["payload"][0]["type"], "message");
+}
+
+#[test]
+fn native_agent_message_preservation_precedes_input_rename_without_rewriting() {
+    let agent_message = json!({
+        "type": "agent_message",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}]
+    });
+    let normalized = normalize_responses_request(
+        json!({"model": "test-model", "input": [agent_message.clone()]}),
+        &TransformConfig {
+            preserve_native_agent_messages: true,
+            responses_request_morphs: vec![RequestMorph {
+                from: "input".to_string(),
+                to: Some("payload".to_string()),
+                value: None,
+                kind: RequestMorphKind::Rename,
+            }],
+            ..TransformConfig::default()
+        },
+    );
+
+    assert!(normalized.body.get("input").is_none());
+    assert_eq!(normalized.body["payload"][0], agent_message);
+}
+
+#[test]
+fn agent_messages_wait_until_all_outstanding_tool_outputs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(messages[1]["tool_call_id"], "call_1");
+    assert_eq!(messages[2]["tool_call_id"], "call_2");
+    assert_eq!(messages[3]["role"], "user");
+    assert!(
+        messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn interleaved_agent_message_does_not_split_parallel_tool_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[0]["role"], "assistant");
+    assert_eq!(messages[0]["tool_calls"].as_array().unwrap().len(), 2);
+    assert_eq!(messages[1]["tool_call_id"], "call_1");
+    assert_eq!(messages[2]["tool_call_id"], "call_2");
+    assert_eq!(messages[3]["role"], "user");
+    assert!(
+        messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn agent_message_precedes_an_unresolved_tool_call_at_end_of_history() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            }
+        ]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_1");
+}
+
+#[test]
+fn agent_messages_without_outstanding_calls_keep_their_input_order() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "agent_message",
+            "author": "/root/worker",
+            "recipient": "/root",
+            "content": [{"type": "input_text", "text": "worker update"}]
+        }, {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next request"}]
+        }]
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().unwrap();
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(messages[1]["content"], "next request");
+}
+
+fn native_input_types(body: &serde_json::Value) -> Vec<&str> {
+    body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item.get("type").and_then(Value::as_str))
+        .collect()
+}
+
+#[test]
+fn native_agent_messages_wait_until_all_outstanding_tool_outputs() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
+            "message"
+        ]
+    );
+    assert_eq!(normalized.body["input"][4]["role"], "user");
+    assert!(
+        normalized.body["input"][4]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn native_interleaved_agent_message_does_not_split_parallel_tool_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {"type": "function_call", "call_id": "call_2", "name": "second", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {"type": "function_call_output", "call_id": "call_2", "output": "two"}
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "function_call",
+            "function_call_output",
+            "function_call_output",
+            "message"
+        ]
+    );
+    assert_eq!(normalized.body["input"][0]["call_id"], "call_1");
+    assert_eq!(normalized.body["input"][1]["call_id"], "call_2");
+    assert!(
+        normalized.body["input"][4]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+}
+
+#[test]
+fn native_agent_message_precedes_an_unresolved_tool_call_at_end_of_history() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            }
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        native_input_types(&normalized.body),
+        ["message", "function_call"]
+    );
+    assert!(
+        normalized.body["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(normalized.body["input"][1]["call_id"], "call_1");
+}
+
+#[test]
+fn native_agent_message_is_released_only_by_matching_tool_output() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {"type": "function_call", "call_id": "call_1", "name": "first", "arguments": "{}"},
+            {
+                "type": "agent_message",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [{"type": "input_text", "text": "worker update"}]
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "call_id": "call_1",
+                "content": [{"type": "input_text", "text": "not an output"}]
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "one"},
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "next request"}]
+            }
+        ]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    let input = normalized.body["input"].as_array().unwrap();
+    assert_eq!(
+        native_input_types(&normalized.body),
+        [
+            "function_call",
+            "message",
+            "function_call_output",
+            "message",
+            "message"
+        ]
+    );
+    assert_eq!(input[1]["content"][0]["text"], "not an output");
+    assert!(
+        input[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker update")
+    );
+    assert_eq!(input[4]["content"][0]["text"], "next request");
 }
 
 #[test]
@@ -772,6 +1265,129 @@ fn expands_multi_agent_namespace_into_spawn_agent_helpers() {
 }
 
 #[test]
+fn current_collaboration_history_replays_split_namespace_calls() {
+    let request = json!({
+        "model": "test-model",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_spawn",
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "arguments": "{\"message\":\"review\",\"task_name\":\"reviewer\"}",
+                "encrypted_function_args": []
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_spawn",
+                "output": "{\"task_name\":\"/root/reviewer\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_message",
+                "namespace": "collaboration",
+                "name": "send_message",
+                "arguments": "{\"target\":\"/root/reviewer\",\"message\":\"check replay\"}",
+                "encrypted_function_args": []
+            }
+        ],
+        "tools": [{
+            "type": "namespace",
+            "name": "collaboration",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string", "encrypted": true},
+                            "task_name": {"type": "string"}
+                        }
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "send_message",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string"},
+                            "message": {"type": "string", "encrypted": true}
+                        }
+                    }
+                }
+            ]
+        }],
+        "stream": true
+    });
+
+    let transformed = responses_to_chat(request, &TransformConfig::default());
+    let messages = transformed.body["messages"].as_array().expect("messages");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[0]["tool_calls"][0]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(messages[1]["role"], "tool");
+    assert_eq!(
+        messages[2]["tool_calls"][0]["function"]["name"],
+        "send_message"
+    );
+    assert!(
+        transformed.body["tools"][0]["function"]["parameters"]["properties"]["message"]
+            .get("encrypted")
+            .is_none()
+    );
+}
+
+#[test]
+fn unknown_split_namespace_history_and_choice_keep_distinct_identity() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_plugin",
+            "namespace": "plugin",
+            "name": "lookup",
+            "arguments": "{\"q\":\"x\"}",
+            "encrypted_function_args": ["q"]
+        }],
+        "tools": [{
+            "type": "function",
+            "name": "lookup",
+            "description": "Current ordinary lookup",
+            "parameters": {"type": "object", "properties": {}}
+        }],
+        "tool_choice": {
+            "type": "function",
+            "namespace": "plugin",
+            "name": "lookup"
+        },
+        "stream": true
+    });
+
+    let chat = responses_to_chat(request.clone(), &TransformConfig::default());
+    assert_eq!(
+        chat.body["messages"][0]["tool_calls"][0]["function"]["name"],
+        "plugin.lookup"
+    );
+    assert_eq!(chat.body["tool_choice"]["name"], "plugin.lookup");
+    assert!(chat.body["tool_choice"].get("namespace").is_none());
+
+    let native = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(native.body["input"][0]["name"], "plugin.lookup");
+    assert!(native.body["input"][0].get("namespace").is_none());
+    assert!(
+        native.body["input"][0]
+            .get("encrypted_function_args")
+            .is_none()
+    );
+    assert_eq!(native.body["tool_choice"]["name"], "plugin.lookup");
+    assert!(native.body["tool_choice"].get("namespace").is_none());
+}
+
+#[test]
 fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
     let request = json!({
         "model": "test-model",
@@ -805,7 +1421,120 @@ fn namespace_children_yield_when_a_later_function_already_owns_the_name() {
         .filter_map(|tool| tool["function"]["name"].as_str())
         .collect();
 
-    assert_eq!(names, vec!["multi_agent_v1.spawn_agent", "spawn_agent"]);
+    assert_eq!(names, vec!["multi_agent_v1__spawn_agent", "spawn_agent"]);
+}
+
+#[test]
+fn ordinary_dotted_history_and_choice_survive_namespace_runtime_collision() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_ordinary",
+            "name": "collaboration.spawn_agent",
+            "arguments": "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}",
+            "encrypted_function_args": ["payload"]
+        }, {
+            "type": "function_call",
+            "call_id": "call_namespace",
+            "namespace": "collaboration",
+            "name": "spawn_agent",
+            "arguments": "{\"message\":\"review\"}",
+            "encrypted_function_args": []
+        }],
+        "tools": [{
+            "type": "function",
+            "name": "collaboration.spawn_agent",
+            "parameters": {"type": "object", "properties": {}}
+        }, {
+            "type": "namespace",
+            "name": "collaboration",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }],
+        "tool_choice": {"type": "function", "name": "collaboration.spawn_agent"}
+    });
+
+    let chat = responses_to_chat(request.clone(), &TransformConfig::default());
+    let messages = chat.body["messages"].as_array().unwrap();
+    assert_eq!(
+        messages[0]["tool_calls"][0]["function"]["name"],
+        "collaboration.spawn_agent"
+    );
+    assert_eq!(
+        messages[0]["tool_calls"][1]["function"]["name"],
+        "spawn_agent"
+    );
+    assert_eq!(
+        chat.body["tool_choice"]["name"],
+        "collaboration.spawn_agent"
+    );
+
+    let native = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(native.body["input"][0]["name"], "collaboration.spawn_agent");
+    assert_eq!(
+        native.body["input"][0]["encrypted_function_args"],
+        json!(["payload"])
+    );
+    assert_eq!(
+        native.body["input"][0]["arguments"],
+        "{\"tool\":\"spawn_agent\",\"arguments\":{\"message\":\"ordinary\"}}"
+    );
+    assert_eq!(native.body["input"][1]["name"], "spawn_agent");
+    assert!(
+        native.body["input"][1]
+            .get("encrypted_function_args")
+            .is_none()
+    );
+    assert_eq!(
+        native.body["tool_choice"]["name"],
+        "collaboration.spawn_agent"
+    );
+}
+
+#[test]
+fn native_ordinary_encrypted_history_preserves_metadata_without_namespaces() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "ordinary",
+            "name": "secure_lookup",
+            "arguments": "{\"ciphertext\":\"opaque\"}",
+            "encrypted_function_args": ["ciphertext"]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(
+        normalized.body["input"][0]["encrypted_function_args"],
+        json!(["ciphertext"])
+    );
+}
+
+#[test]
+fn native_functions_namespace_preserves_ordinary_encrypted_metadata() {
+    let request = json!({
+        "model": "test-model",
+        "input": [{
+            "type": "function_call",
+            "call_id": "ordinary",
+            "namespace": "functions",
+            "name": "secure_lookup",
+            "arguments": "{\"ciphertext\":\"opaque\"}",
+            "encrypted_function_args": ["ciphertext"]
+        }]
+    });
+
+    let normalized = normalize_responses_request(request, &TransformConfig::default());
+    assert_eq!(normalized.body["input"][0]["name"], "secure_lookup");
+    assert_eq!(
+        normalized.body["input"][0]["encrypted_function_args"],
+        json!(["ciphertext"])
+    );
 }
 
 #[test]
@@ -880,7 +1609,8 @@ fn native_responses_replay_history_and_tool_choice_with_visible_names() {
             "type": "function_call",
             "call_id": "call_1",
             "name": "multi_agent_v1.spawn_agent",
-            "arguments": "{\"message\":\"review the diff\"}"
+            "arguments": "{\"message\":\"review the diff\"}",
+            "encrypted_function_args": []
         }],
         "tools": [{
             "type": "namespace",
@@ -898,6 +1628,11 @@ fn native_responses_replay_history_and_tool_choice_with_visible_names() {
     let normalized = normalize_responses_request(request, &TransformConfig::default());
     assert_eq!(normalized.body["tools"][0]["name"], "spawn_agent");
     assert_eq!(normalized.body["input"][0]["name"], "spawn_agent");
+    assert!(
+        normalized.body["input"][0]
+            .get("encrypted_function_args")
+            .is_none()
+    );
     assert_eq!(
         normalized.body["input"][0]["arguments"],
         "{\"message\":\"review the diff\"}"

@@ -131,32 +131,77 @@ fallback is about making the JSON response parseable.
 
 ## Sub-Agent Namespace Helpers
 
-These notes were checked on 2026-08-14 against the public
-[`openai/codex`](https://github.com/openai/codex) source tree:
+These notes were checked on 2026-08-26 against the public
+[`openai/codex`](https://github.com/openai/codex) source tree at commit
+[`bde9db1375667c50dcc0c2b52532a4e2672571c2`](https://github.com/openai/codex/commit/bde9db1375667c50dcc0c2b52532a4e2672571c2):
 
-- [`codex-rs/core/src/tools/handlers/multi_agents_spec.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_spec.rs)
+- [`codex-rs/core/src/tools/handlers/multi_agents_spec.rs`](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/core/src/tools/handlers/multi_agents_spec.rs)
   wraps v1 `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, and
   `close_agent` in a Responses `type = "namespace"` tool named
-  `multi_agent_v1`. The runtime names Codex routes are dotted, for example
-  `multi_agent_v1.spawn_agent`.
-- Multi-agent v2 advertises those tools as ordinary functions such as
-  `spawn_agent`, so Warp leaves them unchanged.
+  `multi_agent_v1`.
+- [`codex-rs/core/src/tools/spec_plan.rs`](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/core/src/tools/spec_plan.rs)
+  places v2 `spawn_agent`, `send_message`, `followup_task`, `wait_agent`,
+  `interrupt_agent`, and `list_agents` in the `collaboration` namespace by
+  default.
+- [`codex-rs/core/src/tools/router.rs`](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/core/src/tools/router.rs)
+  routes a Responses function call from separate `namespace` and `name`
+  fields. A dotted name without a namespace is an ordinary function name and
+  does not select the collaboration runtime.
+- [`codex-rs/core/src/session/multi_agents.rs`](https://github.com/openai/codex/blob/bde9db1375667c50dcc0c2b52532a4e2672571c2/codex-rs/core/src/session/multi_agents.rs)
+  tells the root model that agent starts are asynchronous, identifies the
+  available concurrency slots, and distinguishes queued `send_message` from
+  turn-triggering `followup_task`.
 
 Chat Completions providers and many OpenAI-compatible Responses backends do
 not understand namespace tools. Warp expands each namespace child into an
 ordinary function named after the child (`spawn_agent`, `wait_agent`, and so
-on) and keeps the original child description and parameter schema. If a child
-name is already present as a top-level function, Warp falls back to the
-dotted runtime name.
+on) and keeps the original child description and parameter schema. Responses
+`encrypted` schema annotations are remembered but removed from the ordinary
+function schema sent to third-party providers because they are not standard
+JSON Schema keywords. If a child name is already present as a top-level
+function, Warp uses a provider-safe generated alias such as
+`collaboration__spawn_agent` (with a numeric suffix if necessary).
 
-On the way back to Codex, Warp rewrites helper calls to the namespaced runtime
-name. It also unwraps the older collapsed envelope
+On the way back to Codex, Warp restores the child name and namespace as
+separate fields. Message-bearing v2 calls also receive an empty
+`encrypted_function_args` marker, which tells Codex that the compatible
+third-party backend returned plaintext arguments. Warp also unwraps the older
+collapsed envelope
 `{ "tool": "spawn_agent", "arguments": { ... } }` that some models emit when
 they only saw a single `{namespace}_tool` function.
 
-For Chat Completions coding turns (not Guardian requests), Warp also inserts a
-short system clarification that sub-agent tools are ordinary functions and
-should be called directly.
+Plaintext v2 messaging currently requires Codex's default `collaboration`
+namespace. The pinned Codex protocol recognizes the empty plaintext marker
+only for that runtime namespace; a custom `multi_agent_v2.tool_namespace`
+would otherwise label plaintext tasks and updates as encrypted content. Warp
+rejects such requests with a compatibility error instead of silently dropping
+the child task or mailbox payload. Rejection requires definitive MultiAgentV2
+provenance: Codex's namespace description `Tools for spawning and managing
+sub-agents.` plus the full v2 helper family (`spawn_agent`, `send_message`,
+`followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) with
+encrypted messaging arguments. An unrelated dynamic namespace that happens to
+reuse the three encrypted messaging names is forwarded. Full custom-namespace
+support requires a corresponding Codex router change.
+
+For Chat Completions and compatible native Responses coding turns (not
+Guardian requests), Warp also inserts a short clarification that sub-agent
+tools are ordinary functions and lists the exact aliases advertised in that
+request. The clarification recommends starting multiple independent agents
+before waiting when Codex reports available slots and identifies the
+advertised messaging lifecycle. By default, Warp translates Codex v2
+`agent_message` task, update, and result items into user-role messages with
+their author and recipient context on both Chat and native Responses backends;
+encrypted content is explicitly marked as unavailable rather than silently
+discarded. Converted native messages use the same call/output batch-ordering
+protection as Chat Completions: they wait until outstanding function or custom
+tool outputs are present, stay outside a parallel call batch, and precede a
+trailing unresolved call rather than splitting it from its output. A native
+Responses provider that explicitly supports Codex agent
+items and their encrypted content can instead set
+`preserve_native_agent_messages = true` in its transform configuration. Chat
+conversion remains unconditional. Codex remains responsible for the actual
+per-session concurrency limit, agent execution, message delivery, and result
+notifications; Warp only preserves their request and response protocol.
 
 Empty namespaces still collapse to `{namespace}_tool` as a last-resort helper.
 

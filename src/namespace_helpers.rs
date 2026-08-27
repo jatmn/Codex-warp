@@ -5,10 +5,33 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 
-pub(crate) const SUBAGENT_HELPER_CLARIFICATION: &str = "\
+const SUBAGENT_HELPER_CLARIFICATION_PREFIX: &str = "\
 Sub-agent tool helpers:
 
-Codex sub-agent tools arrived as a Responses namespace and are exposed here as ordinary functions. To spawn a sub-agent, call `spawn_agent` directly with that function's parameters (for example `message`, plus `task_name` when the schema requires it). Then use `wait_agent`, `send_input` or `send_message`, and `close_agent` as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
+Codex sub-agent tools arrived as a Responses namespace and are exposed here as ordinary functions. Call each helper exactly by its advertised function name and pass that function's parameters directly. ";
+const SUBAGENT_HELPER_CLARIFICATION_MARKER: &str = "Sub-agent tool helpers:";
+
+const SUBAGENT_HELPER_CLARIFICATION_SUFFIX: &str = "Independent agents run asynchronously, so start multiple useful agents before waiting when concurrency slots are available. Use the advertised messaging helpers for two-way communication, and use the advertised wait, interrupt, list, resume, or close helpers as needed. Do not wrap these in another tool, a shell command, or a `{tool, arguments}` envelope.";
+
+/// Codex `MultiAgentV2NamespaceOverride` always stamps this namespace description.
+const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
+const MULTI_AGENT_V2_ENCRYPTED_TOOLS: [&str; 3] = ["followup_task", "send_message", "spawn_agent"];
+const MULTI_AGENT_V2_CONTROL_TOOLS: [&str; 3] = ["interrupt_agent", "list_agents", "wait_agent"];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RewrittenCall {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub arguments: String,
+    pub plaintext_encrypted_arguments: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RuntimeTool {
+    namespace: String,
+    name: String,
+    encrypted_arguments: bool,
+}
 
 /// Maps model-visible Chat Completions function names back to Codex's namespaced
 /// runtime tool names such as `multi_agent_v1.spawn_agent`.
@@ -20,6 +43,10 @@ pub struct NamespaceHelpers {
     reverse: BTreeMap<String, String>,
     /// Collapsed `{namespace}_tool` helpers still accepted from older turns.
     collapsed: BTreeMap<String, String>,
+    /// Registered runtime calls keyed by the legacy dotted spelling.
+    runtime_tools: BTreeMap<String, RuntimeTool>,
+    /// Namespace descriptions observed while expanding Responses namespace tools.
+    namespace_descriptions: BTreeMap<String, String>,
 }
 
 /// Native backends may emit `tool_call` for the same payload as Responses `function_call`.
@@ -36,25 +63,121 @@ impl NamespaceHelpers {
         self.aliases.is_empty() && self.collapsed.is_empty()
     }
 
-    /// True when at least one namespace child was expanded into an ordinary function.
-    /// Collapsed `{namespace}_tool` fallbacks do not count: those still require the
-    /// envelope schema, so the expanded-helper clarification would contradict the
-    /// advertised tools.
-    pub fn has_expanded_helpers(&self) -> bool {
-        !self.aliases.is_empty()
+    /// True when at least one subagent namespace child was expanded into an ordinary
+    /// function. Other namespaces and collapsed envelope fallbacks do not count.
+    pub fn has_expanded_subagent_helpers(&self) -> bool {
+        self.runtime_tools.values().any(is_subagent_runtime_tool)
     }
 
-    pub fn register(&mut self, visible_name: String, runtime_name: String) {
+    /// Codex currently recognizes the empty plaintext-arguments marker for v2
+    /// messaging helpers only when their runtime namespace is `collaboration`.
+    pub fn incompatible_plaintext_subagent_namespace(&self) -> Option<&str> {
+        let mut names_by_namespace: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        let mut encrypted_by_namespace: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for runtime in self.runtime_tools.values() {
+            names_by_namespace
+                .entry(runtime.namespace.as_str())
+                .or_default()
+                .insert(runtime.name.as_str());
+            if runtime.encrypted_arguments
+                && MULTI_AGENT_V2_ENCRYPTED_TOOLS.contains(&runtime.name.as_str())
+            {
+                encrypted_by_namespace
+                    .entry(runtime.namespace.as_str())
+                    .or_default()
+                    .insert(runtime.name.as_str());
+            }
+        }
+        names_by_namespace
+            .into_iter()
+            .find_map(|(namespace, names)| {
+                if namespace == "collaboration"
+                    || self
+                        .namespace_descriptions
+                        .get(namespace)
+                        .map(String::as_str)
+                        != Some(MULTI_AGENT_V2_NAMESPACE_DESCRIPTION)
+                {
+                    return None;
+                }
+                let encrypted = encrypted_by_namespace.get(namespace)?;
+                let has_encrypted_family = MULTI_AGENT_V2_ENCRYPTED_TOOLS
+                    .iter()
+                    .all(|name| encrypted.contains(name));
+                let has_control_family = MULTI_AGENT_V2_CONTROL_TOOLS
+                    .iter()
+                    .all(|name| names.contains(name));
+                (has_encrypted_family && has_control_family).then_some(namespace)
+            })
+    }
+
+    pub(crate) fn is_namespace_function_alias(&self, name: &str) -> bool {
+        self.aliases.contains_key(name) || self.collapsed.contains_key(name)
+    }
+
+    pub(crate) fn is_expanded_namespace_function_alias(&self, name: &str) -> bool {
+        self.aliases.contains_key(name)
+    }
+
+    fn subagent_helper_clarification(&self) -> String {
+        let aliases = self
+            .reverse
+            .iter()
+            .filter_map(|(runtime_name, visible_name)| {
+                let (_, child_name) = runtime_name.split_once('.')?;
+                self.runtime_tools
+                    .get(runtime_name)
+                    .is_some_and(is_subagent_runtime_tool)
+                    .then(|| format!("{} as {}", json!(child_name), json!(visible_name)))
+            })
+            .collect::<Vec<_>>();
+        let available = if aliases.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Available helper aliases for this request: {}. ",
+                aliases.join(", ")
+            )
+        };
+        format!(
+            "{SUBAGENT_HELPER_CLARIFICATION_PREFIX}{available}{SUBAGENT_HELPER_CLARIFICATION_SUFFIX}"
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register(&mut self, visible_name: String, runtime_name: String) {
+        self.register_with_encrypted_arguments(visible_name, runtime_name, false, true);
+    }
+
+    fn register_with_encrypted_arguments(
+        &mut self,
+        visible_name: String,
+        runtime_name: String,
+        encrypted_arguments: bool,
+        register_runtime_alias: bool,
+    ) {
         self.reverse
             .entry(runtime_name.clone())
             .or_insert_with(|| visible_name.clone());
         self.aliases
             .entry(visible_name)
             .or_insert_with(|| runtime_name.clone());
-        self.aliases
-            .entry(runtime_name.clone())
-            .or_insert_with(|| runtime_name.clone());
-        if let Some((namespace, _)) = runtime_name.split_once('.') {
+        if register_runtime_alias {
+            self.aliases
+                .entry(runtime_name.clone())
+                .or_insert_with(|| runtime_name.clone());
+        }
+        if let Some((namespace, name)) = runtime_name.split_once('.') {
+            self.runtime_tools
+                .entry(runtime_name.clone())
+                .and_modify(|tool| {
+                    tool.encrypted_arguments |= encrypted_arguments;
+                })
+                .or_insert_with(|| RuntimeTool {
+                    namespace: namespace.to_string(),
+                    name: name.to_string(),
+                    encrypted_arguments,
+                });
             self.collapsed
                 .entry(format!("{namespace}_tool"))
                 .or_insert_with(|| namespace.to_string());
@@ -65,12 +188,26 @@ impl NamespaceHelpers {
         self.collapsed.insert(helper_name, namespace);
     }
 
+    fn record_namespace_description(&mut self, namespace: &str, description: &str) {
+        if description.is_empty() {
+            return;
+        }
+        self.namespace_descriptions
+            .entry(namespace.to_string())
+            .or_insert_with(|| description.to_string());
+    }
+
     pub fn model_visible_name<'a>(&'a self, name: &'a str) -> &'a str {
-        self.reverse.get(name).map(String::as_str).unwrap_or(name)
+        if self.aliases.contains_key(name) {
+            self.reverse.get(name).map(String::as_str).unwrap_or(name)
+        } else {
+            name
+        }
     }
 
     /// Model-visible call -> Codex runtime call.
-    pub fn rewrite_call(&self, name: &str, arguments: &str) -> (String, String) {
+    #[cfg(test)]
+    pub(crate) fn rewrite_call(&self, name: &str, arguments: &str) -> (String, String) {
         if let Some((runtime_name, inner_arguments)) =
             unwrap_registered_envelope(self, name, arguments)
         {
@@ -80,6 +217,49 @@ impl NamespaceHelpers {
             return (runtime_name.clone(), arguments.to_string());
         }
         (name.to_string(), arguments.to_string())
+    }
+
+    /// Model-visible call -> the split Responses namespace/name shape Codex routes.
+    pub(crate) fn rewrite_response_call(&self, name: &str, arguments: &str) -> RewrittenCall {
+        if let Some((runtime_name, arguments)) = unwrap_registered_envelope(self, name, arguments) {
+            return self.rewritten_registered_call(runtime_name, arguments);
+        }
+        if let Some(runtime_name) = self.aliases.get(name) {
+            return self.rewritten_registered_call(runtime_name.clone(), arguments.to_string());
+        }
+        RewrittenCall {
+            name: name.to_string(),
+            namespace: None,
+            arguments: arguments.to_string(),
+            plaintext_encrypted_arguments: false,
+        }
+    }
+
+    fn rewritten_registered_call(&self, runtime_name: String, arguments: String) -> RewrittenCall {
+        if let Some(runtime) = self.runtime_tools.get(&runtime_name) {
+            return RewrittenCall {
+                name: runtime.name.clone(),
+                namespace: Some(runtime.namespace.clone()),
+                arguments,
+                plaintext_encrypted_arguments: runtime.encrypted_arguments,
+            };
+        }
+        if let Some((namespace, child_name)) = runtime_name.split_once('.')
+            && self.collapsed.values().any(|value| value == namespace)
+        {
+            return RewrittenCall {
+                name: child_name.to_string(),
+                namespace: Some(namespace.to_string()),
+                arguments,
+                plaintext_encrypted_arguments: false,
+            };
+        }
+        RewrittenCall {
+            name: runtime_name,
+            namespace: None,
+            arguments,
+            plaintext_encrypted_arguments: false,
+        }
     }
 
     /// Codex/history call -> model-visible call for Chat Completions replay.
@@ -96,6 +276,52 @@ impl NamespaceHelpers {
             arguments,
         )
     }
+
+    /// Split Codex namespace/name history -> the model-visible flattened alias.
+    pub(crate) fn to_visible_call_with_namespace(
+        &self,
+        namespace: Option<&str>,
+        name: &str,
+        arguments: &str,
+    ) -> (String, String) {
+        if let Some(namespace) = namespace
+            && !namespace.is_empty()
+            && namespace != "functions"
+        {
+            let runtime_name = format!("{namespace}.{name}");
+            let (runtime_name, arguments) =
+                unwrap_registered_envelope(self, &runtime_name, arguments)
+                    .unwrap_or((runtime_name, arguments.to_string()));
+            return (
+                self.reverse
+                    .get(&runtime_name)
+                    .map(String::as_str)
+                    .unwrap_or(&runtime_name)
+                    .to_string(),
+                arguments,
+            );
+        }
+        self.to_visible_call(name, arguments)
+    }
+}
+
+fn is_subagent_runtime_tool(tool: &RuntimeTool) -> bool {
+    match tool.namespace.as_str() {
+        "collaboration" => matches!(
+            tool.name.as_str(),
+            "spawn_agent"
+                | "send_message"
+                | "followup_task"
+                | "wait_agent"
+                | "interrupt_agent"
+                | "list_agents"
+        ),
+        "multi_agent_v1" => matches!(
+            tool.name.as_str(),
+            "spawn_agent" | "send_input" | "resume_agent" | "wait_agent" | "close_agent"
+        ),
+        _ => false,
+    }
 }
 
 pub(crate) fn expand_namespace_tool(
@@ -107,6 +333,12 @@ pub(crate) fn expand_namespace_tool(
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("namespace");
+    helpers.record_namespace_description(
+        namespace,
+        tool.get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
     let children = namespace_children(tool);
     if children.is_empty() {
         let helper_name = format!("{namespace}_tool");
@@ -127,13 +359,18 @@ pub(crate) fn expand_namespace_tool(
             .and_then(Value::as_str)
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
-        let visible_name = if used_names.contains(child_name) {
-            runtime_name.clone()
-        } else {
-            child_name.to_string()
-        };
+        let runtime_alias_available = !used_names.contains(&runtime_name);
+        let visible_name = namespace_visible_name(namespace, child_name, used_names);
         used_names.insert(visible_name.clone());
-        helpers.register(visible_name.clone(), runtime_name);
+        if runtime_alias_available {
+            used_names.insert(runtime_name.clone());
+        }
+        helpers.register_with_encrypted_arguments(
+            visible_name.clone(),
+            runtime_name,
+            namespace_child_has_encrypted_arguments(&child),
+            runtime_alias_available,
+        );
         expanded.push(namespace_child_to_chat_function(&child, &visible_name));
     }
     expanded
@@ -148,6 +385,12 @@ pub(crate) fn expand_namespace_responses_tool(
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("namespace");
+    helpers.record_namespace_description(
+        namespace,
+        tool.get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
     let children = namespace_children(tool);
     if children.is_empty() {
         let helper_name = format!("{namespace}_tool");
@@ -168,13 +411,18 @@ pub(crate) fn expand_namespace_responses_tool(
             .and_then(Value::as_str)
             .unwrap_or("tool");
         let runtime_name = format!("{namespace}.{child_name}");
-        let visible_name = if used_names.contains(child_name) {
-            runtime_name.clone()
-        } else {
-            child_name.to_string()
-        };
+        let runtime_alias_available = !used_names.contains(&runtime_name);
+        let visible_name = namespace_visible_name(namespace, child_name, used_names);
         used_names.insert(visible_name.clone());
-        helpers.register(visible_name.clone(), runtime_name);
+        if runtime_alias_available {
+            used_names.insert(runtime_name.clone());
+        }
+        helpers.register_with_encrypted_arguments(
+            visible_name.clone(),
+            runtime_name,
+            namespace_child_has_encrypted_arguments(&child),
+            runtime_alias_available,
+        );
         expanded.push(namespace_child_to_responses_function(&child, &visible_name));
     }
     expanded
@@ -184,18 +432,47 @@ pub(crate) fn apply_subagent_helper_shim(
     chat_body: &mut Value,
     helpers: &NamespaceHelpers,
 ) -> bool {
-    if !helpers.has_expanded_helpers() || subagent_helper_already_applied(chat_body) {
+    if !helpers.has_expanded_subagent_helpers() || subagent_helper_already_applied(chat_body) {
         return false;
     }
     let instruction = json!({
         "role": "system",
-        "content": SUBAGENT_HELPER_CLARIFICATION
+        "content": helpers.subagent_helper_clarification()
     });
     if let Some(messages) = chat_body.get_mut("messages").and_then(Value::as_array_mut) {
         insert_after_leading_system(messages, instruction);
         return true;
     }
     false
+}
+
+pub(crate) fn apply_subagent_helper_shim_to_responses(
+    body: &mut Value,
+    helpers: &NamespaceHelpers,
+) -> bool {
+    if !helpers.has_expanded_subagent_helpers() {
+        return false;
+    }
+    let clarification = helpers.subagent_helper_clarification();
+    let Some(map) = body.as_object_mut() else {
+        return false;
+    };
+    match map.get_mut("instructions") {
+        Some(Value::String(instructions)) => {
+            if instructions.contains(SUBAGENT_HELPER_CLARIFICATION_MARKER) {
+                return false;
+            }
+            if !instructions.is_empty() {
+                instructions.push_str("\n\n");
+            }
+            instructions.push_str(&clarification);
+        }
+        Some(_) => return false,
+        None => {
+            map.insert("instructions".to_string(), Value::String(clarification));
+        }
+    }
+    true
 }
 
 pub(crate) fn subagent_helper_debug_event(request_log_id: &str, applied: bool) -> Value {
@@ -215,6 +492,34 @@ fn namespace_children(tool: &Value) -> Vec<Value> {
         .collect()
 }
 
+fn namespace_visible_name(
+    namespace: &str,
+    child_name: &str,
+    used_names: &BTreeSet<String>,
+) -> String {
+    if !used_names.contains(child_name) {
+        return child_name.to_string();
+    }
+    let safe_child_name = child_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let base = format!("{namespace}__{safe_child_name}");
+    if !used_names.contains(&base) {
+        return base;
+    }
+    (2..=used_names.len().saturating_add(2))
+        .map(|suffix| format!("{base}_{suffix}"))
+        .find(|candidate| !used_names.contains(candidate))
+        .expect("more candidate suffixes than used names guarantees a free namespace alias")
+}
+
 fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value {
     if child.get("type").and_then(Value::as_str) == Some("function")
         && child.get("function").is_some()
@@ -223,10 +528,13 @@ fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value 
         if let Some(map) = function.as_object_mut() {
             map.insert("name".to_string(), json!(visible_name));
         }
+        if let Some(parameters) = function.get_mut("parameters") {
+            strip_encrypted_schema_annotations(parameters);
+        }
         return json!({"type": "function", "function": function});
     }
 
-    json!({
+    let mut out = json!({
         "type": "function",
         "function": {
             "name": visible_name,
@@ -235,12 +543,19 @@ fn namespace_child_to_chat_function(child: &Value, visible_name: &str) -> Value 
                 json!({"type": "object", "properties": {}})
             })
         }
-    })
+    });
+    if let Some(parameters) = out.pointer_mut("/function/parameters") {
+        strip_encrypted_schema_annotations(parameters);
+    }
+    out
 }
 
 fn namespace_child_to_responses_function(child: &Value, visible_name: &str) -> Value {
     if child.get("function").is_some() {
-        let function = child.get("function").cloned().unwrap_or_else(|| json!({}));
+        let mut function = child.get("function").cloned().unwrap_or_else(|| json!({}));
+        if let Some(parameters) = function.get_mut("parameters") {
+            strip_encrypted_schema_annotations(parameters);
+        }
         let mut out = json!({
             "type": "function",
             "name": visible_name,
@@ -263,7 +578,79 @@ fn namespace_child_to_responses_function(child: &Value, visible_name: &str) -> V
         map.insert("name".to_string(), json!(visible_name));
         map.remove("tools");
     }
+    if let Some(parameters) = out.get_mut("parameters") {
+        strip_encrypted_schema_annotations(parameters);
+    }
     out
+}
+
+fn namespace_child_has_encrypted_arguments(child: &Value) -> bool {
+    let parameters = child
+        .get("function")
+        .and_then(|function| function.get("parameters"))
+        .or_else(|| child.get("parameters"));
+    parameters
+        .and_then(|parameters| parameters.get("properties"))
+        .and_then(Value::as_object)
+        .is_some_and(|properties| {
+            properties
+                .values()
+                .any(|schema| schema.get("encrypted").and_then(Value::as_bool) == Some(true))
+        })
+}
+
+fn strip_encrypted_schema_annotations(value: &mut Value) {
+    let Value::Object(map) = value else {
+        return;
+    };
+    if map.get("encrypted").is_some_and(Value::is_boolean) {
+        map.remove("encrypted");
+    }
+    for keyword in [
+        "additionalItems",
+        "additionalProperties",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ] {
+        if let Some(schema) = map.get_mut(keyword) {
+            match schema {
+                Value::Array(schemas) => {
+                    for schema in schemas {
+                        strip_encrypted_schema_annotations(schema);
+                    }
+                }
+                _ => strip_encrypted_schema_annotations(schema),
+            }
+        }
+    }
+    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(schemas) = map.get_mut(keyword).and_then(Value::as_array_mut) {
+            for schema in schemas {
+                strip_encrypted_schema_annotations(schema);
+            }
+        }
+    }
+    for keyword in [
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    ] {
+        if let Some(schemas) = map.get_mut(keyword).and_then(Value::as_object_mut) {
+            for schema in schemas.values_mut() {
+                strip_encrypted_schema_annotations(schema);
+            }
+        }
+    }
 }
 
 fn collapsed_namespace_function(namespace: &str, tool: &Value) -> Value {
@@ -332,7 +719,7 @@ fn unwrap_registered_envelope(
 }
 
 fn is_registered_call_name(helpers: &NamespaceHelpers, name: &str) -> bool {
-    helpers.aliases.contains_key(name) || helpers.reverse.contains_key(name)
+    helpers.aliases.contains_key(name)
 }
 
 fn resolve_nested_runtime(helpers: &NamespaceHelpers, nested_tool: &str) -> Option<String> {
@@ -354,7 +741,9 @@ fn subagent_helper_already_applied(body: &Value) -> bool {
                     && message
                         .get("content")
                         .and_then(Value::as_str)
-                        .is_some_and(|content| content.starts_with("Sub-agent tool helpers:"))
+                        .is_some_and(|content| {
+                            content.starts_with(SUBAGENT_HELPER_CLARIFICATION_MARKER)
+                        })
             })
         })
 }

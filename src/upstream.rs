@@ -25,6 +25,7 @@ use crate::http::endpoint_url;
 use crate::http::error_response;
 use crate::ids::generated_id;
 use crate::namespace_helpers::apply_subagent_helper_shim;
+use crate::namespace_helpers::apply_subagent_helper_shim_to_responses;
 use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::begin_session_model_update;
 use crate::provider::complete_session_model_update;
@@ -90,11 +91,38 @@ pub(crate) async fn proxy_native_responses(
     );
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
-    let native = normalize_responses_request(body, &selected.transform);
+    let guardian_request = is_guardian_request(&body);
+    // Probe a clone so alias-aware generated guidance can be inserted before the
+    // forwarded request goes through the provider morph pipeline exactly once.
+    let discovery = normalize_responses_request(body.clone(), &selected.transform);
+    if !guardian_request
+        && let Some(namespace) = discovery
+            .namespace_helpers
+            .incompatible_plaintext_subagent_namespace()
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Codex Warp requires the default `collaboration` namespace for plaintext v2 sub-agent messaging; `{namespace}` is not supported by this Codex protocol version"
+            ),
+        );
+    }
+    let subagent_helpers_applied = !guardian_request
+        && apply_subagent_helper_shim_to_responses(&mut body, &discovery.namespace_helpers);
+    let native = if subagent_helpers_applied {
+        normalize_responses_request(body, &selected.transform)
+    } else {
+        discovery
+    };
     let namespace_helpers = native.namespace_helpers;
     let body = native.body;
     let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
     let request_log_id = generated_id("dbg");
+    if subagent_helpers_applied {
+        state
+            .debug_log
+            .log(subagent_helper_debug_event(&request_log_id, true));
+    }
     state.debug_log.log_request(
         json!({
             "event": "upstream_request",
@@ -103,6 +131,7 @@ pub(crate) async fn proxy_native_responses(
             "provider_id": selected.id.clone(),
             "provider_name": provider_display_name(&selected.id, &selected.provider),
             "url": url,
+            "subagent_helpers_applied": subagent_helpers_applied,
             "request": request_debug_summary(&body)
         }),
         &body,
@@ -140,6 +169,19 @@ pub(crate) async fn proxy_chat_responses(
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
     let chat_transform = responses_to_chat(body.clone(), &selected.transform);
+    let guardian_request = is_guardian_request(&body);
+    if !guardian_request
+        && let Some(namespace) = chat_transform
+            .namespace_helpers
+            .incompatible_plaintext_subagent_namespace()
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Codex Warp requires the default `collaboration` namespace for plaintext v2 sub-agent messaging; `{namespace}` is not supported by this Codex protocol version"
+            ),
+        );
+    }
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
     let request_log_id = generated_id("dbg");
     let mut original_chat_body = chat_transform.body;
@@ -150,7 +192,7 @@ pub(crate) async fn proxy_chat_responses(
             .debug_log
             .log(guardian_compat_debug_event(&request_log_id, true));
     }
-    let subagent_helpers_applied = !is_guardian_request(&body)
+    let subagent_helpers_applied = !guardian_request
         && apply_subagent_helper_shim(&mut original_chat_body, &chat_transform.namespace_helpers);
     if subagent_helpers_applied {
         state

@@ -516,6 +516,9 @@ pub struct TransformConfig {
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: bool,
     pub preserve_reasoning_content_history: bool,
+    /// Preserves Codex-native `agent_message` history for Responses providers
+    /// that explicitly support that item and its encrypted content.
+    pub preserve_native_agent_messages: bool,
     /// Enables model-specific removal of duplicate XML-like tool markup only
     /// after a matching native tool call has been observed.
     pub suppress_duplicate_tool_markup: bool,
@@ -540,6 +543,7 @@ impl Default for TransformConfig {
             // that support usage chunks can opt in explicitly.
             request_stream_options_include_usage: false,
             preserve_reasoning_content_history: false,
+            preserve_native_agent_messages: false,
             suppress_duplicate_tool_markup: false,
             split_concatenated_tool_call_arguments: false,
         }
@@ -564,6 +568,7 @@ pub struct TransformConfigPatch {
     pub force_parallel_tool_calls: Option<bool>,
     pub request_stream_options_include_usage: Option<bool>,
     pub preserve_reasoning_content_history: Option<bool>,
+    pub preserve_native_agent_messages: Option<bool>,
     pub suppress_duplicate_tool_markup: Option<bool>,
     pub split_concatenated_tool_call_arguments: Option<bool>,
 }
@@ -618,6 +623,9 @@ impl TransformConfigPatch {
         }
         if let Some(preserve_reasoning_content_history) = self.preserve_reasoning_content_history {
             transform.preserve_reasoning_content_history = preserve_reasoning_content_history;
+        }
+        if let Some(preserve_native_agent_messages) = self.preserve_native_agent_messages {
+            transform.preserve_native_agent_messages = preserve_native_agent_messages;
         }
         if let Some(suppress_duplicate_tool_markup) = self.suppress_duplicate_tool_markup {
             transform.suppress_duplicate_tool_markup = suppress_duplicate_tool_markup;

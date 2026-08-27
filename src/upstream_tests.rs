@@ -18,10 +18,11 @@ use crate::config::AppConfig;
 use crate::config::DebugConfig;
 use crate::config::ModelCatalogEntry;
 use crate::config::ProviderConfig;
+use crate::config::RequestMorph;
+use crate::config::RequestMorphKind;
 use crate::config::TransformConfig;
 use crate::debug_log::DebugLog;
 use crate::guardian_compat::GUARDIAN_COMPAT_CLARIFICATION;
-use crate::namespace_helpers::SUBAGENT_HELPER_CLARIFICATION;
 use crate::state::AppState;
 use crate::state::SelectedProvider;
 use crate::store::AnalyticsRange;
@@ -564,6 +565,34 @@ async fn spawn_chat_script(
                         axum::http::StatusCode::from_u16(status).expect("status"),
                         Json(payload),
                     )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve test listener");
+    });
+    (format!("http://{addr}"), bodies, server)
+}
+
+async fn spawn_responses_capture() -> (String, Arc<Mutex<Vec<Value>>>, tokio::task::JoinHandle<()>)
+{
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let app = axum::Router::new().route(
+        "/responses",
+        post({
+            let bodies = bodies.clone();
+            move |Json(body): Json<Value>| {
+                let bodies = bodies.clone();
+                async move {
+                    bodies.lock().expect("bodies lock").push(body);
+                    Json(json!({"id": "resp_test", "status": "completed"}))
                 }
             }
         }),
@@ -1311,14 +1340,122 @@ fn multi_agent_namespace_request(prompt_cache_key: Option<&str>) -> Value {
     request
 }
 
+fn custom_v2_namespace_request(namespace: &str) -> Value {
+    let mut request = multi_agent_namespace_request(None);
+    request["tools"][0]["name"] = json!(namespace);
+    request["tools"][0]["tools"] = json!([
+        {
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "send_message",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "followup_task",
+            "parameters": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "encrypted": true}}
+            }
+        },
+        {
+            "type": "function",
+            "name": "wait_agent",
+            "parameters": {"type": "object", "properties": {}}
+        },
+        {
+            "type": "function",
+            "name": "interrupt_agent",
+            "parameters": {"type": "object", "properties": {}}
+        },
+        {
+            "type": "function",
+            "name": "list_agents",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    ]);
+    request
+}
+
+fn encrypted_v2_name_collision_request() -> Value {
+    json!({
+        "model": "test-model",
+        "stream": false,
+        "tools": [{
+            "type": "namespace",
+            "name": "plugin_mailbox",
+            "description": "Plugin mailbox helpers.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "spawn_agent",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "send_message",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                },
+                {
+                    "type": "function",
+                    "name": "followup_task",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string", "encrypted": true}}
+                    }
+                }
+            ]
+        }],
+        "input": "deliver a plugin message"
+    })
+}
+
+fn unrelated_encrypted_namespace_request() -> Value {
+    json!({
+        "model": "test-model",
+        "stream": false,
+        "tools": [{
+            "type": "namespace",
+            "name": "notifications",
+            "tools": [{
+                "type": "function",
+                "name": "send_message",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"secret": {"type": "string", "encrypted": true}}
+                }
+            }]
+        }],
+        "input": "send a notification"
+    })
+}
+
 fn has_subagent_helper_clarification(body: &Value) -> bool {
     body.get("messages")
         .and_then(Value::as_array)
         .is_some_and(|messages| {
             messages.iter().any(|message| {
                 message.get("role").and_then(Value::as_str) == Some("system")
-                    && message.get("content").and_then(Value::as_str)
-                        == Some(SUBAGENT_HELPER_CLARIFICATION)
+                    && message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("Sub-agent tool helpers:"))
             })
         })
 }
@@ -1363,6 +1500,340 @@ async fn namespace_request_receives_subagent_helper_clarification() {
     assert_eq!(request_event["guardian_compat_applied"], false);
     server.abort();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn native_namespace_request_receives_alias_aware_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut request = multi_agent_namespace_request(None);
+    request["tools"].as_array_mut().unwrap().push(json!({
+        "type": "function",
+        "name": "spawn_agent",
+        "description": "An unrelated ordinary function",
+        "parameters": {"type": "object", "properties": {}}
+    }));
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    let instructions = seen[0]["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are a coding agent.\n\nSub-agent tool helpers:"));
+    assert!(instructions.contains(r#""spawn_agent" as "multi_agent_v1__spawn_agent""#));
+    let names = seen[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec!["multi_agent_v1__spawn_agent", "spawn_agent"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_unrelated_namespace_does_not_receive_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let request = json!({
+        "model": "test-model",
+        "stream": false,
+        "instructions": "Keep this instruction.",
+        "tools": [{
+            "type": "namespace",
+            "name": "plugin",
+            "tools": [{
+                "type": "function",
+                "name": "lookup",
+                "parameters": {"type": "object", "properties": {}}
+            }]
+        }]
+    });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["instructions"], "Keep this instruction.");
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_subagent_clarification_obeys_final_provider_morphs() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut selected = selected_provider_at(&base_url);
+    selected
+        .transform
+        .responses_request_morphs
+        .push(RequestMorph {
+            from: "instructions".to_string(),
+            to: None,
+            value: None,
+            kind: RequestMorphKind::Drop,
+        });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected,
+        HeaderMap::new(),
+        multi_agent_namespace_request(None),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert!(seen[0].get("instructions").is_none());
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_subagent_clarification_and_caller_instruction_are_renamed_together() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut selected = selected_provider_at(&base_url);
+    selected
+        .transform
+        .responses_request_morphs
+        .push(RequestMorph {
+            from: "instructions".to_string(),
+            to: Some("system_prompt".to_string()),
+            value: None,
+            kind: RequestMorphKind::Rename,
+        });
+
+    let response = proxy_native_responses(
+        test_state(),
+        selected,
+        HeaderMap::new(),
+        multi_agent_namespace_request(None),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert!(seen[0].get("instructions").is_none());
+    let system_prompt = seen[0]["system_prompt"].as_str().unwrap();
+    assert!(system_prompt.starts_with("You are a coding agent.\n\nSub-agent tool helpers:"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn custom_v2_namespace_is_rejected_before_native_forwarding() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        custom_v2_namespace_request("agents"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(bodies.lock().expect("bodies lock").is_empty());
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("default `collaboration` namespace"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn custom_v2_namespace_is_rejected_before_chat_forwarding() {
+    let (base_url, bodies, server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        custom_v2_namespace_request("agents"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(bodies.lock().expect("bodies lock").is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn encrypted_v2_family_named_multi_agent_v1_is_rejected() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        custom_v2_namespace_request("multi_agent_v1"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(bodies.lock().expect("bodies lock").is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn unrelated_encrypted_namespace_is_forwarded_on_both_wire_paths() {
+    let (native_url, native_bodies, native_server) = spawn_responses_capture().await;
+    let native_response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&native_url),
+        HeaderMap::new(),
+        unrelated_encrypted_namespace_request(),
+    )
+    .await;
+    assert_eq!(native_response.status(), StatusCode::OK);
+    assert_eq!(native_bodies.lock().expect("bodies lock").len(), 1);
+
+    let (chat_url, chat_bodies, chat_server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let chat_response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&chat_url),
+        HeaderMap::new(),
+        unrelated_encrypted_namespace_request(),
+    )
+    .await;
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    assert_eq!(chat_bodies.lock().expect("bodies lock").len(), 1);
+    native_server.abort();
+    chat_server.abort();
+}
+
+#[tokio::test]
+async fn encrypted_v2_name_collision_is_forwarded_on_both_wire_paths() {
+    let (native_url, native_bodies, native_server) = spawn_responses_capture().await;
+    let native_response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&native_url),
+        HeaderMap::new(),
+        encrypted_v2_name_collision_request(),
+    )
+    .await;
+    assert_eq!(native_response.status(), StatusCode::OK);
+    assert_eq!(native_bodies.lock().expect("bodies lock").len(), 1);
+
+    let (chat_url, chat_bodies, chat_server) =
+        spawn_chat_script(vec![(200, successful_chat_completion())]).await;
+    let chat_response = proxy_chat_responses(
+        test_state(),
+        selected_provider_at(&chat_url),
+        HeaderMap::new(),
+        encrypted_v2_name_collision_request(),
+    )
+    .await;
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    assert_eq!(chat_bodies.lock().expect("bodies lock").len(), 1);
+    native_server.abort();
+    chat_server.abort();
+}
+
+#[tokio::test]
+async fn guardian_inventory_does_not_trigger_custom_v2_rejection() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let mut request = custom_v2_namespace_request("agents");
+    request["prompt_cache_key"] = json!("guardian:test");
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(bodies.lock().expect("bodies lock").len(), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_proxy_standardizes_agent_message_input() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let request = json!({
+        "model": "test-model",
+        "stream": false,
+        "input": [{
+            "type": "agent_message",
+            "author": "/root",
+            "recipient": "/root/worker",
+            "content": [{"type": "input_text", "text": "Review the codec"}]
+        }]
+    });
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        request,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["input"][0]["type"], "message");
+    assert_eq!(seen[0]["input"][0]["role"], "user");
+    assert!(
+        seen[0]["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Review the codec")
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_proxy_preserves_agent_message_for_capable_provider() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let agent_message = json!({
+        "type": "agent_message",
+        "id": "agent_msg_1",
+        "author": "/root/worker",
+        "recipient": "/root",
+        "content": [{"type": "encrypted_content", "encrypted_content": "ciphertext"}],
+        "internal_chat_message_metadata_passthrough": {"opaque": true}
+    });
+    let request = json!({
+        "model": "test-model",
+        "stream": false,
+        "input": [agent_message.clone()]
+    });
+    let selected = SelectedProvider {
+        transform: TransformConfig {
+            preserve_native_agent_messages: true,
+            ..TransformConfig::default()
+        },
+        ..selected_provider_at(&base_url)
+    };
+
+    let response = proxy_native_responses(test_state(), selected, HeaderMap::new(), request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["input"][0], agent_message);
+    server.abort();
+}
+
+#[tokio::test]
+async fn native_guardian_request_skips_subagent_clarification() {
+    let (base_url, bodies, server) = spawn_responses_capture().await;
+    let response = proxy_native_responses(
+        test_state(),
+        selected_provider_at(&base_url),
+        HeaderMap::new(),
+        multi_agent_namespace_request(Some("guardian:test")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let seen = bodies.lock().expect("bodies lock").clone();
+    assert_eq!(seen[0]["instructions"], "You are a coding agent.");
+    server.abort();
 }
 
 #[tokio::test]

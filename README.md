@@ -241,7 +241,7 @@ Implemented now:
 - streaming chat-completions text to Responses SSE
 - streaming chat-completions function calls to Responses `function_call` output
   items, including expansion of Codex `namespace` tools such as
-  `multi_agent_v1.spawn_agent` into ordinary functions
+  `multi_agent_v1` and `collaboration` into ordinary functions
 - non-streaming chat-completions response conversion
 - editable TOML provider headers, auth, endpoint paths, model metadata, and
   tool/request morphs
