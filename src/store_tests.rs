@@ -1744,6 +1744,97 @@ fn create_named_template_catalog_preserves_earliest_colliding_route_owner() {
 }
 
 #[test]
+fn create_named_template_catalog_preserves_owner_at_minimum_route_order() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-preserves-minimum-route-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = || ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared.clone()],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog("owner", &provider(), &provider().model_catalog, false)
+            .unwrap();
+        {
+            let db = store.db.lock().expect("sqlite lock poisoned");
+            db.execute(
+                "UPDATE model_overlays SET route_order = ?1
+                 WHERE provider_id = 'owner' AND model_id = 'shared/model'",
+                params![i64::MIN],
+            )
+            .unwrap();
+        }
+        store
+            .create_provider_with_catalog(
+                "duplicate",
+                &provider(),
+                &provider().model_catalog,
+                true,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("owner")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn next_route_order_rejects_exhausted_persisted_order() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-order-exhausted-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("routes.db")).unwrap();
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, route_order)
+             VALUES (?1, ?2, 1, ?3)",
+            params!["owner", "shared/model", i64::MAX],
+        )
+        .unwrap();
+        let error = next_route_order(&db).expect_err("maximum route order must fail safely");
+        assert!(error.to_string().contains("route order is exhausted"));
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn create_named_template_catalog_does_not_preseed_disabled_colliding_owner() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-create-disabled-colliding-{}",
