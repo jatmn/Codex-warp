@@ -12,6 +12,9 @@ You need:
 - CMake and a C/C++ build toolchain
 - an API key for an OpenAI-compatible provider
 
+If you use Codex Desktop, the CLI is not required for normal sessions. The
+smoke test in step 6 is an optional CLI-only verification.
+
 See the [developer build guide](development.md) for exact Linux, macOS, and
 Windows prerequisites.
 
@@ -155,8 +158,9 @@ refresh_interval_ms = 0
 
 ## 5. Use Codex
 
-Restart Codex after changing its configuration. Select one of the models
-returned by Warp's `/v1/models` endpoint and start a session normally:
+Restart Codex after changing its configuration. In Codex Desktop, reopen the
+app and select one of the models returned by Warp's `/v1/models` endpoint. With
+Codex CLI, select a returned model and start a session normally:
 
 ```bash
 codex
@@ -168,7 +172,8 @@ the adapted request upstream.
 
 ## 6. Run A Smoke Test
 
-This isolated check ignores the rest of your user configuration. Replace
+This optional check requires Codex CLI and ignores the rest of your user
+configuration. Desktop-only users can skip it after completing step 5. Replace
 `MODEL_ID_FROM_CATALOG` with a model ID returned by `/v1/models`:
 
 ### Linux And macOS
