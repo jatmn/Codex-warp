@@ -6,7 +6,8 @@ The commands below use Bash on Linux and macOS. On Windows PowerShell, use the
 [provider startup](quick-start.md#2-choose-a-provider),
 [proxy checks](quick-start.md#3-check-the-proxy), and
 [smoke test](quick-start.md#6-run-a-smoke-test) from the quick start, replacing
-the provider key, profile path, and model ID with the values described here.
+the executable path with `.\target\debug\codex-warp.exe` and replacing the
+provider key, profile path, and model ID with the values described here.
 
 ## Table Of Contents
 
