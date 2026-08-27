@@ -143,13 +143,13 @@ if you want a mixed catalog.
 
 ### Windows Codex Auth
 
-Windows does not provide `printf` by default. Use PowerShell as the token
-command instead:
+Windows does not provide `printf` by default. Use the zero-argument `hostname`
+command instead; its output is only a nonsecret placeholder for the local
+proxy:
 
 ```toml
 [model_providers.codex-warp.auth]
-command = "powershell"
-args = ["-NoProfile", "-Command", "Write-Output codex-warp-local"]
+command = "hostname"
 refresh_interval_ms = 0
 ```
 
@@ -212,8 +212,7 @@ codex exec `
   -c 'model_providers.codex-warp.name="Codex Warp"' `
   -c 'model_providers.codex-warp.base_url="http://127.0.0.1:8787/v1"' `
   -c 'model_providers.codex-warp.wire_api="responses"' `
-  -c 'model_providers.codex-warp.auth.command="powershell"' `
-  -c 'model_providers.codex-warp.auth.args=["-NoProfile", "-Command", "Write-Output codex-warp-local"]' `
+  -c 'model_providers.codex-warp.auth.command="hostname"' `
   -c 'model_providers.codex-warp.auth.refresh_interval_ms=0' `
   -s read-only `
   --output-last-message $outputPath `
