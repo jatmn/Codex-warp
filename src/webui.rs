@@ -395,7 +395,9 @@ struct ProviderPersist {
     models_path: Option<String>,
     model_catalog_only: Option<bool>,
     /// When set, overrides stream usage injection for this provider.
-    request_stream_options_include_usage: Option<bool>,
+    /// JSON `null` clears back to inherit; omitted keys leave the stored value.
+    #[serde(default)]
+    request_stream_options_include_usage: OptionalPatch<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1654,6 +1656,16 @@ fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -
         || before.auth_scheme != after.auth_scheme
 }
 
+fn apply_provider_stream_usage_override(provider: &mut ProviderConfig, fields: &ProviderPersist) {
+    match &fields.request_stream_options_include_usage {
+        OptionalPatch::Absent => {}
+        OptionalPatch::Clear => provider.request_stream_options_include_usage = None,
+        OptionalPatch::Set(include_usage) => {
+            provider.request_stream_options_include_usage = Some(*include_usage);
+        }
+    }
+}
+
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     match &fields.name {
         OptionalPatch::Absent => {}
@@ -1688,9 +1700,7 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
     }
-    if let Some(include_usage) = fields.request_stream_options_include_usage {
-        provider.request_stream_options_include_usage = Some(include_usage);
-    }
+    apply_provider_stream_usage_override(provider, fields);
 }
 
 /// Named templates keep bundled endpoint/auth paths. Credentials and extra
@@ -2100,6 +2110,7 @@ async fn create_provider(
             reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_name(&mut provider, &fields);
             apply_named_template_credentials(&mut provider, &fields);
+            apply_provider_stream_usage_override(&mut provider, &fields);
             (id, provider)
         }
     } else {

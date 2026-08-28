@@ -619,6 +619,30 @@
   };
   let credentialFieldTomlLocked = false;
   const credentialClassHint = $("#provider-credential-class");
+  const streamUsageState = {
+    original: null,
+    touched: false,
+  };
+
+  function resetStreamUsageState(value) {
+    streamUsageState.original =
+      value === true ? true : value === false ? false : null;
+    streamUsageState.touched = false;
+    const input = providerForm.querySelector("[name=request_stream_options_include_usage]");
+    if (input) {
+      input.checked = value === true;
+    }
+  }
+
+  function streamUsagePatch() {
+    if (!streamUsageState.touched) {
+      return {};
+    }
+    const checked = providerForm.querySelector(
+      "[name=request_stream_options_include_usage]",
+    ).checked;
+    return { request_stream_options_include_usage: checked };
+  }
 
   // Editing a loaded env name into a truncation of that name
   // (OPENAI_API_KEY → OPENAI or OPENAIAPIKEY) must not become an inline
@@ -857,6 +881,11 @@
   $("#provider-form-cancel").addEventListener("click", () => providerDialog.close());
   templateSelect.addEventListener("change", () => applySelectedTemplate());
   addProviderHeaderBtn.addEventListener("click", () => addProviderHeaderRow());
+  providerForm
+    .querySelector("[name=request_stream_options_include_usage]")
+    ?.addEventListener("change", () => {
+      streamUsageState.touched = true;
+    });
 
   providerForm.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -872,6 +901,7 @@
       status(credential.message, { isError: true });
       return;
     }
+    const streamUsage = streamUsagePatch();
     const body = {
       name: String(fd.get("name") || "").trim() || null,
       base_url: String(fd.get("base_url") || "").trim(),
@@ -887,9 +917,8 @@
         String(fd.get("chat_completions_path") || "").trim() || "/chat/completions",
       models_path: String(fd.get("models_path") || "").trim() || "/models",
       model_catalog_only: providerForm.querySelector("[name=model_catalog_only]").checked,
-      request_stream_options_include_usage:
-        providerForm.querySelector("[name=request_stream_options_include_usage]").checked,
       enabled: providerForm.querySelector("[name=enabled]")?.checked ?? true,
+      ...streamUsage,
     };
     try {
       const headers = collectProviderHeadersFromForm(mode);
@@ -909,7 +938,9 @@
               name: body.name,
               ...(Object.hasOwn(body, "api_key_env") ? { api_key_env: body.api_key_env } : {}),
               ...(Object.hasOwn(body, "api_key") ? { api_key: body.api_key } : {}),
-              request_stream_options_include_usage: body.request_stream_options_include_usage,
+              ...(Object.hasOwn(body, "request_stream_options_include_usage")
+                ? { request_stream_options_include_usage: body.request_stream_options_include_usage }
+                : {}),
               enabled: body.enabled,
               ...(headers ? { headers } : {}),
             };
@@ -937,7 +968,7 @@
             models_path: body.models_path,
             ...(headers ? { headers } : {}),
             model_catalog_only: body.model_catalog_only,
-            request_stream_options_include_usage: body.request_stream_options_include_usage,
+            ...streamUsage,
             enabled: body.enabled,
           }),
         });
@@ -1132,6 +1163,7 @@
       template.chat_completions_path || "/chat/completions";
     providerForm.querySelector("[name=models_path]").value = template.models_path || "/models";
     providerForm.querySelector("[name=model_catalog_only]").checked = !!template.model_catalog_only;
+    resetStreamUsageState(null);
     providerForm.querySelector("[name=enabled]").checked = true;
     applyProviderHeaders(template.headers ?? null);
     setNamedTemplateMode(isNamed);
@@ -1212,8 +1244,7 @@
         p.chat_completions_path || "/chat/completions";
       providerForm.querySelector("[name=models_path]").value = p.models_path || "/models";
       providerForm.querySelector("[name=model_catalog_only]").checked = !!p.model_catalog_only;
-      providerForm.querySelector("[name=request_stream_options_include_usage]").checked =
-        !!p.request_stream_options_include_usage;
+      resetStreamUsageState(p.request_stream_options_include_usage);
       providerForm.querySelector("[name=enabled]").checked = !!p.enabled;
       if (allowCustomHeaders) {
         applyProviderHeaders(p.headers);
@@ -1233,6 +1264,7 @@
       providerForm.reset();
       providerIdInput.value = "";
       applyProviderHeaders(null);
+      resetStreamUsageState(null);
       credentialFieldTomlLocked = false;
       apiKeyInput.placeholder = "PROVIDER_API_KEY or sk-…";
       setCredentialInput("");
