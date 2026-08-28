@@ -573,10 +573,8 @@ dialog label {
   opacity: 0.85;
   cursor: not-allowed;
 }
-#provider-identity-fields.template-locked {
+#provider-identity-fields input.template-locked {
   opacity: 0.72;
-}
-#provider-identity-fields.template-locked input {
   background: var(--surface-2);
 }
 details {

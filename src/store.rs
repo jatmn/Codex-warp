@@ -734,6 +734,7 @@ impl Store {
         provider_id: &str,
         provider: &ProviderConfig,
         catalog: &[ModelCatalogEntry],
+        preserve_colliding_route_owners: bool,
     ) -> anyhow::Result<()> {
         let config_json =
             provider_overlay_config_json(provider, true).context("serialize provider overlay")?;
@@ -758,6 +759,54 @@ impl Store {
                 params![provider_id],
             )?;
             for entry in catalog {
+                if preserve_colliding_route_owners && entry.enabled {
+                    let owner = db.query_row(
+                        "SELECT provider_id FROM model_overlays
+                         WHERE model_id = ?1 AND enabled = 1 AND COALESCE(removed, 0) = 0
+                         ORDER BY route_order ASC, provider_id ASC LIMIT 1",
+                        params![entry.id],
+                        |row| row.get::<_, String>(0),
+                    );
+                    if let Ok(owner) = owner
+                        && owner != provider_id
+                    {
+                        let catalog_json = serde_json::to_string(entry)?;
+                        // Rebase persisted order values before deriving a
+                        // predecessor. SQLite accepts every i64, while route
+                        // ownership needs a gap before the existing owner.
+                        // Normalizing the whole ordering domain makes that
+                        // gap available even for legacy/imported extremes and
+                        // keeps ascending replay's last-claim-wins contract.
+                        normalize_route_orders(&db)?;
+                        let existing_order = db.query_row(
+                            "SELECT route_order FROM model_overlays
+                             WHERE provider_id = ?1 AND model_id = ?2",
+                            params![owner, entry.id],
+                            |row| row.get::<_, i64>(0),
+                        )?;
+                        let route_order = existing_order
+                            .checked_sub(1)
+                            .ok_or_else(|| anyhow!("could not reserve route order before owner"))?;
+                        db.execute(
+                            "INSERT INTO model_overlays(provider_id, model_id, enabled, managed, catalog_json, removed, route_order)
+                             VALUES (?1, ?2, ?3, 1, ?4, 0, ?5)
+                             ON CONFLICT(provider_id, model_id) DO UPDATE SET
+                                enabled = excluded.enabled,
+                                managed = 1,
+                                catalog_json = excluded.catalog_json,
+                                removed = 0,
+                                route_order = excluded.route_order",
+                            params![
+                                provider_id,
+                                entry.id,
+                                i64::from(entry.enabled),
+                                catalog_json,
+                                route_order
+                            ],
+                        )?;
+                        continue;
+                    }
+                }
                 let catalog_json = serde_json::to_string(entry)?;
                 let route_order = next_route_order(&db)?;
                 db.execute(
@@ -1458,12 +1507,46 @@ fn now_ms() -> i64 {
 /// in ascending order, so the most recent mutation wins for overlapping aliases
 /// as well as for enabled route claims after reopening the store.
 fn next_route_order(db: &Connection) -> anyhow::Result<i64> {
-    db.query_row(
-        "SELECT COALESCE(MAX(route_order), 0) + 1 FROM model_overlays",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(Into::into)
+    let maximum: Option<i64> =
+        db.query_row("SELECT MAX(route_order) FROM model_overlays", [], |row| {
+            row.get(0)
+        })?;
+    match maximum {
+        Some(order) => order
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("model route order is exhausted")),
+        None => Ok(1),
+    }
+}
+
+/// Reassign persisted route orders to a compact, strictly increasing sequence
+/// while retaining the replay order and deterministic tie breakers.
+fn normalize_route_orders(db: &Connection) -> anyhow::Result<()> {
+    let rows = {
+        let mut stmt = db.prepare(
+            "SELECT provider_id, model_id FROM model_overlays
+             ORDER BY route_order ASC, provider_id ASC, model_id ASC",
+        )?;
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    let count = i64::try_from(rows.len()).map_err(|_| anyhow!("too many model route rows"))?;
+    let start = 1_i64
+        .checked_sub(count)
+        .ok_or_else(|| anyhow!("too many model route rows"))?;
+    for (index, (provider_id, model_id)) in rows.into_iter().enumerate() {
+        let route_order = start
+            .checked_add(i64::try_from(index).map_err(|_| anyhow!("too many model route rows"))?)
+            .ok_or_else(|| anyhow!("too many model route rows"))?;
+        db.execute(
+            "UPDATE model_overlays SET route_order = ?1
+             WHERE provider_id = ?2 AND model_id = ?3",
+            params![route_order, provider_id, model_id],
+        )?;
+    }
+    Ok(())
 }
 
 fn overlay_route_seed(model_id: String, catalog_json: Option<String>) -> (String, Option<String>) {
@@ -1625,6 +1708,7 @@ fn merge_provider_overlay(existing: &mut ProviderConfig, overlay: &ProviderConfi
         }
     }
     *existing = overlay.clone();
+    existing.template_key = None;
     existing.api_key = preserved_api_key;
     existing.api_key_env = preserved_api_key_env;
     existing.headers = preserved_headers;

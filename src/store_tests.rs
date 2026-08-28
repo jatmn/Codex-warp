@@ -933,7 +933,7 @@ fn missing_overlay_row_stays_managed_for_this_process() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     assert!(
         store.provider_overlay_exists("managed").unwrap(),
@@ -979,7 +979,7 @@ fn delete_provider_overlay_drops_row_and_managed_memory() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &[])
+        .create_provider_with_catalog("managed", &provider, &[], false)
         .unwrap();
     store.delete_provider_overlay("managed").unwrap();
     assert!(!store.provider_overlay_exists("managed").unwrap());
@@ -1599,7 +1599,7 @@ fn create_provider_with_catalog_persists_provider_and_models() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("newprov", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("newprov", &provider, &provider.model_catalog, false)
         .unwrap();
     assert!(store.provider_is_managed("newprov").unwrap());
     let seeds = store.enabled_model_route_seeds().unwrap();
@@ -1648,7 +1648,7 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("legacy", &provider, &provider.model_catalog, false)
         .unwrap();
 
     let mut config = AppConfig::default();
@@ -1687,6 +1687,206 @@ fn create_provider_with_catalog_replaces_leftover_model_overlays() {
         .unwrap()
     };
     assert_eq!(leftover, 0);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn create_named_template_catalog_preserves_earliest_colliding_route_owner() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-preserves-routes-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = || ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared.clone()],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog("z_owner", &provider(), &provider().model_catalog, false)
+            .unwrap();
+        store
+            .create_provider_with_catalog(
+                "a_duplicate",
+                &provider(),
+                &provider().model_catalog,
+                true,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("z_owner")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn create_named_template_catalog_preserves_owner_at_minimum_route_order() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-preserves-minimum-route-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled: true,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = || ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared.clone()],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog("owner", &provider(), &provider().model_catalog, false)
+            .unwrap();
+        {
+            let db = store.db.lock().expect("sqlite lock poisoned");
+            db.execute(
+                "UPDATE model_overlays SET route_order = ?1
+                 WHERE provider_id = 'owner' AND model_id = 'shared/model'",
+                params![i64::MIN],
+            )
+            .unwrap();
+        }
+        store
+            .create_provider_with_catalog("duplicate", &provider(), &provider().model_catalog, true)
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("owner")
+    );
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn next_route_order_rejects_exhausted_persisted_order() {
+    use rusqlite::params;
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-route-order-exhausted-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("routes.db")).unwrap();
+    {
+        let db = store.db.lock().expect("sqlite lock poisoned");
+        db.execute(
+            "INSERT INTO model_overlays(provider_id, model_id, enabled, route_order)
+             VALUES (?1, ?2, 1, ?3)",
+            params!["owner", "shared/model", i64::MAX],
+        )
+        .unwrap();
+        let error = next_route_order(&db).expect_err("maximum route order must fail safely");
+        assert!(error.to_string().contains("route order is exhausted"));
+    }
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn create_named_template_catalog_does_not_preseed_disabled_colliding_owner() {
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-create-disabled-colliding-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db_path = dir.join("routes.db");
+    let shared = |enabled: bool| ModelCatalogEntry {
+        id: "shared/model".into(),
+        enabled,
+        ..ModelCatalogEntry::default()
+    };
+    let provider = |enabled: bool| ProviderConfig {
+        base_url: "https://example.test/v1".into(),
+        enabled: true,
+        model_catalog: vec![shared(enabled)],
+        ..ProviderConfig::default()
+    };
+    {
+        let store = Store::open(&db_path).unwrap();
+        store
+            .create_provider_with_catalog(
+                "z_owner",
+                &provider(true),
+                &provider(true).model_catalog,
+                false,
+            )
+            .unwrap();
+        store
+            .create_provider_with_catalog(
+                "a_duplicate",
+                &provider(false),
+                &provider(false).model_catalog,
+                true,
+            )
+            .unwrap();
+    }
+
+    let mut config = AppConfig::default();
+    let store = Store::open(&db_path).unwrap();
+    store
+        .apply_overlays_with_tracing_fallback(&mut config, None)
+        .unwrap();
+    let seeds = store.enabled_model_route_seeds().unwrap();
+    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        Some("z_owner")
+    );
+    let duplicate = config
+        .providers
+        .get("a_duplicate")
+        .expect("duplicate overlay restored");
+    assert!(!duplicate.model_catalog[0].enabled);
 
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1847,7 +2047,7 @@ fn delete_managed_model_catalog_entry_updates_provider_and_removes_model_overlay
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog, false)
         .unwrap();
     let mut snapshot = provider.clone();
     snapshot.suppress_catalog_model("drop", None);
@@ -1913,7 +2113,7 @@ fn persist_managed_overlay_disable_updates_provider_and_disables_model_overlay()
         ..ProviderConfig::default()
     };
     store
-        .create_provider_with_catalog("managed", &provider, &provider.model_catalog)
+        .create_provider_with_catalog("managed", &provider, &provider.model_catalog, false)
         .unwrap();
     store
         .set_model_enabled("managed", "overlay-only", true)
