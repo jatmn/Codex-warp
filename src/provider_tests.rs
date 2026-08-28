@@ -10,11 +10,8 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
 
-use crate::config::AppConfig;
 use crate::config::Backend;
 use crate::config::PRIMARY_PROVIDER_ID;
-use crate::config::ProviderConfig;
-use crate::config::TransformConfig;
 use crate::config::load_config_layers;
 use crate::debug_log::DebugLog;
 use crate::transform::normalize_responses_request;
@@ -1062,85 +1059,4 @@ async fn select_provider_rejects_prefixed_model_when_suffix_disabled() {
     });
 
     assert!(select_provider(&state, &body).await.is_none());
-}
-
-#[test]
-fn provider_request_stream_options_include_usage_overrides_transform() {
-    let mut config = AppConfig::default();
-    // Baseline stays false; provider override must flip only the stream-usage bit.
-    assert!(!config.transform.request_stream_options_include_usage);
-
-    let mut provider = ProviderConfig {
-        base_url: "https://api.concentrate.ai/v1".to_string(),
-        request_stream_options_include_usage: Some(true),
-        ..ProviderConfig::default()
-    };
-    // Even an explicit provider transform that leaves the flag false must yield
-    // to the provider-level override so managed Web UI gateways can opt in
-    // without replacing shared baseline morphs.
-    provider.transform = Some(TransformConfig {
-        request_stream_options_include_usage: false,
-        ..TransformConfig::default()
-    });
-    config
-        .providers
-        .insert("api-concentrate-ai-v1".to_string(), provider);
-
-    let selected = selected_provider(
-        &config,
-        "api-concentrate-ai-v1",
-        config.providers.get("api-concentrate-ai-v1").unwrap(),
-        Some("concentrate.ai/grok-4.6"),
-    );
-    assert!(selected.transform.request_stream_options_include_usage);
-
-    // Explicit false override also wins over a true provider transform.
-    config
-        .providers
-        .get_mut("api-concentrate-ai-v1")
-        .unwrap()
-        .request_stream_options_include_usage = Some(false);
-    config
-        .providers
-        .get_mut("api-concentrate-ai-v1")
-        .unwrap()
-        .transform = Some(TransformConfig {
-        request_stream_options_include_usage: true,
-        ..TransformConfig::default()
-    });
-    let selected = selected_provider(
-        &config,
-        "api-concentrate-ai-v1",
-        config.providers.get("api-concentrate-ai-v1").unwrap(),
-        Some("concentrate.ai/grok-4.6"),
-    );
-    assert!(!selected.transform.request_stream_options_include_usage);
-}
-
-#[test]
-fn provider_stream_options_include_usage_injects_chat_stream_options() {
-    let mut config = AppConfig::default();
-    config.providers.insert(
-        "api-concentrate-ai-v1".to_string(),
-        ProviderConfig {
-            base_url: "https://api.concentrate.ai/v1".to_string(),
-            request_stream_options_include_usage: Some(true),
-            ..ProviderConfig::default()
-        },
-    );
-    let selected = selected_provider(
-        &config,
-        "api-concentrate-ai-v1",
-        config.providers.get("api-concentrate-ai-v1").unwrap(),
-        Some("concentrate.ai/grok-4.6"),
-    );
-    let chat = responses_to_chat(
-        json!({
-            "model": "concentrate.ai/grok-4.6",
-            "stream": true,
-            "input": "ping"
-        }),
-        &selected.transform,
-    );
-    assert_eq!(chat.body["stream_options"]["include_usage"], true);
 }

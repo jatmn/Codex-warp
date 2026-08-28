@@ -198,16 +198,6 @@
               <input type="checkbox" name="model_catalog_only">
               Catalog only (skip upstream /models)
             </label>
-            <label class="checkbox-row">
-              <input type="checkbox" name="request_stream_options_include_usage">
-              Request stream usage (stream_options.include_usage)
-            </label>
-            <p class="hint muted">
-              Enable for OpenAI-compatible gateways that only emit token usage on
-              chat streams when <code>stream_options.include_usage</code> is true
-              (for example concentrate.ai). Leave off if the gateway rejects
-              <code>stream_options</code>.
-            </p>
           </details>
           <label id="provider-enabled-field" class="checkbox-row">
             <input type="checkbox" name="enabled" checked>

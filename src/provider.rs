@@ -157,12 +157,6 @@ pub(crate) fn selected_provider(
             family.transform.apply_to(&mut transform);
         }
     }
-    // Provider-level override wins over baseline/provider-transform/family patches.
-    // This lets managed Web UI gateways opt into stream usage analytics without
-    // supplying a full TransformConfig that would drop shared chat morphs.
-    if let Some(include_usage) = provider.request_stream_options_include_usage {
-        transform.request_stream_options_include_usage = include_usage;
-    }
     SelectedProvider {
         id: id.to_string(),
         provider: provider.clone(),

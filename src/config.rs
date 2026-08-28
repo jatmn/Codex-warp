@@ -255,12 +255,6 @@ pub struct ProviderConfig {
     pub model_catalog: Vec<ModelCatalogEntry>,
     pub model_metadata: ModelMetadataConfig,
     pub transform: Option<TransformConfig>,
-    /// When set, overrides `transform.request_stream_options_include_usage` for
-    /// this provider after baseline/provider/family transform resolution.
-    /// Managed Web UI providers use this to opt into stream usage chunks without
-    /// replacing the shared chat-request morph baseline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_stream_options_include_usage: Option<bool>,
     pub responses_path: String,
     pub chat_completions_path: String,
     pub models_path: String,
@@ -285,7 +279,6 @@ impl Default for ProviderConfig {
             model_catalog: Vec::new(),
             model_metadata: ModelMetadataConfig::default(),
             transform: None,
-            request_stream_options_include_usage: None,
             responses_path: "/responses".to_string(),
             chat_completions_path: "/chat/completions".to_string(),
             models_path: "/models".to_string(),

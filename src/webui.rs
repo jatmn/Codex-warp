@@ -394,10 +394,6 @@ struct ProviderPersist {
     chat_completions_path: Option<String>,
     models_path: Option<String>,
     model_catalog_only: Option<bool>,
-    /// When set, overrides stream usage injection for this provider.
-    /// JSON `null` clears back to inherit; omitted keys leave the stored value.
-    #[serde(default)]
-    request_stream_options_include_usage: OptionalPatch<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -460,9 +456,6 @@ struct ProviderView {
     /// Bundled named-template key retained by managed duplicate instances.
     #[serde(skip_serializing_if = "Option::is_none")]
     template_key: Option<String>,
-    /// Effective provider override for requesting stream usage chunks.
-    /// `null` means inherit the resolved transform default (usually false).
-    request_stream_options_include_usage: Option<bool>,
     /// True when persisted provenance or a legacy bundled id names a template.
     named_template: bool,
     models: Vec<ModelView>,
@@ -1281,7 +1274,6 @@ fn build_provider_view(
             .template_key
             .clone()
             .filter(|_| provider_matches_named_template(state, id, provider)),
-        request_stream_options_include_usage: provider.request_stream_options_include_usage,
         named_template: provider_matches_named_template(state, id, provider),
         models: build_model_views(state, id, provider, routed_models, discovered),
     }
@@ -1656,16 +1648,6 @@ fn discovery_settings_changed(before: &ProviderConfig, after: &ProviderConfig) -
         || before.auth_scheme != after.auth_scheme
 }
 
-fn apply_provider_stream_usage_override(provider: &mut ProviderConfig, fields: &ProviderPersist) {
-    match &fields.request_stream_options_include_usage {
-        OptionalPatch::Absent => {}
-        OptionalPatch::Clear => provider.request_stream_options_include_usage = None,
-        OptionalPatch::Set(include_usage) => {
-            provider.request_stream_options_include_usage = Some(*include_usage);
-        }
-    }
-}
-
 fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     match &fields.name {
         OptionalPatch::Absent => {}
@@ -1700,7 +1682,6 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
     }
-    apply_provider_stream_usage_override(provider, fields);
 }
 
 /// Named templates keep bundled endpoint/auth paths. Credentials and extra
@@ -2110,7 +2091,6 @@ async fn create_provider(
             reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_name(&mut provider, &fields);
             apply_named_template_credentials(&mut provider, &fields);
-            apply_provider_stream_usage_override(&mut provider, &fields);
             (id, provider)
         }
     } else {
