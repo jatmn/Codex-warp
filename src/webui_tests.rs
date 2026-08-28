@@ -109,6 +109,7 @@ fn persist_headers(headers: BTreeMap<String, String>) -> ProviderPersist {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     }
 }
 
@@ -129,6 +130,7 @@ fn persist_credentials(
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     }
 }
 
@@ -196,6 +198,67 @@ async fn list_providers_returns_configured_provider_views() {
 }
 
 #[test]
+fn provider_persist_sets_request_stream_options_include_usage() {
+    let mut provider = ProviderConfig::default();
+    assert_eq!(provider.request_stream_options_include_usage, None);
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Set(true),
+    };
+    fields.apply_to(&mut provider);
+    assert_eq!(provider.request_stream_options_include_usage, Some(true));
+
+    // Omitted field must not clear an existing override.
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
+    };
+    fields.apply_to(&mut provider);
+    assert_eq!(provider.request_stream_options_include_usage, Some(true));
+
+    // Explicit null clears back to inherit.
+    let fields = ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: None,
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Absent,
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Clear,
+    };
+    fields.apply_to(&mut provider);
+    assert_eq!(provider.request_stream_options_include_usage, None);
+}
+
+#[test]
 fn provider_persist_apply_to_preserves_api_key_when_not_set() {
     let mut provider = ProviderConfig {
         base_url: "https://example.test/v1".into(),
@@ -215,6 +278,7 @@ fn provider_persist_apply_to_preserves_api_key_when_not_set() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     fields.apply_to(&mut provider);
     assert_eq!(provider.api_key.as_deref(), Some("existing-secret"));
@@ -242,6 +306,7 @@ fn provider_persist_null_clears_optional_name_and_api_key_env() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     fields.apply_to(&mut provider);
     assert!(provider.name.is_none());
@@ -409,6 +474,7 @@ fn validate_provider_persist_rejects_api_key_and_api_key_env_together() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -430,6 +496,7 @@ fn validate_provider_persist_rejects_masked_preview_credentials() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -451,6 +518,7 @@ fn validate_provider_persist_allows_single_bullet_in_secret() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     validate_provider_persist(&fields).expect("single bullet secrets are allowed");
 }
@@ -479,6 +547,7 @@ fn validate_provider_persist_rejects_empty_base_url() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -502,6 +571,7 @@ fn validate_provider_persist_rejects_case_insensitive_duplicate_headers() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -526,6 +596,7 @@ fn validate_provider_persist_accepts_distinct_headers() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     validate_provider_persist(&fields).expect("distinct header names");
 }
@@ -547,6 +618,7 @@ fn validate_provider_persist_rejects_invalid_http_header_names() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let err = validate_provider_persist(&fields).unwrap_err();
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -1042,6 +1114,7 @@ fn normalize_provider_api_key_fields_treats_raw_secret_as_api_key() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
 
     normalize_provider_api_key_fields(&mut fields);
@@ -1068,6 +1141,7 @@ fn normalize_provider_api_key_fields_reclassified_secret_wins_over_api_key_clear
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
 
     normalize_provider_api_key_fields(&mut fields);
@@ -1094,6 +1168,7 @@ fn normalize_provider_api_key_fields_treats_underscore_secret_as_api_key() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
 
     normalize_provider_api_key_fields(&mut fields);
@@ -1120,6 +1195,7 @@ fn normalize_provider_api_key_fields_treats_uppercase_token_without_underscore_a
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
 
     normalize_provider_api_key_fields(&mut fields);
@@ -1187,6 +1263,7 @@ fn apply_provider_persist_clears_opposite_credential() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     env_fields.apply_to(&mut provider);
     assert!(provider.api_key.is_none());
@@ -1205,6 +1282,7 @@ fn apply_provider_persist_clears_opposite_credential() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     inline_fields.apply_to(&mut provider);
     assert_eq!(provider.api_key.as_deref(), Some("sk-live-not-an-env"));
@@ -1233,6 +1311,7 @@ fn apply_provider_persist_null_clears_inline_api_key_and_headers() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     fields.apply_to(&mut provider);
     assert!(provider.api_key.is_none());
@@ -1283,6 +1362,7 @@ fn named_template_credentials_apply_headers_without_replacing_catalog() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     apply_named_template_credentials(&mut provider, &fields);
     assert_eq!(provider.model_catalog.len(), catalog_len);
@@ -2986,6 +3066,7 @@ async fn create_provider_rejects_invalid_reasoning_catalog() {
             chat_completions_path: None,
             models_path: None,
             model_catalog_only: Some(true),
+            request_stream_options_include_usage: OptionalPatch::Absent,
         },
         model_catalog: vec![ModelCatalogEntry {
             id: "bad-model".into(),
@@ -3024,6 +3105,7 @@ async fn create_provider_honors_nonempty_custom_template() {
             chat_completions_path: None,
             models_path: None,
             model_catalog_only: Some(true),
+            request_stream_options_include_usage: OptionalPatch::Absent,
         },
         model_catalog: Vec::new(),
     };
@@ -3035,6 +3117,46 @@ async fn create_provider_honors_nonempty_custom_template() {
     assert_eq!(view.base_url, "https://generated.example/v1");
 
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn named_template_create_honors_request_stream_options_include_usage() {
+    let (state, store_dir) = temporary_store_state("named-template-stream-usage");
+    let (_, Json(view)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("hicap".into()),
+            fields: ProviderPersist {
+                name: OptionalPatch::Absent,
+                base_url: None,
+                enabled: Some(true),
+                api_key_env: OptionalPatch::Absent,
+                api_key: OptionalPatch::Set("hicap-secret".into()),
+                headers: OptionalPatch::Absent,
+                auth_header: None,
+                auth_scheme: None,
+                responses_path: None,
+                chat_completions_path: None,
+                models_path: None,
+                model_catalog_only: None,
+                request_stream_options_include_usage: OptionalPatch::Set(true),
+            },
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("named template create");
+    assert_eq!(view.request_stream_options_include_usage, Some(true));
+    let provider = state
+        .read_config()
+        .providers
+        .get(&view.id)
+        .expect("provider")
+        .clone();
+    assert_eq!(provider.request_stream_options_include_usage, Some(true));
+
+    let _ = std::fs::remove_dir_all(store_dir);
 }
 
 #[tokio::test]
@@ -3053,6 +3175,7 @@ async fn named_template_create_allows_duplicate_instances_and_names() {
         chat_completions_path: None,
         models_path: None,
         model_catalog_only: None,
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
 
     let (_, Json(primary)) = create_provider(
@@ -3215,6 +3338,7 @@ async fn provider_identity_edit_clears_prior_discovery_snapshot() {
             chat_completions_path: None,
             models_path: None,
             model_catalog_only: None,
+            request_stream_options_include_usage: OptionalPatch::Absent,
         }),
     )
     .await
@@ -3419,6 +3543,7 @@ fn discovery_settings_changed_detects_credential_request_edits() {
         chat_completions_path: Some("/chat/completions".into()),
         models_path: Some("/models".into()),
         model_catalog_only: Some(false),
+        request_stream_options_include_usage: OptionalPatch::Absent,
     };
     let mut after = before.clone();
     fields.apply_to(&mut after);
@@ -4275,6 +4400,7 @@ async fn disabled_provider_creation_caches_claims_for_failed_reenable_read() {
                 chat_completions_path: None,
                 models_path: None,
                 model_catalog_only: Some(true),
+                request_stream_options_include_usage: OptionalPatch::Absent,
             },
             model_catalog: vec![ModelCatalogEntry {
                 id: "shared".into(),
@@ -4374,6 +4500,7 @@ async fn create_provider_reused_id_evicts_stale_routes_before_config_is_visible(
                     chat_completions_path: None,
                     models_path: None,
                     model_catalog_only: Some(true),
+                    request_stream_options_include_usage: OptionalPatch::Absent,
                 },
                 model_catalog: vec![ModelCatalogEntry {
                     id: "dynamic-model".into(),
@@ -5132,6 +5259,7 @@ async fn provider_identity_routing_epoch_never_pairs_old_routes_with_new_destina
                 chat_completions_path: None,
                 models_path: None,
                 model_catalog_only: None,
+                request_stream_options_include_usage: OptionalPatch::Absent,
             }),
         )
         .await
@@ -5231,6 +5359,7 @@ async fn provider_disable_routing_epoch_evicts_live_routes_before_config_is_visi
                 chat_completions_path: None,
                 models_path: None,
                 model_catalog_only: None,
+                request_stream_options_include_usage: OptionalPatch::Absent,
             }),
         )
         .await
@@ -5392,6 +5521,7 @@ async fn update_disabled_provider_identity_does_not_wait_for_route_epoch() {
                 chat_completions_path: None,
                 models_path: None,
                 model_catalog_only: None,
+                request_stream_options_include_usage: OptionalPatch::Absent,
             }),
         )
         .await
@@ -5509,6 +5639,7 @@ async fn update_provider_enable_change_reconciles_catalog_routes() {
                 chat_completions_path: None,
                 models_path: None,
                 model_catalog_only: None,
+                request_stream_options_include_usage: OptionalPatch::Absent,
             }),
         )
         .await
@@ -5595,6 +5726,7 @@ async fn update_disabled_provider_identity_does_not_refresh_route_seeds() {
             chat_completions_path: None,
             models_path: None,
             model_catalog_only: None,
+            request_stream_options_include_usage: OptionalPatch::Absent,
         }),
     )
     .await
