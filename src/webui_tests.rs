@@ -259,6 +259,57 @@ fn provider_persist_sets_request_stream_options_include_usage() {
 }
 
 #[test]
+fn provider_persist_deserializes_stream_usage_omit_and_null() {
+    let omitted: ProviderPersist =
+        serde_json::from_str(r#"{"base_url":"https://example.test/v1"}"#).expect("deserialize");
+    assert_eq!(
+        omitted.request_stream_options_include_usage,
+        OptionalPatch::Absent
+    );
+
+    let cleared: ProviderPersist =
+        serde_json::from_str(r#"{"request_stream_options_include_usage":null}"#)
+            .expect("deserialize");
+    assert_eq!(
+        cleared.request_stream_options_include_usage,
+        OptionalPatch::Clear
+    );
+
+    let enabled: ProviderPersist =
+        serde_json::from_str(r#"{"request_stream_options_include_usage":true}"#)
+            .expect("deserialize");
+    assert_eq!(
+        enabled.request_stream_options_include_usage,
+        OptionalPatch::Set(true)
+    );
+
+    let disabled: ProviderPersist =
+        serde_json::from_str(r#"{"request_stream_options_include_usage":false}"#)
+            .expect("deserialize");
+    assert_eq!(
+        disabled.request_stream_options_include_usage,
+        OptionalPatch::Set(false)
+    );
+}
+
+#[test]
+fn javascript_omits_untouched_stream_usage_and_sends_null_to_inherit() {
+    let app = webui_js_source();
+    assert!(
+        app.contains("if (!streamUsageState.touched) {\n      return {};"),
+        "untouched stream-usage checkbox must omit the persist field"
+    );
+    assert!(
+        app.contains("return { request_stream_options_include_usage: null };"),
+        "unchecking after an inherited or true override must send JSON null to restore inherit"
+    );
+    assert!(
+        app.contains("if (streamUsageState.original === false)"),
+        "an explicit loaded false override must still persist false when left unchecked"
+    );
+}
+
+#[test]
 fn provider_persist_apply_to_preserves_api_key_when_not_set() {
     let mut provider = ProviderConfig {
         base_url: "https://example.test/v1".into(),

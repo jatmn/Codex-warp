@@ -641,7 +641,15 @@
     const checked = providerForm.querySelector(
       "[name=request_stream_options_include_usage]",
     ).checked;
-    return { request_stream_options_include_usage: checked };
+    if (checked) {
+      return { request_stream_options_include_usage: true };
+    }
+    // Unchecking restores inherit (`null`) unless the loaded override was
+    // already an explicit false the operator is keeping.
+    if (streamUsageState.original === false) {
+      return { request_stream_options_include_usage: false };
+    }
+    return { request_stream_options_include_usage: null };
   }
 
   // Editing a loaded env name into a truncation of that name
