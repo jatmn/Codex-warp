@@ -2786,11 +2786,16 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
         .split("$(\"#analytics-provider\").addEventListener")
         .next()
         .expect("analytics request helper body");
+    let persist_at = request
+        .find("storeAnalyticsFilters(changedFilter);")
+        .expect("persist filters");
+    let hide_at = request
+        .find("applyAnalyticsChartVisibility(")
+        .expect("hide inactive charts before reload");
+    let load_at = request.find("loadAnalytics(").expect("load analytics");
     assert!(
-        request
-            .find("storeAnalyticsFilters(changedFilter);")
-            .expect("persist filters")
-            < request.find("loadAnalytics(").expect("load analytics")
+        persist_at < hide_at && hide_at < load_at,
+        "filter changes must hide inactive charts before fetching"
     );
 
     let provider_change = app
@@ -2833,6 +2838,107 @@ fn analytics_filters_persist_for_the_browser_session_and_restore_safely() {
 
     let source_checks = include_str!("../scripts/source-checks.sh");
     assert!(source_checks.contains("node scripts/webui_analytics_filters_harness.js"));
+    assert!(source_checks.contains("node scripts/webui_analytics_chart_visibility_harness.js"));
+}
+
+#[test]
+fn analytics_inactive_charts_are_hidden_for_filter_state() {
+    let app = webui_js_source();
+    let css = include_str!("webui_static/app.css");
+    assert!(app.contains("function analyticsChartVisibility(provider, model)"));
+    assert!(app.contains("providerPie: !hasProvider"));
+    assert!(app.contains("perProviderModelPie: hasProvider && !hasModel"));
+    assert!(app.contains("setChartBoxHidden($(\"#chart-pie-provider\"), !visibility.providerPie)"));
+    assert!(app.contains(
+        "setChartBoxHidden($(\"#chart-pie-provider-models\"), !visibility.perProviderModelPie)"
+    ));
+    assert!(app.contains("if (liveVisibility.providerPie && snapshotVisibility.providerPie)"));
+    assert!(app.contains(
+        "if (liveVisibility.perProviderModelPie && snapshotVisibility.perProviderModelPie)"
+    ));
+    assert!(app.contains("for (const canvas of allChartCanvases()) attachChartHover(canvas)"));
+    assert!(app.contains("return !box || !box.hidden"));
+    assert!(app.contains("if (legend) legend.innerHTML = \"\""));
+    let hide_box = app
+        .split("function setChartBoxHidden(canvas, hidden) {")
+        .nth(1)
+        .expect("hide chart box")
+        .split("function applyAnalyticsChartVisibility(")
+        .next()
+        .expect("bounded hide chart box");
+    let mouse_clear_at = hide_box
+        .find("canvas.__mouse = null")
+        .expect("hide must drop leftover pointer coords");
+    let chart_clear_at = hide_box
+        .find("canvas.__chart = null")
+        .expect("hide must drop chart state");
+    assert!(
+        mouse_clear_at < chart_clear_at,
+        "hide must clear pointer coords before dropping chart state"
+    );
+    assert!(!app.contains("Select All providers to see provider usage."));
+    assert!(!app.contains("Select a provider to see model usage per provider."));
+    assert!(!app.contains("Select All models to see model usage per provider."));
+    let box_hidden = css_rule_body(css, ".chart-box[hidden]");
+    let box_compact: String = box_hidden.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        box_compact.contains("display:none"),
+        "inactive chart boxes must leave the analytics grid"
+    );
+
+    let reconcile = app
+        .split("function reconcileAnalyticsFiltersAfterInventory()")
+        .nth(1)
+        .expect("inventory reconcile")
+        .split("function refreshRestoredAnalytics(")
+        .next()
+        .expect("bounded inventory reconcile");
+    let restore_at = reconcile
+        .find("restoreAnalyticsFilters()")
+        .expect("restore during reconcile");
+    let reconcile_hide_at = reconcile
+        .find("applyAnalyticsChartVisibility(")
+        .expect("hide after restored filters");
+    assert!(
+        restore_at < reconcile_hide_at,
+        "inventory restore must hide inactive charts before returning"
+    );
+
+    let paint = app
+        .split("function renderAnalyticsPresentation()")
+        .nth(1)
+        .expect("analytics presentation")
+        .split("window.addEventListener(\"codex-warp-theme-change\"")
+        .next()
+        .expect("bounded presentation");
+    let live_visibility_at = paint
+        .find("$(\"#analytics-provider\").value")
+        .expect("live filter visibility");
+    let snapshot_guard_at = paint
+        .find("if (!analyticsSnapshot) return")
+        .expect("snapshot guard after live visibility");
+    let provider_pie_at = paint
+        .find("if (liveVisibility.providerPie && snapshotVisibility.providerPie)")
+        .expect("provider pie gated on live and snapshot visibility");
+    let per_provider_pie_at = paint
+        .find("if (liveVisibility.perProviderModelPie && snapshotVisibility.perProviderModelPie)")
+        .expect("per-provider pie gated on live and snapshot visibility");
+    let model_pie_at = paint
+        .find("drawPieChart($(\"#chart-pie-model\")")
+        .expect("overall model pie stays visible");
+    assert!(live_visibility_at < snapshot_guard_at);
+    assert!(snapshot_guard_at < provider_pie_at);
+    assert!(provider_pie_at < model_pie_at && model_pie_at < per_provider_pie_at);
+
+    let index = include_str!("webui_static/index.html");
+    let per_provider_box = index
+        .split("id=\"chart-pie-provider-models-title\"")
+        .next()
+        .expect("per-provider title");
+    assert!(
+        per_provider_box.contains("<div class=\"chart-box\" hidden>"),
+        "default All providers must hide the per-provider pie before JS runs"
+    );
 }
 
 #[test]

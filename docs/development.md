@@ -185,7 +185,7 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 
 The preflight runs every Linux CI check explicitly: `cargo update --workspace
 --locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
-language policy, tracked JavaScript syntax, chart harness, and crate-wide
+language policy, tracked JavaScript syntax, chart and analytics harnesses, and crate-wide
 Clippy); `cargo test
 --locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
 --locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
@@ -201,6 +201,9 @@ ownership, pointer reclaim only on hit, paint only with a measured CSS width,
 live-region clear, canvas interactivity attrs, bar paint anchors) and
 `footer-status.js` (analytics footer copy when chart-math is missing, boot
 errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
+The analytics filter and chart-visibility harnesses extract helpers from
+`app-main.js` for session filter restore and for hiding pies that the current
+provider or model filter cannot populate.
 
 For a quick documentation-only feedback loop before the mandatory preflight:
 
@@ -227,7 +230,7 @@ For changes that require full CI, the Linux job performs:
   `Cargo.toml`
 - `typos` spell check (`_typos.toml`)
 - `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
-  capitalization, language policy, tracked JavaScript syntax and chart harness,
+  capitalization, language policy, tracked JavaScript syntax, chart and analytics harnesses,
   crate-wide Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
