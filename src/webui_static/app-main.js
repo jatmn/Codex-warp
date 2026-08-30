@@ -1756,6 +1756,7 @@
     if (!hidden) return;
     dismissChartHoverUi(canvas);
     if (document.activeElement === canvas) canvas.blur();
+    canvas.__mouse = null;
     canvas.__chart = null;
     const legend = legendElFor(canvas);
     if (legend) legend.innerHTML = "";

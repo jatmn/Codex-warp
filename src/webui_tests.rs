@@ -2859,6 +2859,23 @@ fn analytics_inactive_charts_are_hidden_for_filter_state() {
     assert!(app.contains("for (const canvas of allChartCanvases()) attachChartHover(canvas)"));
     assert!(app.contains("return !box || !box.hidden"));
     assert!(app.contains("if (legend) legend.innerHTML = \"\""));
+    let hide_box = app
+        .split("function setChartBoxHidden(canvas, hidden) {")
+        .nth(1)
+        .expect("hide chart box")
+        .split("function applyAnalyticsChartVisibility(")
+        .next()
+        .expect("bounded hide chart box");
+    let mouse_clear_at = hide_box
+        .find("canvas.__mouse = null")
+        .expect("hide must drop leftover pointer coords");
+    let chart_clear_at = hide_box
+        .find("canvas.__chart = null")
+        .expect("hide must drop chart state");
+    assert!(
+        mouse_clear_at < chart_clear_at,
+        "hide must clear pointer coords before dropping chart state"
+    );
     assert!(!app.contains("Select All providers to see provider usage."));
     assert!(!app.contains("Select a provider to see model usage per provider."));
     assert!(!app.contains("Select All models to see model usage per provider."));

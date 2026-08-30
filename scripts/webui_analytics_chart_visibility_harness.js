@@ -40,6 +40,7 @@ function chartElement(id) {
   const canvas = {
     id,
     __chart: { kind: "pie" },
+    __mouse: { x: 12, y: 34 },
     attrs: null,
     width: 800,
     height: 260,
@@ -160,6 +161,7 @@ check("hides inactive pie boxes instead of leaving blank canvases", () => {
   assert.equal(run.providerPie.box.hidden, false);
   assert.equal(run.providerModelsPie.box.hidden, true);
   assert.equal(run.providerModelsPie.canvas.__chart, null);
+  assert.equal(run.providerModelsPie.canvas.__mouse, null);
   assert.equal(run.providerModelsPie.legend.innerHTML, "");
   assert.equal(run.providerModelsPie.canvas.cleared, true);
   assert.deepEqual(run.dismissed, ["chart-pie-provider-models"]);
