@@ -2852,10 +2852,13 @@ fn analytics_inactive_charts_are_hidden_for_filter_state() {
     assert!(app.contains(
         "setChartBoxHidden($(\"#chart-pie-provider-models\"), !visibility.perProviderModelPie)"
     ));
-    assert!(app.contains("if (chartVisibility.providerPie)"));
-    assert!(app.contains("if (chartVisibility.perProviderModelPie)"));
+    assert!(app.contains("if (liveVisibility.providerPie && snapshotVisibility.providerPie)"));
+    assert!(app.contains(
+        "if (liveVisibility.perProviderModelPie && snapshotVisibility.perProviderModelPie)"
+    ));
     assert!(app.contains("for (const canvas of allChartCanvases()) attachChartHover(canvas)"));
     assert!(app.contains("return !box || !box.hidden"));
+    assert!(app.contains("if (legend) legend.innerHTML = \"\""));
     assert!(!app.contains("Select All providers to see provider usage."));
     assert!(!app.contains("Select a provider to see model usage per provider."));
     assert!(!app.contains("Select All models to see model usage per provider."));
@@ -2866,6 +2869,24 @@ fn analytics_inactive_charts_are_hidden_for_filter_state() {
         "inactive chart boxes must leave the analytics grid"
     );
 
+    let reconcile = app
+        .split("function reconcileAnalyticsFiltersAfterInventory()")
+        .nth(1)
+        .expect("inventory reconcile")
+        .split("function refreshRestoredAnalytics(")
+        .next()
+        .expect("bounded inventory reconcile");
+    let restore_at = reconcile
+        .find("restoreAnalyticsFilters()")
+        .expect("restore during reconcile");
+    let reconcile_hide_at = reconcile
+        .find("applyAnalyticsChartVisibility(")
+        .expect("hide after restored filters");
+    assert!(
+        restore_at < reconcile_hide_at,
+        "inventory restore must hide inactive charts before returning"
+    );
+
     let paint = app
         .split("function renderAnalyticsPresentation()")
         .nth(1)
@@ -2873,20 +2894,34 @@ fn analytics_inactive_charts_are_hidden_for_filter_state() {
         .split("window.addEventListener(\"codex-warp-theme-change\"")
         .next()
         .expect("bounded presentation");
-    let visibility_at = paint
-        .find("applyAnalyticsChartVisibility(activeProvider, activeModel)")
-        .expect("apply snapshot visibility before paint");
+    let live_visibility_at = paint
+        .find("$(\"#analytics-provider\").value")
+        .expect("live filter visibility");
+    let snapshot_guard_at = paint
+        .find("if (!analyticsSnapshot) return")
+        .expect("snapshot guard after live visibility");
     let provider_pie_at = paint
-        .find("if (chartVisibility.providerPie)")
-        .expect("provider pie gated on visibility");
+        .find("if (liveVisibility.providerPie && snapshotVisibility.providerPie)")
+        .expect("provider pie gated on live and snapshot visibility");
     let per_provider_pie_at = paint
-        .find("if (chartVisibility.perProviderModelPie)")
-        .expect("per-provider pie gated on visibility");
+        .find("if (liveVisibility.perProviderModelPie && snapshotVisibility.perProviderModelPie)")
+        .expect("per-provider pie gated on live and snapshot visibility");
     let model_pie_at = paint
         .find("drawPieChart($(\"#chart-pie-model\")")
         .expect("overall model pie stays visible");
-    assert!(visibility_at < provider_pie_at);
+    assert!(live_visibility_at < snapshot_guard_at);
+    assert!(snapshot_guard_at < provider_pie_at);
     assert!(provider_pie_at < model_pie_at && model_pie_at < per_provider_pie_at);
+
+    let index = include_str!("webui_static/index.html");
+    let per_provider_box = index
+        .split("id=\"chart-pie-provider-models-title\"")
+        .next()
+        .expect("per-provider title");
+    assert!(
+        per_provider_box.contains("<div class=\"chart-box\" hidden>"),
+        "default All providers must hide the per-provider pie before JS runs"
+    );
 }
 
 #[test]

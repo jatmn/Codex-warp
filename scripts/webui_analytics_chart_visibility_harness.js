@@ -29,11 +29,21 @@ const canvasListSource = sourceBetween(
 );
 
 function chartElement(id) {
-  const box = { hidden: false };
+  const legend = { innerHTML: "stale-legend" };
+  const box = {
+    hidden: false,
+    querySelector(selector) {
+      assert.equal(selector, ".chart-legend");
+      return legend;
+    },
+  };
   const canvas = {
     id,
     __chart: { kind: "pie" },
     attrs: null,
+    width: 800,
+    height: 260,
+    cleared: false,
     closest(selector) {
       assert.equal(selector, ".chart-box");
       return box;
@@ -41,9 +51,17 @@ function chartElement(id) {
     blur() {
       canvas.blurred = true;
     },
+    getContext(kind) {
+      assert.equal(kind, "2d");
+      return {
+        clearRect() {
+          canvas.cleared = true;
+        },
+      };
+    },
   };
   box.canvas = canvas;
-  return { box, canvas };
+  return { box, canvas, legend };
 }
 
 function runtime() {
@@ -79,6 +97,10 @@ function runtime() {
       function applyChartCanvasAttrs(canvas, attrs) {
         canvas.attrs = attrs;
         globalThis.attrCalls.push({ id: canvas.id, attrs });
+      }
+      function legendElFor(canvas) {
+        const box = canvas && canvas.closest ? canvas.closest(".chart-box") : null;
+        return box ? box.querySelector(".chart-legend") : null;
       }
       function syncChartSurface() {
         globalThis.synced += 1;
@@ -138,6 +160,8 @@ check("hides inactive pie boxes instead of leaving blank canvases", () => {
   assert.equal(run.providerPie.box.hidden, false);
   assert.equal(run.providerModelsPie.box.hidden, true);
   assert.equal(run.providerModelsPie.canvas.__chart, null);
+  assert.equal(run.providerModelsPie.legend.innerHTML, "");
+  assert.equal(run.providerModelsPie.canvas.cleared, true);
   assert.deepEqual(run.dismissed, ["chart-pie-provider-models"]);
   assert.equal(run.providerModelsPie.canvas.attrs.ariaHidden, true);
   assert.equal(run.providerModelsPie.canvas.attrs.tabIndex, null);

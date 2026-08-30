@@ -1523,7 +1523,12 @@
 
   function reconcileAnalyticsFiltersAfterInventory() {
     fillAnalyticsFilters();
-    return restoreAnalyticsFilters();
+    const changed = restoreAnalyticsFilters();
+    applyAnalyticsChartVisibility(
+      $("#analytics-provider").value,
+      $("#analytics-model").value,
+    );
+    return changed;
   }
 
   let analyticsPending = { queued: false, fromPoll: true };
@@ -1752,6 +1757,10 @@
     dismissChartHoverUi(canvas);
     if (document.activeElement === canvas) canvas.blur();
     canvas.__chart = null;
+    const legend = legendElFor(canvas);
+    if (legend) legend.innerHTML = "";
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (ctx) ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0);
     applyChartCanvasAttrs(canvas, {
       tabIndex: null,
       role: null,
@@ -1771,11 +1780,13 @@
   }
 
   function renderAnalyticsPresentation() {
+    const liveVisibility = applyAnalyticsChartVisibility(
+      $("#analytics-provider").value,
+      $("#analytics-model").value,
+    );
     if (!analyticsSnapshot) return;
     const { data, range, barTitle, provider, model } = analyticsSnapshot;
-    const activeProvider = provider || "";
-    const activeModel = model || "";
-    const chartVisibility = applyAnalyticsChartVisibility(activeProvider, activeModel);
+    const snapshotVisibility = analyticsChartVisibility(provider || "", model || "");
     renderAnalyticsCards(data);
     $("#chart-bar-title").textContent = barTitle;
     if (!Charts) {
@@ -1834,7 +1845,7 @@
     // live select values: a slow poll can otherwise render a response computed
     // with different filters than the user currently sees, mislabeling the
     // per-provider pie for up to one round trip.
-    if (chartVisibility.providerPie) {
+    if (liveVisibility.providerPie && snapshotVisibility.providerPie) {
       drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider, "provider"), {
         emptyText: "No token usage in this range.",
       });
@@ -1850,7 +1861,7 @@
     });
     // Per-provider model breakdown exists only while a provider filter is
     // active and the model filter is clear (the API omits by_model otherwise).
-    if (chartVisibility.perProviderModelPie) {
+    if (liveVisibility.perProviderModelPie && snapshotVisibility.perProviderModelPie) {
       drawPieChart($("#chart-pie-provider-models"), pieRows(data.by_model, "model"), {
         emptyText: "No token usage for this provider in this range.",
       });

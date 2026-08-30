@@ -102,6 +102,7 @@ function runtime({
     elements,
     initialProviders: providers,
     sessionStorage,
+    visibilityCalls: [],
   };
   vm.runInNewContext(
     `
@@ -113,6 +114,9 @@ function runtime({
       let analyticsModelIds = [];
       let analyticsModelProvider = null;
       const $ = (selector) => globalThis.elements[selector];
+      function applyAnalyticsChartVisibility(provider, model) {
+        globalThis.visibilityCalls.push({ provider, model });
+      }
       ${fillHelperSource}
       ${readHelperSource}
       ${restoreInitializerSource}
@@ -136,7 +140,7 @@ function runtime({
     `,
     context,
   );
-  return { elements, filters: context.filters, sessionStorage };
+  return { elements, filters: context.filters, sessionStorage, visibilityCalls: context.visibilityCalls };
 }
 
 function parsedStorage(run) {
@@ -210,6 +214,9 @@ check("restores provider before its dependent model", () => {
   assert.equal(run.elements["#analytics-model"].value, "model-a");
   assert.equal(run.filters.getPending(), null);
   assert.deepEqual(parsedStorage(run), saved);
+  const visibility = run.visibilityCalls[run.visibilityCalls.length - 1];
+  assert.equal(visibility.provider, "configured");
+  assert.equal(visibility.model, "model-a");
 });
 
 check("retries a saved usage option as normal analytics inventories arrive", () => {
