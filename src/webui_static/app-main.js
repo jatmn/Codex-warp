@@ -1887,12 +1887,12 @@
     const items = [
       ["Prompts", Number(d.prompts || 0).toLocaleString()],
       ["Sessions", Number(d.sessions || 0).toLocaleString()],
+      ["Total tokens", Number(d.total_tokens || 0).toLocaleString()],
+      ["Cache rate", cacheRateLabel],
       ["Input tokens", Number(d.input_tokens || 0).toLocaleString()],
       ["Output tokens", Number(d.output_tokens || 0).toLocaleString()],
-      ["Total tokens", Number(d.total_tokens || 0).toLocaleString()],
       ["Cached tokens", Number(d.cached_tokens || 0).toLocaleString()],
-      ["Cache rate", cacheRateLabel],
-      ["Reasoning", Number(d.reasoning_tokens || 0).toLocaleString()],
+      ["Reasoning tokens", Number(d.reasoning_tokens || 0).toLocaleString()],
     ];
     const fragment = document.createDocumentFragment();
     for (const [label, val] of items) {
