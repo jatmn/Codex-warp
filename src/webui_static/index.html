@@ -195,10 +195,6 @@
             <label>Chat completions path <input name="chat_completions_path" value="/chat/completions"></label>
             <label>Models path <input name="models_path" value="/models"></label>
             <label class="checkbox-row">
-              <input type="checkbox" name="model_catalog_only">
-              Catalog only (skip upstream /models)
-            </label>
-            <label class="checkbox-row">
               <input type="checkbox" name="request_stream_options_include_usage">
               Request stream usage (stream_options.include_usage)
             </label>
@@ -209,6 +205,10 @@
               <code>stream_options</code>.
             </p>
           </details>
+          <label class="checkbox-row">
+            <input type="checkbox" name="model_catalog_only">
+            Catalog only (skip upstream /models)
+          </label>
           <label id="provider-enabled-field" class="checkbox-row">
             <input type="checkbox" name="enabled" checked>
             Enable after save
