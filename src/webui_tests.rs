@@ -2675,6 +2675,52 @@ fn provider_form_matches_credential_and_header_ownership() {
 }
 
 #[test]
+fn provider_form_exposes_editable_catalog_only() {
+    let app = webui_js_source();
+    let index = include_str!("webui_static/index.html");
+    let form = index
+        .split("<form id=\"provider-form\"")
+        .nth(1)
+        .expect("provider form")
+        .split("</form>")
+        .next()
+        .expect("provider form body");
+    let advanced = form
+        .split("<details id=\"provider-advanced\">")
+        .nth(1)
+        .expect("advanced details")
+        .split("</details>")
+        .next()
+        .expect("advanced details body");
+    assert!(
+        form.contains("name=\"model_catalog_only\""),
+        "create and edit must expose catalog only"
+    );
+    assert!(
+        !advanced.contains("name=\"model_catalog_only\""),
+        "catalog only must stay visible when named-template advanced paths are hidden"
+    );
+    assert!(
+        !app.contains("[name=model_catalog_only]\").disabled"),
+        "catalog only must stay enabled for named templates"
+    );
+    assert!(
+        app.contains(
+            "model_catalog_only: body.model_catalog_only,\n              enabled: body.enabled,"
+        ),
+        "named-template creates must persist the catalog-only checkbox"
+    );
+    assert!(
+        app.contains("[name=model_catalog_only]\").checked = !!template.model_catalog_only"),
+        "add-provider must seed catalog only from the selected template"
+    );
+    assert!(
+        app.contains("[name=model_catalog_only]\").checked = !!p.model_catalog_only"),
+        "edit-provider must seed catalog only from the saved provider"
+    );
+}
+
+#[test]
 fn analytics_chart_tooltips_and_summary_include_cached_tokens() {
     let app = include_str!("webui_static/app-main.js");
     let index = include_str!("webui_static/index.html");
@@ -3206,6 +3252,84 @@ async fn named_template_create_honors_request_stream_options_include_usage() {
         .expect("provider")
         .clone();
     assert_eq!(provider.request_stream_options_include_usage, Some(true));
+
+    let _ = std::fs::remove_dir_all(store_dir);
+}
+
+#[tokio::test]
+async fn named_template_create_honors_model_catalog_only() {
+    let (state, store_dir) = temporary_store_state("named-template-catalog-only");
+    let persist = |catalog_only: Option<bool>, api_key: &str| ProviderPersist {
+        name: OptionalPatch::Absent,
+        base_url: None,
+        enabled: Some(true),
+        api_key_env: OptionalPatch::Absent,
+        api_key: OptionalPatch::Set(api_key.into()),
+        headers: OptionalPatch::Absent,
+        auth_header: None,
+        auth_scheme: None,
+        responses_path: None,
+        chat_completions_path: None,
+        models_path: None,
+        model_catalog_only: catalog_only,
+        request_stream_options_include_usage: OptionalPatch::Absent,
+    };
+
+    let (_, Json(overridden)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("hicap".into()),
+            fields: persist(Some(true), "hicap-secret"),
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("named template create can enable catalog only");
+    assert!(overridden.model_catalog_only);
+    assert!(
+        state
+            .read_config()
+            .providers
+            .get(&overridden.id)
+            .expect("hicap overlay")
+            .model_catalog_only
+    );
+
+    let (_, Json(inherited)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("opencode_go".into()),
+            fields: persist(None, "go-secret"),
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("omitted catalog only keeps the bundled default");
+    assert!(inherited.model_catalog_only);
+
+    let (_, Json(unchecked)) = create_provider(
+        State(state.clone()),
+        Json(CreateProviderBody {
+            id: None,
+            template: Some("opencode_go".into()),
+            fields: persist(Some(false), "go-secret-2"),
+            model_catalog: Vec::new(),
+        }),
+    )
+    .await
+    .expect("named template create can disable catalog only");
+    assert!(!unchecked.model_catalog_only);
+    assert_eq!(unchecked.id, "opencode_go-2");
+    assert!(
+        !state
+            .read_config()
+            .providers
+            .get("opencode_go-2")
+            .expect("duplicate overlay")
+            .model_catalog_only
+    );
 
     let _ = std::fs::remove_dir_all(store_dir);
 }

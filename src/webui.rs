@@ -1697,10 +1697,16 @@ fn apply_provider_persist(provider: &mut ProviderConfig, fields: &ProviderPersis
     if let Some(models_path) = &fields.models_path {
         provider.models_path = models_path.clone();
     }
+    apply_model_catalog_only(provider, fields);
+    apply_provider_stream_usage_override(provider, fields);
+}
+
+/// Catalog-only is operator-owned even on named bundled templates, matching
+/// the WebUI checkbox on both create and edit.
+fn apply_model_catalog_only(provider: &mut ProviderConfig, fields: &ProviderPersist) {
     if let Some(model_catalog_only) = fields.model_catalog_only {
         provider.model_catalog_only = model_catalog_only;
     }
-    apply_provider_stream_usage_override(provider, fields);
 }
 
 /// Named templates keep bundled endpoint/auth paths. Credentials and extra
@@ -2110,6 +2116,7 @@ async fn create_provider(
             reject_truncated_env_replacement(provider.api_key_env.as_deref(), &fields)?;
             apply_named_template_name(&mut provider, &fields);
             apply_named_template_credentials(&mut provider, &fields);
+            apply_model_catalog_only(&mut provider, &fields);
             apply_provider_stream_usage_override(&mut provider, &fields);
             (id, provider)
         }

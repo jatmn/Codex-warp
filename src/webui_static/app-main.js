@@ -949,6 +949,7 @@
               ...(Object.hasOwn(body, "request_stream_options_include_usage")
                 ? { request_stream_options_include_usage: body.request_stream_options_include_usage }
                 : {}),
+              model_catalog_only: body.model_catalog_only,
               enabled: body.enabled,
               ...(headers ? { headers } : {}),
             };
@@ -1134,7 +1135,6 @@
       .forEach((name) => {
         providerForm.querySelector(`[name=${name}]`).readOnly = isNamed;
       });
-    providerForm.querySelector("[name=model_catalog_only]").disabled = isNamed;
     idInput.readOnly = true;
   }
 
