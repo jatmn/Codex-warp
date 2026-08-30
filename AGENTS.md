@@ -201,7 +201,7 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 order: `cargo update --workspace --locked`; `typos`;
 `SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs
 whitespace/prose, CI change-scope regression coverage, language policy,
-tracked JavaScript, chart harness, and crate-wide Clippy);
+tracked JavaScript, chart and analytics harnesses, and crate-wide Clippy);
 `cargo test --locked`; `cargo build --locked`;
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
 `--help` smoke checks; `git diff --check`; conditional Rust-diff
@@ -269,6 +269,9 @@ ownership, pointer reclaim only on hit, paint only with a measured CSS width,
 live-region clear, canvas interactivity attrs, bar paint anchors) and
 `footer-status.js` (analytics footer copy when chart-math is missing, boot
 errors skipping that overlay). It is not a browser canvas stub of `app-main.js`.
+The analytics filter and chart-visibility harnesses extract helpers from
+`app-main.js` for session filter restore and for hiding pies that the current
+provider or model filter cannot populate.
 
 For a focused documentation-only feedback loop before the required local CI
 preflight:
@@ -289,7 +292,7 @@ Before you call implementation or a local review done:
 
 1. Run `bash scripts/source-checks.sh`. Fix every failure (`cargo fmt`, `typos`,
    trailing whitespace, lowercase docs contractions such as `i'll`, language
-   policy, JavaScript syntax, chart harness).
+   policy, JavaScript syntax, chart and analytics harnesses).
 2. Read the Clippy output from that script. The script fails on any Clippy
    warning (`-D warnings`). Those are defects to fix or an explicit, justified
    `allow` with a comment. Do not leave them for the next review round. Do not

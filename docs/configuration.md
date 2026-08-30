@@ -454,10 +454,11 @@ The UI can:
   cache rate (cached tokens as a percent of input tokens; global, per provider,
   and per model)
 - show window-scoped average cache rate beside the other analytics summary cards
-- inspect token usage breakdowns with pie charts: provider usage (shown while
-  All providers is selected), model usage per provider (shown while a provider
-  filter is selected and All models is selected), and overall model usage
-  (global even while a provider filter is active)
+- inspect token usage breakdowns with pie charts: provider usage (visible
+  while All providers is selected and hidden when a provider is selected),
+  model usage per provider (visible while a provider is selected and All
+  models is selected; hidden otherwise), and overall model usage (always
+  visible; global even while a provider filter is active)
 - view process logs and the sanitized debug JSONL log, and change debug logging
   settings without restarting Warp
 

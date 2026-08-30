@@ -1536,6 +1536,10 @@
 
   function requestAnalytics(changedFilter) {
     storeAnalyticsFilters(changedFilter);
+    applyAnalyticsChartVisibility(
+      $("#analytics-provider").value,
+      $("#analytics-model").value,
+    );
     void loadAnalytics({ fromPoll: false });
   }
 
@@ -1595,6 +1599,10 @@
       if (reconcileAnalyticsFiltersAfterInventory()) {
         // A newly available saved option changed the effective filters. Fetch
         // again instead of painting this response under different controls.
+        applyAnalyticsChartVisibility(
+          $("#analytics-provider").value,
+          $("#analytics-model").value,
+        );
         analyticsPending.queued = true;
         analyticsPending.fromPoll = reportFromPoll;
         return;
@@ -1638,6 +1646,10 @@
   // Chart math is a sibling deferred script. Missing it must not abort this
   // IIFE — providers, logs, and analytics cards still have to boot.
   const Charts = globalThis.CodexWarpCharts || null;
+  applyAnalyticsChartVisibility(
+    $("#analytics-provider").value,
+    $("#analytics-model").value,
+  );
   function applyChartCanvasAttrs(canvas, attrs) {
     if (!canvas.dataset.labelledby) {
       const labelled = canvas.getAttribute("aria-labelledby");
@@ -1680,9 +1692,9 @@
           kbdHelpHidden: true,
           fallbackHidden: false,
         };
-    document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
+    for (const canvas of chartCanvases()) {
       applyChartCanvasAttrs(canvas, attrs);
-    });
+    }
     applyChartChrome(attrs);
   }
   function chartsLiveLayout() {
@@ -1697,14 +1709,14 @@
     }
     const live = chartsLiveLayout();
     let anyInteractive = false;
-    document.querySelectorAll(".chart-wrap canvas").forEach((canvas) => {
+    for (const canvas of chartCanvases()) {
       const count = Charts.chartNavigableCount
         ? Charts.chartNavigableCount(canvas.__chart)
         : 0;
       const surface = Charts.chartSurface(true, count, live);
       applyChartCanvasAttrs(canvas, Charts.chartCanvasAttrs(surface));
       if (surface === "interactive") anyInteractive = true;
-    });
+    }
     applyChartChrome(Charts.chartCanvasAttrs(anyInteractive ? "interactive" : "idle"));
   }
   function noteChartsUnavailable() {
@@ -1719,9 +1731,51 @@
     return Charts ? Charts.bucketLabelStyle(points) : "time";
   }
 
+  function analyticsChartVisibility(provider, model) {
+    const hasProvider = Boolean(provider);
+    const hasModel = Boolean(model);
+    return {
+      providerPie: !hasProvider,
+      perProviderModelPie: hasProvider && !hasModel,
+    };
+  }
+
+  function chartBoxFor(canvas) {
+    return canvas && canvas.closest ? canvas.closest(".chart-box") : null;
+  }
+
+  function setChartBoxHidden(canvas, hidden) {
+    if (!canvas) return;
+    const box = chartBoxFor(canvas);
+    if (box) box.hidden = !!hidden;
+    if (!hidden) return;
+    dismissChartHoverUi(canvas);
+    if (document.activeElement === canvas) canvas.blur();
+    canvas.__chart = null;
+    applyChartCanvasAttrs(canvas, {
+      tabIndex: null,
+      role: null,
+      keyshortcuts: null,
+      describedBy: null,
+      labelledBy: null,
+      ariaHidden: true,
+    });
+  }
+
+  function applyAnalyticsChartVisibility(provider, model) {
+    const visibility = analyticsChartVisibility(provider, model);
+    setChartBoxHidden($("#chart-pie-provider"), !visibility.providerPie);
+    setChartBoxHidden($("#chart-pie-provider-models"), !visibility.perProviderModelPie);
+    syncChartSurface();
+    return visibility;
+  }
+
   function renderAnalyticsPresentation() {
     if (!analyticsSnapshot) return;
-    const { data, range, barTitle } = analyticsSnapshot;
+    const { data, range, barTitle, provider, model } = analyticsSnapshot;
+    const activeProvider = provider || "";
+    const activeModel = model || "";
+    const chartVisibility = applyAnalyticsChartVisibility(activeProvider, activeModel);
     renderAnalyticsCards(data);
     $("#chart-bar-title").textContent = barTitle;
     if (!Charts) {
@@ -1780,13 +1834,11 @@
     // live select values: a slow poll can otherwise render a response computed
     // with different filters than the user currently sees, mislabeling the
     // per-provider pie for up to one round trip.
-    const activeProvider = analyticsSnapshot.provider || "";
-    const activeModel = analyticsSnapshot.model || "";
-    drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider, "provider"), {
-      emptyText: activeProvider
-        ? "Select All providers to see provider usage."
-        : "No token usage in this range.",
-    });
+    if (chartVisibility.providerPie) {
+      drawPieChart($("#chart-pie-provider"), pieRows(data.by_provider, "provider"), {
+        emptyText: "No token usage in this range.",
+      });
+    }
     // Overall model usage ignores the provider filter (by_model_overall), so
     // the overall pie stays global while a provider filter narrows the
     // per-provider pie below.
@@ -1798,15 +1850,11 @@
     });
     // Per-provider model breakdown exists only while a provider filter is
     // active and the model filter is clear (the API omits by_model otherwise).
-    const perProviderRows =
-      activeProvider && !activeModel ? pieRows(data.by_model, "model") : [];
-    drawPieChart($("#chart-pie-provider-models"), perProviderRows, {
-      emptyText: !activeProvider
-        ? "Select a provider to see model usage per provider."
-        : activeModel
-          ? "Select All models to see model usage per provider."
-          : "No token usage for this provider in this range.",
-    });
+    if (chartVisibility.perProviderModelPie) {
+      drawPieChart($("#chart-pie-provider-models"), pieRows(data.by_model, "model"), {
+        emptyText: "No token usage for this provider in this range.",
+      });
+    }
     syncChartSurface();
   }
 
@@ -2094,7 +2142,7 @@
     if (next.changed) live.textContent = next.text;
   }
 
-  function chartCanvases() {
+  function allChartCanvases() {
     return [
       $("#chart-line"),
       $("#chart-bar"),
@@ -2105,6 +2153,13 @@
       $("#chart-pie-model"),
       $("#chart-pie-provider-models"),
     ].filter(Boolean);
+  }
+
+  function chartCanvases() {
+    return allChartCanvases().filter((canvas) => {
+      const box = chartBoxFor(canvas);
+      return !box || !box.hidden;
+    });
   }
 
   function deactivateCharts({ except } = {}) {
@@ -2867,7 +2922,7 @@
   }
 
   function legendElFor(canvas) {
-    const box = canvas.closest(".chart-box");
+    const box = chartBoxFor(canvas);
     return box ? box.querySelector(".chart-legend") : null;
   }
 
@@ -3328,11 +3383,15 @@
   }
 
   function wireCharts() {
+    applyAnalyticsChartVisibility(
+      $("#analytics-provider").value,
+      $("#analytics-model").value,
+    );
     if (!Charts) {
       noteChartsUnavailable();
       return;
     }
-    for (const canvas of chartCanvases()) attachChartHover(canvas);
+    for (const canvas of allChartCanvases()) attachChartHover(canvas);
     syncChartSurface();
   }
   wireCharts();
@@ -3647,6 +3706,10 @@
     // unrelated boot dependency fails. Provider loading retries restoration
     // as soon as its option inventory becomes available.
     restoreAnalyticsFilters();
+    applyAnalyticsChartVisibility(
+      $("#analytics-provider").value,
+      $("#analytics-model").value,
+    );
     try {
       await Promise.all([
         loadProviders({ refreshRoutes: true, updateStatus: false }),

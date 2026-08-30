@@ -48,6 +48,10 @@ if command -v node >/dev/null 2>&1; then
   if ! node scripts/webui_analytics_filters_harness.js; then
     fail=1
   fi
+
+  if ! node scripts/webui_analytics_chart_visibility_harness.js; then
+    fail=1
+  fi
 fi
 
 if [ "$run_clippy" = "1" ]; then

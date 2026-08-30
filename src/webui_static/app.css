@@ -379,6 +379,7 @@ html[data-theme="dark"] .btn.primary { color: #042f2e; }
   padding: 0.85rem;
   box-shadow: var(--shadow);
 }
+.chart-box[hidden] { display: none; }
 .chart-box h3 {
   margin: 0 0 0.55rem;
   font-size: 0.9rem;
