@@ -17,7 +17,7 @@ validate_archive() {
   [ -f "$archive" ] || die "archive is missing: $archive"
   [ -d "$source" ] || die "source directory is missing: $source"
 
-  local expected binary filename basename payload temp list logical
+  local expected binary filename basename payload temp list logical windows_archive windows_destination
   expected="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' "$contract")"
   binary="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .binary' "$contract")"
   [ -n "$expected" ] && [ "$expected" != 'null' ] || die "unsupported target: $target"
@@ -49,8 +49,16 @@ validate_archive() {
     unzip -Z1 "$archive" >"$list"
     mkdir "$temp/zip"
     if [ "${RUNNER_OS:-}" = Windows ]; then
-      command -v 7z >/dev/null || die '7z is required to validate Windows archives'
-      7z x -bd -y "-o$temp/zip" "$archive" >/dev/null
+      if command -v powershell.exe >/dev/null && command -v cygpath >/dev/null; then
+        windows_archive="$(cygpath -w "$archive")"
+        windows_destination="$(cygpath -w "$temp/zip")"
+        MSYS2_ARG_CONV_EXCL='*' powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
+          '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force' \
+          "$windows_archive" "$windows_destination" >/dev/null
+      else
+        command -v 7z >/dev/null || die 'PowerShell or 7z is required to validate Windows archives'
+        7z x -bd -y "-o$temp/zip" "$archive" >/dev/null
+      fi
     else
       unzip -qq "$archive" -d "$temp/zip"
     fi
@@ -65,9 +73,15 @@ validate_archive() {
   if find "$payload" -type l -print -quit | grep -q .; then
     die 'archive contains a symbolic link'
   fi
-  [ -f "$payload/$binary" ] || die "archive is missing $binary"
+  if [ ! -f "$payload/$binary" ]; then
+    find "$payload" -maxdepth 3 -type f -print >&2 || true
+    die "archive is missing $binary"
+  fi
   while IFS= read -r required; do
-    [ -f "$payload/$required" ] || die "archive is missing $required"
+    if [ ! -f "$payload/$required" ]; then
+      find "$payload" -maxdepth 3 -type f -print >&2 || true
+      die "archive is missing $required"
+    fi
     [ "$(bash scripts/sha256-file.sh "$payload/$required")" = "$(bash scripts/sha256-file.sh "$source/$required")" ] ||
       die "$required does not match the selected source"
   done < <(jq -r '.requiredArchiveEntries[]' "$contract")
