@@ -15,6 +15,15 @@ cp -R configs/. "$tmp/$archive_name/configs/"
 tar -cJf "$tmp/$archive_name.tar.xz" -C "$tmp" "$archive_name"
 bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null
 
+windows_name='codex-warp-x86_64-pc-windows-msvc'
+mkdir -p "$tmp/$windows_name/configs"
+cp target/debug/codex-warp "$tmp/$windows_name/codex-warp.exe"
+cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$tmp/$windows_name/"
+cp -R configs/. "$tmp/$windows_name/configs/"
+(cd "$tmp/$windows_name" && 7z a -bd -tzip "$tmp/$windows_name.zip" . >/dev/null)
+RUNNER_OS=Windows SKIP_VERSION_SMOKE=1 \
+  bash scripts/check-release-contract.sh archive "$tmp/$windows_name.zip" x86_64-pc-windows-msvc "$root" 0.0.1 >/dev/null
+
 cp README.md "$tmp/$archive_name/unexpected.txt"
 mkdir "$tmp/invalid"
 tar -cJf "$tmp/invalid/$archive_name.tar.xz" -C "$tmp" "$archive_name"

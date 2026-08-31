@@ -47,13 +47,19 @@ validate_archive() {
     sed -e "s#^$basename/##" -e '/^$/d' "$list" >"$temp/logical.txt"
   else
     unzip -Z1 "$archive" >"$list"
-    unzip -qq "$archive" -d "$temp/zip"
+    mkdir "$temp/zip"
+    if [ "${RUNNER_OS:-}" = Windows ]; then
+      command -v 7z >/dev/null || die '7z is required to validate Windows archives'
+      7z x -bd -y "-o$temp/zip" "$archive" >/dev/null
+    else
+      unzip -qq "$archive" -d "$temp/zip"
+    fi
     payload="$temp/zip"
     cp "$list" "$temp/logical.txt"
   fi
   logical="$temp/logical.txt"
 
-  if rg -n '(^/|(^|/)\.\.(/|$))' "$list" >/dev/null; then
+  if grep -En '(^/|(^|/)\.\.(/|$))' "$list" >/dev/null; then
     die 'archive contains an unsafe path'
   fi
   if find "$payload" -type l -print -quit | grep -q .; then
@@ -84,7 +90,7 @@ validate_archive() {
     esac
   done <"$logical"
   while IFS= read -r forbidden; do
-    if rg -n "$forbidden" "$logical" >/dev/null; then
+    if grep -En "$forbidden" "$logical" >/dev/null; then
       die "archive contains a forbidden path matching: $forbidden"
     fi
   done < <(jq -r '.forbiddenPathPatterns[]' "$contract")
