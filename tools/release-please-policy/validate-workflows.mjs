@@ -83,6 +83,13 @@ assert.ok(Object.hasOwn(releasePlease.on, 'workflow_dispatch'));
 assert.deepEqual(releasePlease.concurrency, {group: 'release-please', queue: 'max'});
 assert.equal(releasePlease.jobs['release-please'].environment, 'release-automation');
 assert.equal(releasePlease.jobs['release-please'].if, "needs.gate.outputs.ready == 'true'");
+const rpCheckout = releasePlease.jobs['release-please'].steps.find(step => step.uses?.startsWith('actions/checkout@'));
+assert.equal(rpCheckout.with.ref, 'main');
+assert.equal(rpCheckout.with['fetch-depth'], 0);
+const rpRevalidate = releasePlease.jobs['release-please'].steps.find(step => step.name?.startsWith('Revalidate protected state'));
+assert.ok(rpRevalidate.run.includes('git fetch --no-tags origin main') &&
+  rpRevalidate.run.includes('git checkout --detach "$live_main"'),
+  'Release Please must revalidate and execute from live main after its protected job starts');
 const rpToken = releasePlease.jobs['release-please'].steps.find(step => step.id === 'app-token');
 assert.deepEqual(rpToken.with, {
   'client-id': '${{ vars.RELEASE_APP_CLIENT_ID }}',
@@ -123,11 +130,22 @@ const nightlyReceiptDownload = nightly.jobs.publish.steps.find(step =>
 assert.equal(nightlyReceiptDownload.with.path, 'retained-tag-receipt');
 assert.ok(nightly.jobs.publish.steps.some(step => typeof step.run === 'string' &&
   step.run.includes('cmp nightly-tag-receipt.json retained-tag-receipt/nightly-tag-receipt.json')));
+const nightlyDraft = nightly.jobs.publish.steps.find(step => step.id === 'draft');
+assert.ok(nightlyDraft.run.includes('/releases?per_page=100') && nightlyDraft.run.includes('length') &&
+  nightlyDraft.run.includes('nightly release appeared before draft creation'),
+  'nightly publication must reread exact-tag release absence immediately before draft creation');
+assert.ok(nightly.jobs.publish.steps.some(step => step.name === 'Create or fast-forward nightly branch' &&
+  step.run.includes('scripts/advance-nightly-branch.sh')),
+  'nightly publication must use the exact API branch race protocol');
 assert.equal(nightly.jobs['repair-branch'].steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}');
+assert.ok(nightly.jobs['repair-branch'].steps.some(step => step.run?.includes('scripts/advance-nightly-branch.sh')),
+  'nightly repair must use the exact API branch race protocol');
 assert.ok(read('.github/workflows/nightly.yml').includes('unable to prove nightly tag absence with the mutation token'));
 
 const release = parse('.github/workflows/release.yml');
 const releaseSource = read('.github/workflows/release.yml');
+assert.match(read('dist-workspace.toml'), /^pr-run-mode = "plan"$/m,
+  'checked-in cargo-dist configuration must use steady-state PR planning');
 assert.ok(
   releaseSource.includes('name: Validate and smoke-test archive') &&
     releaseSource.includes('bash scripts/check-release-contract.sh archive "target/distrib/$archive"'),
@@ -186,6 +204,8 @@ assert.ok(officialRecoverySource.includes("'.tag == $tag and .sourceSha == $sha 
   'remote official draft candidate must bind to the requested release identity');
 assert.ok(officialRecoverySource.includes('cmp "candidate/$name" "remote-final/$name"'),
   'official recovery publication must bind final remote bytes to its candidate');
+assert.ok(officialRecoverySource.includes('scripts/verify-official-attestation.sh "$subject"'),
+  'official recovery must bind candidate attestations to a trusted release workflow identity');
 
 const nightlyRecovery = parse('.github/workflows/nightly-recovery.yml');
 assert.deepEqual(Object.keys(nightlyRecovery.on), ['workflow_dispatch']);
@@ -217,12 +237,16 @@ assert.ok(nightlyRecoverySource.includes('candidateAssets:$candidate_assets') &&
   'nightly replacement intent must bind its plan, local candidate, and remote state');
 assert.ok(nightlyRecoverySource.includes('cmp "candidate/$name" "remote-final/$name"'),
   'nightly recovery publication must bind final remote bytes to its candidate');
+for (const jobName of ['mutate-release', 'repair-branch']) {
+  assert.ok(nightlyRecovery.jobs[jobName].steps.some(step => step.run?.includes('scripts/advance-nightly-branch.sh')),
+    `nightly recovery ${jobName} must use the exact API branch race protocol`);
+}
 assert.ok(releaseSource.match(/\.prerelease == false/g)?.length >= 3,
   'official release must keep stable drafts non-prerelease through every mutation boundary');
 assert.ok(releaseSource.includes('remote asset is not complete:'),
   'official release must reject starter and unknown remote asset states');
 assert.ok(releaseSource.includes('cmp "release-assets/$name" "remote-publish/$name"') &&
-  releaseSource.includes('gh attestation verify "$subject" --repo "${{ github.repository }}"'),
+  releaseSource.includes('scripts/verify-official-attestation.sh "$subject"'),
   'official publication must bind final remote bytes and attestations to the candidate');
 
 console.log('validate-workflows: pins, permissions, triggers, recovery, matrices, and mutation gates ok');

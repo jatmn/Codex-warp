@@ -422,7 +422,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
           [ "$(sort remote-names-before.txt | uniq -d | wc -l)" -eq 0 ]
           for subject in release-assets/*.tar.xz release-assets/*.zip release-assets/codex-warp-release-metadata.json; do
-            gh attestation verify "$subject" --repo "\${{ github.repository }}"
+            bash scripts/verify-official-attestation.sh "$subject" release-assets/codex-warp-release-metadata.json
           done
       - id: app-token
         name: Mint bounded release App token
@@ -499,7 +499,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
             cmp "release-assets/$name" "remote-publish/$name"
           done <candidate-publish-names.txt
           for subject in remote-publish/*.tar.xz remote-publish/*.zip remote-publish/codex-warp-release-metadata.json; do
-            gh attestation verify "$subject" --repo "\${{ github.repository }}"
+            bash scripts/verify-official-attestation.sh "$subject" remote-publish/codex-warp-release-metadata.json
           done
           release="$(gh api "repos/\${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null

@@ -20,7 +20,7 @@ include = ["NOTICE", "codex-warp.toml", "configs/"]
 source-tarball = false
 create-release = false
 github-attestations = true
-pr-run-mode = "upload"
+pr-run-mode = "plan"
 allow-dirty = ["ci"]
 
 [dist.github-custom-runners]

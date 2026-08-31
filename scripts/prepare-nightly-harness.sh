@@ -82,6 +82,19 @@ old_complete="{\"id\":8,\"tag_name\":\"$old_tag\",\"draft\":false,\"prerelease\"
 NIGHTLY_GH_RELEASES_JSON="[$old_complete]" run_prepare >/dev/null
 grep -Fx 'action=build' "$tmp/output" >/dev/null
 
+ancestor_assets="$tmp/ancestor-assets"
+mkdir "$ancestor_assets"
+printf '{}\n' >"$ancestor_assets/codex-warp-nightly-manifest.json"
+git -C "$repo" push --quiet origin "$old_sha:refs/heads/nightly"
+ancestor_failure=0
+NIGHTLY_GH_RELEASES_JSON="[$old_complete]" NIGHTLY_GH_RELEASE_JSON="$old_complete" \
+  NIGHTLY_GH_ASSET_DIR="$ancestor_assets" run_prepare >/dev/null 2>&1 || ancestor_failure=$?
+if [ "$ancestor_failure" -eq 0 ]; then
+  echo 'prepare-nightly-harness: corrupt published ancestor branch was accepted' >&2
+  exit 1
+fi
+git -C "$repo" push --quiet origin --delete nightly
+
 tag="nightly-20260830-${sha:0:12}"
 git -C "$repo" tag --no-sign "$tag" "$sha"
 git -C "$repo" push --quiet origin "refs/tags/$tag"

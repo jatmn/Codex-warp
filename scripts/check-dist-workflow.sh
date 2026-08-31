@@ -63,6 +63,10 @@ if node "$temp/tools/release-please-policy/patch-dist-workflow.mjs" "$unsafe" >/
 fi
 
 current_mode="$(sed -n 's/^pr-run-mode = "\(plan\|upload\)"$/\1/p' "$temp/dist-workspace.toml")"
+[ "$current_mode" = plan ] || {
+  echo 'check-dist-workflow: checked-in pr-run-mode must be steady-state plan' >&2
+  exit 1
+}
 case "$current_mode" in
   plan) alternate_mode='upload' ;;
   upload) alternate_mode='plan' ;;

@@ -174,6 +174,11 @@ Official Release Recovery accepts:
   never-published draft after retained, attested intent; and
 - `publish-verified-draft`: publish an already complete, fully verified draft.
 
+Official archive and metadata attestations are accepted only when their signed
+identity names the reviewed `Release` tag workflow or `Release Recovery` main
+workflow and the expected source/control digest. A repository-scoped
+attestation from a pull-request or unrelated workflow is not release evidence.
+
 It cannot create/delete a release, create/move/delete a tag, change a version,
 or mutate a published release.
 

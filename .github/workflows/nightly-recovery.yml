@@ -508,10 +508,7 @@ jobs:
           jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
           gh api --method PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
-          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
-          if [ -z "$branch" ]; then gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
-          elif [ "$branch" != "$SOURCE_SHA" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null; fi
-          [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          bash scripts/advance-nightly-branch.sh >/dev/null
 
   repair-branch:
     needs: plan
@@ -552,7 +549,4 @@ jobs:
           release="$(gh api "repos/${{ github.repository }}/releases/tags/$TAG")"
           jq -e --arg tag "$TAG" '.tag_name==$tag and .draft==false and .published_at!=null and .prerelease==true' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
-          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
-          if [ -z "$branch" ]; then gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
-          else git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null; fi
-          [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          bash scripts/advance-nightly-branch.sh >/dev/null

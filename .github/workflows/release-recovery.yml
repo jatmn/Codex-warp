@@ -282,7 +282,7 @@ jobs:
           [ "$(bash scripts/sha256-file.sh candidate/codex-warp-release-metadata.json)" = "$EVIDENCE_MANIFEST_SHA256" ]
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and .sourceSha == $sha and .releaseId == $id and .workflow.runId == $run and .workflow.runAttempt == $attempt' candidate/codex-warp-release-metadata.json >/dev/null
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
-          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
+          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" candidate/codex-warp-release-metadata.json; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
 
@@ -321,7 +321,7 @@ jobs:
           while IFS=$'\t' read -r id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"candidate/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" '.tag == $tag and .sourceSha == $sha and .releaseId == $id' candidate/codex-warp-release-metadata.json >/dev/null
-          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
+          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" candidate/codex-warp-release-metadata.json; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
 
@@ -374,7 +374,7 @@ jobs:
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
-          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
+          for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" candidate/codex-warp-release-metadata.json; done
           : >existing.jsonl
           assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
           while IFS=$'\t' read -r id name state; do
@@ -480,7 +480,7 @@ jobs:
           find remote-final -maxdepth 1 -type f -printf '%f\n' | sort >remote-final-names.txt
           cmp candidate-final-names.txt remote-final-names.txt
           while IFS= read -r name; do cmp "candidate/$name" "remote-final/$name"; done <candidate-final-names.txt
-          for subject in remote-final/*.tar.xz remote-final/*.zip remote-final/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
+          for subject in remote-final/*.tar.xz remote-final/*.zip remote-final/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" remote-final/codex-warp-release-metadata.json; done
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]

@@ -65,12 +65,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: false
       - name: Revalidate protected state before reading the App key
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           [ "${{ github.ref }}" = refs/heads/main ]
+          git fetch --no-tags origin main
+          live_main="$(git rev-parse origin/main)"
+          git checkout --detach "$live_main"
+          [ "$(git rev-parse HEAD)" = "$live_main" ]
           [ "${{ vars.OFFICIAL_RELEASES_ENABLED }}" = true ]
           [ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
           bash scripts/check-prior-official-releases.sh

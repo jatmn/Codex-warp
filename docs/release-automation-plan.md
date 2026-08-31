@@ -364,6 +364,9 @@ Add `.github/workflows/release-please.yml` with:
 - a serialized concurrency group with `cancel-in-progress: false` and
   `queue: max`; pending Release Please runs remain queued rather than silently
   replacing one another;
+- after the protected mutation job starts, a fresh fetch and detached checkout
+  of live `main` before policy/config revalidation and private-key access; an
+  event checkout may be stale after an environment or concurrency wait;
 - a pinned Release Please Action SHA;
 - a short-lived repository-scoped GitHub App installation token with only the
   four Release Please permissions from Section 8.2, including the documented
@@ -957,8 +960,12 @@ the release object's `target_commitish` field:
    inventory, peeled tag commit, release `tag_name`, Cargo version, cross-manifest
    relationships, checksums, sidecar digest, and attestations.
    Build-provenance attestations are stored by GitHub's attestation service and
-   verified with `gh attestation verify`; initial delivery does not upload an
-   attestation bundle as a twelfth release asset.
+   verified with `gh attestation verify`. Official verification must constrain
+   the certificate identity to the reviewed `Release` or `Release Recovery`
+   signer workflow, expected tag/main source ref, source/control digest, and
+   GitHub-hosted runner; repository scope alone is insufficient because other
+   repository workflows may also mint attestations. Initial delivery does not
+   upload an attestation bundle as a twelfth release asset.
 10. In a separate command and workflow step, it undrafts that exact release ID
     through dist's generated hosting logic and lets the App token revoke at job
     completion. No upload command or shell step may also perform the undraft.

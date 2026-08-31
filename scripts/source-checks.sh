@@ -73,6 +73,10 @@ if command -v node >/dev/null 2>&1; then
     fail=1
   fi
 
+  if ! bash scripts/verify-official-attestation-harness.sh; then
+    fail=1
+  fi
+
   if ! bash scripts/check-sha256-index-harness.sh; then
     fail=1
   fi
@@ -93,6 +97,10 @@ if command -v node >/dev/null 2>&1; then
   fi
 
   if ! bash scripts/prepare-nightly-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/advance-nightly-branch-harness.sh; then
     fail=1
   fi
 else

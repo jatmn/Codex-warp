@@ -318,6 +318,11 @@ jobs:
         run: |
           cmp nightly-tag-receipt.json retained-tag-receipt/nightly-tag-receipt.json
           gh attestation verify retained-tag-receipt/nightly-tag-receipt.json --repo "${{ github.repository }}"
+          releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
+          [ "$(jq --arg tag "$TAG" '[.[] | select(.tag_name==$tag)] | length' <<<"$releases")" -eq 0 ] || {
+            echo "nightly release appeared before draft creation: $TAG" >&2
+            exit 1
+          }
           body="$(printf '# Unstable nightly build\n\nThis build is for testing. Source: https://github.com/%s/commit/%s\nVersion: %s\nWorkflow: https://github.com/%s/actions/runs/%s\n\nArchives include runtime configuration. Verify sha256.sum and GitHub attestations. Stable release: https://github.com/%s/releases/latest\n' "${{ github.repository }}" "$SOURCE_SHA" "${{ needs.prepare.outputs.version }}" "${{ github.repository }}" "${{ github.run_id }}" "${{ github.repository }}")"
           release="$(gh api --method POST "repos/${{ github.repository }}/releases" -f tag_name="$TAG" -f name="$TAG" -F draft=true -F prerelease=true -f make_latest=false -F generate_release_notes=false -f body="$body")"
           jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true and .prerelease == true' <<<"$release" >/dev/null
@@ -354,19 +359,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
-          if [ -z "$branch" ]; then
-            gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
-            branch_action=created
-          elif [ "$branch" = "$SOURCE_SHA" ]; then
-            branch_action=already-equal
-          else
-            git fetch origin "$branch"
-            git merge-base --is-ancestor "$branch" "$SOURCE_SHA"
-            gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null
-            branch_action=fast-forwarded
-          fi
-          [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          branch_action="$(bash scripts/advance-nightly-branch.sh)"
           {
             echo "Published [$TAG](https://github.com/${{ github.repository }}/releases/tag/$TAG)."
             echo "Intent artifact: ${{ needs.retain-intent.outputs.artifact_id }}"
@@ -442,12 +435,5 @@ jobs:
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id==$id and .tag_name==$tag and .draft==false and .published_at!=null and .prerelease==true' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
-          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
-          if [ -z "$branch" ]; then
-            gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
-          else
-            git merge-base --is-ancestor "$branch" "$SOURCE_SHA"
-            gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null
-          fi
-          [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          bash scripts/advance-nightly-branch.sh >/dev/null
           echo "Repaired \`nightly\` at the verified published release [$TAG](https://github.com/${{ github.repository }}/releases/tag/$TAG)." >>"$GITHUB_STEP_SUMMARY"

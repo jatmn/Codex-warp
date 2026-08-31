@@ -128,6 +128,14 @@ verify_published() {
   rm -rf "$verify_temp"
 }
 
+if [ "$branch_state" = ancestor ]; then
+  mapfile -t branch_tags < <(git tag --list 'nightly-*' --points-at "$branch_sha")
+  [ "${#branch_tags[@]}" -eq 1 ] && verify_published "$branch_sha" "${branch_tags[0]}" || {
+    echo 'prepare-nightly: ancestor nightly branch lacks one verified published release' >&2
+    exit 1
+  }
+fi
+
 mapfile -t source_tags < <(git tag --list 'nightly-*' --points-at "$source_sha")
 [ "${#source_tags[@]}" -le 1 ] || { echo 'prepare-nightly: multiple nightly tags target the selected SHA' >&2; exit 1; }
 if [ "${#source_tags[@]}" -eq 1 ]; then
