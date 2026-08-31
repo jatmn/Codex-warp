@@ -192,11 +192,15 @@ validate_assets() {
 
   while IFS=$'\t' read -r archive digest checksum; do
     [ "$(sha256sum "$assets/$archive" | awk '{print $1}')" = "$digest" ] || die "archive digest mismatch: $archive"
-    grep -Ex "${digest}  ${archive}" "$assets/$checksum" >/dev/null || die "invalid checksum file: $checksum"
-    [ "$(wc -l <"$assets/$checksum")" -eq 1 ] || die "checksum file has extra entries: $checksum"
+    bash scripts/check-sha256-index.sh "$assets/$checksum" "$digest" "$archive" >/dev/null || die "invalid checksum file: $checksum"
   done < <(jq -r '.dist.artifacts[] | [.archive, .archiveSha256, .checksumFile] | @tsv' "$metadata")
   unified="$assets/$(jq -r '.unifiedChecksumFilename' "$contract")"
-  [ "$(wc -l <"$unified")" -eq 4 ] || die 'unified checksum index must contain four entries'
+  local checksum_args
+  checksum_args=("$unified")
+  while IFS=$'\t' read -r archive digest; do
+    checksum_args+=("$digest" "$archive")
+  done < <(jq -r '.dist.artifacts[] | [.archive, .archiveSha256] | @tsv' "$metadata")
+  bash scripts/check-sha256-index.sh "${checksum_args[@]}" >/dev/null || die 'unified checksum index differs from the contract'
   (cd "$assets" && sha256sum -c "$(basename "$unified")" >/dev/null) || die 'unified checksum verification failed'
 
   trap - RETURN

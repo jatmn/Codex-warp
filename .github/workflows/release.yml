@@ -254,6 +254,95 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+  # Assemble the complete non-publishable proof on same-repository upload PRs.
+  prepare-pr-upload-proof:
+    needs: [plan, build-local-artifacts, build-global-artifacts]
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.plan.result == 'success' && needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success' && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: tools/release-please-policy/package-lock.json
+      - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        working-directory: tools/release-please-policy
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: artifacts-build-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Bind PR, source, tools, and runners
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MERGE_SHA: ${{ github.sha }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          build_source="$(git rev-parse HEAD)"
+          [ "$build_source" = "$PR_MERGE_SHA" ]
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          runners="$(jq -sc 'sort_by(.target)' target/distrib/*-runner.json)"
+          [ "$(jq 'length' <<<"$runners")" -eq 4 ]
+          jq -n \
+            --argjson publishable false \
+            --arg repository "${{ github.repository }}" \
+            --arg source "$build_source" --arg version "$version" \
+            --arg lock "$(sha256sum Cargo.lock | awk '{print $1}')" \
+            --arg toolchain "$(sha256sum rust-toolchain.toml | awk '{print $1}')" \
+            --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" \
+            --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" \
+            --arg contract "$(sha256sum tools/release-contract.json | awk '{print $1}')" \
+            --arg workflow_sha "$WORKFLOW_SHA" \
+            --arg schema "$(sha256sum tools/dist-manifest.schema.json | awk '{print $1}')" \
+            --argjson runners "$runners" --argjson pr_number "$PR_NUMBER" \
+            --arg base "$PR_BASE_SHA" --arg head "$PR_HEAD_SHA" --arg merge "$PR_MERGE_SHA" \
+            '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:null,peeledTagSha:null,releaseId:null,pullRequest:{number:$pr_number,baseSha:$base,headSha:$head,buildSourceSha:$source,mergeSha:$merge}}' >identity.json
+      - name: Assemble and validate exact proof asset set
+        shell: bash
+        run: bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-upload-proof-candidate
+          path: pr-upload-proof/
+          if-no-files-found: error
+
+  attest-pr-upload-proof-metadata:
+    needs: prepare-pr-upload-proof
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: tools/release-please-policy/package-lock.json
+      - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        working-directory: tools/release-please-policy
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-upload-proof-candidate
+          path: pr-upload-proof
+      - name: Revalidate non-publishable proof
+        shell: bash
+        run: SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh pr-upload-proof pr-upload-proof pr-upload-proof/codex-warp-release-metadata.json pr-upload-proof/dist-manifest.json
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: pr-upload-proof/codex-warp-release-metadata.json
+
   # Prepare and validate the complete candidate without mutation credentials.
   prepare-official-release:
     needs: [plan, build-local-artifacts, build-global-artifacts]
@@ -357,10 +446,24 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: tools/release-please-policy/package-lock.json
+      - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        working-directory: tools/release-please-policy
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: official-release-candidate
           path: release-assets
+      - name: Revalidate official candidate before attestation
+        shell: bash
+        run: SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication release-assets release-assets/codex-warp-release-metadata.json release-assets/dist-manifest.json
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release-assets/codex-warp-release-metadata.json

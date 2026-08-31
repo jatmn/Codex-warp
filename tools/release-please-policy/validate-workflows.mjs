@@ -125,8 +125,23 @@ assert.ok(
 );
 assert.deepEqual(release.on.push.tags, ['v[0-9]+.[0-9]+.[0-9]+']);
 assert.equal(release.concurrency.queue, 'max');
+const proofPrepare = release.jobs['prepare-pr-upload-proof'];
+assert.equal(proofPrepare.environment, undefined);
+assert.deepEqual(proofPrepare.permissions, {contents: 'read'});
+assert.ok(proofPrepare.if.includes("github.event_name == 'pull_request'"));
+assert.ok(proofPrepare.if.includes('github.event.pull_request.head.repo.full_name == github.repository'));
+assert.ok(proofPrepare.if.includes("fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'"));
+assert.ok(proofPrepare.steps.some(step => step.run === 'bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof'));
+const proofAttest = release.jobs['attest-pr-upload-proof-metadata'];
+assert.equal(proofAttest.environment, undefined);
+assert.deepEqual(proofAttest.permissions, {attestations: 'write', contents: 'read', 'id-token': 'write'});
+assert.ok(proofAttest.steps.some(step => typeof step.run === 'string' && step.run.includes('check-release-contract.sh pr-upload-proof')));
+assert.equal(proofAttest.steps.find(step => step.uses?.startsWith('actions/attest-build-provenance@')).with['subject-path'],
+  'pr-upload-proof/codex-warp-release-metadata.json');
 assert.ok(release.jobs['publish-official-release'].if.includes("vars.OFFICIAL_RELEASES_ENABLED == 'true'"));
 assert.equal(release.jobs['publish-official-release'].environment, 'release-automation');
+const officialAttest = release.jobs['attest-official-metadata'];
+assert.ok(officialAttest.steps.some(step => typeof step.run === 'string' && step.run.includes('check-release-contract.sh official-publication')));
 const officialToken = release.jobs['publish-official-release'].steps.find(step => step.id === 'app-token');
 assert.equal(officialToken.with['client-id'], '${{ vars.RELEASE_APP_CLIENT_ID }}');
 assert.equal(officialToken.with['permission-contents'], 'write');

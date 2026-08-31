@@ -6,6 +6,7 @@ tools/nightly-packaging-contract.txt
 tools/nightly-manifest.schema.json
 scripts/package-nightly.sh
 scripts/sha256-file.sh
+scripts/check-sha256-index.sh
 scripts/check-release-contract.sh
 scripts/check-nightly-assets.sh
 codex-warp.toml

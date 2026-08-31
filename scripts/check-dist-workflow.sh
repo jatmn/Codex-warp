@@ -39,6 +39,9 @@ assert_safe_overlay() {
   grep -F 'Upload only missing verified assets' "$workflow" >/dev/null
   grep -F 'Verify complete remote checksums' "$workflow" >/dev/null
   grep -F 'Publish exact verified draft' "$workflow" >/dev/null
+  grep -F 'prepare-pr-upload-proof:' "$workflow" >/dev/null
+  grep -F 'bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof' "$workflow" >/dev/null
+  grep -F 'attest-pr-upload-proof-metadata:' "$workflow" >/dev/null
   if grep -E 'cargo-dist-installer\.(sh|ps1)' "$workflow" >/dev/null ||
      awk '
        previous_permissions && /^[[:space:]]+contents:[[:space:]]+write([[:space:]]|$)/ { found = 1 }
