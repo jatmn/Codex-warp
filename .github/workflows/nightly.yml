@@ -349,7 +349,7 @@ jobs:
             [ "$(sha256sum "remote/$name" | awk '{print $1}')" = "$(sha256sum "nightly-assets/$name" | awk '{print $1}')" ]
           done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
           SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh remote remote/codex-warp-nightly-manifest.json
-          for archive in remote/*.tar.xz remote/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" remote/codex-warp-nightly-manifest.json; done
+          for archive in remote/*.tar.xz remote/*.zip; do GH_TOKEN="${{ github.token }}" bash scripts/verify-nightly-attestation.sh "$archive" remote/codex-warp-nightly-manifest.json; done
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
@@ -374,6 +374,7 @@ jobs:
     timeout-minutes: 15
     environment: release-automation
     permissions:
+      actions: read
       attestations: read
       contents: read
     env:

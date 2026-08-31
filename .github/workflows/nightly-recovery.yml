@@ -503,7 +503,7 @@ jobs:
           find remote-final -maxdepth 1 -type f -printf '%f\n' | sort >remote-final-names.txt
           cmp candidate-final-names.txt remote-final-names.txt
           while IFS= read -r name; do cmp "candidate/$name" "remote-final/$name"; done <candidate-final-names.txt
-          for archive in remote-final/*.tar.xz remote-final/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" remote-final/codex-warp-nightly-manifest.json; done
+          for archive in remote-final/*.tar.xz remote-final/*.zip; do GH_TOKEN="${{ github.token }}" bash scripts/verify-nightly-attestation.sh "$archive" remote-final/codex-warp-nightly-manifest.json; done
           release="$(gh api "repos/${{ github.repository }}/releases/$id")"
           jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
@@ -516,7 +516,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-automation
-    permissions: {attestations: read, contents: read}
+    permissions: {actions: read, attestations: read, contents: read}
     env: {GH_TOKEN: '${{ github.token }}', TAG: '${{ inputs.tag }}', SOURCE_SHA: '${{ inputs.expected_sha }}'}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

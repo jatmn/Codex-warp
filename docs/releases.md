@@ -64,9 +64,19 @@ the GitHub Release. On Linux:
 
 ```bash
 sha256sum -c codex-warp-x86_64-unknown-linux-gnu.tar.xz.sha256
-gh attestation verify codex-warp-x86_64-unknown-linux-gnu.tar.xz \
-  --repo jatmn/Codex-warp
+# Official: requires the release metadata sidecar from the same GitHub Release.
+bash scripts/verify-official-attestation.sh \
+  codex-warp-x86_64-unknown-linux-gnu.tar.xz \
+  codex-warp-release-metadata.json
+# Nightly: requires the nightly manifest from the same GitHub Release.
+bash scripts/verify-nightly-attestation.sh \
+  codex-warp-nightly-<tag>-x86_64-unknown-linux-gnu.tar.xz \
+  codex-warp-nightly-manifest.json
 ```
+
+Those helpers bind the certificate to the reviewed signer workflow, expected
+source ref and digest, and GitHub-hosted runners. A repository-only
+`gh attestation verify --repo` check is not release evidence.
 
 Nightly archive names include the nightly tag before the target triple. macOS
 can verify the recorded digest with `shasum -a 256 <archive>`. The project

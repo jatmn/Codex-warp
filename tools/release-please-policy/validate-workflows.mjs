@@ -137,6 +137,12 @@ assert.ok(nightlyDraft.run.includes('/releases?per_page=100') && nightlyDraft.ru
 assert.ok(nightly.jobs.publish.steps.some(step => step.name === 'Create or fast-forward nightly branch' &&
   step.run.includes('scripts/advance-nightly-branch.sh')),
   'nightly publication must use the exact API branch race protocol');
+assert.deepEqual(nightly.jobs['repair-branch'].permissions,
+  {actions: 'read', attestations: 'read', contents: 'read'},
+  'nightly branch repair must read Actions runs to bind archive attestations');
+assert.ok(nightly.jobs.publish.steps.some(step => typeof step.run === 'string' &&
+  step.run.includes('GH_TOKEN="${{ github.token }}" bash scripts/verify-nightly-attestation.sh')),
+  'nightly remote archive verification must use the job token, not the mutation App token');
 assert.ok(read('.github/workflows/nightly.yml').includes('scripts/verify-nightly-attestation.sh'),
   'nightly publication must bind archive attestations to a trusted nightly workflow identity');
 assert.ok(read('scripts/prepare-nightly.sh').includes('scripts/verify-nightly-attestation.sh'),
@@ -214,6 +220,10 @@ assert.ok(officialRecoverySource.includes("'.tag == $tag and .sourceSha == $sha 
   'remote official draft candidate must bind to the requested release identity');
 assert.ok(officialRecoverySource.includes('cmp "candidate/$name" "remote-final/$name"'),
   'official recovery publication must bind final remote bytes to its candidate');
+assert.ok(officialRecovery.jobs.rebuild.steps.some(step =>
+  step.name === 'enable windows longpaths' && typeof step.run === 'string' &&
+  step.run.includes('core.longpaths true')),
+  'official recovery Windows rebuilds must enable git long paths before checkout');
 assert.ok(officialRecoverySource.includes('scripts/verify-official-attestation.sh "$subject"'),
   'official recovery must bind candidate attestations to a trusted release workflow identity');
 
@@ -247,6 +257,11 @@ assert.ok(nightlyRecoverySource.includes('candidateAssets:$candidate_assets') &&
   'nightly replacement intent must bind its plan, local candidate, and remote state');
 assert.ok(nightlyRecoverySource.includes('cmp "candidate/$name" "remote-final/$name"'),
   'nightly recovery publication must bind final remote bytes to its candidate');
+assert.deepEqual(nightlyRecovery.jobs['repair-branch'].permissions,
+  {actions: 'read', attestations: 'read', contents: 'read'},
+  'nightly recovery branch repair must read Actions runs to bind archive attestations');
+assert.ok(nightlyRecoverySource.includes('GH_TOKEN="${{ github.token }}" bash scripts/verify-nightly-attestation.sh'),
+  'nightly recovery remote archive verification must use the job token, not the mutation App token');
 assert.ok(nightlyRecoverySource.includes('scripts/verify-nightly-attestation.sh'),
   'nightly recovery must bind archive attestations to a trusted nightly workflow identity');
 assert.ok(nightlyRecoverySource.includes('.workflow==$f.workflow and .workflowSha==$f.workflowSha'),
