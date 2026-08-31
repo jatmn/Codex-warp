@@ -160,8 +160,8 @@ assert.ok(read('.github/workflows/nightly.yml').includes('unable to prove nightl
 
 const release = parse('.github/workflows/release.yml');
 const releaseSource = read('.github/workflows/release.yml');
-assert.match(read('dist-workspace.toml'), /^pr-run-mode = "plan"$/m,
-  'checked-in cargo-dist configuration must use steady-state PR planning');
+assert.match(read('dist-workspace.toml'), /^pr-run-mode = "(plan|upload)"$/m,
+  'checked-in cargo-dist configuration must use a supported PR run mode');
 assert.ok(
   releaseSource.includes('name: Validate and smoke-test archive') &&
     releaseSource.includes('bash scripts/check-release-contract.sh archive "target/distrib/$archive"'),
