@@ -4,6 +4,7 @@ rust-toolchain.toml
 tools/release-contract.json
 tools/nightly-packaging-contract.txt
 tools/nightly-manifest.schema.json
+scripts/nightly-contract-digest.sh
 scripts/package-nightly.sh
 scripts/sha256-file.sh
 scripts/check-sha256-index.sh

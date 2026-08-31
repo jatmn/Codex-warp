@@ -81,6 +81,10 @@ if command -v node >/dev/null 2>&1; then
     fail=1
   fi
 
+  if ! bash scripts/nightly-contract-digest-harness.sh; then
+    fail=1
+  fi
+
   if ! bash scripts/check-sha256-index-harness.sh; then
     fail=1
   fi
