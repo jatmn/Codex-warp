@@ -73,7 +73,14 @@ if command -v node >/dev/null 2>&1; then
     fail=1
   fi
 
-  if ! bash scripts/check-dist-workflow.sh; then
+  if ! (
+    rg() {
+      echo 'source-checks: workflow checks must not require undeclared ripgrep' >&2
+      return 127
+    }
+    export -f rg
+    bash scripts/check-dist-workflow.sh
+  ); then
     fail=1
   fi
 

@@ -20,6 +20,8 @@ validate_archive() {
   local expected binary filename basename payload temp list logical windows_archive windows_destination
   expected="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' "$contract")"
   binary="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .binary' "$contract")"
+  expected="${expected%$'\r'}"
+  binary="${binary%$'\r'}"
   [ -n "$expected" ] && [ "$expected" != 'null' ] || die "unsupported target: $target"
   filename="$(basename "$archive")"
   if [ "$filename" != "$expected" ] &&
@@ -81,6 +83,7 @@ validate_archive() {
     die "archive is missing $binary"
   fi
   while IFS= read -r required; do
+    required="${required%$'\r'}"
     if [ ! -f "$payload/$required" ]; then
       find "$payload" -maxdepth 3 -type f -print >&2 || true
       die "archive is missing $required"
@@ -99,6 +102,7 @@ validate_archive() {
   cmp "$temp/source-configs.txt" "$temp/archive-configs.txt" >/dev/null || die 'archive configuration inventory differs from the selected source'
 
   while IFS= read -r entry; do
+    entry="${entry%$'\r'}"
     entry="${entry%/}"
     [ -z "$entry" ] && continue
     case "$entry" in
@@ -107,6 +111,7 @@ validate_archive() {
     esac
   done <"$logical"
   while IFS= read -r forbidden; do
+    forbidden="${forbidden%$'\r'}"
     if grep -En "$forbidden" "$logical" >/dev/null; then
       die "archive contains a forbidden path matching: $forbidden"
     fi

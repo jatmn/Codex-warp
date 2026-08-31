@@ -21,7 +21,14 @@ cp target/debug/codex-warp "$tmp/$windows_name/codex-warp.exe"
 cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$tmp/$windows_name/"
 cp -R configs/. "$tmp/$windows_name/configs/"
 (cd "$tmp/$windows_name" && 7z a -bd -tzip "$tmp/$windows_name.zip" . >/dev/null)
-RUNNER_OS=Windows SKIP_VERSION_SMOKE=1 \
+windows_bin="$tmp/windows-bin"
+mkdir "$windows_bin"
+ln -s "$root/scripts/test-fixtures/windows-cygpath.sh" "$windows_bin/cygpath"
+ln -s "$root/scripts/test-fixtures/windows-jq.sh" "$windows_bin/jq"
+ln -s "$root/scripts/test-fixtures/windows-powershell.sh" "$windows_bin/powershell.exe"
+ln -s "$root/scripts/test-fixtures/windows-unzip.sh" "$windows_bin/unzip"
+JQ_REAL="$(command -v jq)" UNZIP_REAL="$(command -v unzip)" \
+  PATH="$windows_bin:$PATH" RUNNER_OS=Windows SKIP_VERSION_SMOKE=1 \
   bash scripts/check-release-contract.sh archive "$tmp/$windows_name.zip" x86_64-pc-windows-msvc "$root" 0.0.1 >/dev/null
 
 cp README.md "$tmp/$archive_name/unexpected.txt"

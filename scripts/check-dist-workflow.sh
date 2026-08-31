@@ -33,14 +33,18 @@ cmp "$checked" "$temp/.github/workflows/release.yml" >/dev/null || {
 
 assert_safe_overlay() {
   local workflow="$1"
-  rg -F "'v[0-9]+.[0-9]+.[0-9]+'" "$workflow" >/dev/null
-  rg -F 'queue: max' "$workflow" >/dev/null
-  rg -F 'bash scripts/install-pinned-dist.sh' "$workflow" >/dev/null
-  rg -F 'Upload only missing verified assets' "$workflow" >/dev/null
-  rg -F 'Verify complete remote checksums' "$workflow" >/dev/null
-  rg -F 'Publish exact verified draft' "$workflow" >/dev/null
-  if rg 'cargo-dist-installer\.(sh|ps1)' "$workflow" >/dev/null ||
-     rg -U 'permissions:\n\s+contents: write' "$workflow" >/dev/null; then
+  grep -F "'v[0-9]+.[0-9]+.[0-9]+'" "$workflow" >/dev/null
+  grep -F 'queue: max' "$workflow" >/dev/null
+  grep -F 'bash scripts/install-pinned-dist.sh' "$workflow" >/dev/null
+  grep -F 'Upload only missing verified assets' "$workflow" >/dev/null
+  grep -F 'Verify complete remote checksums' "$workflow" >/dev/null
+  grep -F 'Publish exact verified draft' "$workflow" >/dev/null
+  if grep -E 'cargo-dist-installer\.(sh|ps1)' "$workflow" >/dev/null ||
+     awk '
+       previous_permissions && /^[[:space:]]+contents:[[:space:]]+write([[:space:]]|$)/ { found = 1 }
+       { previous_permissions = ($0 ~ /^[[:space:]]*permissions:[[:space:]]*$/) }
+       END { exit found ? 0 : 1 }
+     ' "$workflow"; then
     echo 'check-dist-workflow: unsafe installer or GITHUB_TOKEN write permission returned' >&2
     exit 1
   fi
@@ -69,7 +73,7 @@ if [ "$current_mode" = upload ]; then
 else
   upload_workflow="$temp/.github/workflows/release.yml"
 fi
-rg -F 'uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6' \
+grep -F 'uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6' \
   "$upload_workflow" >/dev/null
 
 echo "check-dist-workflow: generated $current_mode overlay is current; $alternate_mode overlay is safe"
