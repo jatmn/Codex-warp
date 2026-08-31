@@ -1309,8 +1309,9 @@ Guards:
 
 Execution model:
 
-1. Record the recovery workflow SHA from protected `main` and verify that the
-   dispatch ref is `main`.
+1. Record and checkout the immutable recovery `github.workflow_sha` selected by
+   the protected-`main` dispatch, verify the dispatch ref is `main`, and prove
+   that control commit remains an ancestor of live protected `main`.
 2. Resolve and peel the immutable tag to the supplied full source SHA. Checkout
    that tagged source into a separate directory for source/contract validation
    and, only for an operation that rebuilds, compilation; never build the binary
@@ -1369,9 +1370,10 @@ Execution model:
    documented GitHub upload remnant in `starter` state—from the never-published
    draft. Before the private key is read, retain, attest, retrieve, and verify a
    pre-delete intent binding the release/tag/SHA, remote asset IDs/names/states/
-   digests, replacement digests, complete expected inventory, run/attempt,
-   control workflow SHA, and mutation-plan digest. No wildcard or name-only
-   deletion plan is valid.
+   digests, replacement digests, complete expected name/digest inventory,
+   retained recovery-plan digest, recovery-recipe digest, run/attempt, control
+   workflow SHA, and mutation-plan digest. No wildcard or name-only deletion
+   plan is valid.
 9. Start a separate mutation job, dependent on every read-only build/verification
    job, that declares the protected `release-automation` environment. Once its
    environment rules pass, revalidate the exact live draft/ref state in that job;
@@ -1410,10 +1412,10 @@ Inputs:
 - expected release ID, or the literal `absent` only for `recover-orphan-tag`;
 - operation: `resume-draft`, `replace-unpublished-draft`,
   `recover-orphan-tag`, or `repair-branch`;
-- originating publication/replacement workflow run ID, required for
-  `recover-orphan-tag` and rejected for other operations;
-- originating workflow run-attempt number, required with that run ID and rejected
-  for other operations; and
+- originating publication/replacement workflow run ID and attempt, required for
+  `resume-draft` and `recover-orphan-tag` and rejected for other operations;
+- exact originating nightly manifest SHA-256, required for `resume-draft` and
+  rejected for every other operation; and
 - required confirmation string. It equals the tag for non-destructive operations
   and exactly `replace-unpublished-draft:<tag>:<release-id>` for replacement.
 
@@ -1459,10 +1461,11 @@ The initial job is read-only and must:
    inventory, every relevant original/replacement/recipe digest, and the exact
    allowed mutations.
 
-The recovery workflow must use two explicit source trees. Checkout protected
-`main` into a control directory and record its full workflow SHA; all permission
-checks, state classification, orchestration, and mutation guards execute from
-that directory. Checkout the expected historical source SHA into a different
+The recovery workflow must use two explicit source trees. Checkout the immutable
+`github.workflow_sha` selected by the protected-`main` dispatch into a control
+directory, record it, and prove it remains an ancestor of live `main`; all
+permission checks, state classification, orchestration, and mutation guards
+execute from that directory. Checkout the expected historical source SHA into a different
 source directory for Cargo inputs, the frozen packaging contract, and builds.
 Use `persist-credentials: false` for both. Prove reachability with the GitHub
 compare API or with an explicit fetch that contains the required `main` history
@@ -1471,12 +1474,16 @@ Record the control SHA, source SHA, and proof method in the mutation plan.
 
 Operation contracts:
 
-- `resume-draft` requires the exact release to remain a never-published draft,
-  the tag to point at the expected SHA, and every existing asset to match its
-  expected digest. Upload only missing assets; never overwrite or silently
-  replace an existing asset. Verify the complete remote inventory, then publish
-  and perform the guarded branch create/fast-forward transaction from Section
-  10.6.
+- `resume-draft` requires an exact failed normal Nightly run and attempt whose
+  tag creation and draft creation succeeded but final publication did not. It
+  authenticates the retained intent, tag receipt, candidate artifact,
+  attestations, and supplied manifest SHA-256; it never rebuilds. The exact
+  release must remain a never-published draft, the tag must point at the expected
+  SHA, and every existing asset must match the retained candidate digest. Upload
+  only missing assets; never overwrite or silently replace an existing asset.
+  Verify the complete remote inventory byte-for-byte against that candidate,
+  then publish and perform the guarded branch create/fast-forward transaction
+  from Section 10.6.
 - `replace-unpublished-draft` is the only automated destructive nightly recovery
   operation. It requires the exact confirmation string, exact release ID, an
   existing draft with no publication timestamp, a correct immutable tag, and a

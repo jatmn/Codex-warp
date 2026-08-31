@@ -19,7 +19,7 @@ validate_archive() {
   [ -f "$archive" ] || die "archive is missing: $archive"
   [ -d "$source" ] || die "source directory is missing: $source"
 
-  local expected binary filename basename payload temp list logical windows_archive windows_destination
+  local expected binary filename basename payload temp list logical windows_archive windows_destination reported_version
   expected="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' "$contract")"
   binary="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .binary' "$contract")"
   expected="${expected%$'\r'}"
@@ -121,7 +121,9 @@ validate_archive() {
 
   if [ "${SKIP_VERSION_SMOKE:-0}" != '1' ]; then
     [ -x "$payload/$binary" ] || die "$binary is not executable"
-    "$payload/$binary" --version | grep -F -- "$version" >/dev/null || die "$binary --version does not report $version"
+    reported_version="$("$payload/$binary" --version)"
+    [ "$reported_version" = "codex-warp $version" ] ||
+      die "$binary --version reported '$reported_version', expected 'codex-warp $version'"
     "$payload/$binary" --help >/dev/null || die "$binary --help failed"
   fi
   trap - RETURN

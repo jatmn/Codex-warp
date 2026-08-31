@@ -15,6 +15,16 @@ cp -R configs/. "$tmp/$archive_name/configs/"
 tar -cJf "$tmp/$archive_name.tar.xz" -C "$tmp" "$archive_name"
 bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null
 
+prefix_name='codex-warp-nightly-20260830-111111111111-x86_64-unknown-linux-gnu'
+cp -R "$tmp/$archive_name" "$tmp/$prefix_name"
+printf '%s\n' '#!/usr/bin/env bash' 'case "${1:-}" in --version) echo "codex-warp 0.0.10" ;; --help) exit 0 ;; *) exit 1 ;; esac' >"$tmp/$prefix_name/codex-warp"
+chmod +x "$tmp/$prefix_name/codex-warp"
+tar -cJf "$tmp/$prefix_name.tar.xz" -C "$tmp" "$prefix_name"
+if bash scripts/check-release-contract.sh archive "$tmp/$prefix_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: accepted a prefix-colliding version' >&2
+  exit 1
+fi
+
 windows_name='codex-warp-x86_64-pc-windows-msvc'
 mkdir -p "$tmp/$windows_name/configs"
 cp target/debug/codex-warp "$tmp/$windows_name/codex-warp.exe"

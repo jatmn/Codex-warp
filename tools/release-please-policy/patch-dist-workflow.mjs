@@ -11,13 +11,23 @@ let source = fs.readFileSync(workflowPath, 'utf8');
 const parsed = YAML.parseDocument(source);
 if (parsed.errors.length > 0) throw parsed.errors[0];
 const doc = parsed.toJS();
+
+function assertNoContentsWrite(workflow, label) {
+  if (workflow.permissions?.contents === 'write') {
+    throw new Error(`${label} contains a root GITHUB_TOKEN contents:write grant`);
+  }
+  for (const [jobName, job] of Object.entries(workflow.jobs || {})) {
+    if (job.permissions?.contents === 'write') {
+      throw new Error(`${label} contains a GITHUB_TOKEN contents:write grant in ${jobName}`);
+    }
+  }
+}
+
 if (source.includes('# Prepare and validate the complete candidate without mutation credentials.')) {
   if (source.includes('cargo-dist-installer.sh') || source.includes('cargo-dist-installer.ps1')) {
     throw new Error('patched workflow contains an unverified dist installer');
   }
-  if (/permissions:\n\s+["']?contents["']?: ["']?write/.test(source)) {
-    throw new Error('patched workflow contains a GITHUB_TOKEN contents:write grant');
-  }
+  assertNoContentsWrite(doc, 'patched workflow');
   console.log('patch-dist-workflow: overlay already applied');
   process.exit(0);
 }
@@ -34,6 +44,11 @@ function replaceOnce(before, after, label) {
 }
 
 replaceOnce('permissions:\n  "contents": "write"', 'permissions:\n  contents: read', 'root permissions');
+replaceOnce(
+  "(needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload')",
+  "(needs.plan.outputs.publishing == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'))",
+  'same-repository PR build gate'
+);
 replaceOnce("      - '**[0-9]+.[0-9]+.[0-9]+*'", "      - 'v[0-9]+.[0-9]+.[0-9]+'", 'tag glob');
 replaceOnce(
   "      - 'v[0-9]+.[0-9]+.[0-9]+'\n\njobs:",
@@ -477,6 +492,15 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
             gh api -H 'Accept: application/octet-stream' "repos/\${{ github.repository }}/releases/assets/$id" >"remote-publish/$name"
           done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
           SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication remote-publish remote-publish/codex-warp-release-metadata.json remote-publish/dist-manifest.json
+          find release-assets -maxdepth 1 -type f -printf '%f\\n' | sort >candidate-publish-names.txt
+          find remote-publish -maxdepth 1 -type f -printf '%f\\n' | sort >remote-publish-names.txt
+          cmp candidate-publish-names.txt remote-publish-names.txt
+          while IFS= read -r name; do
+            cmp "release-assets/$name" "remote-publish/$name"
+          done <candidate-publish-names.txt
+          for subject in remote-publish/*.tar.xz remote-publish/*.zip remote-publish/codex-warp-release-metadata.json; do
+            gh attestation verify "$subject" --repo "\${{ github.repository }}"
+          done
           release="$(gh api "repos/\${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           [ "$(gh api "repos/\${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$(jq -r '.sourceSha' release-assets/codex-warp-release-metadata.json)" ]
@@ -497,7 +521,5 @@ if (finalDocument.errors.length > 0) throw finalDocument.errors[0];
 if (source.includes('cargo-dist-installer.sh') || source.includes('cargo-dist-installer.ps1')) {
   throw new Error('unverified dist installer remains after overlay');
 }
-if (/permissions:\n\s+["']?contents["']?: ["']?write/.test(source)) {
-  throw new Error('GITHUB_TOKEN contents:write grant remains after overlay');
-}
+assertNoContentsWrite(finalDocument.toJS(), 'generated workflow');
 fs.writeFileSync(workflowPath, source);

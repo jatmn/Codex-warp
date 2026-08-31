@@ -55,13 +55,40 @@ if [ "$release_failure" -eq 0 ]; then
   exit 1
 fi
 
+old_sha="$sha"
+old_tag="nightly-20260830-${old_sha:0:12}"
+git -C "$repo" tag --no-sign "$old_tag" "$old_sha"
+git -C "$repo" push --quiet origin "refs/tags/$old_tag"
+git -C "$repo" commit --quiet --allow-empty -m newer
+git -C "$repo" push --quiet origin main
+sha="$(git -C "$repo" rev-parse HEAD)"
+
+orphan_failure=0
+run_prepare >/dev/null 2>&1 || orphan_failure=$?
+if [ "$orphan_failure" -eq 0 ]; then
+  echo 'prepare-nightly-harness: older orphan tag did not block a new candidate' >&2
+  exit 1
+fi
+
+old_draft="[{\"id\":8,\"tag_name\":\"$old_tag\",\"draft\":true,\"prerelease\":true,\"published_at\":null}]"
+draft_failure=0
+NIGHTLY_GH_RELEASES_JSON="$old_draft" run_prepare >/dev/null 2>&1 || draft_failure=$?
+if [ "$draft_failure" -eq 0 ]; then
+  echo 'prepare-nightly-harness: older draft release did not block a new candidate' >&2
+  exit 1
+fi
+
+old_complete="{\"id\":8,\"tag_name\":\"$old_tag\",\"draft\":false,\"prerelease\":true,\"published_at\":\"2026-08-30T09:05:00Z\"}"
+NIGHTLY_GH_RELEASES_JSON="[$old_complete]" run_prepare >/dev/null
+grep -Fx 'action=build' "$tmp/output" >/dev/null
+
 tag="nightly-20260830-${sha:0:12}"
 git -C "$repo" tag --no-sign "$tag" "$sha"
 git -C "$repo" push --quiet origin "refs/tags/$tag"
 assets="$tmp/assets"
 mkdir "$assets"
 printf '{}\n' >"$assets/codex-warp-nightly-manifest.json"
-releases="[{\"id\":9,\"tag_name\":\"$tag\",\"draft\":false,\"prerelease\":true,\"published_at\":\"2026-08-30T10:05:00Z\"}]"
+releases="[$old_complete,{\"id\":9,\"tag_name\":\"$tag\",\"draft\":false,\"prerelease\":true,\"published_at\":\"2026-08-30T10:05:00Z\"}]"
 release="{\"id\":9,\"tag_name\":\"$tag\",\"draft\":false,\"prerelease\":true,\"published_at\":\"2026-08-30T10:05:00Z\"}"
 corrupt_failure=0
 NIGHTLY_GH_RELEASES_JSON="$releases" NIGHTLY_GH_RELEASE_JSON="$release" NIGHTLY_GH_ASSET_DIR="$assets" run_prepare >/dev/null 2>&1 || corrupt_failure=$?

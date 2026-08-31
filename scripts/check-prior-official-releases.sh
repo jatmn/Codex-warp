@@ -74,13 +74,17 @@ if [ -n "${OFFICIAL_STATE_FIXTURE:-}" ]; then
   [ -f "$OFFICIAL_STATE_FIXTURE" ] || { echo 'check-prior-official-releases: fixture is missing' >&2; exit 2; }
   releases="$(jq -c '.releases // []' "$OFFICIAL_STATE_FIXTURE")"
   tags="$(jq -c '.tags // []' "$OFFICIAL_STATE_FIXTURE")"
-  active="$(jq -c '.activeOfficialTags // []' "$OFFICIAL_STATE_FIXTURE")"
+  if jq -e 'has("activeRuns")' "$OFFICIAL_STATE_FIXTURE" >/dev/null; then
+    active="$(jq -c --argjson current "${GITHUB_RUN_ID:-0}" '[.activeRuns[] | select(.id != $current and ((.name == "Release Recovery" and .event == "workflow_dispatch" and .head_branch == "main") or (.name == "Release" and .event == "push" and ((.head_branch // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))) | {id,name,event,head_branch}]' "$OFFICIAL_STATE_FIXTURE")"
+  else
+    active="$(jq -c '.activeOfficialTags // []' "$OFFICIAL_STATE_FIXTURE")"
+  fi
 else
   command -v gh >/dev/null || { echo 'check-prior-official-releases: gh is required' >&2; exit 2; }
   releases="$(gh api --paginate "repos/$repository/releases?per_page=100" --jq '[.[] | {id,tag_name,draft,prerelease,published_at}]' | jq -sc 'add // []')"
   tags="$(gh api --paginate "repos/$repository/tags?per_page=100" --jq '[.[].name]' | jq -sc 'add // []')"
-  in_progress="$(gh api --paginate "repos/$repository/actions/runs?status=in_progress&per_page=100" | jq -sc --argjson current "${GITHUB_RUN_ID:-0}" '[.[] | .workflow_runs[] | select(.id != $current and ((.name == "Release Recovery") or (.name == "Release" and ((.head_branch // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))) | {id,name,head_branch}]')"
-  queued="$(gh api --paginate "repos/$repository/actions/runs?status=queued&per_page=100" | jq -sc --argjson current "${GITHUB_RUN_ID:-0}" '[.[] | .workflow_runs[] | select(.id != $current and ((.name == "Release Recovery") or (.name == "Release" and ((.head_branch // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))) | {id,name,head_branch}]')"
+  in_progress="$(gh api --paginate "repos/$repository/actions/runs?status=in_progress&per_page=100" | jq -sc --argjson current "${GITHUB_RUN_ID:-0}" '[.[] | .workflow_runs[] | select(.id != $current and ((.name == "Release Recovery" and .event == "workflow_dispatch" and .head_branch == "main") or (.name == "Release" and .event == "push" and ((.head_branch // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))) | {id,name,event,head_branch}]')"
+  queued="$(gh api --paginate "repos/$repository/actions/runs?status=queued&per_page=100" | jq -sc --argjson current "${GITHUB_RUN_ID:-0}" '[.[] | .workflow_runs[] | select(.id != $current and ((.name == "Release Recovery" and .event == "workflow_dispatch" and .head_branch == "main") or (.name == "Release" and .event == "push" and ((.head_branch // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))))) | {id,name,event,head_branch}]')"
   active="$(jq -n --argjson in_progress "$in_progress" --argjson queued "$queued" '$in_progress + $queued')"
 fi
 

@@ -21,12 +21,17 @@ on:
         type: choice
         options: [resume-draft, replace-unpublished-draft, recover-orphan-tag, repair-branch]
       origin_run_id:
-        description: Originating failed transaction run ID (orphan only)
+        description: Originating failed transaction run ID (resume or orphan)
         required: false
         type: string
         default: ''
       origin_run_attempt:
-        description: Originating failed transaction run attempt (orphan only)
+        description: Originating failed transaction run attempt (resume or orphan)
+        required: false
+        type: string
+        default: ''
+      evidence_manifest_sha256:
+        description: Exact originating nightly manifest SHA-256 (resume only)
         required: false
         type: string
         default: ''
@@ -67,9 +72,10 @@ jobs:
       CONFIRMATION: ${{ inputs.confirmation }}
       ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
       ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
+      EVIDENCE_MANIFEST_SHA256: ${{ inputs.evidence_manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -93,7 +99,8 @@ jobs:
           [ "$found_tag" = true ]
           remote_branch="$(git ls-remote --heads origin refs/heads/nightly)" || { echo 'unable to inspect nightly branch' >&2; exit 1; }
           if [ -n "$remote_branch" ]; then git fetch --force origin '+refs/heads/nightly:refs/remotes/origin/nightly'; fi
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           mapfile -t source_tags < <(git tag --list 'nightly-*' --points-at "$SOURCE_SHA")
@@ -114,14 +121,34 @@ jobs:
             resume-draft)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == true and .published_at == null and .prerelease == true' <<<"$release" >/dev/null
-              [ "$CONFIRMATION" = "$TAG" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ] ;;
+              [ "$CONFIRMATION" = "$TAG" ]
+              [[ "$ORIGIN_RUN_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$ORIGIN_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              [[ "$EVIDENCE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+              run="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT")"
+              latest="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID")"
+              jq -e --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.run_attempt==$attempt' <<<"$latest" >/dev/null
+              jq -e --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.name=="Nightly" and (.event=="schedule" or .event=="workflow_dispatch") and .head_branch=="main" and .run_attempt==$attempt and .status=="completed" and .conclusion!=null and .conclusion!="success"' <<<"$run" >/dev/null
+              jobs="$(gh api --paginate "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT/jobs?per_page=100" | jq -sc '[.[] | .jobs[] | .steps[]]')"
+              [ "$(jq '[.[]|select(.name=="Create immutable nightly tag and receipt" and .conclusion=="success")]|length' <<<"$jobs")" -eq 1 ]
+              [ "$(jq '[.[]|select(.name=="Create draft prerelease for existing tag" and .conclusion=="success")]|length' <<<"$jobs")" -eq 1 ]
+              [ "$(jq '[.[]|select(.name=="Verify and publish exact prerelease" and .conclusion!="success")]|length' <<<"$jobs")" -eq 1 ]
+              mkdir origin-evidence
+              gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-publication-intent --dir origin-evidence
+              gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
+              gh attestation verify origin-evidence/nightly-intent.json --repo "${{ github.repository }}"
+              gh attestation verify origin-evidence/nightly-tag-receipt.json --repo "${{ github.repository }}"
+              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --arg manifest "$EVIDENCE_MANIFEST_SHA256" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag==$tag and .sourceSha==$sha and .manifestSha256==$manifest and .runId==$run and .runAttempt==$attempt' origin-evidence/nightly-intent.json >/dev/null
+              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag==$tag and .peeledSha==$sha and .runId==$run and .runAttempt==$attempt' origin-evidence/nightly-tag-receipt.json >/dev/null
+              [ "$(jq -r '.intentSha256' origin-evidence/nightly-tag-receipt.json)" = "$(bash scripts/sha256-file.sh origin-evidence/nightly-intent.json)" ]
+              origin_manifest="$EVIDENCE_MANIFEST_SHA256"; build=false; origin=true ;;
             replace-unpublished-draft)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == true and .published_at == null and .prerelease == true' <<<"$release" >/dev/null
-              [ "$CONFIRMATION" = "replace-unpublished-draft:$TAG:$RELEASE_INPUT" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ] ;;
+              [ "$CONFIRMATION" = "replace-unpublished-draft:$TAG:$RELEASE_INPUT" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT$EVIDENCE_MANIFEST_SHA256" ] ;;
             recover-orphan-tag)
               [ "$RELEASE_INPUT" = absent ]; [ -z "$release_id" ]
               [[ "$ORIGIN_RUN_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$ORIGIN_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              [ -z "$EVIDENCE_MANIFEST_SHA256" ]
               [ "$CONFIRMATION" = "$TAG" ]
               run="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT")"
               latest="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID")"
@@ -164,7 +191,7 @@ jobs:
             repair-branch)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == false and .published_at != null and .prerelease == true' <<<"$release" >/dev/null
-              [ "$CONFIRMATION" = "$TAG" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ]
+              [ "$CONFIRMATION" = "$TAG" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT$EVIDENCE_MANIFEST_SHA256" ]
               build=false; repair=true ;;
           esac
           branch="$(git rev-parse refs/remotes/origin/nightly 2>/dev/null || true)"
@@ -176,7 +203,7 @@ jobs:
             jq -e '.original == .replacement' "$recipe" >/dev/null || { echo 'This tag-specific replacement recipe also requires a reviewed workflow implementation for its declared substitutions.' >&2; exit 1; }
             recipe_sha="\"$(bash scripts/sha256-file.sh "$recipe")\""
           fi
-          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg date "$date" --arg version "$version" --arg release "$release_id" --arg branch "$branch" --arg control "${{ github.workflow_sha }}" --argjson recipe "$recipe_sha" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,date:$date,version:$version,releaseId:(if ($release|length)>0 then ($release|tonumber) else null end),branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$control,recipeSha256:$recipe}' >nightly-recovery-plan.json
+          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg date "$date" --arg version "$version" --arg release "$release_id" --arg branch "$branch" --arg control "${{ github.workflow_sha }}" --arg origin_run "$ORIGIN_RUN_ID" --arg origin_attempt "$ORIGIN_RUN_ATTEMPT" --arg origin_manifest "$origin_manifest" --argjson recipe "$recipe_sha" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,date:$date,version:$version,releaseId:(if ($release|length)>0 then ($release|tonumber) else null end),branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$control,recipeSha256:$recipe,originRunId:(if ($origin_run|length)>0 then ($origin_run|tonumber) else null end),originRunAttempt:(if ($origin_attempt|length)>0 then ($origin_attempt|tonumber) else null end),originManifestSha256:(if ($origin_manifest|length)>0 then $origin_manifest else null end)}' >nightly-recovery-plan.json
           echo "build=$build" >>"$GITHUB_OUTPUT"; echo "repair=$repair" >>"$GITHUB_OUTPUT"
           echo "origin=$origin" >>"$GITHUB_OUTPUT"
           echo "release_id=$release_id" >>"$GITHUB_OUTPUT"; echo "date=$date" >>"$GITHUB_OUTPUT"; echo "version=$version" >>"$GITHUB_OUTPUT"
@@ -268,14 +295,17 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
       SOURCE_SHA: ${{ inputs.expected_sha }}
+      ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+      ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen nightly source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -294,7 +324,7 @@ jobs:
           gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name "$name" --dir candidate
           [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "${{ needs.plan.outputs.origin_manifest_sha256 }}" ]
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
-          jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag==$tag and .sourceSha==$sha' candidate/codex-warp-nightly-manifest.json >/dev/null
+          jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --arg workflow "https://github.com/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID" '.tag==$tag and .sourceSha==$sha and .workflow==$workflow' candidate/codex-warp-nightly-manifest.json >/dev/null
           for archive in candidate/*.tar.xz candidate/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: nightly-recovery-candidate, path: candidate/, if-no-files-found: error}
@@ -316,14 +346,17 @@ jobs:
       SOURCE_SHA: ${{ inputs.expected_sha }}
       OPERATION: ${{ inputs.operation }}
       RELEASE_INPUT: ${{ inputs.release_id }}
+      ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+      ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen nightly source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -358,10 +391,10 @@ jobs:
           if [ "$OPERATION" = recover-orphan-tag ]; then
             [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "${{ needs.plan.outputs.origin_manifest_sha256 }}" ]
           fi
-          jq -e --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg workflow "${{ github.workflow_sha }}" '.operation==$operation and .tag==$tag and .sourceSha==$source and .controlWorkflowSha==$workflow' retained-plan/nightly-recovery-plan.json >/dev/null
+          jq -e --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg workflow "${{ github.workflow_sha }}" --arg origin_run "$ORIGIN_RUN_ID" --arg origin_attempt "$ORIGIN_RUN_ATTEMPT" '.operation==$operation and .tag==$tag and .sourceSha==$source and .controlWorkflowSha==$workflow and .originRunId==(if ($origin_run|length)>0 then ($origin_run|tonumber) else null end) and .originRunAttempt==(if ($origin_attempt|length)>0 then ($origin_attempt|tonumber) else null end)' retained-plan/nightly-recovery-plan.json >/dev/null
           candidate_assets="$({ while IFS= read -r file; do jq -n --arg name "$(basename "$file")" --arg digest "$(bash scripts/sha256-file.sh "$file")" '{name:$name,sha256:$digest}'; done < <(find candidate -maxdepth 1 -type f -print | sort); } | jq -sc '.')"
           branch_sha="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
-          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$release_id" --argjson release_state "$release_state" --argjson remote_assets "$remote_assets" --argjson candidate_assets "$candidate_assets" --arg manifest "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/nightly-recovery-plan.json)" --arg tag_sha "$(git rev-parse "refs/tags/$TAG^{}")" --arg branch "$branch_sha" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,releaseState:$release_state,remoteAssets:$remote_assets,candidateAssets:$candidate_assets,manifestSha256:$manifest,planSha256:$plan,tagSha:$tag_sha,branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt}' >nightly-orphan-recovery-intent.json
+          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$release_id" --argjson release_state "$release_state" --argjson remote_assets "$remote_assets" --argjson candidate_assets "$candidate_assets" --arg manifest "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/nightly-recovery-plan.json)" --arg tag_sha "$(git rev-parse "refs/tags/$TAG^{}")" --arg branch "$branch_sha" --arg workflow "${{ github.workflow_sha }}" --arg origin_run "$ORIGIN_RUN_ID" --arg origin_attempt "$ORIGIN_RUN_ATTEMPT" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,releaseState:$release_state,remoteAssets:$remote_assets,candidateAssets:$candidate_assets,manifestSha256:$manifest,planSha256:$plan,tagSha:$tag_sha,branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$workflow,originRunId:(if ($origin_run|length)>0 then ($origin_run|tonumber) else null end),originRunAttempt:(if ($origin_attempt|length)>0 then ($origin_attempt|tonumber) else null end),runId:$run,runAttempt:$attempt}' >nightly-orphan-recovery-intent.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: nightly-orphan-recovery-intent, path: nightly-orphan-recovery-intent.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -466,8 +499,14 @@ jobs:
           final_assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" | jq -sc 'add // []')"
           while IFS=$'\t' read -r asset_id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$asset_id" >"remote-final/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$final_assets")
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh remote-final remote-final/codex-warp-nightly-manifest.json "$PWD/release-source"
+          find candidate -maxdepth 1 -type f -printf '%f\n' | sort >candidate-final-names.txt
+          find remote-final -maxdepth 1 -type f -printf '%f\n' | sort >remote-final-names.txt
+          cmp candidate-final-names.txt remote-final-names.txt
+          while IFS= read -r name; do cmp "candidate/$name" "remote-final/$name"; done <candidate-final-names.txt
+          for archive in remote-final/*.tar.xz remote-final/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
           release="$(gh api "repos/${{ github.repository }}/releases/$id")"
           jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
           gh api --method PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
           branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           if [ -z "$branch" ]; then gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
@@ -484,12 +523,13 @@ jobs:
     env: {GH_TOKEN: '${{ github.token }}', TAG: '${{ inputs.tag }}', SOURCE_SHA: '${{ inputs.expected_sha }}'}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen nightly source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

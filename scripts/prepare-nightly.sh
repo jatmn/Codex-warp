@@ -63,6 +63,20 @@ while IFS=$'\t' read -r release_id release_tag; do
     exit 1
   fi
 done < <(jq -r '.[] | [.id,.tag_name] | @tsv' <<<"$nightly_releases")
+while IFS= read -r immutable_tag; do
+  [ -n "$immutable_tag" ] || continue
+  release_count="$(jq --arg tag "$immutable_tag" '[.[] | select(.tag_name == $tag)] | length' <<<"$nightly_releases")"
+  [ "$release_count" -eq 1 ] || {
+    echo "prepare-nightly: outstanding nightly transaction $immutable_tag does not have exactly one release object; use recovery" >&2
+    exit 1
+  }
+  jq -e --arg tag "$immutable_tag" \
+    '[.[] | select(.tag_name == $tag)] | length == 1 and .[0].draft == false and .[0].prerelease == true and .[0].published_at != null' \
+    <<<"$nightly_releases" >/dev/null || {
+      echo "prepare-nightly: outstanding nightly transaction $immutable_tag is not completely published; use recovery" >&2
+      exit 1
+    }
+done < <(git tag --list 'nightly-*' | LC_ALL=C sort)
 
 publish=false
 if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "${NIGHTLY_PUBLISH_ENABLED:-false}" = true ]; then
@@ -98,7 +112,7 @@ verify_published() {
   if [ ! -f "$manifest" ]; then rm -rf "$verify_temp"; return 1; fi
   source_tree="$verify_temp/source"
   if ! git worktree add --quiet --detach "$source_tree" "$verify_sha"; then rm -rf "$verify_temp"; return 1; fi
-  if ! SOURCE_DIR="$source_tree" bash scripts/check-nightly-assets.sh "$verify_temp/assets" "$manifest"; then git worktree remove --force "$source_tree" >/dev/null 2>&1 || true; rm -rf "$verify_temp"; return 1; fi
+  if ! NIGHTLY_MANIFEST_SCHEMA_PATH="$source_tree/tools/nightly-manifest.schema.json" SOURCE_DIR="$source_tree" bash scripts/check-nightly-assets.sh "$verify_temp/assets" "$manifest"; then git worktree remove --force "$source_tree" >/dev/null 2>&1 || true; rm -rf "$verify_temp"; return 1; fi
   if ! jq -e --arg tag "$verify_tag" --arg sha "$verify_sha" '.tag == $tag and .sourceSha == $sha' "$manifest" >/dev/null; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi
   workflow_sha="$(jq -r '.workflowSha' "$manifest")"
   if ! git cat-file -e "$workflow_sha^{commit}" || ! git merge-base --is-ancestor "$workflow_sha" "$live_main"; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi

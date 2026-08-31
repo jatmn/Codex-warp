@@ -72,6 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: '${{ github.workflow_sha }}'
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -90,7 +91,8 @@ jobs:
           [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$EXPECTED_SHA" ]
           version="$(git show "$EXPECTED_SHA:Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -1)"
           [ "$TAG" = "v$version" ]
@@ -254,12 +256,13 @@ jobs:
       EVIDENCE_MANIFEST_SHA256: ${{ inputs.evidence_manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen release source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -298,12 +301,13 @@ jobs:
       RELEASE_ID: ${{ inputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen release source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -316,6 +320,7 @@ jobs:
           assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
           while IFS=$'\t' read -r id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"candidate/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
+          jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" '.tag == $tag and .sourceSha == $sha and .releaseId == $id' candidate/codex-warp-release-metadata.json >/dev/null
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
@@ -339,12 +344,13 @@ jobs:
       OPERATION: ${{ inputs.operation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+        with: {ref: '${{ github.workflow_sha }}', fetch-depth: 0, persist-credentials: false}
       - name: Materialize frozen release source separately from protected control code
         run: |
           git fetch --no-tags origin main
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -353,11 +359,18 @@ jobs:
         working-directory: tools/release-please-policy
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: official-recovery-candidate, path: candidate}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: {name: official-recovery-plan, path: retained-plan}
       - id: preflight
         name: Revalidate and freeze the exact mutation plan
         shell: bash
         run: |
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          control_sha="$(git rev-parse HEAD)"
+          recipe_sha=null
+          recipe="tools/recovery-recipes/official-$TAG.json"
+          if [ -f "$recipe" ]; then recipe_sha="\"$(bash scripts/sha256-file.sh "$recipe")\""; fi
+          jq -e --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$RELEASE_ID" --arg control "$control_sha" --argjson recipe "$recipe_sha" '.operation==$operation and .tag==$tag and .sourceSha==$source and .releaseId==$release_id and .controlWorkflowSha==$control and .recipeSha256==$recipe' retained-plan/official-recovery-plan.json >/dev/null
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
@@ -380,7 +393,10 @@ jobs:
           jq -s '.' existing.jsonl >existing.json
           jq -e 'length == ([.[].name] | unique | length)' existing.json >/dev/null
           if [ "$OPERATION" != replace-unpublished-assets ]; then jq -e 'all(.[];.matches)' existing.json >/dev/null; fi
-          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$RELEASE_ID" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" --argjson existing "$(cat existing.json)" --argjson inventory "$(find candidate -maxdepth 1 -type f -printf '%f\n' | sort | jq -Rsc 'split("\n")[:-1]')" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt,existingAssets:$existing,expectedInventory:$inventory,deleteAssetIds:[$existing[]|select(.matches|not)|.id]}' >official-recovery-intent.json
+          : >candidate-assets.jsonl
+          while IFS= read -r name; do jq -n --arg name "$name" --arg sha "$(bash scripts/sha256-file.sh "candidate/$name")" '{name:$name,sha256:$sha}' >>candidate-assets.jsonl; done < <(find candidate -maxdepth 1 -type f -printf '%f\n' | sort)
+          jq -s '.' candidate-assets.jsonl >candidate-assets.json
+          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$RELEASE_ID" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" --argjson existing "$(cat existing.json)" --argjson expected "$(cat candidate-assets.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/official-recovery-plan.json)" --argjson recipe "$recipe_sha" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt,planSha256:$plan,recipeSha256:$recipe,existingAssets:$existing,expectedAssets:$expected,expectedInventory:[$expected[].name],deleteAssetIds:[$existing[]|select(.matches|not)|.id]}' >official-recovery-intent.json
           echo "delete_count=$(jq '.deleteAssetIds|length' official-recovery-intent.json)" >>"$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-intent, path: official-recovery-intent.json, retention-days: 90, if-no-files-found: error}
@@ -421,6 +437,9 @@ jobs:
             else
               [ "$state" = starter ]; [ "$(jq -r '.remoteSha256' <<<"$asset")" = null ]
             fi
+            release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
+            jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+            [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
             gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$id"
           done < <(jq -c '.existingAssets[] | select(.matches|not)' official-recovery-intent.json)
           remaining="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc '[.[][] | .id]')"
@@ -457,8 +476,13 @@ jobs:
           assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
           while IFS=$'\t' read -r id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-final/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication remote-final remote-final/codex-warp-release-metadata.json remote-final/dist-manifest.json
+          find candidate -maxdepth 1 -type f -printf '%f\n' | sort >candidate-final-names.txt
+          find remote-final -maxdepth 1 -type f -printf '%f\n' | sort >remote-final-names.txt
+          cmp candidate-final-names.txt remote-final-names.txt
+          while IFS= read -r name; do cmp "candidate/$name" "remote-final/$name"; done <candidate-final-names.txt
+          for subject in remote-final/*.tar.xz remote-final/*.zip remote-final/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
-          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
           gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false -F prerelease=false >/dev/null
           echo "Recovered and published [$TAG](https://github.com/${{ github.repository }}/releases/tag/$TAG) using \`$OPERATION\`." >>"$GITHUB_STEP_SUMMARY"

@@ -42,18 +42,25 @@ assert_safe_overlay() {
   grep -F 'prepare-pr-upload-proof:' "$workflow" >/dev/null
   grep -F 'bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof' "$workflow" >/dev/null
   grep -F 'attest-pr-upload-proof-metadata:' "$workflow" >/dev/null
+  grep -F "github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'" "$workflow" >/dev/null
   if grep -E 'cargo-dist-installer\.(sh|ps1)' "$workflow" >/dev/null ||
-     awk '
-       previous_permissions && /^[[:space:]]+contents:[[:space:]]+write([[:space:]]|$)/ { found = 1 }
-       { previous_permissions = ($0 ~ /^[[:space:]]*permissions:[[:space:]]*$/) }
-       END { exit found ? 0 : 1 }
-     ' "$workflow"; then
+     grep -E '^[[:space:]]+contents:[[:space:]]+write[[:space:]]*$' "$workflow" >/dev/null; then
     echo 'check-dist-workflow: unsafe installer or GITHUB_TOKEN write permission returned' >&2
     exit 1
   fi
 }
 
 assert_safe_overlay "$checked"
+unsafe="$temp/unsafe-release.yml"
+awk '
+  !changed && /^      contents: read$/ { sub(/read$/, "write"); changed = 1 }
+  { print }
+  END { if (!changed) exit 1 }
+' "$checked" >"$unsafe"
+if node "$temp/tools/release-please-policy/patch-dist-workflow.mjs" "$unsafe" >/dev/null 2>&1; then
+  echo 'check-dist-workflow: overlay validator accepted a job-level contents:write grant' >&2
+  exit 1
+fi
 
 current_mode="$(sed -n 's/^pr-run-mode = "\(plan\|upload\)"$/\1/p' "$temp/dist-workspace.toml")"
 case "$current_mode" in

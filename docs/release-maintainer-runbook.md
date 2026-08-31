@@ -179,7 +179,9 @@ or mutate a published release.
 
 Nightly Recovery accepts:
 
-- `resume-draft`: upload missing verified assets to the same draft;
+- `resume-draft`: authenticate the exact retained candidate from the supplied
+  failed normal Nightly run/attempt and manifest SHA-256, then upload only
+  missing verified assets to the same draft without rebuilding;
 - `replace-unpublished-draft`: retain and attest intent, delete only the exact
   never-published draft object, retain and attest the deletion receipt, then
   recreate for the existing immutable tag;
@@ -192,6 +194,10 @@ Use the exact confirmation string shown by the workflow input. Replacement
 operations are destructive and must never target a published release. Missing,
 expired, conflicting, or unverifiable evidence stops automated recovery and
 requires documented human break-glass investigation.
+
+Recovery control jobs execute the immutable `github.workflow_sha` selected by
+the `main` dispatch and prove that commit remains an ancestor of live protected
+`main`; historical release source is materialized separately.
 
 A tag-specific recipe under `tools/recovery-recipes/` is required if the frozen
 contract/tool/schema itself is defective. The baseline workflows deliberately

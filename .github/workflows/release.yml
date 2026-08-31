@@ -101,7 +101,7 @@ jobs:
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
-    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
+    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload')) }}
     strategy:
       fail-fast: false
       # Target platforms/runners are computed by dist in create-release.
@@ -586,6 +586,15 @@ jobs:
             gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-publish/$name"
           done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
           SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication remote-publish remote-publish/codex-warp-release-metadata.json remote-publish/dist-manifest.json
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort >candidate-publish-names.txt
+          find remote-publish -maxdepth 1 -type f -printf '%f\n' | sort >remote-publish-names.txt
+          cmp candidate-publish-names.txt remote-publish-names.txt
+          while IFS= read -r name; do
+            cmp "release-assets/$name" "remote-publish/$name"
+          done <candidate-publish-names.txt
+          for subject in remote-publish/*.tar.xz remote-publish/*.zip remote-publish/codex-warp-release-metadata.json; do
+            gh attestation verify "$subject" --repo "${{ github.repository }}"
+          done
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$(jq -r '.sourceSha' release-assets/codex-warp-release-metadata.json)" ]
