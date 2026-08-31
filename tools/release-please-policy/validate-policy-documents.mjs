@@ -25,10 +25,20 @@ assert.equal(policy.appBot.id, null);
 assert.equal(policy.appBot.login, null);
 
 const tooling = read('tools/release-tooling.json');
+const policyPackage = read('tools/release-please-policy/package.json');
+const policyLock = read('tools/release-please-policy/package-lock.json');
 assert.equal(digest('tools/release-please-policy/config.schema.json'), tooling.releasePlease.configSchemaSha256);
 assert.equal(digest('tools/dist-manifest.schema.json'), tooling.dist.manifestSchemaSha256);
 assert.equal(tooling.releasePlease.version, '17.6.0');
 assert.equal(tooling.dist.version, '0.32.0');
+assert.equal(policyPackage.dependencies.ajv, '8.20.0');
+assert.equal(policyPackage.dependencies['release-please'], undefined);
+assert.equal(policyPackage.devDependencies['release-please'], tooling.releasePlease.version);
+assert.equal(policyLock.packages['node_modules/yargs'].version, '17.7.3');
+assert.equal(
+  policyLock.packages['node_modules/yargs'].integrity,
+  'sha512-GZtjxm/J/4TSxuL3FNYjCmLktBTnIw/rVmKSIyKeYAZpmJB2ig9VauCC5xsa82GNKVKDAqpOn3KVzNt0zmrU0g=='
+);
 
 const distAjv = new Ajv2020({allErrors: true, strict: false});
 addFormats(distAjv);

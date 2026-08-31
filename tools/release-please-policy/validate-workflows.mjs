@@ -46,6 +46,10 @@ for (const file of workflowFiles) {
   assert.ok(!source.includes('pull_request_target:'), `${file} must not use pull_request_target`);
   assert.ok(!/curl[^\n]*\|\s*(?:bash|sh)/.test(source), `${file} must not execute a remote installer`);
   assert.ok(!source.includes('--jq --arg'), `${file} passes unsupported jq arguments to gh --jq`);
+  for (const match of source.matchAll(/\bnpm ci[^\n]*/g)) {
+    assert.ok(match[0].includes('--omit=dev'), `${file} installs dev-only release tooling`);
+    assert.ok(match[0].includes('--ignore-scripts'), `${file} enables dependency lifecycle scripts`);
+  }
   const workflow = parse(file);
   assert.deepEqual(workflow.permissions, {contents: 'read'}, `${file} must default to read-only contents`);
   for (const [jobName, job] of Object.entries(workflow.jobs)) {

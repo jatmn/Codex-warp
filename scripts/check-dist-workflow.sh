@@ -19,7 +19,7 @@ git -C "$temp" add .
 git -C "$temp" commit --quiet -m fixture
 (
   cd "$temp/tools/release-please-policy"
-  npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+  npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null
 )
 (
   cd "$temp"

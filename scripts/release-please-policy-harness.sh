@@ -13,5 +13,6 @@ fi
 (
   cd "$workspace"
   npm ci --ignore-scripts --no-audit --no-fund
+  npm audit --audit-level=moderate
   npm test
 )
