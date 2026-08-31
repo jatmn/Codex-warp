@@ -30,4 +30,10 @@ check wrong-recovery-event ok '{"tags":[],"releases":[],"activeRuns":[{"id":9,"n
 check active-dispatch-recovery fail '{"tags":[],"releases":[],"activeRuns":[{"id":10,"name":"Release Recovery","event":"workflow_dispatch","head_branch":"main"}]}'
 check ignore-nightly ok '{"tags":["nightly-20260830-111111111111"],"releases":[{"tag_name":"nightly-20260830-111111111111","draft":true,"published_at":null}],"activeOfficialTags":[]}'
 
+grep -F 'scripts/verify-official-attestation.sh' scripts/check-prior-official-releases.sh >/dev/null
+if grep -F 'gh attestation verify' scripts/check-prior-official-releases.sh >/dev/null; then
+  echo 'check-prior-official-releases-harness: repository-only attestation verify remains' >&2
+  exit 1
+fi
+
 echo 'check-prior-official-releases-harness: ok'

@@ -137,6 +137,16 @@ assert.ok(nightlyDraft.run.includes('/releases?per_page=100') && nightlyDraft.ru
 assert.ok(nightly.jobs.publish.steps.some(step => step.name === 'Create or fast-forward nightly branch' &&
   step.run.includes('scripts/advance-nightly-branch.sh')),
   'nightly publication must use the exact API branch race protocol');
+assert.ok(read('.github/workflows/nightly.yml').includes('scripts/verify-nightly-attestation.sh'),
+  'nightly publication must bind archive attestations to a trusted nightly workflow identity');
+assert.ok(read('scripts/prepare-nightly.sh').includes('scripts/verify-nightly-attestation.sh'),
+  'nightly prepare must bind historical archives to a trusted nightly workflow identity');
+assert.ok(read('scripts/advance-nightly-branch.sh').includes('git/refs/heads/nightly'),
+  'nightly branch fast-forward must use the plural refs update endpoint');
+assert.ok(read('scripts/check-prior-official-releases.sh').includes('scripts/verify-official-attestation.sh'),
+  'prior official release verification must bind attestations to a trusted release workflow identity');
+assert.ok(!read('scripts/check-prior-official-releases.sh').includes('gh attestation verify'),
+  'prior official release verification must not accept repository-scoped attestations');
 assert.equal(nightly.jobs['repair-branch'].steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}');
 assert.ok(nightly.jobs['repair-branch'].steps.some(step => step.run?.includes('scripts/advance-nightly-branch.sh')),
   'nightly repair must use the exact API branch race protocol');
@@ -237,6 +247,10 @@ assert.ok(nightlyRecoverySource.includes('candidateAssets:$candidate_assets') &&
   'nightly replacement intent must bind its plan, local candidate, and remote state');
 assert.ok(nightlyRecoverySource.includes('cmp "candidate/$name" "remote-final/$name"'),
   'nightly recovery publication must bind final remote bytes to its candidate');
+assert.ok(nightlyRecoverySource.includes('scripts/verify-nightly-attestation.sh'),
+  'nightly recovery must bind archive attestations to a trusted nightly workflow identity');
+assert.ok(nightlyRecoverySource.includes('.workflow==$f.workflow and .workflowSha==$f.workflowSha'),
+  'nightly recovery collect must require cross-target workflow provenance equality');
 for (const jobName of ['mutate-release', 'repair-branch']) {
   assert.ok(nightlyRecovery.jobs[jobName].steps.some(step => step.run?.includes('scripts/advance-nightly-branch.sh')),
     `nightly recovery ${jobName} must use the exact API branch race protocol`);

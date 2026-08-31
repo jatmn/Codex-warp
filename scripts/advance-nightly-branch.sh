@@ -9,6 +9,7 @@ set -euo pipefail
 [[ "$TAG" =~ ^nightly-[0-9]{8}-[0-9a-f]{12}$ ]]
 
 endpoint="repos/$GITHUB_REPOSITORY/git/ref/heads/nightly"
+update_endpoint="repos/$GITHUB_REPOSITORY/git/refs/heads/nightly"
 api_body() {
   sed -n '/^{/,$p'
 }
@@ -51,7 +52,7 @@ if branch_sha="$(read_branch)"; then
       echo "advance-nightly-branch: existing branch is not an ancestor: $branch_sha" >&2
       exit 1
     }
-    update="$(gh api --include --method PATCH "$endpoint" -f sha="$SOURCE_SHA" -F force=false 2>&1)" || {
+    update="$(gh api --include --method PATCH "$update_endpoint" -f sha="$SOURCE_SHA" -F force=false 2>&1)" || {
       echo 'advance-nightly-branch: non-force fast-forward failed' >&2
       printf '%s\n' "$update" >&2
       exit 1

@@ -14,7 +14,8 @@ mkdir -p "$repo/scripts/test-fixtures" "$repo/tools"
 cp "$root/Cargo.toml" "$repo/"
 cp "$root/scripts/prepare-nightly.sh" "$root/scripts/check-nightly-assets.sh" \
   "$root/scripts/check-release-contract.sh" "$root/scripts/check-sha256-index.sh" \
-  "$root/scripts/nightly-contract-digest.sh" "$root/scripts/sha256-file.sh" "$repo/scripts/"
+  "$root/scripts/nightly-contract-digest.sh" "$root/scripts/sha256-file.sh" \
+  "$root/scripts/verify-nightly-attestation.sh" "$repo/scripts/"
 cp "$root/scripts/test-fixtures/nightly-gh.sh" "$repo/scripts/test-fixtures/"
 cp "$root/tools/nightly-manifest.schema.json" "$root/tools/release-contract.json" \
   "$root/tools/nightly-packaging-contract.txt" "$repo/tools/"

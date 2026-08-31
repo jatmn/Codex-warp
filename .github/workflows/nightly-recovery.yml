@@ -275,7 +275,7 @@ jobs:
       - name: Assemble exact nightly manifest
         run: |
           mapfile -t evidence < <(find candidate -maxdepth 1 -name '*-nightly-evidence.json' -print | sort); [ "${#evidence[@]}" -eq 4 ]
-          jq -s '.[0] as $f|if all(.[];.repository==$f.repository and .tag==$f.tag and .date==$f.date and .sourceSha==$f.sourceSha and .baseVersion==$f.baseVersion and .version==$f.version and .cargoLockSha256==$f.cargoLockSha256 and .rustToolchainSha256==$f.rustToolchainSha256 and .packagingContractSha256==$f.packagingContractSha256 and .packagingScriptSha256==$f.packagingScriptSha256) then {"$schema":"./nightly-manifest.schema.json",schemaVersion:1,fileName:"codex-warp-nightly-manifest.json",repository:$f.repository,tag:$f.tag,date:$f.date,sourceSha:$f.sourceSha,baseVersion:$f.baseVersion,version:$f.version,workflow:$f.workflow,workflowSha:$f.workflowSha,cargoLockSha256:$f.cargoLockSha256,rustToolchainSha256:$f.rustToolchainSha256,packagingContractSha256:$f.packagingContractSha256,packagingScriptSha256:$f.packagingScriptSha256,artifacts:(map(.artifact)|sort_by(.target))} else error("nightly recovery evidence mismatch") end' "${evidence[@]}" >candidate/codex-warp-nightly-manifest.json
+          jq -s '.[0] as $f|if all(.[];.repository==$f.repository and .tag==$f.tag and .date==$f.date and .sourceSha==$f.sourceSha and .baseVersion==$f.baseVersion and .version==$f.version and .workflow==$f.workflow and .workflowSha==$f.workflowSha and .cargoLockSha256==$f.cargoLockSha256 and .rustToolchainSha256==$f.rustToolchainSha256 and .packagingContractSha256==$f.packagingContractSha256 and .packagingScriptSha256==$f.packagingScriptSha256) then {"$schema":"./nightly-manifest.schema.json",schemaVersion:1,fileName:"codex-warp-nightly-manifest.json",repository:$f.repository,tag:$f.tag,date:$f.date,sourceSha:$f.sourceSha,baseVersion:$f.baseVersion,version:$f.version,workflow:$f.workflow,workflowSha:$f.workflowSha,cargoLockSha256:$f.cargoLockSha256,rustToolchainSha256:$f.rustToolchainSha256,packagingContractSha256:$f.packagingContractSha256,packagingScriptSha256:$f.packagingScriptSha256,artifacts:(map(.artifact)|sort_by(.target))} else error("nightly recovery evidence mismatch") end' "${evidence[@]}" >candidate/codex-warp-nightly-manifest.json
           jq -r '.artifacts[]|[.archiveSha256,.archive]|@tsv' candidate/codex-warp-nightly-manifest.json | sed $'s/\t/  /' >candidate/sha256.sum
           rm "${evidence[@]}"
           bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json
@@ -325,7 +325,7 @@ jobs:
           [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "${{ needs.plan.outputs.origin_manifest_sha256 }}" ]
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --arg workflow "https://github.com/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID" '.tag==$tag and .sourceSha==$sha and .workflow==$workflow' candidate/codex-warp-nightly-manifest.json >/dev/null
-          for archive in candidate/*.tar.xz candidate/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          for archive in candidate/*.tar.xz candidate/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" candidate/codex-warp-nightly-manifest.json; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: nightly-recovery-candidate, path: candidate/, if-no-files-found: error}
 
@@ -372,7 +372,7 @@ jobs:
         run: |
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
-          for archive in candidate/*.tar.xz candidate/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          for archive in candidate/*.tar.xz candidate/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" candidate/codex-warp-nightly-manifest.json; done
           release=''; release_id=null; release_state=null; remote_assets='[]'
           live_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
           live_count="$(jq --arg tag "$TAG" '[.[] | select(.tag_name==$tag)] | length' <<<"$live_releases")"; [ "$live_count" -le 1 ]
@@ -503,7 +503,7 @@ jobs:
           find remote-final -maxdepth 1 -type f -printf '%f\n' | sort >remote-final-names.txt
           cmp candidate-final-names.txt remote-final-names.txt
           while IFS= read -r name; do cmp "candidate/$name" "remote-final/$name"; done <candidate-final-names.txt
-          for archive in remote-final/*.tar.xz remote-final/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          for archive in remote-final/*.tar.xz remote-final/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" remote-final/codex-warp-nightly-manifest.json; done
           release="$(gh api "repos/${{ github.repository }}/releases/$id")"
           jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
@@ -538,7 +538,7 @@ jobs:
           temp="$(mktemp -d)"; gh release download "$TAG" --repo "${{ github.repository }}" --dir "$temp"
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json" "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag==$tag and .sourceSha==$sha' "$temp/codex-warp-nightly-manifest.json" >/dev/null
-          for archive in "$temp"/*.tar.xz "$temp"/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          for archive in "$temp"/*.tar.xz "$temp"/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" "$temp/codex-warp-nightly-manifest.json"; done
           branch="$(git ls-remote origin refs/heads/nightly|awk '{print $1}')"; if [ -n "$branch" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; fi
       - id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0

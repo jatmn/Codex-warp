@@ -118,7 +118,7 @@ verify_published() {
   if ! git cat-file -e "$workflow_sha^{commit}" || ! git merge-base --is-ancestor "$workflow_sha" "$live_main"; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi
   while IFS=$'\t' read -r target archive; do
     if ! SKIP_VERSION_SMOKE=1 RELEASE_CONTRACT_PATH="$source_tree/tools/release-contract.json" bash scripts/check-release-contract.sh archive "$verify_temp/assets/$archive" "$target" "$source_tree" "$(jq -r '.version' "$manifest")"; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi
-    if ! gh attestation verify "$verify_temp/assets/$archive" --repo "$GITHUB_REPOSITORY" >/dev/null; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi
+    if ! bash scripts/verify-nightly-attestation.sh "$verify_temp/assets/$archive" "$manifest"; then git worktree remove --force "$source_tree"; rm -rf "$verify_temp"; return 1; fi
   done < <(jq -r '.artifacts[] | [.target,.archive] | @tsv' "$manifest")
   git worktree remove --force "$source_tree"
   VERIFIED_TAG="$verify_tag"

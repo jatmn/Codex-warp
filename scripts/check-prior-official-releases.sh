@@ -60,11 +60,11 @@ verify_complete_release() {
     [ "$(bash scripts/sha256-file.sh "$assets/$archive")" = "$digest" ]
     bash scripts/check-sha256-index.sh "$assets/$checksum" "$digest" "$archive" >/dev/null
     checksum_args+=("$digest" "$archive")
-    gh attestation verify "$assets/$archive" --repo "$repository" >/dev/null
+    bash scripts/verify-official-attestation.sh "$assets/$archive" "$metadata" >/dev/null
   done < <(jq -r '.dist.artifacts[] | [.archive,.archiveSha256,.checksumFile] | @tsv' "$metadata")
   bash scripts/check-sha256-index.sh "${checksum_args[@]}" >/dev/null
   (cd "$assets" && sha256sum -c sha256.sum >/dev/null)
-  gh attestation verify "$metadata" --repo "$repository" >/dev/null
+  bash scripts/verify-official-attestation.sh "$metadata" "$metadata" >/dev/null
   git worktree remove --force "$source_tree"
   rm -rf "$temp"
 }

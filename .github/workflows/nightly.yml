@@ -270,7 +270,7 @@ jobs:
         run: |
           SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
           while IFS= read -r archive; do
-            gh attestation verify "nightly-assets/$archive" --repo "${{ github.repository }}"
+            bash scripts/verify-nightly-attestation.sh "nightly-assets/$archive" nightly-assets/codex-warp-nightly-manifest.json
           done < <(jq -r '.artifacts[].archive' nightly-assets/codex-warp-nightly-manifest.json)
           [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/main" --jq '.object.sha')" = "$SOURCE_SHA" ]
           remote_tag="$(git ls-remote --tags --refs origin "refs/tags/$TAG")" || { echo 'unable to inspect candidate nightly tag' >&2; exit 1; }
@@ -349,7 +349,7 @@ jobs:
             [ "$(sha256sum "remote/$name" | awk '{print $1}')" = "$(sha256sum "nightly-assets/$name" | awk '{print $1}')" ]
           done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
           SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh remote remote/codex-warp-nightly-manifest.json
-          for archive in remote/*.tar.xz remote/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          for archive in remote/*.tar.xz remote/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" remote/codex-warp-nightly-manifest.json; done
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
@@ -413,7 +413,7 @@ jobs:
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json" "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag == $tag and .sourceSha == $sha' "$temp/codex-warp-nightly-manifest.json" >/dev/null
           while IFS= read -r archive; do
-            gh attestation verify "$temp/$archive" --repo "${{ github.repository }}"
+            bash scripts/verify-nightly-attestation.sh "$temp/$archive" "$temp/codex-warp-nightly-manifest.json"
           done < <(jq -r '.artifacts[].archive' "$temp/codex-warp-nightly-manifest.json")
           branch="$(git ls-remote origin refs/heads/nightly | awk '{print $1}')"
           if [ -n "$branch" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; fi

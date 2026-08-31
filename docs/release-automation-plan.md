@@ -1160,7 +1160,11 @@ Requirements:
   the selected source SHA and record it in the manifest; recovery must reproduce
   and verify that digest rather than silently using today's contract from
   `main`.
-- Attest every archive with GitHub artifact attestations.
+- Attest every archive with GitHub artifact attestations. Historical and
+  publication verification must constrain the certificate identity to the
+  reviewed `Nightly` or `Nightly Recovery` signer workflow, `refs/heads/main`,
+  the expected source or control digest, and GitHub-hosted runners; repository
+  scope alone is insufficient.
 - Add a CI parity check that compares the nightly target/content contract with
   the dist configuration so the two channels cannot silently drift.
 - Require the same generated inventory contract as official releases: four
