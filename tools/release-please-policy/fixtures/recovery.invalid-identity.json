@@ -1,0 +1,13 @@
+{
+  "$schema": "./schema.json",
+  "schemaVersion": 1,
+  "kind": "official",
+  "tag": "v0.1.0",
+  "expectedSourceSha": "1111111111111111111111111111111111111111",
+  "original": {},
+  "replacement": {"expectedSourceSha": "9999999999999999999999999999999999999999"},
+  "expectedInventoryDifference": [],
+  "rationale": "This invalid fixture attempts to mutate the immutable source identity.",
+  "expiresAfter": "2027-01-31",
+  "removalCondition": "This fixture must always fail validation."
+}

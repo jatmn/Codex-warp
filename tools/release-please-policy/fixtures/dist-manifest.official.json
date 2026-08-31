@@ -1,0 +1,17 @@
+{
+  "announcement_tag": "v0.1.0",
+  "announcement_tag_is_implicit": false,
+  "dist_version": "0.32.0",
+  "artifacts": {
+    "codex-warp-x86_64-unknown-linux-gnu.tar.xz": {"kind": "executable-zip", "name": "codex-warp-x86_64-unknown-linux-gnu.tar.xz", "target_triples": ["x86_64-unknown-linux-gnu"], "checksums": {"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "checksum": "codex-warp-x86_64-unknown-linux-gnu.tar.xz.sha256"},
+    "codex-warp-x86_64-unknown-linux-gnu.tar.xz.sha256": {"kind": "checksum", "name": "codex-warp-x86_64-unknown-linux-gnu.tar.xz.sha256", "target_triples": []},
+    "codex-warp-aarch64-apple-darwin.tar.xz": {"kind": "executable-zip", "name": "codex-warp-aarch64-apple-darwin.tar.xz", "target_triples": ["aarch64-apple-darwin"], "checksums": {"sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "checksum": "codex-warp-aarch64-apple-darwin.tar.xz.sha256"},
+    "codex-warp-aarch64-apple-darwin.tar.xz.sha256": {"kind": "checksum", "name": "codex-warp-aarch64-apple-darwin.tar.xz.sha256", "target_triples": []},
+    "codex-warp-x86_64-apple-darwin.tar.xz": {"kind": "executable-zip", "name": "codex-warp-x86_64-apple-darwin.tar.xz", "target_triples": ["x86_64-apple-darwin"], "checksums": {"sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, "checksum": "codex-warp-x86_64-apple-darwin.tar.xz.sha256"},
+    "codex-warp-x86_64-apple-darwin.tar.xz.sha256": {"kind": "checksum", "name": "codex-warp-x86_64-apple-darwin.tar.xz.sha256", "target_triples": []},
+    "codex-warp-x86_64-pc-windows-msvc.zip": {"kind": "executable-zip", "name": "codex-warp-x86_64-pc-windows-msvc.zip", "target_triples": ["x86_64-pc-windows-msvc"], "checksums": {"sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "checksum": "codex-warp-x86_64-pc-windows-msvc.zip.sha256"},
+    "codex-warp-x86_64-pc-windows-msvc.zip.sha256": {"kind": "checksum", "name": "codex-warp-x86_64-pc-windows-msvc.zip.sha256", "target_triples": []},
+    "sha256.sum": {"kind": "unified-checksum", "name": "sha256.sum", "target_triples": []}
+  },
+  "releases": [{"app_name": "codex-warp", "app_version": "0.1.0", "artifacts": ["codex-warp-x86_64-unknown-linux-gnu.tar.xz", "codex-warp-aarch64-apple-darwin.tar.xz", "codex-warp-x86_64-apple-darwin.tar.xz", "codex-warp-x86_64-pc-windows-msvc.zip"]}]
+}

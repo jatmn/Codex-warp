@@ -22,15 +22,15 @@ builds AWS-LC from source, so source builds need CMake.
 
 ## Prerequisites
 
-- Rust toolchain with Cargo
+- Rustup; the exact Rust/Cargo version is selected by `rust-toolchain.toml`
 - Git
 - A shell for running commands
 
-Recommended Rust install path:
+Install the pinned toolchain and required components from the checked-in file:
 
 ```bash
-rustup default stable
-rustup update
+rustup show active-toolchain
+rustup component list --installed
 ```
 
 Check your toolchain:
@@ -137,6 +137,16 @@ If Cargo cannot find a linker, reopen the terminal after installing Visual
 Studio Build Tools, or run from a Developer PowerShell.
 
 ## Local Validation
+
+Pull request titles use `type(optional-scope)!: concise description`. Accepted
+types are `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`,
+`chore`, and `revert`. Because the repository squash-merges pull requests, that
+title becomes the Conventional Commit Release Please evaluates on `main`.
+
+Release-policy validation uses the exact Node patch recorded in
+`tools/release-tooling.json`. Install Node 24.20.0 before running the complete
+preflight; the isolated Release Please workspace installs only its committed
+lockfile with `npm ci --ignore-scripts`.
 
 Before ordinary local commits, new PR submission, and push that updates a PR,
 run the full local Linux CI preflight:
@@ -328,7 +338,7 @@ RUST_LOG=codex_warp=debug cargo run -- --config configs/xiaomi-token-plan.toml
 
 ## Release Artifacts
 
-Release binaries are produced under `target/release/`.
+Local release binaries are produced under `target/release/`.
 
 Typical artifact names:
 
@@ -338,3 +348,13 @@ Typical artifact names:
 The runtime config files are not embedded in the binary. Keep `codex-warp.toml`
 and any `configs/` profiles you want to use next to the working directory where
 you launch the proxy, or pass explicit `--config` paths.
+
+Published archives include the executable and the reviewed runtime
+configuration tree. Official version changes are owned by Release Please; do
+not manually edit the package version during ordinary development. Nightly
+builds use a compile-time SemVer prerelease identity without changing
+`Cargo.toml`.
+
+Read [Releases](releases.md) for the public artifact contract and
+[Release Automation Maintainer Runbook](release-maintainer-runbook.md) for the
+protected setup, activation, recovery, and incident procedures.

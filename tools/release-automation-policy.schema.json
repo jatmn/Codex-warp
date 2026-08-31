@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jatmn/Codex-warp/blob/main/tools/release-automation-policy.schema.json",
+  "title": "Codex Warp release automation identity policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "enabled",
+    "repository",
+    "baseBranch",
+    "headRepository",
+    "headRef",
+    "appBot",
+    "requiredFiles",
+    "allowedFiles"
+  ],
+  "properties": {
+    "$schema": {"const": "./release-automation-policy.schema.json"},
+    "schemaVersion": {"const": 1},
+    "enabled": {"type": "boolean"},
+    "repository": {"const": "jatmn/Codex-warp"},
+    "baseBranch": {"const": "main"},
+    "headRepository": {"const": "jatmn/Codex-warp"},
+    "headRef": {"type": "string", "minLength": 1},
+    "appBot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "login", "type"],
+      "properties": {
+        "id": {"type": ["integer", "null"], "minimum": 1},
+        "login": {"type": ["string", "null"], "minLength": 1},
+        "type": {"const": "Bot"}
+      }
+    },
+    "requiredFiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "allowedFiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

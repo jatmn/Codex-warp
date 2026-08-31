@@ -1,0 +1,13 @@
+{
+  "$schema": "./schema.json",
+  "schemaVersion": 1,
+  "kind": "nightly",
+  "tag": "nightly-20260830-111111111111",
+  "expectedSourceSha": "1111111111111111111111111111111111111111",
+  "original": {"releaseContractSha256": "2222222222222222222222222222222222222222222222222222222222222222", "rustToolchainSha256": "3333333333333333333333333333333333333333333333333333333333333333", "cargoLockSha256": "4444444444444444444444444444444444444444444444444444444444444444", "tool": {"name": "cargo-dist", "version": "0.32.0", "sourceUrl": "https://example.invalid/cargo-dist.tar.xz", "archiveSha256": "5555555555555555555555555555555555555555555555555555555555555555", "manifestProducing": true}},
+  "replacement": {"releaseContractSha256": "2222222222222222222222222222222222222222222222222222222222222222", "rustToolchainSha256": "3333333333333333333333333333333333333333333333333333333333333333", "cargoLockSha256": "4444444444444444444444444444444444444444444444444444444444444444", "tool": {"name": "cargo-dist", "version": "0.33.0", "sourceUrl": "https://example.invalid/cargo-dist.tar.xz", "archiveSha256": "6666666666666666666666666666666666666666666666666666666666666666", "manifestProducing": true}},
+  "expectedInventoryDifference": [],
+  "rationale": "This invalid fixture omits the exact schemas for manifest-producing tools.",
+  "expiresAfter": "2027-01-31",
+  "removalCondition": "This fixture must always fail validation."
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jatmn/Codex-warp/blob/main/tools/recovery-recipes/schema.json",
+  "title": "Codex Warp tag-specific recovery recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "kind", "tag", "expectedSourceSha", "original", "replacement", "expectedInventoryDifference", "rationale", "expiresAfter", "removalCondition"],
+  "properties": {
+    "$schema": {"const": "./schema.json"},
+    "schemaVersion": {"const": 1},
+    "kind": {"enum": ["official", "nightly"]},
+    "tag": {"type": "string"},
+    "expectedSourceSha": {"$ref": "#/$defs/sha"},
+    "original": {"$ref": "#/$defs/inputs"},
+    "replacement": {"$ref": "#/$defs/inputs"},
+    "expectedInventoryDifference": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "rationale": {"type": "string", "minLength": 20},
+    "expiresAfter": {"type": "string", "format": "date"},
+    "removalCondition": {"type": "string", "minLength": 10}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "inputs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["releaseContractSha256", "rustToolchainSha256", "cargoLockSha256", "tool"],
+      "properties": {
+        "releaseContractSha256": {"$ref": "#/$defs/digest"},
+        "rustToolchainSha256": {"$ref": "#/$defs/digest"},
+        "cargoLockSha256": {"$ref": "#/$defs/digest"},
+        "tool": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "version", "sourceUrl", "archiveSha256", "manifestProducing"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string", "minLength": 1},
+            "sourceUrl": {"type": "string", "format": "uri", "pattern": "^https://"},
+            "archiveSha256": {"$ref": "#/$defs/digest"},
+            "manifestProducing": {"type": "boolean"},
+            "manifestSchema": {
+              "type": "object", "additionalProperties": false,
+              "required": ["sourceUrl", "sha256", "vendoredPath"],
+              "properties": {
+                "sourceUrl": {"type": "string", "format": "uri", "pattern": "^https://raw\\.githubusercontent\\.com/.+/[0-9a-f]{40}/"},
+                "sha256": {"$ref": "#/$defs/digest"},
+                "vendoredPath": {"type": "string", "pattern": "^tools/recovery-recipes/schemas/[0-9a-f]{64}\\.json$"}
+              }
+            }
+          },
+          "allOf": [{"if": {"properties": {"manifestProducing": {"const": true}}}, "then": {"required": ["manifestSchema"]}}]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "official"}}}, "then": {"properties": {"tag": {"pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"}}}},
+    {"if": {"properties": {"kind": {"const": "nightly"}}}, "then": {"properties": {"tag": {"pattern": "^nightly-[0-9]{8}-[0-9a-f]{12}$"}}}}
+  ]
+}

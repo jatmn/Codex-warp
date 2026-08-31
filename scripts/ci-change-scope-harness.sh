@@ -71,6 +71,20 @@ git -C "$fixture" commit --quiet -m workflow
 head="$(git -C "$fixture" rev-parse HEAD)"
 assert_scope true true "$base" "$head"
 
+base="$head"
+printf '{"release-type":"rust"}\n' >"$fixture/release-please-config.json"
+git -C "$fixture" add release-please-config.json
+git -C "$fixture" commit --quiet -m release-policy
+head="$(git -C "$fixture" rev-parse HEAD)"
+assert_scope true false "$base" "$head"
+
+base="$head"
+printf '[toolchain]\nchannel = "1.98.0"\n' >"$fixture/rust-toolchain.toml"
+git -C "$fixture" add rust-toolchain.toml
+git -C "$fixture" commit --quiet -m release-toolchain
+head="$(git -C "$fixture" rev-parse HEAD)"
+assert_scope true false "$base" "$head"
+
 if (cd "$fixture" && bash scripts/ci-change-scope.sh missing...HEAD >/dev/null 2>&1); then
   echo 'ci-change-scope-harness: invalid diff range unexpectedly succeeded' >&2
   exit 1

@@ -2,15 +2,53 @@
 # Reject Python and other new implementation languages before review.
 # Allowlist matches the tracked tree: Rust, Markdown, shell, JavaScript,
 # HTML, CSS, the TOML files this repo already uses, GitHub YAML, Cargo.lock,
-# and a short list of extensionless repo files.
+# and a short list of release-control-plane and extensionless repo files.
 #
 # Invariant: forbidden-ecosystem markers are denied by basename before any
-# suffix/path allowlist is consulted. Suffix classes that the tree only uses in
-# specific names or directories are not opened repo-wide (lockfiles are
-# Cargo.lock; YAML is under .github/; TOML is Cargo/deny/typos/codex-warp
-# plus configs/, configs/model-families/, and configs/tool-policies/).
-# Suffix allowlist never overrides a forbidden basename.
+# suffix/path allowlist is consulted, except for the exact, reviewed Node lock
+# file used to validate release policy. Suffix classes that the tree only uses
+# in specific names or directories are not opened repo-wide (lockfiles are
+# Cargo.lock plus that one Node lock; YAML is under .github/; TOML is the
+# existing application/config set plus two exact release inputs).
 set -euo pipefail
+
+is_release_automation_file() {
+  local path="$1"
+  case "$path" in
+    .release-please-manifest.json | \
+    dist-workspace.toml | \
+    release-please-config.json | \
+    rust-toolchain.toml | \
+    tools/dist-manifest.schema.json | \
+    tools/dist-tool-digests.sha256 | \
+    tools/nightly-manifest.schema.json | \
+    tools/nightly-packaging-contract.txt | \
+    tools/recovery-recipes/schema.json | \
+    tools/recovery-recipes/schemas/d22b592c38c543131d3327c50deba1cfdd3a22e05ac20c9bff4f3e949b9f7f5f.json | \
+    tools/release-automation-policy.json | \
+    tools/release-automation-policy.schema.json | \
+    tools/release-contract.json | \
+    tools/release-metadata.schema.json | \
+    tools/release-please-policy/config.schema.json | \
+    tools/release-please-policy/fixtures/dist-manifest.official.json | \
+    tools/release-please-policy/fixtures/metadata-identity.official.json | \
+    tools/release-please-policy/fixtures/recovery.invalid-identity.json | \
+    tools/release-please-policy/fixtures/recovery.invalid-schema.json | \
+    tools/release-please-policy/fixtures/recovery.valid.json | \
+    tools/release-please-policy/fixtures/version-policy.json | \
+    tools/release-please-policy/harness.mjs | \
+    tools/release-please-policy/package-lock.json | \
+    tools/release-please-policy/package.json | \
+    tools/release-please-policy/patch-dist-workflow.mjs | \
+    tools/release-please-policy/validate-json.mjs | \
+    tools/release-please-policy/validate-policy-documents.mjs | \
+    tools/release-please-policy/validate-workflows.mjs | \
+    tools/release-tooling.json)
+      return 0
+      ;;
+  esac
+  return 1
+}
 
 # Return 0 if this path is an approved TOML location.
 # Approved paths: Cargo.toml, _typos.toml, deny.toml, codex-warp.toml,
@@ -40,6 +78,10 @@ is_tracked_toml() {
 is_forbidden() {
   local path="$1"
   local base="${path##*/}"
+
+  if is_release_automation_file "$path"; then
+    return 1
+  fi
 
   # Python/conda/pixi project and lock files, including names that reuse
   # allowed suffixes (.toml, .lock, .yml).
@@ -136,6 +178,12 @@ self_test() {
   expect_forbidden "conda-lock.yaml"
   expect_forbidden "Gemfile.lock"
   expect_forbidden "package-lock.json"
+  expect_forbidden "tools/package-lock.json"
+  expect_forbidden "tools/release-please-policy/nested/package-lock.json"
+  expect_forbidden "tools/release-please-policy/extra.mjs"
+  expect_forbidden "tools/release-please-policy/fixtures/extra.json"
+  expect_forbidden "tools/recovery-recipes/schemas/extra.json"
+  expect_forbidden "tools/extra.json"
   expect_allowed "src/main.rs"
   expect_allowed "scripts/source-checks.sh"
   expect_allowed "src/webui_static/app-main.js"
@@ -155,6 +203,16 @@ self_test() {
   expect_allowed "Cargo.lock"
   expect_allowed "vendor/Cargo.lock"
   expect_allowed "_typos.toml"
+  expect_allowed ".release-please-manifest.json"
+  expect_allowed "dist-workspace.toml"
+  expect_allowed "release-please-config.json"
+  expect_allowed "rust-toolchain.toml"
+  expect_allowed "tools/dist-tool-digests.sha256"
+  expect_allowed "tools/nightly-packaging-contract.txt"
+  expect_allowed "tools/recovery-recipes/schema.json"
+  expect_allowed "tools/release-please-policy/package-lock.json"
+  expect_allowed "tools/release-please-policy/validate-workflows.mjs"
+  expect_allowed "tools/release-tooling.json"
   if [ "$fail" -ne 0 ]; then
     echo "language-policy-check: self-test failed" >&2
     exit 1

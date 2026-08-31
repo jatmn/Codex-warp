@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jatmn/Codex-warp/blob/main/tools/nightly-manifest.schema.json",
+  "title": "Codex Warp nightly release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "fileName", "repository", "tag", "date", "sourceSha", "baseVersion", "version", "workflow", "workflowSha", "cargoLockSha256", "rustToolchainSha256", "packagingContractSha256", "packagingScriptSha256", "artifacts"],
+  "properties": {
+    "$schema": {"const": "./nightly-manifest.schema.json"},
+    "schemaVersion": {"const": 1},
+    "fileName": {"const": "codex-warp-nightly-manifest.json"},
+    "repository": {"const": "jatmn/Codex-warp"},
+    "tag": {"type": "string", "pattern": "^nightly-[0-9]{8}-[0-9a-f]{12}$"},
+    "date": {"type": "string", "pattern": "^[0-9]{8}$"},
+    "sourceSha": {"$ref": "#/$defs/sha"},
+    "baseVersion": {"$ref": "#/$defs/semver"},
+    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-nightly\\.[0-9]{8}\\.[0-9a-f]{12}$"},
+    "workflow": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/jatmn/Codex-warp/actions/runs/[0-9]+$"},
+    "workflowSha": {"$ref": "#/$defs/sha"},
+    "cargoLockSha256": {"$ref": "#/$defs/digest"},
+    "rustToolchainSha256": {"$ref": "#/$defs/digest"},
+    "packagingContractSha256": {"$ref": "#/$defs/digest"},
+    "packagingScriptSha256": {"$ref": "#/$defs/digest"},
+    "artifacts": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["target", "archive", "archiveSha256", "checksumFile", "runnerLabel", "runnerImage", "rustcVv", "cargoVv", "nativeTools", "packagingTools"],
+        "properties": {
+          "target": {"enum": ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]},
+          "archive": {"type": "string", "pattern": "^codex-warp-nightly-[0-9]{8}-[0-9a-f]{12}-(x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)\\.tar\\.xz$|^codex-warp-nightly-[0-9]{8}-[0-9a-f]{12}-x86_64-pc-windows-msvc\\.zip$"},
+          "archiveSha256": {"$ref": "#/$defs/digest"},
+          "checksumFile": {"type": "string", "pattern": "\\.(tar\\.xz|zip)\\.sha256$"},
+          "runnerLabel": {"type": "string", "minLength": 1},
+          "runnerImage": {"type": "string", "minLength": 1},
+          "rustcVv": {"type": "string", "minLength": 1},
+          "cargoVv": {"type": "string", "minLength": 1},
+          "nativeTools": {"type": "string", "minLength": 1},
+          "packagingTools": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/digest"}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "semver": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"}
+  }
+}

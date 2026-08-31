@@ -1,0 +1,21 @@
+{
+  "publishable": true,
+  "repository": "jatmn/Codex-warp",
+  "sourceSha": "1111111111111111111111111111111111111111",
+  "cargoVersion": "0.1.0",
+  "cargoLockSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "rustToolchain": {"fileSha256": "3333333333333333333333333333333333333333333333333333333333333333", "channel": "1.98.0", "rustcVv": "rustc 1.98.0\nhost: x86_64-unknown-linux-gnu", "cargoVv": "cargo 1.98.0"},
+  "releaseContractSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "workflow": {"name": "Release", "runId": 100, "runAttempt": 1, "workflowSha": "5555555555555555555555555555555555555555"},
+  "dist": {"version": "0.32.0", "manifestSchemaSha256": "d22b592c38c543131d3327c50deba1cfdd3a22e05ac20c9bff4f3e949b9f7f5f"},
+  "runners": [
+    {"target": "x86_64-unknown-linux-gnu", "runnerLabel": "ubuntu-24.04", "runnerImage": "ubuntu-24.04/20260825.1", "nativeTools": {"cmake": "4.1.0"}, "rustcVv": "rustc 1.98.0", "cargoVv": "cargo 1.98.0"},
+    {"target": "aarch64-apple-darwin", "runnerLabel": "macos-15", "runnerImage": "macos-15/20260825.1", "nativeTools": {"xcode": "17.0"}, "rustcVv": "rustc 1.98.0", "cargoVv": "cargo 1.98.0"},
+    {"target": "x86_64-apple-darwin", "runnerLabel": "macos-15-intel", "runnerImage": "macos-15-intel/20260825.1", "nativeTools": {"xcode": "17.0"}, "rustcVv": "rustc 1.98.0", "cargoVv": "cargo 1.98.0"},
+    {"target": "x86_64-pc-windows-msvc", "runnerLabel": "windows-2025", "runnerImage": "windows-2025/20260825.1", "nativeTools": {"cmake": "4.1.0", "nasm": "2.16.03"}, "rustcVv": "rustc 1.98.0", "cargoVv": "cargo 1.98.0"}
+  ],
+  "tag": "v0.1.0",
+  "peeledTagSha": "1111111111111111111111111111111111111111",
+  "releaseId": 99,
+  "pullRequest": null
+}

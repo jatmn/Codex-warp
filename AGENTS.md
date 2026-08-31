@@ -97,10 +97,19 @@ model-family catalogs.
 
 Codex Warp reports itself to upstream providers as `codex-warp/<version>`.
 The version comes from `Cargo.toml` through `src/version.rs`.
+Nightly workflows may set `CODEX_WARP_BUILD_VERSION` at compile time to a valid
+SemVer prerelease identity; ordinary and official builds leave it unset.
 
 Do not automatically increment the version during normal agent work, even when
 committing feature or fix changes. Version bumps are controlled by the GitHub
 release worker only.
+
+Release automation is fail-closed. Do not hand-edit the generated dist workflow,
+replace exact tool/Action pins with floating versions, enable publication policy,
+or populate GitHub App identity fields without the reviewed activation step in
+`docs/release-automation-plan.md` and `docs/release-maintainer-runbook.md`. Run
+every release-policy, workflow, recovery, and archive-contract harness through
+`scripts/source-checks.sh`.
 
 ## Source Layout
 

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "application": "codex-warp",
+  "repository": "jatmn/Codex-warp",
+  "targets": [
+    {"triple": "x86_64-unknown-linux-gnu", "archive": "codex-warp-x86_64-unknown-linux-gnu.tar.xz", "binary": "codex-warp"},
+    {"triple": "aarch64-apple-darwin", "archive": "codex-warp-aarch64-apple-darwin.tar.xz", "binary": "codex-warp"},
+    {"triple": "x86_64-apple-darwin", "archive": "codex-warp-x86_64-apple-darwin.tar.xz", "binary": "codex-warp"},
+    {"triple": "x86_64-pc-windows-msvc", "archive": "codex-warp-x86_64-pc-windows-msvc.zip", "binary": "codex-warp.exe"}
+  ],
+  "requiredArchiveEntries": [
+    "codex-warp.toml",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
+  "requiredArchiveTrees": ["configs/"],
+  "forbiddenPathPatterns": [
+    "(^|/)\\.env($|\\.)",
+    "(^|/)(target|debug|logs?)(/|$)",
+    "\\.(db|sqlite|sqlite3|key|pem)$"
+  ],
+  "distManifestFilename": "dist-manifest.json",
+  "metadataFilename": "codex-warp-release-metadata.json",
+  "unifiedChecksumFilename": "sha256.sum"
+}

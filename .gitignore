@@ -10,3 +10,4 @@ codex-warp-debug.jsonl
 codex-warp-debug.jsonl.*
 mutants.out/
 mutants.out.old/
+node_modules/

@@ -2,6 +2,9 @@
 name = "codex-warp"
 version = "0.0.1"
 edition = "2024"
+description = "A local Responses API compatibility proxy for Codex clients"
+repository = "https://github.com/jatmn/Codex-warp"
+readme = "README.md"
 license-file = "LICENSE"
 
 [dependencies]
@@ -24,3 +27,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["e
 [lints.clippy]
 dbg_macro = "warn"
 todo = "warn"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
