@@ -138,6 +138,10 @@ jobs:
           rustup show active-toolchain
           rustc -Vv
           cargo -V
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ join(matrix.targets, '-') }}
+          cache-provider: ${{ matrix.cache_provider }}
       - name: Install verified dist
         shell: bash
         run: bash scripts/install-pinned-dist.sh

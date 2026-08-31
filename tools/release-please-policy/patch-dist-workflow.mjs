@@ -64,19 +64,31 @@ replaceOnce(
           if ! command -v cargo > /dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          fi
-      - name: Install dist
-        run: \${{ matrix.install_dist.run }}`,
+          fi`,
   `      - name: Confirm pinned Rust
         shell: bash
         run: |
           rustup show active-toolchain
           rustc -Vv
-          cargo -V
-      - name: Install verified dist
+          cargo -V`,
+  'build rust installer'
+);
+if (source.includes('uses: swatinem/rust-cache@v2')) {
+  replaceOnce(
+    'uses: swatinem/rust-cache@v2',
+    'uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2',
+    'build cache pin'
+  );
+} else if (source.includes('uses: swatinem/rust-cache@')) {
+  throw new Error('build cache pin drifted');
+}
+replaceOnce(
+  `      - name: Install dist
+        run: \${{ matrix.install_dist.run }}`,
+  `      - name: Install verified dist
         shell: bash
         run: bash scripts/install-pinned-dist.sh`,
-  'build installer'
+  'build dist installer'
 );
 if (source.includes('uses: actions/attest@v4')) {
   replaceOnce('uses: actions/attest@v4', 'uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2', 'attestation pin');
