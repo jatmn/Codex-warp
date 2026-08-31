@@ -172,6 +172,8 @@ assert.equal(release.concurrency.queue, 'max');
 const proofPrepare = release.jobs['prepare-pr-upload-proof'];
 assert.ok(release.jobs['build-local-artifacts'].if.includes('github.event.pull_request.head.repo.full_name == github.repository'),
   'upload-mode release builds must be limited to same-repository pull requests');
+assert.equal(release.jobs['build-local-artifacts'].name, 'Build native archives',
+  'skipped matrix builds must use a static check name rather than an unevaluated join');
 assert.equal(proofPrepare.environment, undefined);
 assert.deepEqual(proofPrepare.permissions, {contents: 'read'});
 assert.ok(proofPrepare.if.includes("github.event_name == 'pull_request'"));

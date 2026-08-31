@@ -49,6 +49,11 @@ replaceOnce(
   "(needs.plan.outputs.publishing == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'))",
   'same-repository PR build gate'
 );
+replaceOnce(
+  "    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})",
+  '    name: Build native archives',
+  'skipped matrix check name'
+);
 replaceOnce("      - '**[0-9]+.[0-9]+.[0-9]+*'", "      - 'v[0-9]+.[0-9]+.[0-9]+'", 'tag glob');
 replaceOnce(
   "      - 'v[0-9]+.[0-9]+.[0-9]+'\n\njobs:",

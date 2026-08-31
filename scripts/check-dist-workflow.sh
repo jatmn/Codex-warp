@@ -43,6 +43,11 @@ assert_safe_overlay() {
   grep -F 'bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof' "$workflow" >/dev/null
   grep -F 'attest-pr-upload-proof-metadata:' "$workflow" >/dev/null
   grep -F "github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'" "$workflow" >/dev/null
+  grep -F 'name: Build native archives' "$workflow" >/dev/null
+  if grep -F "name: build-local-artifacts (\${{ join(matrix.targets, ', ') }})" "$workflow" >/dev/null; then
+    echo 'check-dist-workflow: skipped matrix jobs would publish an unevaluated check name' >&2
+    exit 1
+  fi
   if grep -E 'cargo-dist-installer\.(sh|ps1)' "$workflow" >/dev/null ||
      grep -E '^[[:space:]]+contents:[[:space:]]+write[[:space:]]*$' "$workflow" >/dev/null; then
     echo 'check-dist-workflow: unsafe installer or GITHUB_TOKEN write permission returned' >&2
