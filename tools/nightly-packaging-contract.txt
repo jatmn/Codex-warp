@@ -1,0 +1,18 @@
+# Canonical source-relative packaging inputs. Directories expand recursively.
+Cargo.lock
+rust-toolchain.toml
+tools/release-contract.json
+tools/nightly-packaging-contract.txt
+tools/nightly-manifest.schema.json
+scripts/nightly-contract-digest.sh
+scripts/package-nightly.sh
+scripts/sha256-file.sh
+scripts/check-sha256-index.sh
+scripts/check-release-contract.sh
+scripts/check-nightly-assets.sh
+codex-warp.toml
+configs/
+README.md
+LICENSE
+NOTICE
+CHANGELOG.md

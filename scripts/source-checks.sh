@@ -29,6 +29,18 @@ if ! bash scripts/git-hooks-harness.sh; then
   fail=1
 fi
 
+if ! bash scripts/check-pr-title-harness.sh; then
+  fail=1
+fi
+
+if ! bash scripts/check-release-readiness-harness.sh; then
+  fail=1
+fi
+
+if ! bash scripts/check-prior-official-releases-harness.sh; then
+  fail=1
+fi
+
 if ! bash scripts/language-policy-check.sh; then
   fail=1
 fi
@@ -39,7 +51,11 @@ if command -v node >/dev/null 2>&1; then
     if ! node --check "$js"; then
       fail=1
     fi
-  done < <(git ls-files '*.js')
+  done < <(git ls-files '*.js' '*.mjs')
+
+  if ! bash scripts/release-please-policy-harness.sh; then
+    fail=1
+  fi
 
   if ! node scripts/webui_chart_harness.js; then
     fail=1
@@ -52,6 +68,52 @@ if command -v node >/dev/null 2>&1; then
   if ! node scripts/webui_analytics_chart_visibility_harness.js; then
     fail=1
   fi
+
+  if ! bash scripts/check-release-contract-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/verify-official-attestation-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/verify-nightly-attestation-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/nightly-contract-digest-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/check-sha256-index-harness.sh; then
+    fail=1
+  fi
+
+  if ! (
+    rg() {
+      echo 'source-checks: workflow checks must not require undeclared ripgrep' >&2
+      return 127
+    }
+    export -f rg
+    bash scripts/check-dist-workflow.sh
+  ); then
+    fail=1
+  fi
+
+  if ! bash scripts/package-nightly-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/prepare-nightly-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/advance-nightly-branch-harness.sh; then
+    fail=1
+  fi
+else
+  echo 'source-checks: Node is required for release policy validation' >&2
+  fail=1
 fi
 
 if [ "$run_clippy" = "1" ]; then

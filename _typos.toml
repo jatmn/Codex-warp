@@ -3,4 +3,4 @@
 # confirmed identifiers or fixtures, never to silence a real misspelling.
 
 [files]
-extend-exclude = ["Cargo.lock"]
+extend-exclude = ["Cargo.lock", "tools/release-please-policy/node_modules/**"]

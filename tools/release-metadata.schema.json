@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jatmn/Codex-warp/blob/main/tools/release-metadata.schema.json",
+  "title": "Codex Warp release metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema", "schemaVersion", "fileName", "mode", "publishable",
+    "repository", "sourceSha", "cargoVersion", "cargoLockSha256",
+    "rustToolchain", "releaseContractSha256", "workflow", "dist", "runners",
+    "tag", "peeledTagSha", "releaseId", "pullRequest"
+  ],
+  "properties": {
+    "$schema": {"const": "./release-metadata.schema.json"},
+    "schemaVersion": {"const": 1},
+    "fileName": {"const": "codex-warp-release-metadata.json"},
+    "mode": {"enum": ["official", "pr-upload-proof"]},
+    "publishable": {"type": "boolean"},
+    "repository": {"const": "jatmn/Codex-warp"},
+    "sourceSha": {"$ref": "#/$defs/sha"},
+    "cargoVersion": {"$ref": "#/$defs/semver"},
+    "cargoLockSha256": {"$ref": "#/$defs/digest"},
+    "rustToolchain": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fileSha256", "channel", "rustcVv", "cargoVv"],
+      "properties": {
+        "fileSha256": {"$ref": "#/$defs/digest"},
+        "channel": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "rustcVv": {"type": "string", "minLength": 1},
+        "cargoVv": {"type": "string", "minLength": 1}
+      }
+    },
+    "releaseContractSha256": {"$ref": "#/$defs/digest"},
+    "workflow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "runId", "runAttempt", "workflowSha"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "runId": {"type": "integer", "minimum": 1},
+        "runAttempt": {"type": "integer", "minimum": 1},
+        "workflowSha": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "dist": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "manifestSha256", "manifestSchemaSha256", "announcementTagIsImplicit", "artifacts"],
+      "properties": {
+        "version": {"const": "0.32.0"},
+        "manifestSha256": {"$ref": "#/$defs/digest"},
+        "manifestSchemaSha256": {"$ref": "#/$defs/digest"},
+        "announcementTagIsImplicit": {"type": "boolean"},
+        "artifacts": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": {"$ref": "#/$defs/artifact"}
+        }
+      }
+    },
+    "runners": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {"$ref": "#/$defs/runner"}
+    },
+    "tag": {"type": ["string", "null"]},
+    "peeledTagSha": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]},
+    "releaseId": {"type": ["integer", "null"], "minimum": 1},
+    "pullRequest": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["number", "baseSha", "headSha", "buildSourceSha", "mergeSha"],
+          "properties": {
+            "number": {"type": "integer", "minimum": 1},
+            "baseSha": {"$ref": "#/$defs/sha"},
+            "headSha": {"$ref": "#/$defs/sha"},
+            "buildSourceSha": {"$ref": "#/$defs/sha"},
+            "mergeSha": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]}
+          }
+        }
+      ]
+    },
+    "recovery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["controlWorkflowSha", "recipeSha256"],
+      "properties": {
+        "controlWorkflowSha": {"$ref": "#/$defs/sha"},
+        "recipeSha256": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}
+      }
+    }
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "semver": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"},
+    "target": {"enum": ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]},
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "archive", "archiveSha256", "checksumFile"],
+      "properties": {
+        "target": {"$ref": "#/$defs/target"},
+        "archive": {"type": "string", "pattern": "^codex-warp-(nightly-[0-9]{8}-[0-9a-f]{12}-)?(x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)\\.tar\\.xz$|^codex-warp-(nightly-[0-9]{8}-[0-9a-f]{12}-)?x86_64-pc-windows-msvc\\.zip$"},
+        "archiveSha256": {"$ref": "#/$defs/digest"},
+        "checksumFile": {"type": "string", "pattern": "\\.(tar\\.xz|zip)\\.sha256$"}
+      }
+    },
+    "runner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "runnerLabel", "runnerImage", "nativeTools", "rustcVv", "cargoVv"],
+      "properties": {
+        "target": {"$ref": "#/$defs/target"},
+        "runnerLabel": {"type": "string", "minLength": 1},
+        "runnerImage": {"type": "string", "minLength": 1},
+        "nativeTools": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string", "minLength": 1}},
+        "rustcVv": {"type": "string", "minLength": 1},
+        "cargoVv": {"type": "string", "minLength": 1}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"mode": {"const": "official"}}},
+      "then": {
+        "properties": {
+          "publishable": {"const": true},
+          "tag": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"},
+          "peeledTagSha": {"$ref": "#/$defs/sha"},
+          "releaseId": {"type": "integer", "minimum": 1},
+          "pullRequest": {"type": "null"},
+          "dist": {"properties": {"announcementTagIsImplicit": {"const": false}}}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"mode": {"const": "pr-upload-proof"}}},
+      "then": {
+        "properties": {
+          "publishable": {"const": false},
+          "tag": {"type": "null"},
+          "peeledTagSha": {"type": "null"},
+          "releaseId": {"type": "null"},
+          "pullRequest": {"type": "object"},
+          "dist": {"properties": {"announcementTagIsImplicit": {"const": true}}}
+        }
+      }
+    }
+  ]
+}

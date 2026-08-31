@@ -1,0 +1,26 @@
+{
+  "$schema": "./release-automation-policy.schema.json",
+  "schemaVersion": 1,
+  "enabled": false,
+  "repository": "jatmn/Codex-warp",
+  "baseBranch": "main",
+  "headRepository": "jatmn/Codex-warp",
+  "headRef": "release-please--branches--main--components--codex-warp",
+  "appBot": {
+    "id": null,
+    "login": null,
+    "type": "Bot"
+  },
+  "requiredFiles": [
+    ".release-please-manifest.json",
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml"
+  ],
+  "allowedFiles": [
+    ".release-please-manifest.json",
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml"
+  ]
+}

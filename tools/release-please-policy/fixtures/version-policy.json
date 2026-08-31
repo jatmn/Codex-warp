@@ -1,0 +1,22 @@
+{
+  "baseVersion": "0.0.1",
+  "cases": [
+    {"name": "feature", "message": "feat: add config inheritance", "version": "0.1.0", "section": "Features"},
+    {"name": "scoped feature", "message": "feat(config): add reusable fragments", "version": "0.1.0", "section": "Features"},
+    {"name": "fix", "message": "fix: preserve stream usage", "version": "0.0.2", "section": "Bug Fixes"},
+    {"name": "scoped fix", "message": "fix(webui): preserve stream usage", "version": "0.0.2", "section": "Bug Fixes"},
+    {"name": "performance", "message": "perf(codec): reduce scanning allocations", "version": "0.0.2", "section": "Performance Improvements"},
+    {"name": "revert", "message": "revert: restore the previous retry policy", "version": "0.0.2", "section": "Reverts"},
+    {"name": "refactor", "message": "refactor: split the transport helper", "version": null, "section": null},
+    {"name": "documentation", "message": "docs: clarify provider setup", "version": null, "section": null},
+    {"name": "test", "message": "test: cover retry exhaustion", "version": null, "section": null},
+    {"name": "build", "message": "build: update linker flags", "version": null, "section": null},
+    {"name": "dependabot", "message": "build(deps): bump serde from 1.0.1 to 1.0.2", "version": null, "section": null},
+    {"name": "ci", "message": "ci: split the Windows job", "version": null, "section": null},
+    {"name": "chore", "message": "chore: refresh fixtures", "version": null, "section": null},
+    {"name": "breaking bang", "message": "feat!: change the provider contract", "version": "0.1.0", "section": "Features"},
+    {"name": "breaking footer", "message": "fix: change the provider contract\n\nBREAKING CHANGE: providers now require an explicit name", "version": "0.1.0", "section": "Bug Fixes"},
+    {"name": "malformed breaking footer", "message": "fix: keep compatibility\n\nBREAKING CHANGE providers remain compatible", "version": "0.0.2", "section": "Bug Fixes"},
+    {"name": "release as", "message": "fix: force the reviewed release\n\nRelease-As: 0.4.0", "version": "0.4.0", "section": "Bug Fixes"}
+  ]
+}

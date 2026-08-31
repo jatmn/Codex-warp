@@ -8,7 +8,7 @@
 [![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20Commons%20Clause-blue.svg)](LICENSE)
 
-[Quick start](docs/quick-start.md) · [Configuration](docs/configuration.md) · [Provider profiles](docs/provider-catalogs.md) · [Contributing](CONTRIBUTING.md)
+[Quick start](docs/quick-start.md) · [Configuration](docs/configuration.md) · [Releases](docs/releases.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -41,6 +41,11 @@ git clone https://github.com/jatmn/Codex-warp.git
 cd Codex-warp
 cargo build --release
 ```
+
+Versioned official archives and immutable nightly prereleases are available
+from [GitHub Releases](https://github.com/jatmn/Codex-warp/releases) after the
+release automation is activated. See [Releases](docs/releases.md) for channel,
+asset, checksum, and provenance details.
 
 For platform-specific prerequisites, see the
 [Linux, macOS, and Windows build guide](docs/development.md).
@@ -178,6 +183,7 @@ before exposing it beyond localhost.
 | Understand Codex client behavior | [Codex compatibility](docs/codex-cli-compatibility.md) |
 | Configure tool-call approval rules | [Tool approval policy](docs/tool-approval-policy.md) |
 | Test against a live upstream | [Live testing](docs/live-testing.md) |
+| Download or verify official and nightly builds | [Releases](docs/releases.md) |
 | Build or contribute | [Development guide](docs/development.md) and [contributing](CONTRIBUTING.md) |
 
 ## Scope

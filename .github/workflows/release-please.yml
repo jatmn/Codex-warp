@@ -1,0 +1,131 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-please
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      ready: ${{ steps.gate.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OFFICIAL_RELEASES_ENABLED: ${{ vars.OFFICIAL_RELEASES_ENABLED || 'false' }}
+        shell: bash
+        run: |
+          [ "${{ github.ref }}" = refs/heads/main ] || { echo 'Release Please must run from main' >&2; exit 1; }
+          policy_enabled="$(jq -r '.enabled' tools/release-automation-policy.json)"
+          if [ "$OFFICIAL_RELEASES_ENABLED" != true ] || [ "$policy_enabled" != true ]; then
+            echo 'ready=false' >>"$GITHUB_OUTPUT"
+            echo 'Release Please mutation is disabled by reviewed policy.' >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          bash scripts/check-prior-official-releases.sh
+          echo 'ready=true' >>"$GITHUB_OUTPUT"
+
+  release-please:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-automation
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
+      html_url: ${{ steps.release.outputs.html_url }}
+      upload_url: ${{ steps.release.outputs.upload_url }}
+      pr: ${{ steps.release.outputs.pr }}
+      prs_created: ${{ steps.release.outputs.prs_created }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Revalidate protected state before reading the App key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ "${{ github.ref }}" = refs/heads/main ]
+          git fetch --no-tags origin main
+          live_main="$(git rev-parse origin/main)"
+          git checkout --detach "$live_main"
+          [ "$(git rev-parse HEAD)" = "$live_main" ]
+          [ "${{ vars.OFFICIAL_RELEASES_ENABLED }}" = true ]
+          [ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
+          bash scripts/check-prior-official-releases.sh
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+          permission-workflows: write
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - name: Validate and summarize result
+        env:
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          RELEASES_CREATED: ${{ steps.release.outputs.releases_created }}
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          SHA: ${{ steps.release.outputs.sha }}
+          URL: ${{ steps.release.outputs.html_url }}
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
+          PR: ${{ steps.release.outputs.pr }}
+        shell: bash
+        run: |
+          if [ "$RELEASE_CREATED" = true ]; then
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [ "$TAG" = "v$VERSION" ]
+            [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+            {
+              echo '## Release Please'
+              echo "- Created draft [$TAG]($URL) at \`$SHA\`."
+              echo '- Its immutable tag is the only normal trigger for the distribution workflow.'
+            } >>"$GITHUB_STEP_SUMMARY"
+          elif [ "$PRS_CREATED" = true ]; then
+            printf '## Release Please\n- Updated release PR: `%s`\n' "$PR" >>"$GITHUB_STEP_SUMMARY"
+          else
+            printf '## Release Please\n- No releasable work.\n' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$RELEASE_CREATED" = true ]; then
+            [ "$RELEASES_CREATED" = true ]
+          else
+            [ "$RELEASES_CREATED" = false ]
+          fi

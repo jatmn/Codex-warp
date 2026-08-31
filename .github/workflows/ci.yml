@@ -20,6 +20,11 @@ jobs:
     name: Source Checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+      pull-requests: read
     outputs:
       full_ci: ${{ steps.scope.outputs.full_ci }}
     steps:
@@ -28,6 +33,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Pull Request Policy
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          policy_dir="$(mktemp -d)"
+          trap 'rm -rf "$policy_dir"' EXIT
+          mkdir -p "$policy_dir/scripts" "$policy_dir/tools"
+          for path in \
+            scripts/check-pr-title.sh \
+            scripts/check-release-readiness.sh \
+            tools/release-automation-policy.json; do
+            if ! git show "$BASE_SHA:$path" >"$policy_dir/$path" 2>/dev/null; then
+              cp "$path" "$policy_dir/$path"
+            fi
+          done
+          bash "$policy_dir/scripts/check-pr-title.sh"
+          RELEASE_AUTOMATION_POLICY="$policy_dir/tools/release-automation-policy.json" \
+            bash "$policy_dir/scripts/check-release-readiness.sh"
 
       - name: Classify Changes
         id: scope
@@ -56,11 +83,20 @@ jobs:
           case "${scope_lines[1]}" in supply_chain=true | supply_chain=false) ;; *) exit 1 ;; esac
           printf '%s\n%s\n' "${scope_lines[0]}" "${scope_lines[1]}" >> "$GITHUB_OUTPUT"
 
-      - name: Install Rust
+      - name: Install Pinned Rust
         if: steps.scope.outputs.full_ci == 'true'
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
+        run: |
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+
+      - name: Install Pinned Node
+        if: steps.scope.outputs.full_ci == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          components: rustfmt, clippy
+          node-version: 24.20.0
+          cache: npm
+          cache-dependency-path: tools/release-please-policy/package-lock.json
 
       - name: Cache Cargo
         if: steps.scope.outputs.full_ci == 'true'
@@ -134,8 +170,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable as of 2026-06-30
+      - name: Install Pinned Rust
+        shell: bash
+        run: |
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
 
       - name: Install NASM
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
