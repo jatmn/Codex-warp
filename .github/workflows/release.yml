@@ -160,6 +160,15 @@ jobs:
           # Actually do builds and make zips and whatnot
           dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
           echo "dist ran successfully"
+      - name: Validate and smoke-test archive
+        shell: bash
+        run: |
+          target="${{ join(matrix.targets, '') }}"
+          archive="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' tools/release-contract.json)"
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "codex-warp") | .version')"
+          [ -n "$archive" ] && [ "$archive" != null ]
+          [ -n "$version" ] && [ "$version" != null ]
+          bash scripts/check-release-contract.sh archive "target/distrib/$archive" "$target" "$PWD" "$version"
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:

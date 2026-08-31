@@ -90,6 +90,22 @@ replaceOnce(
         run: bash scripts/install-pinned-dist.sh`,
   'build dist installer'
 );
+replaceOnce(
+  `      - name: Attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6`,
+  `      - name: Validate and smoke-test archive
+        shell: bash
+        run: |
+          target="\${{ join(matrix.targets, '') }}"
+          archive="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' tools/release-contract.json)"
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "codex-warp") | .version')"
+          [ -n "$archive" ] && [ "$archive" != null ]
+          [ -n "$version" ] && [ "$version" != null ]
+          bash scripts/check-release-contract.sh archive "target/distrib/$archive" "$target" "$PWD" "$version"
+      - name: Attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6`,
+  'native archive smoke test'
+);
 if (source.includes('uses: actions/attest@v4')) {
   replaceOnce('uses: actions/attest@v4', 'uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2', 'attestation pin');
 } else if (!source.includes('uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6')) {

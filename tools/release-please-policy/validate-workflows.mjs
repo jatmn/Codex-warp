@@ -117,6 +117,12 @@ assert.equal(nightlyToken.with['permission-contents'], 'write');
 assert.equal(nightlyToken.with['permission-workflows'], 'write');
 
 const release = parse('.github/workflows/release.yml');
+const releaseSource = read('.github/workflows/release.yml');
+assert.ok(
+  releaseSource.includes('name: Validate and smoke-test archive') &&
+    releaseSource.includes('bash scripts/check-release-contract.sh archive "target/distrib/$archive"'),
+  'official release builds must validate and smoke-test every native archive before attestation'
+);
 assert.deepEqual(release.on.push.tags, ['v[0-9]+.[0-9]+.[0-9]+']);
 assert.equal(release.concurrency.queue, 'max');
 assert.ok(release.jobs['publish-official-release'].if.includes("vars.OFFICIAL_RELEASES_ENABLED == 'true'"));
