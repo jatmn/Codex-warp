@@ -52,9 +52,12 @@ validate_archive() {
       if command -v powershell.exe >/dev/null && command -v cygpath >/dev/null; then
         windows_archive="$(cygpath -w "$archive")"
         windows_destination="$(cygpath -w "$temp/zip")"
-        MSYS2_ARG_CONV_EXCL='*' powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
-          '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force' \
-          "$windows_archive" "$windows_destination" >/dev/null
+        CODEX_WARP_ARCHIVE_PATH="$windows_archive" \
+          CODEX_WARP_ARCHIVE_DESTINATION="$windows_destination" \
+          MSYS2_ARG_CONV_EXCL='*' \
+          powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
+          '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:CODEX_WARP_ARCHIVE_PATH -DestinationPath $env:CODEX_WARP_ARCHIVE_DESTINATION -Force' \
+          >/dev/null
       else
         command -v 7z >/dev/null || die 'PowerShell or 7z is required to validate Windows archives'
         7z x -bd -y "-o$temp/zip" "$archive" >/dev/null
