@@ -18,6 +18,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       actions: read
+      attestations: read
       contents: read
     outputs:
       ready: ${{ steps.gate.outputs.ready }}
@@ -49,6 +50,7 @@ jobs:
     environment: release-automation
     permissions:
       actions: read
+      attestations: read
       contents: read
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}

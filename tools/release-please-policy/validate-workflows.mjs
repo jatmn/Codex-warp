@@ -59,6 +59,8 @@ for (const file of workflowFiles) {
     }
     for (const [index, step] of (job.steps || []).entries()) {
       if (typeof step.run !== 'string') continue;
+      assert.ok(!step.run.includes('${{ inputs.'),
+        `${file}:${jobName}:step-${index + 1} embeds workflow-dispatch input in shell source`);
       const bashStep = step.shell === 'bash' || (!step.shell && String(job['runs-on']).startsWith('ubuntu'));
       if (!bashStep) continue;
       const script = step.run.replace(/\$\{\{[^}]*\}\}/g, 'GITHUB_EXPRESSION');
@@ -115,6 +117,12 @@ const nightlyToken = nightly.jobs.publish.steps.find(step => step.id === 'app-to
 assert.equal(nightlyToken.with['client-id'], '${{ vars.RELEASE_APP_CLIENT_ID }}');
 assert.equal(nightlyToken.with['permission-contents'], 'write');
 assert.equal(nightlyToken.with['permission-workflows'], 'write');
+const nightlyReceiptDownload = nightly.jobs.publish.steps.find(step =>
+  step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'nightly-tag-creation-receipt');
+assert.equal(nightlyReceiptDownload.with.path, 'retained-tag-receipt');
+assert.ok(nightly.jobs.publish.steps.some(step => typeof step.run === 'string' &&
+  step.run.includes('cmp nightly-tag-receipt.json retained-tag-receipt/nightly-tag-receipt.json')));
+assert.equal(nightly.jobs['repair-branch'].steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main');
 
 const release = parse('.github/workflows/release.yml');
 const releaseSource = read('.github/workflows/release.yml');
@@ -155,6 +163,15 @@ assert.deepEqual(officialRecovery.on.workflow_dispatch.inputs.operation.options,
 assert.equal(officialRecovery.jobs.mutate.environment, 'release-automation');
 assert.ok(officialRecovery.jobs.mutate.if.includes("vars.OFFICIAL_RECOVERY_READY == 'true'"));
 const officialRecoverySource = read('.github/workflows/release-recovery.yml');
+assert.ok(officialRecoverySource.includes('.prerelease == false'), 'official recovery must reject prerelease drafts');
+for (const jobName of ['load-retained', 'load-remote', 'mutate']) {
+  const job = officialRecovery.jobs[jobName];
+  assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main',
+    `official recovery ${jobName} must execute protected-main control code`);
+  assert.ok(job.steps.some(step => step.name?.includes('separately from protected control code')),
+    `official recovery ${jobName} must materialize historical source separately`);
+}
+assert.ok(officialRecoverySource.includes('starter)'), 'official recovery must classify starter assets without downloading them');
 assert.ok(!officialRecoverySource.includes('-f ref=refs/tags/'), 'official recovery must never create or move a tag');
 assert.ok(!officialRecoverySource.includes('--method DELETE "repos/${{ github.repository }}/releases/$RELEASE_ID"'), 'official recovery must never delete a release');
 
@@ -171,5 +188,20 @@ assert.deepEqual(nightlyRecovery.jobs.build.strategy.matrix.include.map(item => 
   contract.targets.map(item => item.triple).sort());
 const nightlyRecoverySource = read('.github/workflows/nightly-recovery.yml');
 assert.ok(!nightlyRecoverySource.includes('-f ref=refs/tags/'), 'nightly recovery must never create or move a tag');
+for (const jobName of ['load-origin', 'mutate-release', 'repair-branch']) {
+  const job = nightlyRecovery.jobs[jobName];
+  assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, 'main',
+    `nightly recovery ${jobName} must execute protected-main control code`);
+  assert.ok(job.steps.some(step => step.name?.includes('separately from protected control code')),
+    `nightly recovery ${jobName} must materialize historical source separately`);
+}
+assert.ok(nightlyRecoverySource.includes('/attempts/$ORIGIN_RUN_ATTEMPT/jobs?per_page=100'));
+assert.ok(nightlyRecoverySource.includes('candidateAssets:$candidate_assets') &&
+  nightlyRecoverySource.includes('planSha256:$plan') && nightlyRecoverySource.includes('remoteAssets:$remote_assets'),
+  'nightly replacement intent must bind its plan, local candidate, and remote state');
+assert.ok(releaseSource.match(/\.prerelease == false/g)?.length >= 3,
+  'official release must keep stable drafts non-prerelease through every mutation boundary');
+assert.ok(releaseSource.includes('remote asset is not complete:'),
+  'official release must reject starter and unknown remote asset states');
 
 console.log('validate-workflows: pins, permissions, triggers, recovery, matrices, and mutation gates ok');

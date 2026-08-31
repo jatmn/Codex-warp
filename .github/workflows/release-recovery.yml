@@ -65,6 +65,10 @@ jobs:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
       RELEASE_ID: ${{ inputs.release_id }}
       OPERATION: ${{ inputs.operation }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+      ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
+      EVIDENCE_MANIFEST_SHA256: ${{ inputs.evidence_manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,7 +95,7 @@ jobs:
           version="$(git show "$EXPECTED_SHA:Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -1)"
           [ "$TAG" = "v$version" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
-          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           recipe="tools/recovery-recipes/official-$TAG.json"
           recipe_sha=null
           if [ -f "$recipe" ]; then
@@ -102,18 +106,18 @@ jobs:
           fi
           case "$OPERATION" in
             rebuild-draft|publish-verified-draft)
-              [ "${{ inputs.confirmation }}" = "$TAG" ]; extra_empty=true ;;
+              [ "$CONFIRMATION" = "$TAG" ]; extra_empty=true ;;
             resume-upload)
-              [ "${{ inputs.confirmation }}" = "$TAG" ]
-              [[ "${{ inputs.origin_run_id }}" =~ ^[1-9][0-9]*$ ]]
-              [[ "${{ inputs.origin_run_attempt }}" =~ ^[1-9][0-9]*$ ]]
-              [[ "${{ inputs.evidence_manifest_sha256 }}" =~ ^[0-9a-f]{64}$ ]]
+              [ "$CONFIRMATION" = "$TAG" ]
+              [[ "$ORIGIN_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              [[ "$ORIGIN_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              [[ "$EVIDENCE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
               extra_empty=false ;;
             replace-unpublished-assets)
-              [ "${{ inputs.confirmation }}" = "replace-unpublished-assets:$TAG:$RELEASE_ID" ]; extra_empty=true ;;
+              [ "$CONFIRMATION" = "replace-unpublished-assets:$TAG:$RELEASE_ID" ]; extra_empty=true ;;
           esac
           if [ "$extra_empty" = true ]; then
-            [ -z "${{ inputs.origin_run_id }}${{ inputs.origin_run_attempt }}${{ inputs.evidence_manifest_sha256 }}" ]
+            [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT$EVIDENCE_MANIFEST_SHA256" ]
           fi
           rebuild=false; resume=false; remote=false
           case "$OPERATION" in
@@ -157,9 +161,10 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           TARGET: ${{ matrix.target }}
+          SOURCE_SHA: ${{ inputs.expected_sha }}
         run: |
-          [ "$(git rev-parse HEAD)" = "${{ inputs.expected_sha }}" ]
-          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "${{ inputs.expected_sha }}" ]
+          [ "$(git rev-parse HEAD)" = "$SOURCE_SHA" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           rustup target add "$TARGET"
           bash scripts/install-pinned-dist.sh
           dist build --artifacts=local --tag="$TAG" --target="$TARGET" --print=linkage --output-format=json >target-recovery-dist-manifest.json
@@ -209,6 +214,7 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ inputs.release_id }}
+          SOURCE_SHA: ${{ inputs.expected_sha }}
         run: |
           bash scripts/install-pinned-dist.sh
           dist build --artifacts=global --tag="$TAG" --output-format=json >global-recovery-dist-manifest.json
@@ -218,7 +224,7 @@ jobs:
           [ "$(jq 'length' <<<"$runners")" -eq 4 ]
           recipe="tools/recovery-recipes/official-$TAG.json"; recipe_sha=null
           [ ! -f "$recipe" ] || recipe_sha="\"$(bash scripts/sha256-file.sh "$recipe")\""
-          jq -n --argjson publishable true --arg repository "${{ github.repository }}" --arg source "${{ inputs.expected_sha }}" --arg version "${TAG#v}" --arg lock "$(bash scripts/sha256-file.sh Cargo.lock)" --arg toolchain "$(bash scripts/sha256-file.sh rust-toolchain.toml)" --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg contract "$(bash scripts/sha256-file.sh tools/release-contract.json)" --arg workflow_sha "${{ github.workflow_sha }}" --arg tag "$TAG" --argjson release_id "$RELEASE_ID" --arg schema "$(bash scripts/sha256-file.sh tools/dist-manifest.schema.json)" --argjson runners "$runners" --argjson recipe "$recipe_sha" '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release Recovery",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:$tag,peeledTagSha:$source,releaseId:$release_id,pullRequest:null,recovery:{controlWorkflowSha:$workflow_sha,recipeSha256:$recipe}}' >identity.json
+          jq -n --argjson publishable true --arg repository "${{ github.repository }}" --arg source "$SOURCE_SHA" --arg version "${TAG#v}" --arg lock "$(bash scripts/sha256-file.sh Cargo.lock)" --arg toolchain "$(bash scripts/sha256-file.sh rust-toolchain.toml)" --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg contract "$(bash scripts/sha256-file.sh tools/release-contract.json)" --arg workflow_sha "${{ github.workflow_sha }}" --arg tag "$TAG" --argjson release_id "$RELEASE_ID" --arg schema "$(bash scripts/sha256-file.sh tools/dist-manifest.schema.json)" --argjson runners "$runners" --argjson recipe "$recipe_sha" '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release Recovery",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:$tag,peeledTagSha:$source,releaseId:$release_id,pullRequest:null,recovery:{controlWorkflowSha:$workflow_sha,recipeSha256:$recipe}}' >identity.json
           mkdir candidate
           while IFS= read -r file; do cp "$file" candidate/; done < <(jq -r '.upload_files[]' dist-manifest.json)
           cp dist-manifest.json candidate/dist-manifest.json
@@ -240,9 +246,22 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.expected_sha }}
+      RELEASE_ID: ${{ inputs.release_id }}
+      ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+      ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
+      EVIDENCE_MANIFEST_SHA256: ${{ inputs.evidence_manifest_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen release source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -250,14 +269,16 @@ jobs:
       - name: Retrieve and authenticate retained candidate
         shell: bash
         run: |
-          run="$(gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.origin_run_id }}/attempts/${{ inputs.origin_run_attempt }}")"
-          jq -e --arg tag "${{ inputs.tag }}" '.head_branch == $tag and ((.name == "Release") or (.name == "Release Recovery")) and ((.event == "push") or (.event == "workflow_dispatch"))' <<<"$run" >/dev/null
+          run="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT")"
+          latest="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID")"
+          jq -e --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.run_attempt == $attempt' <<<"$latest" >/dev/null
+          jq -e --arg tag "$TAG" '((.name == "Release" and .event == "push" and .head_branch == $tag) or (.name == "Release Recovery" and .event == "workflow_dispatch" and .head_branch == "main"))' <<<"$run" >/dev/null
           name=official-release-candidate
           [ "$(jq -r '.name' <<<"$run")" != 'Release Recovery' ] || name=official-recovery-candidate
-          gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name "$name" --dir candidate
-          [ "$(bash scripts/sha256-file.sh candidate/codex-warp-release-metadata.json)" = "${{ inputs.evidence_manifest_sha256 }}" ]
-          jq -e --arg tag "${{ inputs.tag }}" --arg sha "${{ inputs.expected_sha }}" --argjson id "${{ inputs.release_id }}" --argjson run "${{ inputs.origin_run_id }}" --argjson attempt "${{ inputs.origin_run_attempt }}" '.tag == $tag and .sourceSha == $sha and .releaseId == $id and .workflow.runId == $run and .workflow.runAttempt == $attempt' candidate/codex-warp-release-metadata.json >/dev/null
-          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
+          gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name "$name" --dir candidate
+          [ "$(bash scripts/sha256-file.sh candidate/codex-warp-release-metadata.json)" = "$EVIDENCE_MANIFEST_SHA256" ]
+          jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and .sourceSha == $sha and .releaseId == $id and .workflow.runId == $run and .workflow.runAttempt == $attempt' candidate/codex-warp-release-metadata.json >/dev/null
+          SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
@@ -272,9 +293,19 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.expected_sha }}
+      RELEASE_ID: ${{ inputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen release source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -282,8 +313,9 @@ jobs:
       - name: Materialize and authenticate the complete remote draft
         run: |
           mkdir candidate
-          while IFS=$'\t' read -r id name; do gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"candidate/$name"; done < <(gh api --paginate "repos/${{ github.repository }}/releases/${{ inputs.release_id }}/assets" --jq '.[]|[.id,.name]|@tsv')
-          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"candidate/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
+          SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
@@ -307,7 +339,14 @@ jobs:
       OPERATION: ${{ inputs.operation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen release source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -320,17 +359,26 @@ jobs:
         run: |
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
-          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
-          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+          SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do gh attestation verify "$subject" --repo "${{ github.repository }}"; done
           : >existing.jsonl
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
           while IFS=$'\t' read -r id name state; do
             [ -f "candidate/$name" ] || { echo "unexpected existing asset: $name" >&2; exit 1; }
-            gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >remote-asset
-            remote_sha="$(bash scripts/sha256-file.sh remote-asset)"; expected_sha="$(bash scripts/sha256-file.sh "candidate/$name")"
-            jq -n --argjson id "$id" --arg name "$name" --arg state "$state" --arg remote "$remote_sha" --arg expected "$expected_sha" '{id:$id,name:$name,state:$state,remoteSha256:$remote,expectedSha256:$expected,matches:($remote==$expected)}' >>existing.jsonl
-          done < <(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[]|[.id,.name,.state]|@tsv')
+            expected_sha="$(bash scripts/sha256-file.sh "candidate/$name")"
+            case "$state" in
+              uploaded)
+                gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >remote-asset
+                remote_sha="$(bash scripts/sha256-file.sh remote-asset)"
+                jq -n --argjson id "$id" --arg name "$name" --arg state "$state" --arg remote "$remote_sha" --arg expected "$expected_sha" '{id:$id,name:$name,state:$state,remoteSha256:$remote,expectedSha256:$expected,matches:($remote==$expected)}' >>existing.jsonl ;;
+              starter)
+                jq -n --argjson id "$id" --arg name "$name" --arg state "$state" --arg expected "$expected_sha" '{id:$id,name:$name,state:$state,remoteSha256:null,expectedSha256:$expected,matches:false}' >>existing.jsonl ;;
+              *) echo "unsupported release asset state: $state" >&2; exit 1 ;;
+            esac
+          done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
           jq -s '.' existing.jsonl >existing.json
+          jq -e 'length == ([.[].name] | unique | length)' existing.json >/dev/null
           if [ "$OPERATION" != replace-unpublished-assets ]; then jq -e 'all(.[];.matches)' existing.json >/dev/null; fi
           jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$RELEASE_ID" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" --argjson existing "$(cat existing.json)" --argjson inventory "$(find candidate -maxdepth 1 -type f -printf '%f\n' | sort | jq -Rsc 'split("\n")[:-1]')" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt,existingAssets:$existing,expectedInventory:$inventory,deleteAssetIds:[$existing[]|select(.matches|not)|.id]}' >official-recovery-intent.json
           echo "delete_count=$(jq '.deleteAssetIds|length' official-recovery-intent.json)" >>"$GITHUB_OUTPUT"
@@ -353,11 +401,30 @@ jobs:
           repositories: Codex-warp
           permission-contents: write
           permission-workflows: write
+      - name: Revalidate the exact draft after credential issuance
+        env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
+        run: |
+          release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
       - name: Delete only attested mismatches from never-published draft
         if: inputs.operation == 'replace-unpublished-assets' && steps.preflight.outputs.delete_count != '0'
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
-          jq -r '.deleteAssetIds[]' official-recovery-intent.json | while read -r id; do gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$id"; done
+          while IFS= read -r asset; do
+            id="$(jq -r '.id' <<<"$asset")"; name="$(jq -r '.name' <<<"$asset")"; state="$(jq -r '.state' <<<"$asset")"
+            live="$(gh api "repos/${{ github.repository }}/releases/assets/$id")"
+            jq -e --argjson id "$id" --arg name "$name" --arg state "$state" '.id==$id and .name==$name and .state==$state' <<<"$live" >/dev/null
+            if [ "$state" = uploaded ]; then
+              gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >remote-asset
+              [ "$(bash scripts/sha256-file.sh remote-asset)" = "$(jq -r '.remoteSha256' <<<"$asset")" ]
+            else
+              [ "$state" = starter ]; [ "$(jq -r '.remoteSha256' <<<"$asset")" = null ]
+            fi
+            gh api --method DELETE "repos/${{ github.repository }}/releases/assets/$id"
+          done < <(jq -c '.existingAssets[] | select(.matches|not)' official-recovery-intent.json)
+          remaining="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc '[.[][] | .id]')"
+          while IFS= read -r id; do jq -e --argjson id "$id" 'index($id)==null' <<<"$remaining" >/dev/null; done < <(jq -r '.deleteAssetIds[]' official-recovery-intent.json)
           jq -n --arg intent "$(bash scripts/sha256-file.sh official-recovery-intent.json)" --argjson ids "$(jq '.deleteAssetIds' official-recovery-intent.json)" --argjson run "${{ github.run_id }}" '{schemaVersion:1,intentSha256:$intent,deletedAssetIds:$ids,runId:$run}' >official-recovery-delete-receipt.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: inputs.operation == 'replace-unpublished-assets' && steps.preflight.outputs.delete_count != '0'
@@ -387,10 +454,11 @@ jobs:
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
           mkdir remote-final
-          while IFS=$'\t' read -r id name; do gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-final/$name"; done < <(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[]|[.id,.name]|@tsv')
-          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication remote-final remote-final/codex-warp-release-metadata.json remote-final/dist-manifest.json
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-final/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$assets")
+          SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication remote-final remote-final/codex-warp-release-metadata.json remote-final/dist-manifest.json
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
-          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
-          gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false >/dev/null
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false -F prerelease=false >/dev/null
           echo "Recovered and published [$TAG](https://github.com/${{ github.repository }}/releases/tag/$TAG) using \`$OPERATION\`." >>"$GITHUB_STEP_SUMMARY"

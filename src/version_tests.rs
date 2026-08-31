@@ -16,7 +16,7 @@ fn selected_version_defaults_to_the_package_version() {
 #[test]
 fn selected_version_uses_the_build_override() {
     assert_eq!(
-        selected_version("1.2.3", Some("1.2.3-nightly.20260830.abcdef123456")),
-        "1.2.3-nightly.20260830.abcdef123456"
+        selected_version("1.2.3", Some("1.2.3-nightly.20260830+abcdef123456")),
+        "1.2.3-nightly.20260830+abcdef123456"
     );
 }

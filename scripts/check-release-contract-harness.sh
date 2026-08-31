@@ -116,4 +116,15 @@ if bash scripts/check-release-contract.sh pr-upload-proof "$tmp/extra-checksum-e
   exit 1
 fi
 
+cp -R "$proof" "$tmp/mismatched-announcement"
+jq '.announcement_tag_is_implicit = false' "$tmp/mismatched-announcement/dist-manifest.json" >"$tmp/mismatched-manifest.json"
+mv "$tmp/mismatched-manifest.json" "$tmp/mismatched-announcement/dist-manifest.json"
+manifest_digest="$(bash scripts/sha256-file.sh "$tmp/mismatched-announcement/dist-manifest.json")"
+jq --arg digest "$manifest_digest" '.dist.manifestSha256 = $digest' "$tmp/mismatched-announcement/codex-warp-release-metadata.json" >"$tmp/mismatched-metadata.json"
+mv "$tmp/mismatched-metadata.json" "$tmp/mismatched-announcement/codex-warp-release-metadata.json"
+if bash scripts/check-release-contract.sh pr-upload-proof "$tmp/mismatched-announcement" "$tmp/mismatched-announcement/codex-warp-release-metadata.json" "$tmp/mismatched-announcement/dist-manifest.json" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: accepted mismatched announcement-tag mode' >&2
+  exit 1
+fi
+
 echo 'check-release-contract-harness: ok'

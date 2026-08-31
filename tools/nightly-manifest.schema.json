@@ -14,7 +14,7 @@
     "date": {"type": "string", "pattern": "^[0-9]{8}$"},
     "sourceSha": {"$ref": "#/$defs/sha"},
     "baseVersion": {"$ref": "#/$defs/semver"},
-    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-nightly\\.[0-9]{8}\\.[0-9a-f]{12}$"},
+    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-nightly\\.[0-9]{8}\\+[0-9a-f]{12}$"},
     "workflow": {"type": "string", "format": "uri", "pattern": "^https://github\\.com/jatmn/Codex-warp/actions/runs/[0-9]+$"},
     "workflowSha": {"$ref": "#/$defs/sha"},
     "cargoLockSha256": {"$ref": "#/$defs/digest"},

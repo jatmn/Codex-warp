@@ -4,7 +4,9 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
-contract='tools/release-contract.json'
+contract="${RELEASE_CONTRACT_PATH:-tools/release-contract.json}"
+dist_schema="${DIST_MANIFEST_SCHEMA_PATH:-tools/dist-manifest.schema.json}"
+metadata_schema="${RELEASE_METADATA_SCHEMA_PATH:-tools/release-metadata.schema.json}"
 
 die() {
   echo "check-release-contract: $*" >&2
@@ -141,8 +143,8 @@ validate_assets() {
   local profile="$1" assets="$2" metadata="$3" manifest="$4"
   [ "$profile" = 'official-publication' ] || [ "$profile" = 'pr-upload-proof' ] || die "unknown profile: $profile"
   [ -d "$assets" ] && [ -f "$metadata" ] && [ -f "$manifest" ] || die 'asset validation inputs are missing'
-  node tools/release-please-policy/validate-json.mjs tools/dist-manifest.schema.json "$manifest"
-  node tools/release-please-policy/validate-json.mjs tools/release-metadata.schema.json "$metadata"
+  node tools/release-please-policy/validate-json.mjs "$dist_schema" "$manifest"
+  node tools/release-please-policy/validate-json.mjs "$metadata_schema" "$metadata"
 
   local expected_mode manifest_sha contract_sha schema_sha mode
   expected_mode="$([ "$profile" = 'official-publication' ] && echo official || echo pr-upload-proof)"
@@ -150,11 +152,12 @@ validate_assets() {
   [ "$mode" = "$expected_mode" ] || die "$profile rejects metadata mode $mode"
   manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
   contract_sha="$(sha256sum "$contract" | awk '{print $1}')"
-  schema_sha="$(sha256sum tools/dist-manifest.schema.json | awk '{print $1}')"
+  schema_sha="$(sha256sum "$dist_schema" | awk '{print $1}')"
   [ "$(jq -r '.dist.manifestSha256' "$metadata")" = "$manifest_sha" ] || die 'dist manifest digest mismatch'
   [ "$(jq -r '.releaseContractSha256' "$metadata")" = "$contract_sha" ] || die 'release contract digest mismatch'
   [ "$(jq -r '.dist.manifestSchemaSha256' "$metadata")" = "$schema_sha" ] || die 'dist schema digest mismatch'
   [ "$(jq -r '.dist.version' "$metadata")" = "$(jq -r '.dist_version' "$manifest")" ] || die 'dist version mismatch'
+  [ "$(jq -r '.dist.announcementTagIsImplicit' "$metadata")" = "$(jq -r '.announcement_tag_is_implicit' "$manifest")" ] || die 'dist announcement-tag mode mismatch'
   [ "$(jq -c '.dist.artifacts | sort_by(.target)' "$metadata")" = "$(dist_artifacts "$manifest")" ] || die 'metadata and dist artifact mappings disagree'
 
   if [ -n "${SOURCE_DIR:-}" ]; then

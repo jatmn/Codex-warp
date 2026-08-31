@@ -73,6 +73,10 @@ if command -v node >/dev/null 2>&1; then
     fail=1
   fi
 
+  if ! bash scripts/check-sha256-index-harness.sh; then
+    fail=1
+  fi
+
   if ! (
     rg() {
       echo 'source-checks: workflow checks must not require undeclared ripgrep' >&2
@@ -85,6 +89,10 @@ if command -v node >/dev/null 2>&1; then
   fi
 
   if ! bash scripts/package-nightly-harness.sh; then
+    fail=1
+  fi
+
+  if ! bash scripts/prepare-nightly-harness.sh; then
     fail=1
   fi
 else

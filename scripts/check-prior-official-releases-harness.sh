@@ -16,11 +16,14 @@ check() {
 }
 
 check empty ok '{"tags":[],"releases":[],"activeOfficialTags":[]}'
-check complete ok '{"tags":["v0.1.0"],"releases":[{"tag_name":"v0.1.0","draft":false,"published_at":"2026-08-30T00:00:00Z"}],"activeOfficialTags":[]}'
-check draft fail '{"tags":["v0.1.0"],"releases":[{"tag_name":"v0.1.0","draft":true,"published_at":null}],"activeOfficialTags":[]}'
+check complete ok '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":true}],"activeOfficialTags":[]}'
+check incomplete fail '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":false}],"activeOfficialTags":[]}'
+check prerelease fail '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":true,"published_at":"2026-08-30T00:00:00Z","complete":true}],"activeOfficialTags":[]}'
+check draft fail '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":true,"prerelease":false,"published_at":null,"complete":false}],"activeOfficialTags":[]}'
 check missing fail '{"tags":["v0.1.0"],"releases":[],"activeOfficialTags":[]}'
-check orphan-release fail '{"tags":[],"releases":[{"tag_name":"v0.1.0","draft":false,"published_at":"2026-08-30T00:00:00Z"}],"activeOfficialTags":[]}'
+check orphan-release fail '{"tags":[],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":true}],"activeOfficialTags":[]}'
 check active fail '{"tags":[],"releases":[],"activeOfficialTags":["v0.1.0"]}'
+check active-recovery fail '{"tags":[],"releases":[],"activeOfficialTags":["main"]}'
 check ignore-nightly ok '{"tags":["nightly-20260830-111111111111"],"releases":[{"tag_name":"nightly-20260830-111111111111","draft":true,"published_at":null}],"activeOfficialTags":[]}'
 
 echo 'check-prior-official-releases-harness: ok'

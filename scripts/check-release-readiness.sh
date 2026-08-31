@@ -108,32 +108,13 @@ for changed in "${changed_files[@]}"; do
 done
 
 if jq -e '.release_state | type == "object"' "$event_path" >/dev/null 2>&1; then
-  releases_json="$(jq -c '.release_state.releases // []' "$event_path")"
-  tags_json="$(jq -c '.release_state.tags // []' "$event_path")"
-  active_json="$(jq -c '.release_state.activeOfficialTags // []' "$event_path")"
+  state_fixture="$(mktemp)"
+  trap 'rm -f "$state_fixture"' EXIT
+  jq '.release_state' "$event_path" >"$state_fixture"
+  OFFICIAL_STATE_FIXTURE="$state_fixture" GITHUB_REPOSITORY="$expected_repository" \
+    bash scripts/check-prior-official-releases.sh >/dev/null
 else
-  releases_json="$(gh api --paginate "repos/$expected_repository/releases" --jq '[.[] | {tag_name, draft}]' | jq -sc 'add // []')"
-  tags_json="$(gh api --paginate "repos/$expected_repository/tags" --jq '[.[].name]' | jq -sc 'add // []')"
-  active_json="$({
-    gh api "repos/$expected_repository/actions/runs?status=in_progress" --jq '[.workflow_runs[] | select((.name == "Release") or (.name == "Release Recovery")) | .head_branch]'
-    gh api "repos/$expected_repository/actions/runs?status=queued" --jq '[.workflow_runs[] | select((.name == "Release") or (.name == "Release Recovery")) | .head_branch]'
-  } | jq -sc 'add // []')"
-fi
-
-if jq -e '[.[] | select(.draft == true and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))] | length > 0' <<<"$releases_json" >/dev/null; then
-  echo 'check-release-readiness: an official draft release is still outstanding' >&2
-  exit 1
-fi
-while IFS= read -r tag; do
-  if [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] &&
-     ! jq -e --arg tag "$tag" '.[] | select(.tag_name == $tag and .draft == false)' <<<"$releases_json" >/dev/null; then
-    echo "check-release-readiness: official tag has no published release: $tag" >&2
-    exit 1
-  fi
-done < <(jq -r '.[]' <<<"$tags_json")
-if jq -e '[.[] | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] | length > 0' <<<"$active_json" >/dev/null; then
-  echo 'check-release-readiness: an official finalizer or recovery run is active' >&2
-  exit 1
+  GITHUB_REPOSITORY="$expected_repository" bash scripts/check-prior-official-releases.sh >/dev/null
 fi
 
 echo 'check-release-readiness: release PR identity, file contract, and prior release state are ready'

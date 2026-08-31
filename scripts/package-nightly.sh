@@ -8,15 +8,16 @@ done
 [[ "$NIGHTLY_DATE" =~ ^[0-9]{8}$ ]]
 [[ "$NIGHTLY_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
 [[ "$NIGHTLY_TAG" == "nightly-$NIGHTLY_DATE-${NIGHTLY_SOURCE_SHA:0:12}" ]]
-[[ "$NIGHTLY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.$NIGHTLY_DATE\.${NIGHTLY_SOURCE_SHA:0:12}$ ]]
+[[ "$NIGHTLY_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.$NIGHTLY_DATE\+${NIGHTLY_SOURCE_SHA:0:12}$ ]]
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 base_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
-[ "$NIGHTLY_VERSION" = "$base_version-nightly.$NIGHTLY_DATE.${NIGHTLY_SOURCE_SHA:0:12}" ]
+[ "$NIGHTLY_VERSION" = "$base_version-nightly.$NIGHTLY_DATE+${NIGHTLY_SOURCE_SHA:0:12}" ]
 [ "$(git rev-parse HEAD)" = "$NIGHTLY_SOURCE_SHA" ]
 [ -f "$BINARY_PATH" ]
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
 case "$TARGET" in
   x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)

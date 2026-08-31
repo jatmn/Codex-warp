@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[ "$#" -eq 2 ] || { echo 'usage: check-nightly-assets.sh <asset-dir> <manifest.json>' >&2; exit 2; }
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo 'usage: check-nightly-assets.sh <asset-dir> <manifest.json> [source-dir]' >&2; exit 2; }
 assets="$1"
 manifest="$2"
+source_dir="${3:-${SOURCE_DIR:-}}"
+schema="${NIGHTLY_MANIFEST_SCHEMA_PATH:-tools/nightly-manifest.schema.json}"
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
-node tools/release-please-policy/validate-json.mjs tools/nightly-manifest.schema.json "$manifest"
+node tools/release-please-policy/validate-json.mjs "$schema" "$manifest"
 [ "$(jq '.artifacts | map(.target) | unique | length' "$manifest")" -eq 4 ]
 [ "$(jq '.artifacts | map(.archive) | unique | length' "$manifest")" -eq 4 ]
 [ "$(jq -r '.tag' "$manifest")" = "nightly-$(jq -r '.date' "$manifest")-$(jq -r '.sourceSha' "$manifest" | cut -c1-12)" ]
-[ "$(jq -r '.version' "$manifest")" = "$(jq -r '.baseVersion' "$manifest")-nightly.$(jq -r '.date' "$manifest").$(jq -r '.sourceSha' "$manifest" | cut -c1-12)" ]
+[ "$(jq -r '.version' "$manifest")" = "$(jq -r '.baseVersion' "$manifest")-nightly.$(jq -r '.date' "$manifest")+$(jq -r '.sourceSha' "$manifest" | cut -c1-12)" ]
+
+if [ -n "$source_dir" ]; then
+  source_dir="$(cd "$source_dir" && pwd)"
+  [ "$(git -C "$source_dir" rev-parse HEAD)" = "$(jq -r '.sourceSha' "$manifest")" ]
+  base_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$source_dir/Cargo.toml" | head -1)"
+  [ "$(jq -r '.baseVersion' "$manifest")" = "$base_version" ]
+  [ "$(jq -r '.cargoLockSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/Cargo.lock")" ]
+  [ "$(jq -r '.rustToolchainSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/rust-toolchain.toml")" ]
+  [ "$(jq -r '.packagingContractSha256' "$manifest")" = "$(bash scripts/nightly-contract-digest.sh "$source_dir")" ]
+  [ "$(jq -r '.packagingScriptSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/scripts/package-nightly.sh")" ]
+fi
 
 expected="$(mktemp)"
 actual="$(mktemp)"
@@ -24,9 +37,12 @@ cmp "$expected" "$actual" >/dev/null || { echo 'check-nightly-assets: inventory 
 [ "$(wc -l <"$expected")" -eq 10 ]
 while IFS=$'\t' read -r archive digest checksum; do
   [ "$(sha256sum "$assets/$archive" | awk '{print $1}')" = "$digest" ]
-  grep -Ex "${digest}  ${archive}" "$assets/$checksum" >/dev/null
-  [ "$(wc -l <"$assets/$checksum")" -eq 1 ]
+  bash scripts/check-sha256-index.sh "$assets/$checksum" "$digest" "$archive" >/dev/null
 done < <(jq -r '.artifacts[] | [.archive,.archiveSha256,.checksumFile] | @tsv' "$manifest")
-[ "$(wc -l <"$assets/sha256.sum")" -eq 4 ]
+checksum_args=("$assets/sha256.sum")
+while IFS=$'\t' read -r archive digest; do
+  checksum_args+=("$digest" "$archive")
+done < <(jq -r '.artifacts[] | [.archive,.archiveSha256] | @tsv' "$manifest")
+bash scripts/check-sha256-index.sh "${checksum_args[@]}" >/dev/null
 (cd "$assets" && sha256sum -c sha256.sum >/dev/null)
 echo 'check-nightly-assets: ok'

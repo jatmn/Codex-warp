@@ -64,6 +64,9 @@ jobs:
       SOURCE_SHA: ${{ inputs.expected_sha }}
       RELEASE_INPUT: ${{ inputs.release_id }}
       OPERATION: ${{ inputs.operation }}
+      CONFIRMATION: ${{ inputs.confirmation }}
+      ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+      ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
@@ -79,53 +82,89 @@ jobs:
           date="${BASH_REMATCH[1]}"; short="${BASH_REMATCH[2]}"
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; [ "${SOURCE_SHA:0:12}" = "$short" ]
           git fetch --no-tags origin main
-          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
-          git fetch origin '+refs/heads/nightly:refs/remotes/origin/nightly' 2>/dev/null || true
+          remote_tags="$(git ls-remote --tags --refs origin 'refs/tags/nightly-*')" || { echo 'unable to enumerate nightly tags' >&2; exit 1; }
+          found_tag=false
+          while IFS=$'\t' read -r _object ref; do
+            [ -z "$ref" ] && continue
+            [[ "$ref" =~ ^refs/tags/nightly-[0-9]{8}-[0-9a-f]{12}$ ]] || { echo "malformed nightly tag: $ref" >&2; exit 1; }
+            [ "$ref" != "refs/tags/$TAG" ] || found_tag=true
+            git fetch --force origin "$ref:$ref"
+          done <<<"$remote_tags"
+          [ "$found_tag" = true ]
+          remote_branch="$(git ls-remote --heads origin refs/heads/nightly)" || { echo 'unable to inspect nightly branch' >&2; exit 1; }
+          if [ -n "$remote_branch" ]; then git fetch --force origin '+refs/heads/nightly:refs/remotes/origin/nightly'; fi
           [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          mapfile -t source_tags < <(git tag --list 'nightly-*' --points-at "$SOURCE_SHA")
+          [ "${#source_tags[@]}" -eq 1 ]; [ "${source_tags[0]}" = "$TAG" ]
           base="$(git show "$SOURCE_SHA:Cargo.toml" | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -1)"
           [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          version="$base-nightly.$date.$short"
+          version="$base-nightly.$date+$short"
+          nightly_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" --jq '[.[] | select(.tag_name | test("^nightly-[0-9]{8}-[0-9a-f]{12}$")) | {id,tag_name,draft,prerelease,published_at}]' | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id release_tag; do
+            git show-ref --verify --quiet "refs/tags/$release_tag" || { echo "nightly release $id has no immutable tag" >&2; exit 1; }
+          done < <(jq -r '.[] | [.id,.tag_name] | @tsv' <<<"$nightly_releases")
           release=''; release_id=''
-          if release="$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" 2>/dev/null)"; then release_id="$(jq -r '.id' <<<"$release")"; fi
+          release_count="$(jq --arg tag "$TAG" '[.[] | select(.tag_name==$tag)] | length' <<<"$nightly_releases")"
+          [ "$release_count" -le 1 ]
+          if [ "$release_count" -eq 1 ]; then release="$(jq -c --arg tag "$TAG" '.[] | select(.tag_name==$tag)' <<<"$nightly_releases")"; release_id="$(jq -r '.id' <<<"$release")"; fi
           build=true; repair=false; origin=false; origin_manifest=''
           case "$OPERATION" in
             resume-draft)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == true and .published_at == null and .prerelease == true' <<<"$release" >/dev/null
-              [ "${{ inputs.confirmation }}" = "$TAG" ]; [ -z "${{ inputs.origin_run_id }}${{ inputs.origin_run_attempt }}" ] ;;
+              [ "$CONFIRMATION" = "$TAG" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ] ;;
             replace-unpublished-draft)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == true and .published_at == null and .prerelease == true' <<<"$release" >/dev/null
-              [ "${{ inputs.confirmation }}" = "replace-unpublished-draft:$TAG:$RELEASE_INPUT" ]; [ -z "${{ inputs.origin_run_id }}${{ inputs.origin_run_attempt }}" ] ;;
+              [ "$CONFIRMATION" = "replace-unpublished-draft:$TAG:$RELEASE_INPUT" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ] ;;
             recover-orphan-tag)
               [ "$RELEASE_INPUT" = absent ]; [ -z "$release_id" ]
-              [[ "${{ inputs.origin_run_id }}" =~ ^[1-9][0-9]*$ ]]; [[ "${{ inputs.origin_run_attempt }}" =~ ^[1-9][0-9]*$ ]]
-              [ "${{ inputs.confirmation }}" = "$TAG" ]
-              run="$(gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.origin_run_id }}/attempts/${{ inputs.origin_run_attempt }}")"
-              jq -e '.name == "Nightly" or .name == "Nightly Recovery"' <<<"$run" >/dev/null
+              [[ "$ORIGIN_RUN_ID" =~ ^[1-9][0-9]*$ ]]; [[ "$ORIGIN_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              [ "$CONFIRMATION" = "$TAG" ]
+              run="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT")"
+              latest="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID")"
+              jq -e --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.run_attempt==$attempt' <<<"$latest" >/dev/null
+              jq -e --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.run_attempt==$attempt and .status=="completed" and .conclusion!=null and .conclusion!="success" and .head_branch=="main" and ((.name=="Nightly" and (.event=="schedule" or .event=="workflow_dispatch")) or (.name=="Nightly Recovery" and .event=="workflow_dispatch"))' <<<"$run" >/dev/null
+              jobs="$(gh api --paginate "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT/jobs?per_page=100" | jq -sc '[.[] | .jobs[] | .steps[]]')"
+              require_step() {
+                local name="$1" expected="$2" count conclusion
+                count="$(jq --arg name "$name" '[.[] | select(.name==$name)] | length' <<<"$jobs")"; [ "$count" -eq 1 ]
+                conclusion="$(jq -r --arg name "$name" '.[] | select(.name==$name) | .conclusion' <<<"$jobs")"
+                if [ "$expected" = success ]; then [ "$conclusion" = success ]; else [ "$conclusion" != success ]; fi
+              }
               mkdir origin-evidence
               if [ "$(jq -r '.name' <<<"$run")" = Nightly ]; then
-                gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name nightly-publication-intent --dir origin-evidence
-                gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
+                require_step 'Create immutable nightly tag and receipt' success
+                require_step 'Create draft prerelease for existing tag' not-success
+                require_step 'Upload complete candidate' not-success
+                require_step 'Verify and publish exact prerelease' not-success
+                gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-publication-intent --dir origin-evidence
+                gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
                 intent=nightly-intent.json; receipt=nightly-tag-receipt.json
               else
-                gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name nightly-orphan-recovery-intent --dir origin-evidence
-                gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name nightly-deletion-receipt --dir origin-evidence
+                require_step 'Delete only the attested never-published draft' success
+                require_step 'Reuse or recreate the draft for the existing immutable tag' not-success
+                require_step 'Upload missing assets, verify, publish, and advance branch' not-success
+                gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-orphan-recovery-intent --dir origin-evidence
+                gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-deletion-receipt --dir origin-evidence
                 intent=nightly-orphan-recovery-intent.json; receipt=nightly-deletion-receipt.json
               fi
               gh attestation verify "origin-evidence/$intent" --repo "${{ github.repository }}"
               gh attestation verify "origin-evidence/$receipt" --repo "${{ github.repository }}"
               jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag == $tag and .sourceSha == $sha' "origin-evidence/$intent" >/dev/null
-              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "${{ inputs.origin_run_id }}" --argjson attempt "${{ inputs.origin_run_attempt }}" '.tag == $tag and ((.peeledSha == $sha) or (.sourceSha == $sha)) and .runId == $run and .runAttempt == $attempt' "origin-evidence/$receipt" >/dev/null
+              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and ((.peeledSha == $sha) or (.sourceSha == $sha)) and .runId == $run and .runAttempt == $attempt' "origin-evidence/$receipt" >/dev/null
+              if [ "$(jq -r '.name' <<<"$run")" = 'Nightly Recovery' ]; then
+                jq -e --slurpfile intent "origin-evidence/$intent" '.deletedReleaseId == $intent[0].releaseId and $intent[0].operation == "replace-unpublished-draft"' "origin-evidence/$receipt" >/dev/null
+              fi
               [ "$(jq -r '.intentSha256' "origin-evidence/$receipt")" = "$(bash scripts/sha256-file.sh "origin-evidence/$intent")" ]
               origin_manifest="$(jq -r '.manifestSha256' "origin-evidence/$intent")"; [[ "$origin_manifest" =~ ^[0-9a-f]{64}$ ]]
               build=false; origin=true ;;
             repair-branch)
               [[ "$RELEASE_INPUT" =~ ^[1-9][0-9]*$ ]]; [ "$release_id" = "$RELEASE_INPUT" ]
               jq -e '.draft == false and .published_at != null and .prerelease == true' <<<"$release" >/dev/null
-              [ "${{ inputs.confirmation }}" = "$TAG" ]; [ -z "${{ inputs.origin_run_id }}${{ inputs.origin_run_attempt }}" ]
+              [ "$CONFIRMATION" = "$TAG" ]; [ -z "$ORIGIN_RUN_ID$ORIGIN_RUN_ATTEMPT" ]
               build=false; repair=true ;;
           esac
           branch="$(git rev-parse refs/remotes/origin/nightly 2>/dev/null || true)"
@@ -225,22 +264,37 @@ jobs:
       actions: read
       attestations: read
       contents: read
-    env: {GH_TOKEN: '${{ github.token }}'}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.expected_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen nightly source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
       - name: Retrieve the exact candidate bound by orphan evidence
+        env:
+          ORIGIN_RUN_ID: ${{ inputs.origin_run_id }}
+          ORIGIN_RUN_ATTEMPT: ${{ inputs.origin_run_attempt }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.expected_sha }}
         run: |
-          run="$(gh api "repos/${{ github.repository }}/actions/runs/${{ inputs.origin_run_id }}/attempts/${{ inputs.origin_run_attempt }}")"
+          run="$(gh api "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/attempts/$ORIGIN_RUN_ATTEMPT")"
           name=nightly-release-candidate; [ "$(jq -r '.name' <<<"$run")" != 'Nightly Recovery' ] || name=nightly-recovery-candidate
-          gh run download "${{ inputs.origin_run_id }}" --repo "${{ github.repository }}" --name "$name" --dir candidate
+          gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name "$name" --dir candidate
           [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "${{ needs.plan.outputs.origin_manifest_sha256 }}" ]
-          bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json
-          jq -e --arg tag "${{ inputs.tag }}" --arg sha "${{ inputs.expected_sha }}" '.tag==$tag and .sourceSha==$sha' candidate/codex-warp-nightly-manifest.json >/dev/null
+          NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
+          jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag==$tag and .sourceSha==$sha' candidate/codex-warp-nightly-manifest.json >/dev/null
           for archive in candidate/*.tar.xz candidate/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: nightly-recovery-candidate, path: candidate/, if-no-files-found: error}
@@ -261,31 +315,53 @@ jobs:
       TAG: ${{ inputs.tag }}
       SOURCE_SHA: ${{ inputs.expected_sha }}
       OPERATION: ${{ inputs.operation }}
+      RELEASE_INPUT: ${{ inputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen nightly source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: nightly-recovery-candidate, path: candidate}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: {name: nightly-recovery-plan, path: retained-plan}
       - id: state
         name: Revalidate and retain mutation intent before private key use
         run: |
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
-          bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json
-          release=''; release_id=null
-          if release="$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" 2>/dev/null)"; then release_id="$(jq '.id' <<<"$release")"; fi
+          NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
+          for archive in candidate/*.tar.xz candidate/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
+          release=''; release_id=null; release_state=null; remote_assets='[]'
+          live_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
+          live_count="$(jq --arg tag "$TAG" '[.[] | select(.tag_name==$tag)] | length' <<<"$live_releases")"; [ "$live_count" -le 1 ]
+          if [ "$live_count" -eq 1 ]; then
+            release="$(jq -c --arg tag "$TAG" '.[] | select(.tag_name==$tag)' <<<"$live_releases")"
+            release_id="$(jq '.id' <<<"$release")"
+            release_state="$(jq -c '{id,tagName:.tag_name,draft,prerelease,publishedAt:.published_at}' <<<"$release")"
+            remote_assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$release_id/assets" | jq -sc '[.[][] | {id,name,state}] | sort_by(.id)')"
+            jq -e 'all(.[];.state=="uploaded" or .state=="starter") and (length==([.[].name]|unique|length))' <<<"$remote_assets" >/dev/null
+          fi
           case "$OPERATION" in
-            resume-draft) [ "$release_id" = "${{ inputs.release_id }}" ]; jq -e '.draft==true and .published_at==null' <<<"$release" >/dev/null ;;
-            replace-unpublished-draft) [ "$release_id" = "${{ inputs.release_id }}" ]; jq -e '.draft==true and .published_at==null' <<<"$release" >/dev/null ;;
+            resume-draft) [ "$release_id" = "$RELEASE_INPUT" ]; jq -e --arg tag "$TAG" '.tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null ;;
+            replace-unpublished-draft) [ "$release_id" = "$RELEASE_INPUT" ]; jq -e --arg tag "$TAG" '.tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null ;;
             recover-orphan-tag) [ "$release_id" = null ] ;;
           esac
           if [ "$OPERATION" = recover-orphan-tag ]; then
             [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "${{ needs.plan.outputs.origin_manifest_sha256 }}" ]
           fi
-          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$release_id" --arg manifest "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,manifestSha256:$manifest,controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt}' >nightly-orphan-recovery-intent.json
+          jq -e --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg workflow "${{ github.workflow_sha }}" '.operation==$operation and .tag==$tag and .sourceSha==$source and .controlWorkflowSha==$workflow' retained-plan/nightly-recovery-plan.json >/dev/null
+          candidate_assets="$({ while IFS= read -r file; do jq -n --arg name "$(basename "$file")" --arg digest "$(bash scripts/sha256-file.sh "$file")" '{name:$name,sha256:$digest}'; done < <(find candidate -maxdepth 1 -type f -print | sort); } | jq -sc '.')"
+          branch_sha="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
+          jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$release_id" --argjson release_state "$release_state" --argjson remote_assets "$remote_assets" --argjson candidate_assets "$candidate_assets" --arg manifest "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/nightly-recovery-plan.json)" --arg tag_sha "$(git rev-parse "refs/tags/$TAG^{}")" --arg branch "$branch_sha" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,releaseState:$release_state,remoteAssets:$remote_assets,candidateAssets:$candidate_assets,manifestSha256:$manifest,planSha256:$plan,tagSha:$tag_sha,branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt}' >nightly-orphan-recovery-intent.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: nightly-orphan-recovery-intent, path: nightly-orphan-recovery-intent.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -304,13 +380,41 @@ jobs:
           repositories: Codex-warp
           permission-contents: write
           permission-workflows: write
+      - name: Revalidate the exact attested state after credential issuance
+        env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
+        run: |
+          [ "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" = "$(jq -r '.manifestSha256' nightly-orphan-recovery-intent.json)" ]
+          [ "$(bash scripts/sha256-file.sh retained-plan/nightly-recovery-plan.json)" = "$(jq -r '.planSha256' nightly-orphan-recovery-intent.json)" ]
+          candidate_assets="$({ while IFS= read -r file; do jq -n --arg name "$(basename "$file")" --arg digest "$(bash scripts/sha256-file.sh "$file")" '{name:$name,sha256:$digest}'; done < <(find candidate -maxdepth 1 -type f -print | sort); } | jq -sc '.')"
+          [ "$(jq -S . <<<"$candidate_assets")" = "$(jq -S '.candidateAssets' nightly-orphan-recovery-intent.json)" ]
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$(jq -r '.tagSha' nightly-orphan-recovery-intent.json)" ]
+          branch_sha="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
+          [ "${branch_sha:-null}" = "$(jq -r '.branchSha' nightly-orphan-recovery-intent.json)" ]
+          expected_release="$(jq -c '.releaseState' nightly-orphan-recovery-intent.json)"
+          if [ "$expected_release" = null ]; then
+            live_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
+            [ "$(jq --arg tag "$TAG" '[.[] | select(.tag_name==$tag)] | length' <<<"$live_releases")" -eq 0 ]
+          else
+            live="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_INPUT")"
+            live_state="$(jq -c '{id,tagName:.tag_name,draft,prerelease,publishedAt:.published_at}' <<<"$live")"
+            [ "$(jq -S . <<<"$live_state")" = "$(jq -S . <<<"$expected_release")" ]
+            live_assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_INPUT/assets" | jq -sc '[.[][] | {id,name,state}] | sort_by(.id)')"
+            [ "$(jq -S . <<<"$live_assets")" = "$(jq -S '.remoteAssets' nightly-orphan-recovery-intent.json)" ]
+          fi
       - name: Delete only the attested never-published draft
         if: inputs.operation == 'replace-unpublished-draft'
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
-          gh api --method DELETE "repos/${{ github.repository }}/releases/${{ inputs.release_id }}"
-          if gh api "repos/${{ github.repository }}/releases/${{ inputs.release_id }}" >/dev/null 2>&1; then exit 1; fi
-          jq -n --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg intent "$(bash scripts/sha256-file.sh nightly-orphan-recovery-intent.json)" --argjson release_id "${{ inputs.release_id }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,tag:$tag,sourceSha:$source,deletedReleaseId:$release_id,intentSha256:$intent,runId:$run,runAttempt:$attempt}' >nightly-deletion-receipt.json
+          live="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_INPUT")"
+          live_state="$(jq -c '{id,tagName:.tag_name,draft,prerelease,publishedAt:.published_at}' <<<"$live")"
+          [ "$(jq -S . <<<"$live_state")" = "$(jq -S '.releaseState' nightly-orphan-recovery-intent.json)" ]
+          live_assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_INPUT/assets" | jq -sc '[.[][] | {id,name,state}] | sort_by(.id)')"
+          [ "$(jq -S . <<<"$live_assets")" = "$(jq -S '.remoteAssets' nightly-orphan-recovery-intent.json)" ]
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          gh api --method DELETE "repos/${{ github.repository }}/releases/$RELEASE_INPUT"
+          live_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
+          [ "$(jq --arg tag "$TAG" --argjson id "$RELEASE_INPUT" '[.[] | select(.id==$id or .tag_name==$tag)] | length' <<<"$live_releases")" -eq 0 ]
+          jq -n --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg intent "$(bash scripts/sha256-file.sh nightly-orphan-recovery-intent.json)" --argjson release_id "$RELEASE_INPUT" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,tag:$tag,sourceSha:$source,deletedReleaseId:$release_id,intentSha256:$intent,runId:$run,runAttempt:$attempt}' >nightly-deletion-receipt.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: inputs.operation == 'replace-unpublished-draft'
         with: {name: nightly-deletion-receipt, path: nightly-deletion-receipt.json, retention-days: 90, if-no-files-found: error}
@@ -331,10 +435,11 @@ jobs:
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
           if [ "$OPERATION" = resume-draft ]; then
-            id="${{ inputs.release_id }}"
+            id="$RELEASE_INPUT"
           else
             body="$(printf '# Recovered unstable nightly\n\nSource: https://github.com/%s/commit/%s\nVersion: %s\n' "${{ github.repository }}" "$SOURCE_SHA" "${{ needs.plan.outputs.version }}")"
             release="$(gh api --method POST "repos/${{ github.repository }}/releases" -f tag_name="$TAG" -f name="$TAG" -F draft=true -F prerelease=true -f make_latest=false -F generate_release_notes=false -f body="$body")"
+            jq -e --arg tag "$TAG" '.tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
             id="$(jq -r '.id' <<<"$release")"
           fi
           echo "release_id=$id" >>"$GITHUB_OUTPUT"
@@ -342,20 +447,29 @@ jobs:
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
           id="${{ steps.draft.outputs.release_id }}"
+          release="$(gh api "repos/${{ github.repository }}/releases/$id")"
+          jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" | jq -sc '[.[][] | {id,name,state}]')"
+          jq -e 'all(.[];.state=="uploaded") and (length==([.[].name]|unique|length))' <<<"$assets" >/dev/null
+          while IFS= read -r asset; do
+            name="$(jq -r '.name' <<<"$asset")"; asset_id="$(jq -r '.id' <<<"$asset")"
+            [ -f "candidate/$name" ] || { echo "unexpected existing asset: $name" >&2; exit 1; }
+            gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$asset_id" >remote-one
+            [ "$(bash scripts/sha256-file.sh remote-one)" = "$(bash scripts/sha256-file.sh "candidate/$name")" ]
+          done < <(jq -c '.[]' <<<"$assets")
           for file in candidate/*; do
             name="$(basename "$file")"
-            count="$(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" | jq -s --arg name "$name" '[.[][]|select(.name==$name)]|length')"; [ "$count" -le 1 ]
-            if [ "$count" -eq 1 ]; then
-              asset_id="$(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" | jq -s --arg name "$name" '[.[][]|select(.name==$name)][0].id')"
-              gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$asset_id" >remote-one
-              [ "$(bash scripts/sha256-file.sh remote-one)" = "$(bash scripts/sha256-file.sh "$file")" ]
-            else gh release upload "$TAG" "$file"; fi
+            count="$(jq --arg name "$name" '[.[]|select(.name==$name)]|length' <<<"$assets")"
+            [ "$count" -eq 1 ] || gh release upload "$TAG" "$file"
           done
           mkdir remote-final
-          while IFS=$'\t' read -r asset_id name; do gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$asset_id" >"remote-final/$name"; done < <(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" --jq '.[]|[.id,.name]|@tsv')
-          bash scripts/check-nightly-assets.sh remote-final remote-final/codex-warp-nightly-manifest.json
+          final_assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$id/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r asset_id name state; do [ "$state" = uploaded ]; gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$asset_id" >"remote-final/$name"; done < <(jq -r '.[]|[.id,.name,.state]|@tsv' <<<"$final_assets")
+          NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh remote-final remote-final/codex-warp-nightly-manifest.json "$PWD/release-source"
+          release="$(gh api "repos/${{ github.repository }}/releases/$id")"
+          jq -e --arg tag "$TAG" --argjson id "$id" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
           gh api --method PATCH "repos/${{ github.repository }}/releases/$id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
-          branch="$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha' 2>/dev/null || true)"
+          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           if [ -z "$branch" ]; then gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
           elif [ "$branch" != "$SOURCE_SHA" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null; fi
           [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]
@@ -370,7 +484,14 @@ jobs:
     env: {GH_TOKEN: '${{ github.token }}', TAG: '${{ inputs.tag }}', SOURCE_SHA: '${{ inputs.expected_sha }}'}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: {ref: '${{ inputs.expected_sha }}', fetch-depth: 0, persist-credentials: false}
+        with: {ref: main, fetch-depth: 0, persist-credentials: false}
+      - name: Materialize frozen nightly source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
@@ -378,7 +499,7 @@ jobs:
       - name: Verify complete published release before private key use
         run: |
           temp="$(mktemp -d)"; gh release download "$TAG" --repo "${{ github.repository }}" --dir "$temp"
-          bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json"
+          NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json" "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag==$tag and .sourceSha==$sha' "$temp/codex-warp-nightly-manifest.json" >/dev/null
           for archive in "$temp"/*.tar.xz "$temp"/*.zip; do gh attestation verify "$archive" --repo "${{ github.repository }}"; done
           branch="$(git ls-remote origin refs/heads/nightly|awk '{print $1}')"; if [ -n "$branch" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; fi
@@ -388,7 +509,10 @@ jobs:
       - name: Create or fast-forward nightly branch only
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
-          branch="$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha' 2>/dev/null || true)"
+          release="$(gh api "repos/${{ github.repository }}/releases/tags/$TAG")"
+          jq -e --arg tag "$TAG" '.tag_name==$tag and .draft==false and .published_at!=null and .prerelease==true' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           if [ -z "$branch" ]; then gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
           else git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; gh api --method PATCH "repos/${{ github.repository }}/git/refs/heads/nightly" -f sha="$SOURCE_SHA" -F force=false >/dev/null; fi
           [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha')" = "$SOURCE_SHA" ]

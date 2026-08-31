@@ -402,7 +402,7 @@ jobs:
             [ "$attempt" -lt 12 ] && sleep 5
           done
           [ -n "$release" ] || { echo "Release Please did not create the expected draft for $TAG" >&2; exit 1; }
-          jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
+          jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           release_id="$(jq -r '.id' <<<"$release")"
           runners="$(jq -sc 'sort_by(.target)' target/distrib/*-runner.json)"
           [ "$(jq 'length' <<<"$runners")" -eq 4 ]
@@ -503,13 +503,18 @@ jobs:
           [ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$(jq -r '.sourceSha' release-assets/codex-warp-release-metadata.json)" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
-          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
           mkdir remote-before
-          while IFS=$'\t' read -r id name; do
+          : >remote-names-before.txt
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id name state; do
             [ -f "release-assets/$name" ] || { echo "unexpected remote asset: $name" >&2; exit 1; }
+            [ "$state" = uploaded ] || { echo "remote asset is not complete: $name ($state)" >&2; exit 1; }
+            printf '%s\n' "$name" >>remote-names-before.txt
             gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-before/$name"
             [ "$(sha256sum "remote-before/$name" | awk '{print $1}')" = "$(sha256sum "release-assets/$name" | awk '{print $1}')" ] || { echo "mismatched remote asset: $name" >&2; exit 1; }
-          done < <(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | [.id,.name] | @tsv')
+          done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
+          [ "$(sort remote-names-before.txt | uniq -d | wc -l)" -eq 0 ]
           for subject in release-assets/*.tar.xz release-assets/*.zip release-assets/codex-warp-release-metadata.json; do
             gh attestation verify "$subject" --repo "${{ github.repository }}"
           done
@@ -523,6 +528,24 @@ jobs:
           repositories: Codex-warp
           permission-contents: write
           permission-workflows: write
+      - name: Revalidate all existing assets after credential issuance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$(jq -r '.sourceSha' release-assets/codex-warp-release-metadata.json)" ]
+          : >remote-names-after-token.txt
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id name state; do
+            [ -f "release-assets/$name" ] || { echo "unexpected remote asset: $name" >&2; exit 1; }
+            [ "$state" = uploaded ] || { echo "remote asset is not complete: $name ($state)" >&2; exit 1; }
+            printf '%s\n' "$name" >>remote-names-after-token.txt
+            gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >remote-after-token
+            [ "$(sha256sum remote-after-token | awk '{print $1}')" = "$(sha256sum "release-assets/$name" | awk '{print $1}')" ]
+          done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
+          [ "$(sort remote-names-after-token.txt | uniq -d | wc -l)" -eq 0 ]
       - name: Upload only missing verified assets
         shell: bash
         env:
@@ -542,21 +565,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir remote-final
-          gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[].name' | sort >remote-names.txt
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          jq -r '.[].name' <<<"$assets" | sort >remote-names.txt
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort >expected-names.txt
           cmp expected-names.txt remote-names.txt
-          while IFS=$'\t' read -r id name; do
+          while IFS=$'\t' read -r id name state; do
+            [ "$state" = uploaded ]
             gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-final/$name"
             [ "$(sha256sum "remote-final/$name" | awk '{print $1}')" = "$(sha256sum "release-assets/$name" | awk '{print $1}')" ]
-          done < <(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | [.id,.name] | @tsv')
+          done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
       - name: Publish exact verified draft
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          mkdir remote-publish
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          while IFS=$'\t' read -r id name state; do
+            [ "$state" = uploaded ]
+            gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote-publish/$name"
+          done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
+          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication remote-publish remote-publish/codex-warp-release-metadata.json remote-publish/dist-manifest.json
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
-          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null' <<<"$release" >/dev/null
-          gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -f draft=false >/dev/null
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$(jq -r '.sourceSha' release-assets/codex-warp-release-metadata.json)" ]
+          gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false -F prerelease=false >/dev/null
 
   announce:
     needs: publish-official-release

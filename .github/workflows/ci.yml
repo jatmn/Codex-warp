@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       actions: read
+      attestations: read
       contents: read
       pull-requests: read
     outputs:

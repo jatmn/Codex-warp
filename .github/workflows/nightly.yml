@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       actions: read
+      attestations: read
       contents: read
     outputs:
       publish: ${{ steps.prepare.outputs.publish }}
@@ -178,7 +179,7 @@ jobs:
           ' "${evidence[@]}" >nightly-assets/codex-warp-nightly-manifest.json
           jq -r '.artifacts[] | [.archiveSha256,.archive] | @tsv' nightly-assets/codex-warp-nightly-manifest.json | sed $'s/\t/  /' >nightly-assets/sha256.sum
           rm "${evidence[@]}"
-          bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
+          SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nightly-release-candidate
@@ -210,7 +211,8 @@ jobs:
         shell: bash
         run: |
           ! git ls-remote --exit-code --tags origin "refs/tags/${{ needs.prepare.outputs.tag }}" >/dev/null 2>&1
-          if gh api "repos/${{ github.repository }}/releases/tags/${{ needs.prepare.outputs.tag }}" >/dev/null 2>&1; then exit 1; fi
+          release_count="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -s --arg tag "${{ needs.prepare.outputs.tag }}" '[.[][] | select(.tag_name==$tag)] | length')"
+          [ "$release_count" -eq 0 ]
           branch="$(git ls-remote origin refs/heads/nightly | awk '{print $1}')"
           jq -n \
             --arg repository "${{ github.repository }}" --arg tag "${{ needs.prepare.outputs.tag }}" \
@@ -265,13 +267,14 @@ jobs:
       - name: Final read-only state validation
         shell: bash
         run: |
-          bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
+          SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
           while IFS= read -r archive; do
             gh attestation verify "nightly-assets/$archive" --repo "${{ github.repository }}"
           done < <(jq -r '.artifacts[].archive' nightly-assets/codex-warp-nightly-manifest.json)
           [ "$(gh api "repos/${{ github.repository }}/git/ref/heads/main" --jq '.object.sha')" = "$SOURCE_SHA" ]
           ! git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1
-          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" >/dev/null 2>&1; then exit 1; fi
+          release_count="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -s --arg tag "$TAG" '[.[][] | select(.tag_name==$tag)] | length')"
+          [ "$release_count" -eq 0 ]
           branch="$(git ls-remote origin refs/heads/nightly | awk '{print $1}')"
           if [ -n "$branch" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; fi
           gh attestation verify nightly-intent.json --repo "${{ github.repository }}"
@@ -298,13 +301,16 @@ jobs:
         with: {name: nightly-tag-creation-receipt, path: nightly-tag-receipt.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: nightly-tag-receipt.json}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: {name: nightly-tag-creation-receipt, path: retained-tag-receipt}
       - id: draft
         name: Create draft prerelease for existing tag
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh attestation verify nightly-tag-receipt.json --repo "${{ github.repository }}"
+          cmp nightly-tag-receipt.json retained-tag-receipt/nightly-tag-receipt.json
+          gh attestation verify retained-tag-receipt/nightly-tag-receipt.json --repo "${{ github.repository }}"
           body="$(printf '# Unstable nightly build\n\nThis build is for testing. Source: https://github.com/%s/commit/%s\nVersion: %s\nWorkflow: https://github.com/%s/actions/runs/%s\n\nArchives include runtime configuration. Verify sha256.sum and GitHub attestations. Stable release: https://github.com/%s/releases/latest\n' "${{ github.repository }}" "$SOURCE_SHA" "${{ needs.prepare.outputs.version }}" "${{ github.repository }}" "${{ github.run_id }}" "${{ github.repository }}")"
           release="$(gh api --method POST "repos/${{ github.repository }}/releases" -f tag_name="$TAG" -f name="$TAG" -F draft=true -F prerelease=true -f make_latest=false -F generate_release_notes=false -f body="$body")"
           jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true and .prerelease == true' <<<"$release" >/dev/null
@@ -321,22 +327,26 @@ jobs:
           RELEASE_ID: ${{ steps.draft.outputs.release_id }}
         run: |
           mkdir remote
-          gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[].name' | sort >remote-names.txt
+          assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
+          jq -r '.[].name' <<<"$assets" | sort >remote-names.txt
           find nightly-assets -maxdepth 1 -type f -printf '%f\n' | sort >expected-names.txt
           cmp expected-names.txt remote-names.txt
-          while IFS=$'\t' read -r id name; do
+          while IFS=$'\t' read -r id name state; do
+            [ "$state" = uploaded ]
             gh api -H 'Accept: application/octet-stream' "repos/${{ github.repository }}/releases/assets/$id" >"remote/$name"
             [ "$(sha256sum "remote/$name" | awk '{print $1}')" = "$(sha256sum "nightly-assets/$name" | awk '{print $1}')" ]
-          done < <(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq '.[] | [.id,.name] | @tsv')
-          bash scripts/check-nightly-assets.sh remote remote/codex-warp-nightly-manifest.json
+          done < <(jq -r '.[] | [.id,.name,.state] | @tsv' <<<"$assets")
+          SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh remote remote/codex-warp-nightly-manifest.json
           [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id==$id and .tag_name==$tag and .draft==true and .published_at==null and .prerelease==true' <<<"$release" >/dev/null
           gh api --method PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
       - name: Create or fast-forward nightly branch
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          branch="$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha' 2>/dev/null || true)"
+          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           if [ -z "$branch" ]; then
             gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
             branch_action=created
@@ -373,9 +383,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
+          ref: main
           fetch-depth: 0
           persist-credentials: false
+      - name: Materialize frozen nightly source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ]
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.20.0
@@ -386,13 +403,12 @@ jobs:
       - name: Revalidate the published nightly before private key use
         shell: bash
         run: |
-          [ "$(git rev-parse HEAD)" = "$SOURCE_SHA" ]
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
           jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id == $id and .tag_name == $tag and .draft == false and .prerelease == true and .published_at != null' <<<"$release" >/dev/null
           temp="$(mktemp -d)"
           gh release download "$TAG" --repo "${{ github.repository }}" --dir "$temp"
-          bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json"
+          NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh "$temp" "$temp/codex-warp-nightly-manifest.json" "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag == $tag and .sourceSha == $sha' "$temp/codex-warp-nightly-manifest.json" >/dev/null
           while IFS= read -r archive; do
             gh attestation verify "$temp/$archive" --repo "${{ github.repository }}"
@@ -414,7 +430,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          branch="$(gh api "repos/${{ github.repository }}/git/ref/heads/nightly" --jq '.object.sha' 2>/dev/null || true)"
+          release="$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID")"
+          jq -e --arg tag "$TAG" --argjson id "$RELEASE_ID" '.id==$id and .tag_name==$tag and .draft==false and .published_at!=null and .prerelease==true' <<<"$release" >/dev/null
+          [ "$(gh api "repos/${{ github.repository }}/git/ref/tags/$TAG" --jq '.object.sha')" = "$SOURCE_SHA" ]
+          branch="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           if [ -z "$branch" ]; then
             gh api --method POST "repos/${{ github.repository }}/git/refs" -f ref=refs/heads/nightly -f sha="$SOURCE_SHA" >/dev/null
           else

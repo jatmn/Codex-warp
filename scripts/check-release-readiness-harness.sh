@@ -34,9 +34,11 @@ fixture author-only jatmn/Codex-warp main jatmn/Codex-warp feature/topic 12345 '
 fixture fork-head jatmn/Codex-warp main attacker/Codex-warp release-please--branches--main--components--codex-warp 12345 'codex-warp-release[bot]' Bot maintainer "$allowed" "$empty_state"
 fixture wrong-base jatmn/Codex-warp develop jatmn/Codex-warp release-please--branches--main--components--codex-warp 12345 'codex-warp-release[bot]' Bot maintainer "$allowed" "$empty_state"
 fixture unexpected-file "${genuine_args[@]}" maintainer '[".release-please-manifest.json","CHANGELOG.md","Cargo.lock","Cargo.toml","src/version.rs"]' "$empty_state"
-fixture draft "${genuine_args[@]}" maintainer "$allowed" '{"tags":["v0.1.0"],"releases":[{"tag_name":"v0.1.0","draft":true}],"activeOfficialTags":[]}'
+fixture draft "${genuine_args[@]}" maintainer "$allowed" '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":true,"prerelease":false,"published_at":null,"complete":false}],"activeOfficialTags":[]}'
 fixture missing-release "${genuine_args[@]}" maintainer "$allowed" '{"tags":["v0.1.0"],"releases":[],"activeOfficialTags":[]}'
 fixture active-finalizer "${genuine_args[@]}" maintainer "$allowed" '{"tags":[],"releases":[],"activeOfficialTags":["v0.1.0"]}'
+fixture active-recovery "${genuine_args[@]}" maintainer "$allowed" '{"tags":[],"releases":[],"activeOfficialTags":["main"]}'
+fixture incomplete "${genuine_args[@]}" maintainer "$allowed" '{"tags":["v0.1.0"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":false}],"activeOfficialTags":[]}'
 
 expect_ok() {
   RELEASE_AUTOMATION_POLICY="$tmp/policy.json" bash scripts/check-release-readiness.sh "$tmp/$1.json" >/dev/null
@@ -58,6 +60,8 @@ expect_fail unexpected-file
 expect_fail draft
 expect_fail missing-release
 expect_fail active-finalizer
+expect_fail active-recovery
+expect_fail incomplete
 
 # A different event actor cannot change the creator-based classification.
 if ! jq -e '.sender.login == "different-rerun-actor" and .pull_request.user.login == "codex-warp-release[bot]"' "$tmp/genuine.json" >/dev/null; then

@@ -134,7 +134,7 @@ const nightly = {
   $schema: './nightly-manifest.schema.json', schemaVersion: 1,
   fileName: 'codex-warp-nightly-manifest.json', repository: 'jatmn/Codex-warp',
   tag: nightlyTag, date: '20260830', sourceSha: nightlySha, baseVersion: '0.0.1',
-  version: `0.0.1-nightly.20260830.${nightlySha.slice(0, 12)}`,
+  version: `0.0.1-nightly.20260830+${nightlySha.slice(0, 12)}`,
   workflow: 'https://github.com/jatmn/Codex-warp/actions/runs/1', workflowSha: nightlySha,
   cargoLockSha256: nightlyDigest, rustToolchainSha256: nightlyDigest,
   packagingContractSha256: nightlyDigest, packagingScriptSha256: nightlyDigest,

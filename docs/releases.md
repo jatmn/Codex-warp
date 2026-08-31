@@ -40,7 +40,7 @@ manually in dry-run mode. A nightly identity is source-exact:
 
 ```text
 tag:     nightly-20260830-0123456789ab
-version: 0.1.0-nightly.20260830.0123456789ab
+version: 0.1.0-nightly.20260830+0123456789ab
 ```
 
 The date comes from the original workflow run timestamp. The suffix is the

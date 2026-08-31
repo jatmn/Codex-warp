@@ -47,6 +47,11 @@ is_release_automation_file() {
       return 0
       ;;
   esac
+  if [[ "$path" =~ ^tools/recovery-recipes/official-v[0-9]+\.[0-9]+\.[0-9]+\.json$ ]] ||
+     [[ "$path" =~ ^tools/recovery-recipes/nightly-nightly-[0-9]{8}-[0-9a-f]{12}\.json$ ]] ||
+     [[ "$path" =~ ^tools/recovery-recipes/schemas/[0-9a-f]{64}\.json$ ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -183,6 +188,9 @@ self_test() {
   expect_forbidden "tools/release-please-policy/extra.mjs"
   expect_forbidden "tools/release-please-policy/fixtures/extra.json"
   expect_forbidden "tools/recovery-recipes/schemas/extra.json"
+  expect_forbidden "tools/recovery-recipes/schemas/abc.json"
+  expect_forbidden "tools/recovery-recipes/official-latest.json"
+  expect_forbidden "tools/recovery-recipes/nightly-nightly-20260830-ABCDEF123456.json"
   expect_forbidden "tools/extra.json"
   expect_allowed "src/main.rs"
   expect_allowed "scripts/source-checks.sh"
@@ -210,6 +218,9 @@ self_test() {
   expect_allowed "tools/dist-tool-digests.sha256"
   expect_allowed "tools/nightly-packaging-contract.txt"
   expect_allowed "tools/recovery-recipes/schema.json"
+  expect_allowed "tools/recovery-recipes/official-v1.2.3.json"
+  expect_allowed "tools/recovery-recipes/nightly-nightly-20260830-abcdef123456.json"
+  expect_allowed "tools/recovery-recipes/schemas/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
   expect_allowed "tools/release-please-policy/package-lock.json"
   expect_allowed "tools/release-please-policy/validate-workflows.mjs"
   expect_allowed "tools/release-tooling.json"
