@@ -6,6 +6,11 @@ cd "$root"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Release Please PRs bump Cargo.toml; pin the contract to that live version.
+version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+[ -n "$version" ]
+prefix_collision="${version}0"
+
 cargo build --locked >/dev/null
 archive_name='codex-warp-x86_64-unknown-linux-gnu'
 mkdir -p "$tmp/$archive_name/configs"
@@ -13,14 +18,28 @@ cp target/debug/codex-warp "$tmp/$archive_name/codex-warp"
 cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$tmp/$archive_name/"
 cp -R configs/. "$tmp/$archive_name/configs/"
 tar -cJf "$tmp/$archive_name.tar.xz" -C "$tmp" "$archive_name"
-bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null
+bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null
+
+crlf_source="$tmp/crlf-source"
+mkdir -p "$crlf_source/configs"
+cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$crlf_source/"
+cp -R configs/. "$crlf_source/configs/"
+python3 - "$crlf_source" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for path in [root / 'codex-warp.toml', root / 'README.md', root / 'LICENSE', root / 'NOTICE', root / 'CHANGELOG.md', *sorted((root / 'configs').rglob('*'))]:
+    if path.is_file():
+        path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+PY
+bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$crlf_source" "$version" >/dev/null
 
 prefix_name='codex-warp-nightly-20260830-111111111111-x86_64-unknown-linux-gnu'
 cp -R "$tmp/$archive_name" "$tmp/$prefix_name"
-printf '%s\n' '#!/usr/bin/env bash' 'case "${1:-}" in --version) echo "codex-warp 0.0.10" ;; --help) exit 0 ;; *) exit 1 ;; esac' >"$tmp/$prefix_name/codex-warp"
+printf '%s\n' '#!/usr/bin/env bash' "case \"\${1:-}\" in --version) echo \"codex-warp $prefix_collision\" ;; --help) exit 0 ;; *) exit 1 ;; esac" >"$tmp/$prefix_name/codex-warp"
 chmod +x "$tmp/$prefix_name/codex-warp"
 tar -cJf "$tmp/$prefix_name.tar.xz" -C "$tmp" "$prefix_name"
-if bash scripts/check-release-contract.sh archive "$tmp/$prefix_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null 2>&1; then
+if bash scripts/check-release-contract.sh archive "$tmp/$prefix_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null 2>&1; then
   echo 'check-release-contract-harness: accepted a prefix-colliding version' >&2
   exit 1
 fi
@@ -39,12 +58,12 @@ ln -s "$root/scripts/test-fixtures/windows-powershell.sh" "$windows_bin/powershe
 ln -s "$root/scripts/test-fixtures/windows-unzip.sh" "$windows_bin/unzip"
 JQ_REAL="$(command -v jq)" UNZIP_REAL="$(command -v unzip)" \
   PATH="$windows_bin:$PATH" RUNNER_OS=Windows SKIP_VERSION_SMOKE=1 \
-  bash scripts/check-release-contract.sh archive "$tmp/$windows_name.zip" x86_64-pc-windows-msvc "$root" 0.0.1 >/dev/null
+  bash scripts/check-release-contract.sh archive "$tmp/$windows_name.zip" x86_64-pc-windows-msvc "$root" "$version" >/dev/null
 
 cp README.md "$tmp/$archive_name/unexpected.txt"
 mkdir "$tmp/invalid"
 tar -cJf "$tmp/invalid/$archive_name.tar.xz" -C "$tmp" "$archive_name"
-if bash scripts/check-release-contract.sh archive "$tmp/invalid/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" 0.0.1 >/dev/null 2>&1; then
+if bash scripts/check-release-contract.sh archive "$tmp/invalid/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null 2>&1; then
   echo 'check-release-contract-harness: accepted an unexpected archive file' >&2
   exit 1
 fi
@@ -88,6 +107,62 @@ done < <(jq -r '.targets[].triple' tools/release-contract.json)
 proof="$tmp/proof"
 bash scripts/assemble-pr-upload-proof.sh "$distrib" "$tmp/proof-identity.json" "$proof" >/dev/null
 bash scripts/check-release-contract.sh pr-upload-proof "$proof" "$proof/codex-warp-release-metadata.json" "$proof/dist-manifest.json" >/dev/null
+
+printf 'not-a-release-asset\n' >"$distrib/extra-upload-file.txt"
+mkdir -p "$distrib/codex-warp-x86_64-unknown-linux-gnu"
+printf 'unpacked-binary\n' >"$distrib/codex-warp-x86_64-unknown-linux-gnu/codex-warp"
+jq '.announcement_tag_is_implicit = false' "$tmp/manifest.json" >"$tmp/official-manifest.json"
+jq '
+  .publishable = true |
+  .tag = "v0.1.0" |
+  .peeledTagSha = .sourceSha |
+  .releaseId = 99 |
+  .pullRequest = null
+' "$tmp/proof-identity.json" >"$tmp/official-identity.json"
+official="$tmp/official"
+bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/official-manifest.json" "$official" >/dev/null
+[ ! -e "$official/extra-upload-file.txt" ] || {
+  echo 'check-release-contract-harness: official assemble copied a non-contract file' >&2
+  exit 1
+}
+[ ! -e "$official/x86_64-unknown-linux-gnu-runner.json" ] || {
+  echo 'check-release-contract-harness: official assemble copied runner evidence' >&2
+  exit 1
+}
+[ "$(jq -r '.mode' "$official/codex-warp-release-metadata.json")" = official ] || {
+  echo 'check-release-contract-harness: official assemble wrote the wrong metadata mode' >&2
+  exit 1
+}
+{
+  jq -r '.dist.artifacts[] | .archive, .checksumFile' "$official/codex-warp-release-metadata.json"
+  jq -r '.unifiedChecksumFilename, .distManifestFilename, .metadataFilename' tools/release-contract.json
+} | sort >"$tmp/official-expected.txt"
+find "$official" -maxdepth 1 -type f -printf '%f\n' | sort >"$tmp/official-actual.txt"
+cmp "$tmp/official-expected.txt" "$tmp/official-actual.txt" >/dev/null || {
+  echo 'check-release-contract-harness: official assemble inventory differs from the contract' >&2
+  diff -u "$tmp/official-expected.txt" "$tmp/official-actual.txt" || true
+  exit 1
+}
+[ "$(wc -l <"$tmp/official-expected.txt")" -eq 11 ] || {
+  echo 'check-release-contract-harness: official assemble did not write eleven files' >&2
+  exit 1
+}
+if bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/manifest.json" "$tmp/official-implicit" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: assembled official candidate from an implicit announcement tag' >&2
+  exit 1
+fi
+jq '.targets += [{"triple":"wasm32-wasi","archive":"codex-warp-wasm32-wasi.tar.xz","binary":"codex-warp"}]' \
+  tools/release-contract.json >"$tmp/future-contract.json"
+if RELEASE_CONTRACT_PATH="$tmp/future-contract.json" \
+  bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/official-manifest.json" "$tmp/official-future" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: assembled against a later control contract the source did not build' >&2
+  exit 1
+fi
+if DIST_MANIFEST_SCHEMA_PATH="$tmp/missing-schema.json" \
+  bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/official-manifest.json" "$tmp/official-missing-schema" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: ignored DIST_MANIFEST_SCHEMA_PATH' >&2
+  exit 1
+fi
 
 jq '.publishable = true' "$proof/codex-warp-release-metadata.json" >"$tmp/invalid-metadata.json"
 if bash scripts/check-release-contract.sh pr-upload-proof "$proof" "$tmp/invalid-metadata.json" "$proof/dist-manifest.json" >/dev/null 2>&1; then

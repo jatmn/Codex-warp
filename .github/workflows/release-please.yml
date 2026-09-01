@@ -39,7 +39,7 @@ jobs:
             echo 'Release Please mutation is disabled by reviewed policy.' >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          bash scripts/check-prior-official-releases.sh
+          OFFICIAL_ALLOW_MISSING_LATEST_TAG=1 bash scripts/check-prior-official-releases.sh
           echo 'ready=true' >>"$GITHUB_OUTPUT"
 
   release-please:
@@ -79,7 +79,7 @@ jobs:
           [ "$(git rev-parse HEAD)" = "$live_main" ]
           [ "${{ vars.OFFICIAL_RELEASES_ENABLED }}" = true ]
           [ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
-          bash scripts/check-prior-official-releases.sh
+          OFFICIAL_ALLOW_MISSING_LATEST_TAG=1 bash scripts/check-prior-official-releases.sh
       - id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -91,7 +91,17 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
           permission-workflows: write
+      - name: Revalidate prior official releases with draft-visible token
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          OFFICIAL_ALLOW_MISSING_LATEST_TAG: '1'
+        run: bash scripts/check-prior-official-releases.sh
+      - id: missing-draft
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/create-missing-official-draft.sh
       - id: release
+        if: steps.missing-draft.outputs.created != 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
@@ -100,6 +110,11 @@ jobs:
           manifest-file: .release-please-manifest.json
       - name: Validate and summarize result
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MISSING_CREATED: ${{ steps.missing-draft.outputs.created }}
+          MISSING_TAG: ${{ steps.missing-draft.outputs.tag }}
+          MISSING_SHA: ${{ steps.missing-draft.outputs.sha }}
+          MISSING_RELEASE_ID: ${{ steps.missing-draft.outputs.release_id }}
           RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
           RELEASES_CREATED: ${{ steps.release.outputs.releases_created }}
           VERSION: ${{ steps.release.outputs.version }}
@@ -110,7 +125,25 @@ jobs:
           PR: ${{ steps.release.outputs.pr }}
         shell: bash
         run: |
-          if [ "$RELEASE_CREATED" = true ]; then
+          if [ "$MISSING_CREATED" = true ]; then
+            [[ "$MISSING_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [[ "$MISSING_SHA" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$MISSING_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+            [ -z "$RELEASE_CREATED" ] || [ "$RELEASE_CREATED" != true ]
+            [ -z "$PRS_CREATED" ] || [ "$PRS_CREATED" != true ]
+            git fetch --force --no-tags origin "refs/tags/${MISSING_TAG}:refs/tags/${MISSING_TAG}"
+            [ "$(git rev-parse "${MISSING_TAG}^{}")" = "$MISSING_SHA" ]
+            release="$(LOOKUP_OFFICIAL_DRAFT_ATTEMPTS=1 LOOKUP_OFFICIAL_DRAFT_SLEEP=0 \
+              bash scripts/lookup-official-draft.sh "${{ github.repository }}" "$MISSING_TAG")"
+            [ "$(jq -r '.id' <<<"$release")" = "$MISSING_RELEASE_ID" ]
+            latest_published="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name || true)"
+            [ "$latest_published" != "$MISSING_TAG" ]
+            {
+              echo '## Release Please'
+              echo "- Created missing draft $MISSING_TAG (id \`$MISSING_RELEASE_ID\`) at \`$MISSING_SHA\`."
+              echo '- Skipped opening a newer version while that tag remains unpublished.'
+            } >>"$GITHUB_STEP_SUMMARY"
+          elif [ "$RELEASE_CREATED" = true ]; then
             [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             [ "$TAG" = "v$VERSION" ]
             [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -124,7 +157,9 @@ jobs:
           else
             printf '## Release Please\n- No releasable work.\n' >>"$GITHUB_STEP_SUMMARY"
           fi
-          if [ "$RELEASE_CREATED" = true ]; then
+          if [ "$MISSING_CREATED" = true ]; then
+            :
+          elif [ "$RELEASE_CREATED" = true ]; then
             [ "$RELEASES_CREATED" = true ]
           else
             [ "$RELEASES_CREATED" = false ]

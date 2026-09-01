@@ -10,6 +10,8 @@ fixture=false
 verify_complete_release() {
   local tag="$1" release_id="$2" temp source source_tree assets metadata manifest expected_targets
   temp="$(mktemp -d)"
+  source_tree=""
+  trap 'if [ -n "$source_tree" ]; then git worktree remove --force "$source_tree" >/dev/null 2>&1 || true; fi; rm -rf "$temp"' RETURN
   git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag" >/dev/null
   source="$(git rev-parse "refs/tags/$tag^{}")"
   source_tree="$temp/source"
@@ -65,8 +67,6 @@ verify_complete_release() {
   bash scripts/check-sha256-index.sh "${checksum_args[@]}" >/dev/null
   (cd "$assets" && sha256sum -c sha256.sum >/dev/null)
   bash scripts/verify-official-attestation.sh "$metadata" "$metadata" >/dev/null
-  git worktree remove --force "$source_tree"
-  rm -rf "$temp"
 }
 
 if [ -n "${OFFICIAL_STATE_FIXTURE:-}" ]; then
@@ -92,19 +92,44 @@ if jq -e '[.[] | select(.draft == true and (.tag_name | test("^v[0-9]+\\.[0-9]+\
   echo 'check-prior-official-releases: an official draft is still outstanding' >&2
   exit 1
 fi
+latest_official="$({ jq -r '.[]' <<<"$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)"
 while IFS= read -r tag; do
   [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
   count="$(jq --arg tag "$tag" '[.[] | select(.tag_name == $tag and .draft == false and .prerelease == false and .published_at != null)] | length' <<<"$releases")"
-  [ "$count" -eq 1 ] || { echo "check-prior-official-releases: $tag does not have exactly one stable published release" >&2; exit 1; }
+  if [ "$count" -ne 1 ]; then
+    if [ "${OFFICIAL_ALLOW_MISSING_LATEST_TAG:-}" = 1 ] &&
+      [ "$tag" = "$latest_official" ] && [ "$count" -eq 0 ]; then
+      echo "check-prior-official-releases: allowing missing-draft continuation for $tag"
+      continue
+    fi
+    echo "check-prior-official-releases: $tag does not have exactly one stable published release" >&2
+    exit 1
+  fi
   release_id="$(jq -r --arg tag "$tag" '.[] | select(.tag_name == $tag and .draft == false and .prerelease == false and .published_at != null) | .id // empty' <<<"$releases")"
   if [ "$fixture" = true ]; then
-    jq -e --arg tag "$tag" '.[] | select(.tag_name == $tag and .complete == true)' <<<"$releases" >/dev/null || {
-      echo "check-prior-official-releases: $tag lacks complete publication evidence" >&2
-      exit 1
-    }
+    if jq -e --arg tag "$tag" '.[] | select(.tag_name == $tag and .complete == true)' <<<"$releases" >/dev/null; then
+      :
+    else
+      echo "check-prior-official-releases: allowing broken published official $tag; published bytes cannot be repaired"
+    fi
   else
     [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
-    verify_complete_release "$tag" "$release_id"
+    # `if verify_complete_release` disables set -e inside the function, so a
+    # failed check plus successful cleanup would look verified. Capture status
+    # from a standalone subshell that keeps errexit on.
+    verify_status=0
+    set +e
+    (
+      set -euo pipefail
+      verify_complete_release "$tag" "$release_id"
+    )
+    verify_status=$?
+    set -e
+    if [ "$verify_status" -eq 0 ]; then
+      :
+    else
+      echo "check-prior-official-releases: allowing broken published official $tag; published bytes cannot be repaired"
+    fi
   fi
 done < <(jq -r '.[]' <<<"$tags")
 

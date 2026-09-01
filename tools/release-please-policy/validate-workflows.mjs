@@ -101,11 +101,49 @@ assert.deepEqual(rpToken.with, {
   'permission-issues': 'write',
   'permission-workflows': 'write',
 });
+const rpSteps = releasePlease.jobs['release-please'].steps;
+const rpTokenIdx = rpSteps.findIndex(step => step.id === 'app-token');
+const rpActionIdx = rpSteps.findIndex(step => step.id === 'release');
+const rpPriorAfterToken = rpSteps.slice(rpTokenIdx + 1, rpActionIdx).find(step =>
+  typeof step.run === 'string' && step.run.includes('check-prior-official-releases.sh'));
+assert.equal(rpPriorAfterToken.env.GH_TOKEN, '${{ steps.app-token.outputs.token }}',
+  'Release Please must recheck prior releases with a draft-visible App token');
+assert.equal(rpPriorAfterToken.env.OFFICIAL_ALLOW_MISSING_LATEST_TAG, '1');
+assert.ok(read('.github/workflows/release-please.yml').includes('OFFICIAL_ALLOW_MISSING_LATEST_TAG=1'),
+  'Release Please may continue a missing-draft latest tag');
+assert.ok(!read('scripts/check-release-readiness.sh').includes('OFFICIAL_ALLOW_MISSING_LATEST_TAG'),
+  'a new official release PR must not merge while the latest tag is unpublished');
+const rpMissingDraft = rpSteps.find(step => step.id === 'missing-draft');
+assert.equal(rpMissingDraft.env.GH_TOKEN, '${{ steps.app-token.outputs.token }}',
+  'missing-draft create must use the draft-visible App token');
+assert.equal(rpMissingDraft.run, 'bash scripts/create-missing-official-draft.sh');
+assert.ok(rpTokenIdx < rpSteps.indexOf(rpPriorAfterToken) &&
+  rpSteps.indexOf(rpPriorAfterToken) < rpSteps.indexOf(rpMissingDraft) &&
+  rpSteps.indexOf(rpMissingDraft) < rpActionIdx,
+  'missing-draft create must run after the App-token prior-release recheck and before Release Please');
 const rpAction = releasePlease.jobs['release-please'].steps.find(step => step.id === 'release');
+assert.equal(rpAction.if, "steps.missing-draft.outputs.created != 'true'",
+  'Release Please must not open a newer version while it just created the missing draft');
 assert.equal(rpAction.uses, `googleapis/release-please-action@${tooling.releasePleaseAction.commit}`);
 assert.equal(rpAction.with['target-branch'], 'main');
 assert.equal(rpAction.with['config-file'], 'release-please-config.json');
 assert.equal(rpAction.with['manifest-file'], '.release-please-manifest.json');
+const missingDraftSource = read('scripts/create-missing-official-draft.sh');
+assert.ok(missingDraftSource.includes('--method POST'),
+  'missing-draft create must POST /releases');
+assert.ok(!missingDraftSource.includes('/releases/tags/'),
+  'missing-draft create must not look up drafts by published tag');
+assert.ok(!missingDraftSource.includes('gh release'),
+  'missing-draft create must not use gh release create');
+assert.ok(missingDraftSource.includes('target_commitish'),
+  'missing-draft create must bind the draft to the peeled tag SHA');
+assert.ok(!read('.github/workflows/release-please.yml').includes('gh release create'),
+  'Release Please must not use gh release create');
+assert.ok(read('.github/workflows/release-please.yml').includes(
+  'latest_published="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name || true)"'),
+  'missing-draft validation must tolerate /releases/latest 404 when no published release exists');
+assert.ok(read('.github/workflows/release-please.yml').includes('[ "$latest_published" != "$MISSING_TAG" ]'),
+  'missing-draft create must not promote the unpublished tag to Latest');
 
 const nightly = parse('.github/workflows/nightly.yml');
 assert.deepEqual(nightly.concurrency, {group: 'nightly-release', queue: 'max'});
@@ -180,12 +218,28 @@ assert.ok(proofPrepare.if.includes("github.event_name == 'pull_request'"));
 assert.ok(proofPrepare.if.includes('github.event.pull_request.head.repo.full_name == github.repository'));
 assert.ok(proofPrepare.if.includes("fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload'"));
 assert.ok(proofPrepare.steps.some(step => step.run === 'bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof'));
+const officialPrepare = release.jobs['prepare-official-release'];
+assert.ok(officialPrepare.steps.some(step => typeof step.run === 'string' &&
+  step.run.includes('bash scripts/assemble-official-candidate.sh target/distrib identity.json dist-manifest.json release-assets')),
+  'official prepare must assemble the eleven-file candidate from contract-named dist outputs');
+assert.ok(!officialPrepare.steps.some(step => typeof step.run === 'string' &&
+  step.run.includes("jq -r '.upload_files[]' dist-manifest.json")),
+  'official prepare must not copy dist host upload_files as the release candidate');
 const proofAttest = release.jobs['attest-pr-upload-proof-metadata'];
 assert.equal(proofAttest.environment, undefined);
 assert.deepEqual(proofAttest.permissions, {attestations: 'write', contents: 'read', 'id-token': 'write'});
 assert.ok(proofAttest.steps.some(step => typeof step.run === 'string' && step.run.includes('check-release-contract.sh pr-upload-proof')));
 assert.equal(proofAttest.steps.find(step => step.uses?.startsWith('actions/attest-build-provenance@')).with['subject-path'],
   'pr-upload-proof/codex-warp-release-metadata.json');
+assert.ok(
+  releaseSource.includes('bash scripts/lookup-official-draft.sh "${{ github.repository }}" "$TAG"'),
+  'official prepare must look up the unpublished draft by listing releases'
+);
+assert.ok(
+  !releaseSource.includes('/releases/tags/$TAG'),
+  'official prepare must not use GET /releases/tags/{tag}, which omits drafts'
+);
+assert.equal(release.jobs['prepare-official-release'].environment, 'release-automation');
 assert.ok(release.jobs['publish-official-release'].if.includes("vars.OFFICIAL_RELEASES_ENABLED == 'true'"));
 assert.equal(release.jobs['publish-official-release'].environment, 'release-automation');
 const officialAttest = release.jobs['attest-official-metadata'];
@@ -194,18 +248,40 @@ const officialToken = release.jobs['publish-official-release'].steps.find(step =
 assert.equal(officialToken.with['client-id'], '${{ vars.RELEASE_APP_CLIENT_ID }}');
 assert.equal(officialToken.with['permission-contents'], 'write');
 assert.equal(officialToken.with['permission-workflows'], 'write');
+const officialVerifyRemote = release.jobs['publish-official-release'].steps.find(
+  step => step.name === 'Verify complete remote checksums');
+assert.equal(officialVerifyRemote.env.GH_TOKEN, '${{ steps.app-token.outputs.token }}',
+  'official publish must verify unpublished draft assets with the App token');
+assert.notEqual(officialVerifyRemote.env.GH_TOKEN, '${{ github.token }}',
+  'contents:read GITHUB_TOKEN cannot download unpublished draft assets');
 
 const officialRecovery = parse('.github/workflows/release-recovery.yml');
 assert.deepEqual(Object.keys(officialRecovery.on), ['workflow_dispatch']);
 assert.deepEqual(officialRecovery.concurrency, {group: 'official-release-${{ inputs.tag }}', queue: 'max'});
 assert.deepEqual(officialRecovery.on.workflow_dispatch.inputs.operation.options,
   ['rebuild-draft', 'resume-upload', 'replace-unpublished-assets', 'publish-verified-draft']);
+assert.equal(officialRecovery.jobs.plan.environment, 'release-automation');
 assert.equal(officialRecovery.jobs.mutate.environment, 'release-automation');
+assert.equal(officialRecovery.jobs['load-remote'].environment, 'release-automation',
+  'publish-verified-draft remote load must mint the App token inside release-automation');
+const loadRemoteToken = officialRecovery.jobs['load-remote'].steps.find(step => step.id === 'app-token');
+assert.equal(loadRemoteToken.with['permission-contents'], 'write');
+const loadRemoteDraft = officialRecovery.jobs['load-remote'].steps.find(
+  step => step.name === 'Materialize and authenticate the complete remote draft');
+assert.equal(loadRemoteDraft.env.GH_TOKEN, '${{ steps.app-token.outputs.token }}',
+  'publish-verified-draft must download unpublished draft assets with the App token');
 assert.ok(officialRecovery.jobs.mutate.if.includes("vars.OFFICIAL_RECOVERY_READY == 'true'"));
 const officialRecoverySource = read('.github/workflows/release-recovery.yml');
 assert.ok(officialRecoverySource.includes('.prerelease == false'), 'official recovery must reject prerelease drafts');
 assert.equal(officialRecovery.jobs.plan.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}');
-for (const jobName of ['load-retained', 'load-remote', 'mutate']) {
+assert.ok(officialRecovery.jobs['collect-rebuild'].steps.some(step => typeof step.run === 'string' &&
+  step.run.includes('RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json"') &&
+  step.run.includes('DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json"') &&
+  step.run.includes('bash scripts/assemble-official-candidate.sh release-source/target/distrib identity.json dist-manifest.json candidate')),
+  'official recovery collect must assemble from the tagged source contract and schema');
+assert.ok(!officialRecoverySource.includes("jq -r '.upload_files[]' dist-manifest.json"),
+  'official recovery must not copy dist host upload_files as the release candidate');
+for (const jobName of ['collect-rebuild', 'load-retained', 'load-remote', 'mutate']) {
   const job = officialRecovery.jobs[jobName];
   assert.equal(job.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}',
     `official recovery ${jobName} must execute immutable dispatch control code`);
@@ -237,11 +313,20 @@ assert.deepEqual(nightlyRecovery.on.workflow_dispatch.inputs.operation.options,
 assert.equal(nightlyRecovery.on.workflow_dispatch.inputs.evidence_manifest_sha256.default, '');
 assert.ok(nightlyRecovery.jobs['mutate-release'].if.includes("vars.NIGHTLY_RECOVERY_READY == 'true'"));
 assert.ok(nightlyRecovery.jobs['repair-branch'].if.includes("vars.NIGHTLY_RECOVERY_READY == 'true'"));
+assert.equal(nightlyRecovery.jobs.plan.environment, 'release-automation',
+  'nightly recovery plan must mint the App token inside release-automation');
 assert.equal(nightlyRecovery.jobs['mutate-release'].environment, 'release-automation');
 assert.equal(nightlyRecovery.jobs['repair-branch'].environment, 'release-automation');
+const nightlyPlanToken = nightlyRecovery.jobs.plan.steps.find(step => step.id === 'app-token');
+assert.equal(nightlyPlanToken.with['client-id'], '${{ vars.RELEASE_APP_CLIENT_ID }}');
+assert.equal(nightlyPlanToken.with['permission-contents'], 'write');
 assert.deepEqual(nightlyRecovery.jobs.build.strategy.matrix.include.map(item => item.target).sort(),
   contract.targets.map(item => item.triple).sort());
 const nightlyRecoverySource = read('.github/workflows/nightly-recovery.yml');
+assert.ok(nightlyRecoverySource.includes('releases/$RELEASE_INPUT'),
+  'nightly recovery plan must read an unpublished draft by ID with the App token');
+assert.ok(nightlyRecovery.jobs['mutate-release'].steps.some(step => step.id === 'app-token-read'),
+  'nightly recovery mutate must mint an App token before observing unpublished drafts');
 assert.ok(!nightlyRecoverySource.includes('-f ref=refs/tags/'), 'nightly recovery must never create or move a tag');
 assert.equal(nightlyRecovery.jobs.plan.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}');
 for (const jobName of ['load-origin', 'mutate-release', 'repair-branch']) {

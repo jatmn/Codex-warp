@@ -90,14 +90,14 @@ validate_archive() {
       find "$payload" -maxdepth 3 -type f -print >&2 || true
       die "archive is missing $required"
     fi
-    [ "$(bash scripts/sha256-file.sh "$payload/$required")" = "$(bash scripts/sha256-file.sh "$source/$required")" ] ||
+    [ "$(bash scripts/sha256-lf-file.sh "$payload/$required")" = "$(bash scripts/sha256-lf-file.sh "$source/$required")" ] ||
       die "$required does not match the selected source"
   done < <(jq -r '.requiredArchiveEntries[]' "$contract")
   (cd "$source/configs" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort) >"$temp/source-configs.txt"
   [ -s "$temp/source-configs.txt" ] || die 'selected source has no configuration files'
   while IFS= read -r config_file; do
     [ -f "$payload/configs/$config_file" ] || die "archive is missing configs/$config_file"
-    [ "$(bash scripts/sha256-file.sh "$payload/configs/$config_file")" = "$(bash scripts/sha256-file.sh "$source/configs/$config_file")" ] ||
+    [ "$(bash scripts/sha256-lf-file.sh "$payload/configs/$config_file")" = "$(bash scripts/sha256-lf-file.sh "$source/configs/$config_file")" ] ||
       die "configs/$config_file does not match the selected source"
   done <"$temp/source-configs.txt"
   (cd "$payload/configs" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort) >"$temp/archive-configs.txt"
@@ -190,7 +190,13 @@ validate_assets() {
     jq -r '.unifiedChecksumFilename, .distManifestFilename, .metadataFilename' "$contract"
   } | sort >"$expected_list"
   find "$assets" -maxdepth 1 -type f -printf '%f\n' | sort >"$actual_list"
-  cmp "$expected_list" "$actual_list" >/dev/null || die 'release asset inventory differs from the contract'
+  if ! cmp "$expected_list" "$actual_list" >/dev/null; then
+    echo 'check-release-contract: expected assets:' >&2
+    cat "$expected_list" >&2
+    echo 'check-release-contract: actual assets:' >&2
+    cat "$actual_list" >&2
+    die 'release asset inventory differs from the contract'
+  fi
   [ "$(wc -l <"$expected_list")" -eq 11 ] || die 'derived official asset contract must contain eleven files'
   [ "$(sha256sum "$assets/$(jq -r '.distManifestFilename' "$contract")" | awk '{print $1}')" = "$manifest_sha" ] || die 'asset dist manifest differs from the validated manifest'
   [ "$(sha256sum "$assets/$(jq -r '.metadataFilename' "$contract")" | awk '{print $1}')" = "$(sha256sum "$metadata" | awk '{print $1}')" ] || die 'asset metadata differs from the validated sidecar'
