@@ -7,7 +7,13 @@ cd "$root"
 
 policy="${RELEASE_AUTOMATION_POLICY:-tools/release-automation-policy.json}"
 event_path="${1:-${GITHUB_EVENT_PATH:-}}"
-event_name="${GITHUB_EVENT_NAME:-pull_request}"
+# An explicit event file is a PR fixture. Do not let a surrounding Actions
+# `push` (or other) event name skip classification.
+if [ -n "${1:-}" ]; then
+  event_name=pull_request
+else
+  event_name="${GITHUB_EVENT_NAME:-pull_request}"
+fi
 
 if [ "$event_name" != 'pull_request' ]; then
   echo 'check-release-readiness: non-PR event; not applicable'

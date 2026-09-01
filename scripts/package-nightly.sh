@@ -31,11 +31,15 @@ archive="$archive_base.$extension"
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 stage="$temp/$archive_base"
-mkdir -p "$stage/configs"
+mkdir -p "$stage"
 cp "$BINARY_PATH" "$stage/$binary_name"
 chmod +x "$stage/$binary_name" 2>/dev/null || true
-cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$stage/"
-cp -R configs/. "$stage/configs/"
+# Copy tracked payload bytes from git, not the working tree. Windows runners
+# may materialize CRLF checkouts; collectors compare archives to Linux LF files.
+git archive --format=tar HEAD -- \
+  codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md configs \
+  >"$temp/source.tar"
+tar -xf "$temp/source.tar" -C "$stage"
 
 packaging_tools='{}'
 record_tool() {
@@ -61,14 +65,16 @@ printf '%s  %s\n' "$archive_sha" "$archive" >"$OUTPUT_DIR/$archive.sha256"
 
 native_tools="$({ cmake --version 2>/dev/null | head -1; xcodebuild -version 2>/dev/null | paste -sd ' ' -; nasm -v 2>/dev/null; cc --version 2>/dev/null | head -1; } || true)"
 [ -n "$native_tools" ] || native_tools='not reported by runner'
+contract="$(bash scripts/nightly-contract-digest.sh)" || exit 1
+[[ "$contract" =~ ^[0-9a-f]{64}$ ]] || { echo 'package-nightly: invalid packaging contract digest' >&2; exit 1; }
 jq -n \
   --arg repository 'jatmn/Codex-warp' --arg tag "$NIGHTLY_TAG" --arg date "$NIGHTLY_DATE" \
   --arg source "$NIGHTLY_SOURCE_SHA" --arg base "$base_version" --arg version "$NIGHTLY_VERSION" \
   --arg workflow "$WORKFLOW_URL" --arg workflow_sha "$WORKFLOW_SHA" \
-  --arg lock "$(bash scripts/sha256-file.sh Cargo.lock)" \
-  --arg toolchain "$(bash scripts/sha256-file.sh rust-toolchain.toml)" \
-  --arg contract "$(bash scripts/nightly-contract-digest.sh)" \
-  --arg script "$(bash scripts/sha256-file.sh scripts/package-nightly.sh)" \
+  --arg lock "$(bash scripts/sha256-lf-file.sh Cargo.lock)" \
+  --arg toolchain "$(bash scripts/sha256-lf-file.sh rust-toolchain.toml)" \
+  --arg contract "$contract" \
+  --arg script "$(bash scripts/sha256-lf-file.sh scripts/package-nightly.sh)" \
   --arg target "$TARGET" --arg archive "$archive" --arg archive_sha "$archive_sha" \
   --arg checksum "$archive.sha256" --arg runner "$RUNNER_LABEL" --arg image "$RUNNER_IMAGE" \
   --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg native "$native_tools" \

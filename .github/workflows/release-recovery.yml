@@ -51,6 +51,7 @@ jobs:
   plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release-automation
     permissions:
       actions: read
       contents: read
@@ -82,8 +83,19 @@ jobs:
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-workflows: write
       - id: plan
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           [ "${{ github.ref }}" = refs/heads/main ]
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -196,12 +208,24 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+    env:
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.expected_sha }}
+      RELEASE_ID: ${{ inputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.expected_sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Materialize frozen release source separately from protected control code
+        run: |
+          git fetch --no-tags origin main
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+          [ "$(git rev-parse HEAD)" = "${{ github.workflow_sha }}" ]
+          git merge-base --is-ancestor "${{ github.workflow_sha }}" origin/main
+          [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+          git worktree add --quiet --detach release-source "$SOURCE_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.20.0
@@ -212,29 +236,25 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: official-recovery-build-*
-          path: target/distrib
+          path: release-source/target/distrib
           merge-multiple: true
       - name: Assemble source-exact candidate
         shell: bash
-        env:
-          TAG: ${{ inputs.tag }}
-          RELEASE_ID: ${{ inputs.release_id }}
-          SOURCE_SHA: ${{ inputs.expected_sha }}
         run: |
           bash scripts/install-pinned-dist.sh
-          dist build --artifacts=global --tag="$TAG" --output-format=json >global-recovery-dist-manifest.json
-          cp global-recovery-dist-manifest.json target/distrib/global-dist-manifest.json
-          dist host --tag="$TAG" --steps=upload --steps=release --output-format=json >dist-manifest.json
-          runners="$(jq -sc 'sort_by(.target)' target/distrib/*-runner.json)"
+          (
+            cd release-source
+            dist build --artifacts=global --tag="$TAG" --output-format=json >"$OLDPWD/global-recovery-dist-manifest.json"
+            cp "$OLDPWD/global-recovery-dist-manifest.json" target/distrib/global-dist-manifest.json
+            dist host --tag="$TAG" --steps=upload --steps=release --output-format=json >"$OLDPWD/dist-manifest.json"
+          )
+          runners="$(jq -sc 'sort_by(.target)' release-source/target/distrib/*-runner.json)"
           [ "$(jq 'length' <<<"$runners")" -eq 4 ]
           recipe="tools/recovery-recipes/official-$TAG.json"; recipe_sha=null
           [ ! -f "$recipe" ] || recipe_sha="\"$(bash scripts/sha256-file.sh "$recipe")\""
-          jq -n --argjson publishable true --arg repository "${{ github.repository }}" --arg source "$SOURCE_SHA" --arg version "${TAG#v}" --arg lock "$(bash scripts/sha256-file.sh Cargo.lock)" --arg toolchain "$(bash scripts/sha256-file.sh rust-toolchain.toml)" --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)" --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg contract "$(bash scripts/sha256-file.sh tools/release-contract.json)" --arg workflow_sha "${{ github.workflow_sha }}" --arg tag "$TAG" --argjson release_id "$RELEASE_ID" --arg schema "$(bash scripts/sha256-file.sh tools/dist-manifest.schema.json)" --argjson runners "$runners" --argjson recipe "$recipe_sha" '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release Recovery",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:$tag,peeledTagSha:$source,releaseId:$release_id,pullRequest:null,recovery:{controlWorkflowSha:$workflow_sha,recipeSha256:$recipe}}' >identity.json
-          mkdir candidate
-          while IFS= read -r file; do cp "$file" candidate/; done < <(jq -r '.upload_files[]' dist-manifest.json)
-          cp dist-manifest.json candidate/dist-manifest.json
-          bash scripts/generate-release-metadata.sh official identity.json dist-manifest.json candidate/codex-warp-release-metadata.json
-          SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
+          jq -n --argjson publishable true --arg repository "${{ github.repository }}" --arg source "$SOURCE_SHA" --arg version "${TAG#v}" --arg lock "$(bash scripts/sha256-file.sh release-source/Cargo.lock)" --arg toolchain "$(bash scripts/sha256-file.sh release-source/rust-toolchain.toml)" --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' release-source/rust-toolchain.toml)" --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg contract "$(bash scripts/sha256-file.sh release-source/tools/release-contract.json)" --arg workflow_sha "${{ github.workflow_sha }}" --arg tag "$TAG" --argjson release_id "$RELEASE_ID" --arg schema "$(bash scripts/sha256-file.sh release-source/tools/dist-manifest.schema.json)" --argjson runners "$runners" --argjson recipe "$recipe_sha" '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release Recovery",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:$tag,peeledTagSha:$source,releaseId:$release_id,pullRequest:null,recovery:{controlWorkflowSha:$workflow_sha,recipeSha256:$recipe}}' >identity.json
+          bash scripts/assemble-official-candidate.sh release-source/target/distrib identity.json dist-manifest.json candidate
+          SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -294,6 +314,7 @@ jobs:
     if: needs.plan.outputs.remote == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    environment: release-automation
     permissions:
       attestations: read
       contents: read
@@ -317,7 +338,17 @@ jobs:
         with: {node-version: 24.20.0, cache: npm, cache-dependency-path: tools/release-please-policy/package-lock.json}
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-workflows: write
       - name: Materialize and authenticate the complete remote draft
+        env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |
           mkdir candidate
           assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"
@@ -364,9 +395,20 @@ jobs:
         with: {name: official-recovery-candidate, path: candidate}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: {name: official-recovery-plan, path: retained-plan}
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-workflows: write
       - id: preflight
         name: Revalidate and freeze the exact mutation plan
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
           control_sha="$(git rev-parse HEAD)"
@@ -411,15 +453,6 @@ jobs:
         run: |
           cmp official-recovery-intent.json retained-intent/official-recovery-intent.json
           gh attestation verify retained-intent/official-recovery-intent.json --repo "${{ github.repository }}"
-      - id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: Codex-warp
-          permission-contents: write
-          permission-workflows: write
       - name: Revalidate the exact draft after credential issuance
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
         run: |

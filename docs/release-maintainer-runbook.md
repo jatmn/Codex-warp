@@ -137,7 +137,9 @@ an intentional true value.
 8. Set `NIGHTLY_PUBLISH_ENABLED=true` only after the manual publication proof.
 9. Set `OFFICIAL_RECOVERY_READY=true` only after its sandbox campaign passes.
 10. Set `OFFICIAL_RELEASES_ENABLED=true` only after the pinned Release Please
-    forced-tag/missing-draft continuation proof passes in the sandbox.
+    forced-tag/missing-draft continuation proof passes in the sandbox. That
+    proof uses `scripts/create-missing-official-draft.sh` because the pin does
+    not POST a GitHub draft when the Git tag already exists.
 11. Confirm Release Please opens one internal App-authored release PR and that
     the readiness classifier recognizes its exact creator/head/base/files.
 12. For the bootstrap only, ensure the setup squash commit includes
@@ -173,6 +175,20 @@ Official Release Recovery accepts:
 - `replace-unpublished-assets`: delete only mismatched assets from the exact
   never-published draft after retained, attested intent; and
 - `publish-verified-draft`: publish an already complete, fully verified draft.
+  Use it when the exact eleven assets are already on that never-published draft.
+  If the normal tag workflow attached those assets but has not yet set
+  `draft=false`, stop that publish job and continue through this operation
+  instead of starting another official version.
+
+Cancel-before-undraft is not proof that the draft is still unpublished. The
+tag job may still PATCH `draft=false` after `gh run cancel` returns. Re-GET
+the exact release ID and require `draft=true` and `published_at=null` immediately
+before any asset delete or upload. Do not use `gh release upload` as a draft
+mutation; if that GET already shows a published release, stop. Recovery cannot
+repair published bytes. Cut the next official version instead. Prior-release
+verification still fail-closes on a missing release, outstanding draft, or
+active official run, but it allows a broken published official so Release Please
+can open that next version. Published bytes cannot be repaired.
 
 Official archive and metadata attestations are accepted only when their signed
 identity names the reviewed `Release` tag workflow or `Release Recovery` main
@@ -181,6 +197,17 @@ attestation from a pull-request or unrelated workflow is not release evidence.
 
 It cannot create/delete a release, create/move/delete a tag, change a version,
 or mutate a published release.
+
+For `recover-orphan-tag`, force-cancel the origin Nightly as soon as the
+immutable tag and `nightly-tag-creation-receipt` exist. Cooperative
+`gh run cancel` can still POST the draft and upload assets. The draft step
+must appear with a non-success conclusion and no release object.
+
+For `replace-unpublished-assets`, inject the attested mismatch only after a
+fresh GET shows `draft=true` and `published_at=null`, during
+`attest-official-metadata` after the eleven assets exist and before
+`publish-official-release` starts. Then force-cancel the origin tag job.
+Do not inject after cancel if that GET already shows a published release.
 
 Nightly Recovery accepts:
 

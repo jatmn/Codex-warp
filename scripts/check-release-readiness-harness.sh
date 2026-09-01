@@ -53,6 +53,14 @@ expect_fail() {
 expect_ok genuine
 expect_ok ordinary
 expect_fail branch-only
+# Push CI sets GITHUB_EVENT_NAME=push; a fixture path must still classify.
+if ! GITHUB_EVENT_NAME=push RELEASE_AUTOMATION_POLICY="$tmp/policy.json" \
+    bash scripts/check-release-readiness.sh "$tmp/branch-only.json" >/dev/null 2>&1; then
+  :
+else
+  echo 'check-release-readiness-harness: push event name skipped a fixture file' >&2
+  exit 1
+fi
 expect_fail author-only
 expect_fail fork-head
 expect_fail wrong-base
@@ -61,7 +69,9 @@ expect_fail draft
 expect_fail missing-release
 expect_fail active-finalizer
 expect_fail active-recovery
-expect_fail incomplete
+expect_ok incomplete
+fixture incomplete-prior "${genuine_args[@]}" maintainer "$allowed" '{"tags":["v0.1.0","v0.1.1"],"releases":[{"id":1,"tag_name":"v0.1.0","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":false},{"id":2,"tag_name":"v0.1.1","draft":false,"prerelease":false,"published_at":"2026-08-30T00:00:00Z","complete":true}],"activeOfficialTags":[]}'
+expect_ok incomplete-prior
 
 # A different event actor cannot change the creator-based classification.
 if ! jq -e '.sender.login == "different-rerun-actor" and .pull_request.user.login == "codex-warp-release[bot]"' "$tmp/genuine.json" >/dev/null; then

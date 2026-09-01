@@ -339,11 +339,13 @@ jobs:
         with:
           subject-path: pr-upload-proof/codex-warp-release-metadata.json
 
-  # Prepare and validate the complete candidate without mutation credentials.
+  # Prepare and validate the complete candidate. Draft lookup needs the App
+  # token because GitHub hides unpublished releases from contents:read tokens.
   prepare-official-release:
     needs: [plan, build-local-artifacts, build-global-artifacts]
     if: ${{ always() && github.event_name == 'push' && github.ref_type == 'tag' && needs.plan.result == 'success' && needs.build-local-artifacts.result == 'success' && needs.build-global-artifacts.result == 'success' }}
     runs-on: ubuntu-24.04
+    environment: release-automation
     permissions:
       contents: read
     outputs:
@@ -379,10 +381,21 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           dist host --tag="$TAG" --steps=upload --steps=release --output-format=json >dist-manifest.json
           node tools/release-please-policy/validate-json.mjs tools/dist-manifest.schema.json dist-manifest.json
+      - id: app-token
+        name: Mint bounded release App token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-workflows: write
       - id: identity
         name: Bind tag, draft, source, tools, and runners
         shell: bash
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           source_sha="$(git rev-parse HEAD)"
@@ -390,15 +403,7 @@ jobs:
           [ "$source_sha" = "$peeled" ]
           version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
           [ "$TAG" = "v$version" ]
-          release=''
-          for attempt in {1..12}; do
-            if release="$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" 2>/dev/null)"; then
-              break
-            fi
-            [ "$attempt" -lt 12 ] && sleep 5
-          done
-          [ -n "$release" ] || { echo "Release Please did not create the expected draft for $TAG" >&2; exit 1; }
-          jq -e --arg tag "$TAG" '.tag_name == $tag and .draft == true and .published_at == null and .prerelease == false' <<<"$release" >/dev/null
+          release="$(bash scripts/lookup-official-draft.sh "${{ github.repository }}" "$TAG")"
           release_id="$(jq -r '.id' <<<"$release")"
           runners="$(jq -sc 'sort_by(.target)' target/distrib/*-runner.json)"
           [ "$(jq 'length' <<<"$runners")" -eq 4 ]
@@ -420,13 +425,7 @@ jobs:
       - name: Assemble and validate exact asset set
         shell: bash
         run: |
-          mkdir release-assets
-          while IFS= read -r file; do
-            [ -f "$file" ]
-            cp "$file" release-assets/
-          done < <(jq -r '.upload_files[]' dist-manifest.json)
-          cp dist-manifest.json release-assets/dist-manifest.json
-          bash scripts/generate-release-metadata.sh official identity.json dist-manifest.json release-assets/codex-warp-release-metadata.json
+          bash scripts/assemble-official-candidate.sh target/distrib identity.json dist-manifest.json release-assets
           SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication release-assets release-assets/codex-warp-release-metadata.json release-assets/dist-manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -492,8 +491,20 @@ jobs:
         with:
           name: official-release-candidate
           path: release-assets
-      - name: Revalidate candidate and live draft before private key use
+      - id: app-token
+        name: Mint bounded release App token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Codex-warp
+          permission-contents: write
+          permission-workflows: write
+      - name: Revalidate candidate and live draft
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication release-assets release-assets/codex-warp-release-metadata.json release-assets/dist-manifest.json
           [ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
@@ -514,16 +525,6 @@ jobs:
           for subject in release-assets/*.tar.xz release-assets/*.zip release-assets/codex-warp-release-metadata.json; do
             bash scripts/verify-official-attestation.sh "$subject" release-assets/codex-warp-release-metadata.json
           done
-      - id: app-token
-        name: Mint bounded release App token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: Codex-warp
-          permission-contents: write
-          permission-workflows: write
       - name: Revalidate all existing assets after credential issuance
         shell: bash
         env:
@@ -555,10 +556,11 @@ jobs:
               gh release upload "$TAG" "$file"
             fi
           done
+      # Unpublished draft assets are hidden from contents:read GITHUB_TOKEN.
       - name: Verify complete remote checksums
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           mkdir remote-final
           assets="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc 'add // []')"

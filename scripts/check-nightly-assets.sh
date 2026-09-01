@@ -6,6 +6,7 @@ assets="$1"
 manifest="$2"
 source_dir="${3:-${SOURCE_DIR:-}}"
 schema="${NIGHTLY_MANIFEST_SCHEMA_PATH:-tools/nightly-manifest.schema.json}"
+scripts_dir="$(cd "$(dirname "$0")" && pwd)"
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 node tools/release-please-policy/validate-json.mjs "$schema" "$manifest"
@@ -38,13 +39,13 @@ if [ -n "$source_dir" ]; then
   [ "$(git -C "$source_dir" rev-parse HEAD)" = "$(jq -r '.sourceSha' "$manifest")" ]
   base_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$source_dir/Cargo.toml" | head -1)"
   [ "$(jq -r '.baseVersion' "$manifest")" = "$base_version" ]
-  [ "$(jq -r '.cargoLockSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/Cargo.lock")" ]
-  [ "$(jq -r '.rustToolchainSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/rust-toolchain.toml")" ]
-  [ "$(jq -r '.packagingContractSha256' "$manifest")" = "$(bash scripts/nightly-contract-digest.sh "$source_dir")" ]
-  [ "$(jq -r '.packagingScriptSha256' "$manifest")" = "$(bash scripts/sha256-file.sh "$source_dir/scripts/package-nightly.sh")" ]
+  [ "$(jq -r '.cargoLockSha256' "$manifest")" = "$(bash "$scripts_dir/sha256-lf-file.sh" "$source_dir/Cargo.lock")" ]
+  [ "$(jq -r '.rustToolchainSha256' "$manifest")" = "$(bash "$scripts_dir/sha256-lf-file.sh" "$source_dir/rust-toolchain.toml")" ]
+  [ "$(jq -r '.packagingContractSha256' "$manifest")" = "$(bash "$scripts_dir/nightly-contract-digest.sh" "$source_dir")" ]
+  [ "$(jq -r '.packagingScriptSha256' "$manifest")" = "$(bash "$scripts_dir/sha256-lf-file.sh" "$source_dir/scripts/package-nightly.sh")" ]
   while IFS=$'\t' read -r target archive; do
     SKIP_VERSION_SMOKE=1 RELEASE_CONTRACT_PATH="$source_dir/tools/release-contract.json" \
-      bash scripts/check-release-contract.sh archive "$assets/$archive" "$target" "$source_dir" "$version" >/dev/null
+      bash "$scripts_dir/check-release-contract.sh" archive "$assets/$archive" "$target" "$source_dir" "$version" >/dev/null
   done < <(jq -r '.artifacts[] | [.target,.archive] | @tsv' "$manifest")
 fi
 
