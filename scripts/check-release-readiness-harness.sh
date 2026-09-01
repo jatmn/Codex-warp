@@ -79,9 +79,21 @@ if ! jq -e '.sender.login == "different-rerun-actor" and .pull_request.user.logi
   exit 1
 fi
 
-# Until the reviewed live App identity is installed, automation-shaped PRs fail closed.
+# Live enabled policy must reject automation-shaped PRs that do not match the
+# recorded App bot. The overlay fixture author is not the production bot.
 if bash scripts/check-release-readiness.sh "$tmp/genuine.json" >/dev/null 2>&1; then
-  echo 'check-release-readiness-harness: disabled production policy accepted an automation-shaped PR' >&2
+  echo 'check-release-readiness-harness: live policy accepted a non-matching automation-shaped PR' >&2
+  exit 1
+fi
+
+[ "$(jq -r '.enabled' tools/release-automation-policy.json)" = true ]
+live_id="$(jq '.appBot.id' tools/release-automation-policy.json)"
+live_login="$(jq -r '.appBot.login' tools/release-automation-policy.json)"
+jq --argjson id "$live_id" --arg login "$live_login" \
+  '.pull_request.user.id=$id | .pull_request.user.login=$login' \
+  "$tmp/genuine.json" >"$tmp/live-genuine.json"
+if ! bash scripts/check-release-readiness.sh "$tmp/live-genuine.json" >/dev/null; then
+  echo 'check-release-readiness-harness: live policy rejected the recorded App identity' >&2
   exit 1
 fi
 
