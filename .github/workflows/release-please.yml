@@ -136,7 +136,7 @@ jobs:
             release="$(LOOKUP_OFFICIAL_DRAFT_ATTEMPTS=1 LOOKUP_OFFICIAL_DRAFT_SLEEP=0 \
               bash scripts/lookup-official-draft.sh "${{ github.repository }}" "$MISSING_TAG")"
             [ "$(jq -r '.id' <<<"$release")" = "$MISSING_RELEASE_ID" ]
-            latest_published="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)"
+            latest_published="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name || true)"
             [ "$latest_published" != "$MISSING_TAG" ]
             {
               echo '## Release Please'

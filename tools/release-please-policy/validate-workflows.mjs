@@ -139,7 +139,10 @@ assert.ok(missingDraftSource.includes('target_commitish'),
   'missing-draft create must bind the draft to the peeled tag SHA');
 assert.ok(!read('.github/workflows/release-please.yml').includes('gh release create'),
   'Release Please must not use gh release create');
-assert.ok(read('.github/workflows/release-please.yml').includes('releases/latest'),
+assert.ok(read('.github/workflows/release-please.yml').includes(
+  'latest_published="$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name || true)"'),
+  'missing-draft validation must tolerate /releases/latest 404 when no published release exists');
+assert.ok(read('.github/workflows/release-please.yml').includes('[ "$latest_published" != "$MISSING_TAG" ]'),
   'missing-draft create must not promote the unpublished tag to Latest');
 
 const nightly = parse('.github/workflows/nightly.yml');
