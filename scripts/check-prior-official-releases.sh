@@ -10,6 +10,8 @@ fixture=false
 verify_complete_release() {
   local tag="$1" release_id="$2" temp source source_tree assets metadata manifest expected_targets
   temp="$(mktemp -d)"
+  source_tree=""
+  trap 'if [ -n "$source_tree" ]; then git worktree remove --force "$source_tree" >/dev/null 2>&1 || true; fi; rm -rf "$temp"' RETURN
   git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag" >/dev/null
   source="$(git rev-parse "refs/tags/$tag^{}")"
   source_tree="$temp/source"
@@ -65,8 +67,6 @@ verify_complete_release() {
   bash scripts/check-sha256-index.sh "${checksum_args[@]}" >/dev/null
   (cd "$assets" && sha256sum -c sha256.sum >/dev/null)
   bash scripts/verify-official-attestation.sh "$metadata" "$metadata" >/dev/null
-  git worktree remove --force "$source_tree"
-  rm -rf "$temp"
 }
 
 if [ -n "${OFFICIAL_STATE_FIXTURE:-}" ]; then
@@ -114,7 +114,18 @@ while IFS= read -r tag; do
     fi
   else
     [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
-    if verify_complete_release "$tag" "$release_id"; then
+    # `if verify_complete_release` disables set -e inside the function, so a
+    # failed check plus successful cleanup would look verified. Capture status
+    # from a standalone subshell that keeps errexit on.
+    verify_status=0
+    set +e
+    (
+      set -euo pipefail
+      verify_complete_release "$tag" "$release_id"
+    )
+    verify_status=$?
+    set -e
+    if [ "$verify_status" -eq 0 ]; then
       :
     else
       echo "check-prior-official-releases: allowing broken published official $tag; published bytes cannot be repaired"

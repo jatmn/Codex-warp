@@ -50,5 +50,33 @@ if grep -F 'gh attestation verify' scripts/check-prior-official-releases.sh >/de
   echo 'check-prior-official-releases-harness: repository-only attestation verify remains' >&2
   exit 1
 fi
+if grep -E '^[[:space:]]*if verify_complete_release' scripts/check-prior-official-releases.sh >/dev/null; then
+  echo 'check-prior-official-releases-harness: verify_complete_release is invoked in a conditional' >&2
+  exit 1
+fi
+grep -F 'set +e' scripts/check-prior-official-releases.sh >/dev/null
+grep -F 'verify_complete_release "$tag" "$release_id"' scripts/check-prior-official-releases.sh >/dev/null
+
+masking_verify() {
+  false
+  true
+}
+if masking_verify; then
+  :
+else
+  echo 'check-prior-official-releases-harness: unexpected if-condition failure' >&2
+  exit 1
+fi
+set +e
+(
+  set -euo pipefail
+  masking_verify
+)
+masking_status=$?
+set -e
+[ "$masking_status" -ne 0 ] || {
+  echo 'check-prior-official-releases-harness: standalone subshell treated failed check plus cleanup as success' >&2
+  exit 1
+}
 
 echo 'check-prior-official-releases-harness: ok'

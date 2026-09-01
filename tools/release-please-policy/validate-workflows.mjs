@@ -272,8 +272,10 @@ const officialRecoverySource = read('.github/workflows/release-recovery.yml');
 assert.ok(officialRecoverySource.includes('.prerelease == false'), 'official recovery must reject prerelease drafts');
 assert.equal(officialRecovery.jobs.plan.steps.find(step => step.uses?.startsWith('actions/checkout@')).with.ref, '${{ github.workflow_sha }}');
 assert.ok(officialRecovery.jobs['collect-rebuild'].steps.some(step => typeof step.run === 'string' &&
+  step.run.includes('RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json"') &&
+  step.run.includes('DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json"') &&
   step.run.includes('bash scripts/assemble-official-candidate.sh release-source/target/distrib identity.json dist-manifest.json candidate')),
-  'official recovery collect must assemble the eleven-file candidate from contract-named dist outputs');
+  'official recovery collect must assemble from the tagged source contract and schema');
 assert.ok(!officialRecoverySource.includes("jq -r '.upload_files[]' dist-manifest.json"),
   'official recovery must not copy dist host upload_files as the release candidate');
 for (const jobName of ['collect-rebuild', 'load-retained', 'load-remote', 'mutate']) {

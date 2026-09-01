@@ -4,6 +4,8 @@
 # upload_files: that list is the files the current dist command built, so a host
 # pass may contain only sha256.sum (or extra CI scratch files) rather than the
 # eleven-file release set.
+# Honor RELEASE_CONTRACT_PATH and DIST_MANIFEST_SCHEMA_PATH so recovery can
+# assemble against the tagged source contract instead of the control checkout.
 set -euo pipefail
 
 if [ "$#" -ne 4 ]; then
@@ -17,12 +19,16 @@ distrib="$1"
 identity="$2"
 manifest="$3"
 output="$4"
+contract="${RELEASE_CONTRACT_PATH:-tools/release-contract.json}"
+dist_schema="${DIST_MANIFEST_SCHEMA_PATH:-tools/dist-manifest.schema.json}"
 [ -d "$distrib" ] || { echo "assemble-official-candidate: missing distrib directory: $distrib" >&2; exit 1; }
 [ -f "$identity" ] || { echo "assemble-official-candidate: missing identity: $identity" >&2; exit 1; }
 [ -f "$manifest" ] || { echo "assemble-official-candidate: missing dist manifest: $manifest" >&2; exit 1; }
+[ -f "$contract" ] || { echo "assemble-official-candidate: missing release contract: $contract" >&2; exit 1; }
+[ -f "$dist_schema" ] || { echo "assemble-official-candidate: missing dist manifest schema: $dist_schema" >&2; exit 1; }
 [ ! -e "$output" ] || { echo "assemble-official-candidate: output already exists: $output" >&2; exit 1; }
 
-node tools/release-please-policy/validate-json.mjs tools/dist-manifest.schema.json "$manifest"
+node tools/release-please-policy/validate-json.mjs "$dist_schema" "$manifest"
 [ "$(jq -r '.announcement_tag_is_implicit' "$manifest")" = false ] || {
   echo 'assemble-official-candidate: official dist manifest must use an explicit announcement tag' >&2
   exit 1
@@ -47,7 +53,7 @@ while IFS= read -r target; do
   runner="$distrib/$target-runner.json"
   [ -f "$target_manifest" ] || { echo "assemble-official-candidate: missing target manifest: $target" >&2; exit 1; }
   [ -f "$runner" ] || { echo "assemble-official-candidate: missing runner evidence: $target" >&2; exit 1; }
-  node tools/release-please-policy/validate-json.mjs tools/dist-manifest.schema.json "$target_manifest"
+  node tools/release-please-policy/validate-json.mjs "$dist_schema" "$target_manifest"
   [ "$(jq -r '.dist_version' "$target_manifest")" = "$(jq -r '.dist_version' "$manifest")" ] || {
     echo "assemble-official-candidate: dist version mismatch for $target" >&2
     exit 1
@@ -66,7 +72,7 @@ while IFS= read -r target; do
     echo "assemble-official-candidate: target and final manifests disagree for $target" >&2
     exit 1
   }
-done < <(jq -r '.targets[].triple' tools/release-contract.json)
+done < <(jq -r '.targets[].triple' "$contract")
 
 identity_runners="$(jq -Sc '.runners | sort_by(.target)' "$identity")"
 evidence_runners="$(jq -scS 'sort_by(.target)' "$distrib"/*-runner.json)"

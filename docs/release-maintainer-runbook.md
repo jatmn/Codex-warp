@@ -188,7 +188,9 @@ mutation; if that GET already shows a published release, stop. Recovery cannot
 repair published bytes. Cut the next official version instead. Prior-release
 verification still fail-closes on a missing release, outstanding draft, or
 active official run, but it allows a broken published official so Release Please
-can open that next version. Published bytes cannot be repaired.
+can open that next version. Published bytes cannot be repaired. Official
+recovery assemble and publication checks use the tagged source contract and
+schema files, not the protected control checkout copies.
 
 Official archive and metadata attestations are accepted only when their signed
 identity names the reviewed `Release` tag workflow or `Release Recovery` main

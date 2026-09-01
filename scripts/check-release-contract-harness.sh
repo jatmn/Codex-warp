@@ -151,6 +151,18 @@ if bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identit
   echo 'check-release-contract-harness: assembled official candidate from an implicit announcement tag' >&2
   exit 1
 fi
+jq '.targets += [{"triple":"wasm32-wasi","archive":"codex-warp-wasm32-wasi.tar.xz","binary":"codex-warp"}]' \
+  tools/release-contract.json >"$tmp/future-contract.json"
+if RELEASE_CONTRACT_PATH="$tmp/future-contract.json" \
+  bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/official-manifest.json" "$tmp/official-future" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: assembled against a later control contract the source did not build' >&2
+  exit 1
+fi
+if DIST_MANIFEST_SCHEMA_PATH="$tmp/missing-schema.json" \
+  bash scripts/assemble-official-candidate.sh "$distrib" "$tmp/official-identity.json" "$tmp/official-manifest.json" "$tmp/official-missing-schema" >/dev/null 2>&1; then
+  echo 'check-release-contract-harness: ignored DIST_MANIFEST_SCHEMA_PATH' >&2
+  exit 1
+fi
 
 jq '.publishable = true' "$proof/codex-warp-release-metadata.json" >"$tmp/invalid-metadata.json"
 if bash scripts/check-release-contract.sh pr-upload-proof "$proof" "$tmp/invalid-metadata.json" "$proof/dist-manifest.json" >/dev/null 2>&1; then
