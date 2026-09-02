@@ -13,6 +13,14 @@ function isWithinBase(target) {
   return target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`);
 }
 
+function hasSafePathSegments(target) {
+  if (!isWithinBase(target) || target === BASE_DIR) return target === BASE_DIR;
+  return target
+    .slice(BASE_DIR.length + 1)
+    .split(path.sep)
+    .every((segment) => segment !== "." && segment !== ".." && SAFE_SEGMENT.test(segment));
+}
+
 function resolveWithinBase(input) {
   const normalizedInput = typeof input === "string" ? input.replace(/\\/g, "/") : "";
   const segments = normalizedInput.split("/").filter((segment) => segment !== "");
@@ -37,6 +45,9 @@ function resolveWithinBase(input) {
   const real = fs.realpathSync(resolved);
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${input}`);
+  }
+  if (!hasSafePathSegments(real)) {
+    throw new Error(`unsafe documentation path: ${input}`);
   }
   return resolved;
 }
@@ -64,7 +75,10 @@ function resolveChild(target, name) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
-  return real;
+  if (!hasSafePathSegments(real)) {
+    throw new Error(`unsafe documentation path: ${name}`);
+  }
+  return resolved;
 }
 
 function walk(target, out) {
@@ -75,6 +89,9 @@ function walk(target, out) {
   const realTarget = fs.realpathSync(target);
   if (!isWithinBase(realTarget)) {
     throw new Error(`documentation path escapes repository: ${target}`);
+  }
+  if (!hasSafePathSegments(realTarget)) {
+    throw new Error(`unsafe documentation path: ${target}`);
   }
 
   const st = fs.statSync(realTarget);
@@ -87,7 +104,9 @@ function walk(target, out) {
     }
     return;
   }
-  if (st.isFile() && realTarget.endsWith(".md")) out.push(realTarget);
+  if (st.isFile() && target.endsWith(".md")) {
+    out.push({ readPath: realTarget, displayPath: target });
+  }
 }
 
 function prose(text) {
@@ -108,11 +127,13 @@ try {
     const files = [];
     walk(resolveWithinBase(root), files);
     for (const file of files) {
-      const text = fs.readFileSync(file, "utf8");
+      const text = fs.readFileSync(file.readPath, "utf8");
       const lines = prose(text).split(/\r?\n/);
       lines.forEach((line, idx) => {
         if (CONTRACTION.test(line)) {
-          console.error(`${file}:${idx + 1}: capitalize first-person contractions in docs`);
+          console.error(
+            `${file.displayPath}:${idx + 1}: capitalize first-person contractions in docs`
+          );
           failed = true;
         }
       });

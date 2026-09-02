@@ -38,11 +38,44 @@ elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
 fi
 
-prose_fixture="$(mktemp -d "$root/.docs-prose-check.XXXXXX")"
+prose_fixture="$(mktemp -d)"
 trap 'rm -rf "$prose_fixture"' EXIT
-touch "$prose_fixture/unsafe name.md"
-if node scripts/docs_prose_check.js "${prose_fixture#"$root/"}" >/dev/null 2>&1; then
+mkdir -p "$prose_fixture/scripts" "$prose_fixture/docs" "$prose_fixture/targets"
+cp scripts/docs_prose_check.js "$prose_fixture/scripts/docs_prose_check.js"
+
+touch "$prose_fixture/docs/unsafe name.md"
+unsafe_status=0
+if (cd "$prose_fixture" && node scripts/docs_prose_check.js docs) >/dev/null 2>&1; then
+  unsafe_status=0
+else
+  unsafe_status=$?
+fi
+if [ "$unsafe_status" -ne 2 ]; then
   echo "docs-checks: prose checker accepted an unsafe child filename" >&2
+  fail=1
+fi
+rm "$prose_fixture/docs/unsafe name.md"
+
+touch "$prose_fixture/targets/unsafe name.md"
+ln -s '../targets/unsafe name.md' "$prose_fixture/docs/safe.md"
+unsafe_status=0
+if (cd "$prose_fixture" && node scripts/docs_prose_check.js docs) >/dev/null 2>&1; then
+  unsafe_status=0
+else
+  unsafe_status=$?
+fi
+if [ "$unsafe_status" -ne 2 ]; then
+  echo "docs-checks: prose checker accepted an unsafe symlink target" >&2
+  fail=1
+fi
+rm "$prose_fixture/docs/safe.md" "$prose_fixture/targets/unsafe name.md"
+
+printf "i'm lowercase\n" > "$prose_fixture/targets/content"
+ln -s ../targets/content "$prose_fixture/docs/guide.md"
+logical_status=0
+logical_output="$(cd "$prose_fixture" && node scripts/docs_prose_check.js docs 2>&1)" || logical_status=$?
+if [ "$logical_status" -ne 1 ] || ! grep -Fq 'docs/guide.md:1:' <<< "$logical_output"; then
+  echo "docs-checks: prose checker lost a safe logical Markdown path" >&2
   fail=1
 fi
 
