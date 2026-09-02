@@ -42,6 +42,9 @@ runtime needs a new generic capability.
   smoke tests against a live upstream.
 - Use [`docs/development.md`](docs/development.md) for platform
   build instructions.
+- Use [`docs/releases.md`](docs/releases.md) for official and nightly artifact
+  contracts. Pull request titles must follow [Commits](#commits) so Release
+  Please classifies the change for `CHANGELOG.md`.
 
 ## Repo Layout
 
@@ -339,5 +342,65 @@ manual smoke-test flow.
 
 ## Commits
 
-When asked to commit local work, use a descriptive subject and a body that
-summarizes the functional changes and validation commands that were run.
+When asked to commit local work, use a Conventional Commit subject and a body
+that summarizes the functional changes and validation commands that were run.
+The repository squash-merges pull requests, so the **pull request title** is
+the commit Release Please reads for version bumps and `CHANGELOG.md`. Match
+the PR title to that subject.
+
+Shape (enforced by `scripts/check-pr-title.sh`):
+
+```text
+type(optional-scope)!: concise description
+```
+
+Types are lowercase. Do not use `Fix:`, `feature:`, or a missing `: ` separator.
+
+### Changelog And Version Effects
+
+User-facing types appear in release notes and can open the next official
+release:
+
+| Type | Changelog section | Version effect | Use when |
+| --- | --- | --- | --- |
+| `feat` | Features | minor | a user-visible capability |
+| `fix` | Bug Fixes | patch | a user-visible bug fix |
+| `perf` | Performance Improvements | patch | a user-visible speed or allocation win |
+| `revert` | Reverts | patch | rolling back a previous user-visible change |
+
+Breaking changes use `type!:` or a body footer `BREAKING CHANGE: ...`. Before
+1.0 that still bumps minor.
+
+These types stay in git history. They do not write release notes and do not
+bump the official version by themselves:
+
+`refactor`, `docs`, `test`, `build`, `ci`, `chore`
+
+Pick the type from the user-visible behavior, not the files touched. A Web UI
+bug that also updates docs is still `fix(webui):`, not `docs:`. A catalog-only
+behavior change is `feat(config):` or `fix(config):`, not `chore:`.
+
+### Title Templates
+
+```text
+feat(config): add reusable provider fragments
+feat(webui): show provider health status
+feat!: change the provider selection contract
+fix(webui): preserve inherited stream usage
+fix(codec): keep usage.input_tokens on empty streams
+perf(codec): reduce markup scanning allocations
+revert: restore the previous retry policy
+docs: clarify Xiaomi Token Plan setup
+test: cover retry exhaustion
+refactor: split the transport helper
+build(release): regenerate the dist workflow
+build(deps): bump serde from 1.0.1 to 1.0.2
+ci: split the Windows job
+chore: refresh release-policy fixtures
+```
+
+Common scopes: `config`, `webui`, `codec`, `provider`, `models`, `store`,
+`server`, `release`. Omit the scope when nothing fits. `build(deps):` is valid
+for Dependabot. Do not invent `chore(main): release ...`; Release Please owns
+that title. Do not add a `Release-As:` footer on ordinary agent commits. Do not
+edit the `Cargo.toml` version.

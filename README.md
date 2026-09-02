@@ -43,9 +43,9 @@ cargo build --release
 ```
 
 Versioned official archives and immutable nightly prereleases are available
-from [GitHub Releases](https://github.com/jatmn/Codex-warp/releases) after the
-release automation is activated. See [Releases](docs/releases.md) for channel,
-asset, checksum, and provenance details.
+from [GitHub Releases](https://github.com/jatmn/Codex-warp/releases). See
+[Releases](docs/releases.md) for channel, asset, checksum, and provenance
+details.
 
 For platform-specific prerequisites, see the
 [Linux, macOS, and Windows build guide](docs/development.md).

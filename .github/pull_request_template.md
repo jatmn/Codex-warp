@@ -6,6 +6,7 @@
 Use a Conventional Commit title because squash merge makes it the main-branch
 commit: type(optional-scope)!: concise description
 Accepted types: feat, fix, perf, refactor, docs, test, build, ci, chore, revert
+Templates and changelog mapping: AGENTS.md#commits
 -->
 
 ## Contribution checklist
