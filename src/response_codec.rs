@@ -1766,17 +1766,7 @@ fn request_has_unresolved_subagent_work(request: &Value) -> bool {
 
 fn input_has_unresolved_subagent_work(items: &[Value]) -> bool {
     let mut open_spawns = 0i32;
-    for item in items {
-        match item_subagent_lifecycle(item) {
-            SubagentLifecycle::Spawn => open_spawns += 1,
-            // A wait acknowledges outstanding children for this parent turn.
-            // Codex may return on the first completed target; later text may
-            // still need follow-up, but that is handled by the mid-task text
-            // classifier. Clearing here avoids double-counting completed waves.
-            SubagentLifecycle::Wait => open_spawns = 0,
-            SubagentLifecycle::Neither => {}
-        }
-    }
+    apply_subagent_lifecycle_items(items, &mut open_spawns);
     open_spawns > 0
 }
 
@@ -1784,21 +1774,29 @@ fn chat_messages_have_unresolved_subagent_work(messages: &[Value]) -> bool {
     let mut open_spawns = 0i32;
     for message in messages {
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-            for call in calls {
-                match item_subagent_lifecycle(call) {
-                    SubagentLifecycle::Spawn => open_spawns += 1,
-                    SubagentLifecycle::Wait => open_spawns = 0,
-                    SubagentLifecycle::Neither => {}
-                }
-            }
+            apply_subagent_lifecycle_items(calls, &mut open_spawns);
         }
-        match item_subagent_lifecycle(message) {
-            SubagentLifecycle::Spawn => open_spawns += 1,
-            SubagentLifecycle::Wait => open_spawns = 0,
-            SubagentLifecycle::Neither => {}
-        }
+        apply_subagent_lifecycle_item(message, &mut open_spawns);
     }
     open_spawns > 0
+}
+
+fn apply_subagent_lifecycle_items(items: &[Value], open_spawns: &mut i32) {
+    for item in items {
+        apply_subagent_lifecycle_item(item, open_spawns);
+    }
+}
+
+fn apply_subagent_lifecycle_item(item: &Value, open_spawns: &mut i32) {
+    match item_subagent_lifecycle(item) {
+        SubagentLifecycle::Spawn => *open_spawns += 1,
+        // A wait acknowledges outstanding children for this parent turn.
+        // Codex may return on the first completed target; later text may
+        // still need follow-up, but that is handled by the mid-task text
+        // classifier. Clearing here avoids double-counting completed waves.
+        SubagentLifecycle::Wait => *open_spawns = 0,
+        SubagentLifecycle::Neither => {}
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2294,9 +2292,7 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
         let complement = complement
             .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
             .trim();
-        return complement.is_empty()
-            || complement_is_deferral_only(complement)
-            || complement_is_person_hand_off(complement);
+        return complement.is_empty() || complement_is_deferral_only(complement);
     }
     [
         "summarize",

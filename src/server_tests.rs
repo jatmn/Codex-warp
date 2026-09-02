@@ -254,7 +254,7 @@ fn apply_configured_tracing_filter_uses_pinned_fallback() {
         CliDebugOverrides::default(),
     )
     .expect("initialize");
-    apply_configured_tracing_filter(&state).expect("apply tracing");
+    assert!(!apply_configured_tracing_filter(&state).expect("apply tracing"));
     assert_eq!(
         state
             .tracing_reload
@@ -272,6 +272,30 @@ fn apply_configured_tracing_filter_uses_pinned_fallback() {
             .wanted_filter(&state.debug_log.live_snapshot()),
         "codex_warp=warn"
     );
+}
+
+#[test]
+fn apply_configured_tracing_filter_reports_disabled_continue_guard() {
+    let mut config = AppConfig::default();
+    config.continue_guard.enabled = false;
+    let state = test_state(config);
+    assert!(apply_configured_tracing_filter(&state).expect("apply tracing"));
+}
+
+#[test]
+fn warn_if_continue_guard_disabled_is_silent_when_enabled() {
+    assert!(!warn_if_continue_guard_disabled(
+        &crate::config::ContinueGuardConfig::default()
+    ));
+}
+
+#[test]
+fn warn_if_continue_guard_disabled_reports_stale_off_config() {
+    let continue_guard = crate::config::ContinueGuardConfig {
+        enabled: false,
+        ..crate::config::ContinueGuardConfig::default()
+    };
+    assert!(warn_if_continue_guard_disabled(&continue_guard));
 }
 
 #[test]

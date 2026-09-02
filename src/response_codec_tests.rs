@@ -1043,16 +1043,9 @@ fn non_stream_chat_repair_fails_closed_for_duplicate_explicit_source_ids() {
 }
 
 fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
-    let mut accum = ChatAccum::default();
-    accum.apply_chat_chunk(&json!({
-        "choices": [{"delta": {"content": text}}]
-    }));
-    accum.apply_chat_chunk(&json!({
-        "choices": [{"delta": {}, "finish_reason": "stop"}]
-    }));
-    let guard = ContinueGuardState::from_request(
-        ContinueGuardConfig::default(),
-        &json!({
+    continue_guard_end_turn_for_request(
+        text,
+        json!({
             "prompt_cache_key": cache_key,
             "input": [{
                 "type": "function_call",
@@ -1060,7 +1053,18 @@ fn continue_guard_end_turn(text: &str, cache_key: &str) -> bool {
                 "arguments": "{\"cmd\":\"git status\"}"
             }]
         }),
-    );
+    )
+}
+
+fn continue_guard_end_turn_for_request(text: &str, request: Value) -> bool {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {"content": text}}]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{"delta": {}, "finish_reason": "stop"}]
+    }));
+    let guard = ContinueGuardState::from_request(ContinueGuardConfig::default(), &request);
     completed_end_turn(&accum.finish(
         "resp_test",
         &BTreeSet::new(),
@@ -3253,6 +3257,22 @@ fn continue_guard_ill_wait_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_ill_wait_later_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait later.",
+        "continue-guard-test-ill-wait-later",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_wait_for_you_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait for you.",
+        "continue-guard-test-ill-wait-for-you",
+    ));
+}
+
+#[test]
 fn continue_guard_hy4_get_subagent_findings_by_resuming_triggers_followup() {
     // Observed pause after wait_agent returned Avicenna mid-work
     // (rollout-2026-09-02T12-56-25, task_complete at 20:33:15Z).
@@ -3460,6 +3480,75 @@ fn continue_guard_completed_plan_does_not_block_unresolved_spawn() {
     );
 
     assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_messages_unresolved_spawn_forces_followup_even_without_mid_task_text() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Spawned two reviewers.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-messages-unresolved-spawn",
+            "messages": [{
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_spawn_1",
+                    "function": {"name": "spawn_agent", "arguments": "{\"message\":\"review A\"}"}
+                }]
+            }]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_messages_spawn_then_wait_without_mid_task_text_stays_end_turn() {
+    assert!(continue_guard_end_turn_for_request(
+        "Both reviewers finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-messages-spawn-then-wait",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_spawn_1",
+                        "function": {"name": "spawn_agent", "arguments": "{\"message\":\"review A\"}"}
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_spawn_1",
+                    "content": "{\"thread_id\":\"agent-a\"}"
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_wait_1",
+                        "function": {"name": "wait_agent", "arguments": "{\"targets\":[\"agent-a\"]}"}
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_wait_1",
+                    "content": "{\"completed\":\"done\"}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_messages_function_name_spawn_forces_followup() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Started the reviewer.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-messages-function-spawn",
+            "messages": [{
+                "function": {"name": "spawn_agent"}
+            }]
+        }),
+    ));
 }
 
 #[test]
