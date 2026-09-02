@@ -3569,8 +3569,11 @@ async fn named_template_create_allows_duplicate_instances_and_names() {
         .apply_overlays_with_tracing_fallback(&mut restored_config, None)
         .unwrap();
     let restored_seeds = reopened_store.enabled_model_route_seeds().unwrap();
-    let restored_routes =
-        crate::models::route_seeds_from_config_and_rows(&restored_config, &restored_seeds);
+    let restored_routes = crate::models::route_seeds_from_config_and_rows_with_disabled(
+        &restored_config,
+        &restored_seeds,
+        None,
+    );
     assert_eq!(
         restored_routes.get(&shared_model_id).map(String::as_str),
         Some("opencode_go"),
@@ -4008,9 +4011,10 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
     let seeds = {
         let config = state.read_config();
         let crate::models::ModelRouteSeedRead::Loaded { seeds, .. } =
-            crate::models::seed_model_routes_from_config_and_store(
+            crate::models::seed_model_routes_from_config_and_store_with_disabled(
                 &config,
                 state.store.as_ref().expect("store present"),
+                None,
             )
         else {
             panic!("seed cache read failed");

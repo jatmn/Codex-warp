@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
@@ -18,6 +19,76 @@ pub use crate::config_loader::provider_id_for_config_model;
 
 pub const DEFAULT_CONFIG_PATH: &str = "codex-warp.toml";
 pub const PRIMARY_PROVIDER_ID: &str = "default";
+
+/// Model ids an operator turned off in the Web UI, across every provider.
+///
+/// Several configured gateways can advertise the same slug (for example
+/// `gateway/model` under two providers that proxy one upstream). Route
+/// ownership is first-writer-wins per slug, so a disable applied to only one
+/// provider still leaves the same slug routable through a sibling that kept it
+/// enabled. Codex CLI's `/model` picker then keeps showing a model the operator
+/// turned off. Treat a Web UI disable as operator intent for the slug itself
+/// so publication, routing, and the picker agree.
+///
+/// Only Web UI-managed disables participate. Static TOML `disabled_models`
+/// entries stay provider-scoped because an operator writing TOML is already
+/// addressing one provider explicitly.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GloballyDisabledModels {
+    exact: BTreeSet<String>,
+    suffixes: Vec<String>,
+}
+
+impl GloballyDisabledModels {
+    /// Collect Web UI-managed disables from every configured provider.
+    ///
+    /// `is_managed` decides whether a provider's `disabled_models` entries are
+    /// Web UI intent. Static TOML `disabled_models` stay provider-scoped: an
+    /// operator editing TOML is already addressing one provider, and a sibling
+    /// gateway that still lists the slug should keep serving it.
+    pub(crate) fn from_config_with_managed<F>(config: &AppConfig, mut is_managed: F) -> Self
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut exact = BTreeSet::new();
+        let mut suffixes = Vec::new();
+        for (provider_id, provider) in provider_entries(config) {
+            if !is_managed(provider_id) {
+                continue;
+            }
+            for disabled in &provider.disabled_models {
+                if disabled.is_empty() {
+                    continue;
+                }
+                // `provider/foo` disables bare `foo` too, matching
+                // `model_ids_overlap`, so a sibling's bare slug stays hidden.
+                match disabled.split_once('/') {
+                    Some((_prefix, suffix)) if !suffix.is_empty() && !suffix.contains('/') => {
+                        suffixes.push(suffix.to_string());
+                    }
+                    _ => {}
+                }
+                exact.insert(disabled.clone());
+            }
+        }
+        Self { exact, suffixes }
+    }
+
+    /// Convenience wrapper for callers without a store. Nothing is treated as
+    /// Web UI managed, so behavior matches the provider-scoped baseline.
+    pub(crate) fn from_config(config: &AppConfig) -> Self {
+        Self::from_config_with_managed(config, |_| false)
+    }
+
+    /// True when some provider has this exact model id in `disabled_models`.
+    pub(crate) fn contains(&self, model_id: &str) -> bool {
+        if self.exact.contains(model_id) {
+            return true;
+        }
+        // A disabled `provider/foo` also covers a sibling's bare `foo`.
+        self.suffixes.iter().any(|suffix| suffix == model_id)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

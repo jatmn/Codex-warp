@@ -24,6 +24,7 @@ use tracing::warn;
 
 use crate::config::Backend;
 use crate::config::ContinueGuardMode;
+use crate::config::GloballyDisabledModels;
 use crate::config::load_config_layers;
 use crate::config::provider_entries;
 use crate::debug_log::DebugLog;
@@ -31,8 +32,8 @@ use crate::http::no_provider_response;
 use crate::http::unknown_model_response;
 use crate::models::ModelRouteSeedRead;
 use crate::models::models;
-use crate::models::register_catalog_routes_for_provider;
-use crate::models::seed_model_routes_from_config_and_store;
+use crate::models::register_catalog_routes_for_provider_with_disabled;
+use crate::models::seed_model_routes_from_config_and_store_with_disabled;
 use crate::process_log::ProcessLog;
 use crate::process_log::TracingReload;
 use crate::process_log::init_tracing;
@@ -298,25 +299,50 @@ fn initialize_state_with_store(
             .map(crate::process_log::TracingReload::fallback_filter),
     )
     .map_err(anyhow::Error::msg)?;
+    // A Web UI disable is operator intent for the slug, so startup seeding must
+    // honor cross-provider disables too. Otherwise a disabled model returns to
+    // the Codex CLI picker on the next restart.
+    let globally_disabled = match store.as_ref() {
+        Some(store) => GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
+            store.provider_is_managed(provider_id).unwrap_or(false)
+        }),
+        None => GloballyDisabledModels::from_config(&config),
+    };
     let (model_routes, model_route_seeds) = match store.as_ref() {
-        Some(store) => match seed_model_routes_from_config_and_store(&config, store) {
-            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, seeds),
-            ModelRouteSeedRead::Failed(err) => {
-                warn!(
-                    error = %err,
-                    "failed to read enabled model route seeds; overlay routes omitted at startup"
-                );
-                let mut seeded = BTreeMap::new();
-                for (provider_id, provider) in provider_entries(&config) {
-                    register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+        Some(store) => {
+            match seed_model_routes_from_config_and_store_with_disabled(
+                &config,
+                store,
+                Some(&globally_disabled),
+            ) {
+                ModelRouteSeedRead::Loaded { routes, seeds } => (routes, seeds),
+                ModelRouteSeedRead::Failed(err) => {
+                    warn!(
+                        error = %err,
+                        "failed to read enabled model route seeds; overlay routes omitted at startup"
+                    );
+                    let mut seeded = BTreeMap::new();
+                    for (provider_id, provider) in provider_entries(&config) {
+                        register_catalog_routes_for_provider_with_disabled(
+                            &mut seeded,
+                            provider_id,
+                            provider,
+                            Some(&globally_disabled),
+                        );
+                    }
+                    (seeded, Vec::new())
                 }
-                (seeded, Vec::new())
             }
-        },
+        }
         None => {
             let mut seeded = BTreeMap::new();
             for (provider_id, provider) in provider_entries(&config) {
-                register_catalog_routes_for_provider(&mut seeded, provider_id, provider);
+                register_catalog_routes_for_provider_with_disabled(
+                    &mut seeded,
+                    provider_id,
+                    provider,
+                    Some(&globally_disabled),
+                );
             }
             (seeded, Vec::new())
         }

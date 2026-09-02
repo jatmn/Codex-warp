@@ -1734,7 +1734,8 @@ fn create_named_template_catalog_preserves_earliest_colliding_route_owner() {
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
     let seeds = store.enabled_model_route_seeds().unwrap();
-    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    let routes =
+        crate::models::route_seeds_from_config_and_rows_with_disabled(&config, &seeds, None);
     assert_eq!(
         routes.get("shared/model").map(String::as_str),
         Some("z_owner")
@@ -1792,7 +1793,8 @@ fn create_named_template_catalog_preserves_owner_at_minimum_route_order() {
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
     let seeds = store.enabled_model_route_seeds().unwrap();
-    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    let routes =
+        crate::models::route_seeds_from_config_and_rows_with_disabled(&config, &seeds, None);
     assert_eq!(
         routes.get("shared/model").map(String::as_str),
         Some("owner")
@@ -1877,7 +1879,8 @@ fn create_named_template_catalog_does_not_preseed_disabled_colliding_owner() {
         .apply_overlays_with_tracing_fallback(&mut config, None)
         .unwrap();
     let seeds = store.enabled_model_route_seeds().unwrap();
-    let routes = crate::models::route_seeds_from_config_and_rows(&config, &seeds);
+    let routes =
+        crate::models::route_seeds_from_config_and_rows_with_disabled(&config, &seeds, None);
     assert_eq!(
         routes.get("shared/model").map(String::as_str),
         Some("z_owner")

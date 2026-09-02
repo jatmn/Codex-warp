@@ -33,6 +33,7 @@ use serde_json::json;
 
 use crate::config::AppConfig;
 use crate::config::DebugConfig;
+use crate::config::GloballyDisabledModels;
 use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
@@ -1030,23 +1031,46 @@ async fn sync_provider_routes_for_enabled(
 
 async fn synchronize_global_route_seed_snapshot(state: &AppState, provider_id: &str) {
     let config = state.read_config().clone();
+    let globally_disabled = match state.store.as_ref() {
+        Some(store) => GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
+            store.provider_is_managed(provider_id).unwrap_or(false)
+        }),
+        None => GloballyDisabledModels::from_config(&config),
+    };
     let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
-        Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
-            models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
-            models::ModelRouteSeedRead::Failed(err) => {
-                tracing::warn!(
-                    provider_id = %provider_id,
-                    error = %err,
-                    "failed to read globally ordered route seeds during provider sync; using cached seeds"
-                );
-                let (seeds, _) = state.model_route_seed_snapshot().await;
-                (
-                    models::route_seeds_from_config_and_rows(&config, &seeds),
-                    None,
-                )
+        Some(store) => {
+            match models::seed_model_routes_from_config_and_store_with_disabled(
+                &config,
+                store,
+                Some(&globally_disabled),
+            ) {
+                models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
+                models::ModelRouteSeedRead::Failed(err) => {
+                    tracing::warn!(
+                        provider_id = %provider_id,
+                        error = %err,
+                        "failed to read globally ordered route seeds during provider sync; using cached seeds"
+                    );
+                    let (seeds, _) = state.model_route_seed_snapshot().await;
+                    (
+                        models::route_seeds_from_config_and_rows_with_disabled(
+                            &config,
+                            &seeds,
+                            Some(&globally_disabled),
+                        ),
+                        None,
+                    )
+                }
             }
-        },
-        None => (models::route_seeds_from_config_and_rows(&config, &[]), None),
+        }
+        None => (
+            models::route_seeds_from_config_and_rows_with_disabled(
+                &config,
+                &[],
+                Some(&globally_disabled),
+            ),
+            None,
+        ),
     };
 
     if let Some(seeds) = refreshed_seeds {
