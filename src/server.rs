@@ -23,6 +23,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::config::Backend;
+use crate::config::ContinueGuardConfig;
 use crate::config::ContinueGuardMode;
 use crate::config::load_config_layers;
 use crate::config::provider_entries;
@@ -148,6 +149,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         cli_debug,
     )?;
     apply_configured_tracing_filter(&state)?;
+    warn_if_continue_guard_disabled(&state.read_config().continue_guard);
     let listen = state.read_config().listen.clone();
     let addr: SocketAddr = listen
         .parse()
@@ -184,6 +186,15 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+fn warn_if_continue_guard_disabled(continue_guard: &ContinueGuardConfig) {
+    if continue_guard.enabled {
+        return;
+    }
+    warn!(
+        "continue_guard is disabled in the loaded config; mid-task chat-completions stops will wait for a manual user prompt. Enable [continue_guard] enabled=true with mode=\"end_turn_false\" (the shipped default) or pass --continue-guard"
+    );
 }
 
 fn apply_destination_override(config: &mut crate::config::AppConfig, destination: Option<String>) {

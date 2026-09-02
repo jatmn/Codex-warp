@@ -3237,6 +3237,232 @@ fn continue_guard_get_back_to_you_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_let_me_wait_for_the_agent_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Let me wait for the agent to finish and report back.",
+        "continue-guard-test-wait-for-agent",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_wait_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait.",
+        "continue-guard-test-ill-wait",
+    ));
+}
+
+#[test]
+fn continue_guard_hy4_get_subagent_findings_by_resuming_triggers_followup() {
+    // Observed pause after wait_agent returned Avicenna mid-work
+    // (rollout-2026-09-02T12-56-25, task_complete at 20:33:15Z).
+    assert!(!continue_guard_end_turn(
+        "Tree is clean. Now let me get Avicenna's actual findings by resuming it.",
+        "continue-guard-test-hy4-resume-subagent",
+    ));
+}
+
+#[test]
+fn continue_guard_hy4_let_me_inspect_query_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Let me inspect the store's enabled-route-seed query, which is the authoritative source.",
+        "continue-guard-test-hy4-inspect-query",
+    ));
+}
+
+#[test]
+fn continue_guard_hy4_let_me_verify_end_to_end_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "S2 is confirmed as a **live, user-visible regression on this exact instance**. Let me verify it end-to-end against the real `/v1/models` output.",
+        "continue-guard-test-hy4-verify-e2e",
+    ));
+}
+
+#[test]
+fn continue_guard_unresolved_spawn_agent_forces_followup_even_without_mid_task_text() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Spawned two reviewers."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-unresolved-spawn",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_1",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_1",
+                    "output": "{\"thread_id\":\"agent-a\"}"
+                }
+            ]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_spawn_then_wait_without_mid_task_text_stays_end_turn() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Both reviewers finished."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-spawn-then-wait",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_1",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_1",
+                    "output": "{\"thread_id\":\"agent-a\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_1",
+                    "arguments": "{\"targets\":[\"agent-a\"]}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_wait_1",
+                    "output": "{\"completed\":\"done\"}"
+                }
+            ]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_namespaced_spawn_without_wait_forces_followup() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Started the reviewer."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-namespaced-spawn",
+            "input": [{
+                "type": "function_call",
+                "name": "multi_agent_v1.spawn_agent",
+                "call_id": "call_spawn_ns",
+                "arguments": "{\"message\":\"review\"}"
+            }]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
+fn continue_guard_completed_plan_does_not_block_unresolved_spawn() {
+    let mut accum = ChatAccum::default();
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {"content": "Spawned reviewers."}
+        }]
+    }));
+    accum.apply_chat_chunk(&json!({
+        "choices": [{
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }));
+    let guard = ContinueGuardState::from_request(
+        ContinueGuardConfig::default(),
+        &json!({
+            "prompt_cache_key": "continue-guard-test-plan-vs-spawn",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "update_plan",
+                    "arguments": "{\"plan\":[{\"step\":\"Done\",\"status\":\"completed\"}]}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_plan",
+                    "arguments": "{\"message\":\"review\"}"
+                }
+            ]
+        }),
+    );
+
+    let events = accum.finish(
+        "resp_test",
+        &BTreeSet::new(),
+        &NamespaceHelpers::default(),
+        &crate::config::ToolPolicyConfig::default(),
+        Some((&DebugLog::disabled(), "dbg_test", &guard)),
+    );
+
+    assert!(!completed_end_turn(&events));
+}
+
+#[test]
 fn continue_guard_ill_do_it_next_stays_end_turn() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({

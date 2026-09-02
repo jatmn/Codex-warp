@@ -1497,6 +1497,7 @@ impl ChatAccum {
                 "finish_reason": self.finish_reason,
                 "tool_call_count": self.tool_calls.iter().filter(|call| !call.name.is_empty()).count(),
                 "active_plan": state.active_plan,
+                "unresolved_subagent": state.unresolved_subagent,
                 "text_chars": self.text.chars().count(),
                 "text_fingerprint": text_fingerprint(&self.text)
             }));
@@ -1511,6 +1512,7 @@ pub(crate) struct ContinueGuardState {
     guard_key: Option<String>,
     active_plan: Option<ActivePlanSummary>,
     progress: bool,
+    unresolved_subagent: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -1543,6 +1545,7 @@ impl ContinueGuardState {
             guard_key,
             active_plan: latest_active_plan(request),
             progress,
+            unresolved_subagent: request_has_unresolved_subagent_work(request),
             config,
         }
     }
@@ -1561,15 +1564,20 @@ impl ContinueGuardState {
         // stopped there. If the last request item is later tool work, the plan
         // snapshot is stale and must not hide a mid-task pause. Missing plans
         // never suppress: many providers never call `update_plan`.
-        if self
+        // Unresolved sub-agent work (spawn without a later wait) is itself a
+        // mid-task signal: parents must keep going to wait/resume rather than
+        // end the turn while a child is still running. This wins over a
+        // completed plan snapshot, which can lag behind an open spawn wave.
+        if self.unresolved_subagent {
+            // fall through to mode handling below
+        } else if self
             .active_plan
             .as_ref()
             .is_some_and(|plan| !plan.has_open_items())
             && !self.progress
         {
             return ContinueGuardDecision::none("plan_completed");
-        }
-        if !looks_like_mid_task_stop(&accum.text) {
+        } else if !looks_like_mid_task_stop(&accum.text) {
             return ContinueGuardDecision::none("assistant_text_not_continuation");
         }
 
@@ -1742,6 +1750,82 @@ fn request_shows_tool_progress(request: &Value) -> bool {
         .is_some_and(|messages| chat_messages_show_tool_progress(messages))
 }
 
+/// True when the request history still has sub-agent spawn work that was never
+/// followed by a wait. Parents that stop after spawning without waiting leave
+/// children running and force the user to prompt "continue"; treat that shape
+/// as a premature stop even when the assistant text is terse.
+fn request_has_unresolved_subagent_work(request: &Value) -> bool {
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        return input_has_unresolved_subagent_work(input);
+    }
+    request
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| chat_messages_have_unresolved_subagent_work(messages))
+}
+
+fn input_has_unresolved_subagent_work(items: &[Value]) -> bool {
+    let mut open_spawns = 0i32;
+    for item in items {
+        match item_subagent_lifecycle(item) {
+            SubagentLifecycle::Spawn => open_spawns += 1,
+            // A wait acknowledges outstanding children for this parent turn.
+            // Codex may return on the first completed target; later text may
+            // still need follow-up, but that is handled by the mid-task text
+            // classifier. Clearing here avoids double-counting completed waves.
+            SubagentLifecycle::Wait => open_spawns = 0,
+            SubagentLifecycle::Neither => {}
+        }
+    }
+    open_spawns > 0
+}
+
+fn chat_messages_have_unresolved_subagent_work(messages: &[Value]) -> bool {
+    let mut open_spawns = 0i32;
+    for message in messages {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                match item_subagent_lifecycle(call) {
+                    SubagentLifecycle::Spawn => open_spawns += 1,
+                    SubagentLifecycle::Wait => open_spawns = 0,
+                    SubagentLifecycle::Neither => {}
+                }
+            }
+        }
+        match item_subagent_lifecycle(message) {
+            SubagentLifecycle::Spawn => open_spawns += 1,
+            SubagentLifecycle::Wait => open_spawns = 0,
+            SubagentLifecycle::Neither => {}
+        }
+    }
+    open_spawns > 0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubagentLifecycle {
+    Spawn,
+    Wait,
+    Neither,
+}
+
+fn item_subagent_lifecycle(item: &Value) -> SubagentLifecycle {
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            item.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("");
+    let bare = name.rsplit('.').next().unwrap_or(name);
+    match bare {
+        "spawn_agent" | "spawn" => SubagentLifecycle::Spawn,
+        "wait_agent" | "wait_threads" | "wait" => SubagentLifecycle::Wait,
+        _ => SubagentLifecycle::Neither,
+    }
+}
+
 fn item_shows_tool_progress(item: &Value, items: &[Value]) -> bool {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call_output" | "custom_tool_call_output") => {
@@ -1841,7 +1925,9 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    deferral, and work verbs whose only complement is postponement do
     //    not count ("Now let me summarize", "I'll update you",
     //    "I'll do it next", "I'll sit tight", "I'll take another look later",
-    //    "look at your PR", "I'll continue later", "I'll run soon").
+    //    "look at your PR", "I'll continue later", "I'll run soon",
+    //    "I'll wait", "I'll wait later"). "Let me wait for the agent" and
+    //    sub-agent resume verbs ("get"/"resume"/"collect") still continue.
     //    Immediacy ("I'll verify now", "I'll continue") is still work.
     // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues, and
@@ -2201,6 +2287,17 @@ fn complement_has_offer_clause(complement: &str) -> bool {
 }
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
+    // Bare "wait" / "I'll wait later" is a pause. "Let me wait for the agent"
+    // or "wait until the tests finish" is still speaker work and must continue.
+    if token_starts_with_stem(rest, "wait") {
+        let complement = strip_complement_fillers(action_complement(rest));
+        let complement = complement
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
+            .trim();
+        return complement.is_empty()
+            || complement_is_deferral_only(complement)
+            || complement_is_person_hand_off(complement);
+    }
     [
         "summarize",
         "stop",
@@ -2208,7 +2305,6 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
         "wrap",
         "explain",
         "tell",
-        "wait",
         "pause",
         "recap",
         "conclude",
@@ -2223,11 +2319,16 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
 }
 
 fn remainder_starts_with_work_verb(rest: &str) -> bool {
-    const STEMS: [&str; 34] = [
+    // Include sub-agent resume verbs observed in long multi-agent sessions
+    // ("let me get Avicenna's findings by resuming it", "I'll collect results").
+    // "get back to you" stays a hand-off via person-complement detection after
+    // particle stripping.
+    const STEMS: [&str; 41] = [
         "check", "inspect", "look", "read", "write", "run", "verify", "open", "search", "audit",
         "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep", "list",
         "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find", "scan",
-        "rebase", "commit", "merge", "build", "checkout",
+        "rebase", "commit", "merge", "build", "checkout", "resume", "get", "collect", "gather",
+        "retrieve", "obtain", "wait",
     ];
     STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
 }
