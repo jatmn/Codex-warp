@@ -1665,6 +1665,105 @@ async fn publish_model_routes_stores_discovered_models() {
     );
 }
 
+/// A Web UI disable must survive a failed provider refresh.
+///
+/// `publish_model_routes` retains stale route ownership for providers whose
+/// upstream fetch failed, so a transient failure must not resurrect a slug the
+/// operator turned off in the Web UI.
+#[tokio::test]
+async fn failed_provider_refresh_does_not_retain_globally_disabled_route() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    // Mark `alpha` Web UI-managed so its disable counts as operator intent
+    // for the slug, not just for one provider's catalog row.
+    store
+        .create_provider_with_catalog("alpha", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    // `beta` owns the route and its refresh FAILED. `alpha` is a sibling that
+    // still lists the same slug as enabled and carries the Web UI disable.
+    // The stale route must not be retained via beta's failed-provider
+    // ownership, because the operator turned the slug off.
+    for (id, disabled) in [("beta", None), ("alpha", Some("shared/model"))] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                disabled_models: disabled.map(|d| vec![d.to_string()]).unwrap_or_default(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared/model".to_string(),
+            "beta".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let failed = BTreeSet::from(["beta".to_string()]);
+    publish_model_routes(&state, BTreeMap::new(), BTreeMap::new(), &failed, None).await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared/model")
+            .map(String::as_str),
+        None,
+        "a globally disabled slug must not be retained via failed-provider ownership"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn route_and_seed_publication_is_cancellation_safe() {
     use std::sync::atomic::Ordering;
@@ -2499,8 +2598,8 @@ fn cross_provider_disable_drops_retained_route_ownership() {
         .disable_model("shared/model");
     let disabled = disabled_from(&config, &["gateway-b"]);
 
-    let mut routes = BTreeMap::new();
-    routes.insert("shared/model".to_string(), "gateway-a".to_string());
+    // Route seeding must drop a globally disabled slug even though the sibling
+    // gateway-a still lists it as enabled and would otherwise win the route.
     let seeds = vec![];
     let rebuilt = route_seeds_from_config_and_rows_with_disabled(&config, &seeds, Some(&disabled));
     assert_eq!(
@@ -2510,8 +2609,93 @@ fn cross_provider_disable_drops_retained_route_ownership() {
     );
 }
 
+/// Regression: a cross-provider disable must stay prefix-aware.
+///
+/// Disabling `opencode-go/model` hides the colliding bare `model` (the same
+/// upstream model reached unprefixed), but it must NOT hide an unrelated
+/// gateway's own `hicap/model`. Modeled on the repo's real bundled configs,
+/// where `moonshot-kimicode` publishes bare `kimi-k2.7-code` while `hicap`
+/// publishes `hicap/kimi-k2.7-code` and `opencode-go` publishes
+/// `opencode-go/kimi-k2.7-code`.
+#[test]
+fn prefixed_disable_does_not_hide_unrelated_prefixed_sibling() {
+    let mut config = AppConfig::default();
+    for (id, model_id, upstream) in [
+        ("moonshot", "kimi-k2.7-code", None),
+        (
+            "opencode-go",
+            "opencode-go/kimi-k2.7-code",
+            Some("kimi-k2.7-code"),
+        ),
+        ("hicap", "hicap/kimi-k2.7-code", Some("kimi-k2.7-code")),
+    ] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: model_id.to_string(),
+                    upstream_id: upstream.map(str::to_string),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    // Operator disables the model in opencode-go only, from the Web UI.
+    config
+        .providers
+        .get_mut("opencode-go")
+        .expect("opencode-go")
+        .disable_model("opencode-go/kimi-k2.7-code");
+    let disabled = disabled_from(&config, &["opencode-go"]);
+
+    assert!(
+        disabled.contains("opencode-go/kimi-k2.7-code"),
+        "the disabled slug itself must be suppressed"
+    );
+    assert!(
+        disabled.contains("kimi-k2.7-code"),
+        "a bare sibling slug must still be hidden"
+    );
+    assert!(
+        !disabled.contains("hicap/kimi-k2.7-code"),
+        "disabling under opencode-go must not hide hicap's own prefixed model"
+    );
+
+    // hicap keeps its route; the colliding slugs do not.
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("hicap/kimi-k2.7-code").map(String::as_str),
+        Some("hicap"),
+        "hicap must keep publishing its own model"
+    );
+    assert_eq!(
+        routes.get("opencode-go/kimi-k2.7-code").map(String::as_str),
+        None,
+        "the disabled slug is not routed"
+    );
+    assert_eq!(
+        routes.get("kimi-k2.7-code").map(String::as_str),
+        None,
+        "the bare slug of the same upstream model stays hidden across providers"
+    );
+}
+
 #[test]
 fn prefixed_disable_hides_bare_sibling_slug() {
+    // (existing test body preserved below)
     let mut config = AppConfig::default();
     config.providers.insert(
         "gateway-a".to_string(),
@@ -2545,5 +2729,58 @@ fn prefixed_disable_hides_bare_sibling_slug() {
     assert!(
         disabled.contains("model"),
         "disabling `provider/foo` must also cover a sibling's bare `foo`"
+    );
+}
+
+/// The overlap match must be symmetric, not one-directional.
+///
+/// Disabling a BARE slug must also hide a sibling's prefixed `provider/foo`,
+/// not just the other way round. The Web UI can address either form, so a
+/// one-directional match would leave the prefixed twin routable and visible
+/// in the Codex CLI `/model` picker.
+#[test]
+fn bare_disable_hides_prefixed_sibling_slug() {
+    let mut config = AppConfig::default();
+    for id in ["gateway-a", "gateway-b"] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "gateway-a/model".to_string(),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    // The operator disables the BARE form from the Web UI.
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("model");
+    let disabled = disabled_from(&config, &["gateway-b"]);
+
+    assert!(
+        disabled.contains("gateway-a/model"),
+        "disabling bare `foo` must also cover a sibling's `provider/foo`"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("gateway-a/model").map(String::as_str),
+        None,
+        "the prefixed twin must not stay routable through a sibling"
     );
 }

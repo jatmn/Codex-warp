@@ -60,15 +60,15 @@ impl GloballyDisabledModels {
                 if disabled.is_empty() {
                     continue;
                 }
-                // `provider/foo` disables bare `foo` too, matching
-                // `model_ids_overlap`, so a sibling's bare slug stays hidden.
-                match disabled.split_once('/') {
-                    Some((_prefix, suffix)) if !suffix.is_empty() && !suffix.contains('/') => {
-                        suffixes.push(suffix.to_string());
-                    }
-                    _ => {}
-                }
                 exact.insert(disabled.clone());
+                // Keep the full id so `contains()` can apply
+                // `model_ids_overlap` symmetrically: `provider/foo` hides a
+                // sibling's bare `foo`, and a bare `foo` hides a sibling's
+                // `provider/foo`, but neither hides another gateway's own
+                // `other/foo`. Gating on `contains('/')` here would make the
+                // match one-directional and let a bare disable leak through a
+                // sibling's prefixed slug.
+                suffixes.push(disabled.clone());
             }
         }
         Self { exact, suffixes }
@@ -85,8 +85,14 @@ impl GloballyDisabledModels {
         if self.exact.contains(model_id) {
             return true;
         }
-        // A disabled `provider/foo` also covers a sibling's bare `foo`.
-        self.suffixes.iter().any(|suffix| suffix == model_id)
+        // A disabled `provider/foo` also covers a sibling's bare `foo`, but it
+        // must NOT cover a different gateway's own `other/foo`. Matching is
+        // delegated to `model_ids_overlap`, which is symmetric and
+        // prefix-aware, so `provider/foo` overlaps bare `foo` yet stays
+        // distinct from `other/foo`.
+        self.suffixes
+            .iter()
+            .any(|suffix| model_ids_overlap(suffix, model_id))
     }
 }
 

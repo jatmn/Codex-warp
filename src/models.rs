@@ -611,6 +611,18 @@ async fn publish_model_routes(
     failed_providers: &BTreeSet<String>,
     refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
+    // A Web UI disable is operator intent for the slug. Compute it here so
+    // retained stale ownership cannot resurrect a disabled slug when a
+    // provider's refresh failed transiently.
+    let globally_disabled = match state.store.as_ref() {
+        Some(store) => {
+            let config = state.read_config();
+            GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
+                store.provider_is_managed(provider_id).unwrap_or(false)
+            })
+        }
+        None => GloballyDisabledModels::from_config(&state.read_config()),
+    };
     let retain_failed_routes = |routes: &mut BTreeMap<String, String>,
                                 prior: &BTreeMap<String, String>| {
         let config = state.read_config();
@@ -622,6 +634,12 @@ async fn publish_model_routes(
                 continue;
             };
             if !provider.model_is_enabled(model_id) {
+                continue;
+            }
+            // Retained prior ownership must also respect a Web UI disable,
+            // otherwise a slug survives purely because its owner's refresh
+            // failed and it was routed before.
+            if globally_disabled.contains(model_id) {
                 continue;
             }
             // A fresh successful discovery owns the route for this refresh.
