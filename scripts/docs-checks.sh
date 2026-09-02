@@ -38,6 +38,14 @@ elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
   fail=1
 fi
 
+prose_fixture="$(mktemp -d "$root/.docs-prose-check.XXXXXX")"
+trap 'rm -rf "$prose_fixture"' EXIT
+touch "$prose_fixture/unsafe name.md"
+if node scripts/docs_prose_check.js "${prose_fixture#"$root/"}" >/dev/null 2>&1; then
+  echo "docs-checks: prose checker accepted an unsafe child filename" >&2
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "docs-checks: failed" >&2
   exit 1

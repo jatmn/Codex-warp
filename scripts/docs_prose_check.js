@@ -42,6 +42,19 @@ function resolveWithinBase(input) {
 }
 
 function resolveChild(target, name) {
+  if (
+    typeof target !== "string" ||
+    !path.isAbsolute(target) ||
+    !isWithinBase(target) ||
+    typeof name !== "string" ||
+    name === "." ||
+    name === ".." ||
+    path.isAbsolute(name) ||
+    !SAFE_SEGMENT.test(name)
+  ) {
+    throw new Error(`unsafe documentation path: ${name}`);
+  }
+
   const resolved = path.resolve(target, name);
   if (!isWithinBase(resolved)) {
     throw new Error(`documentation path escapes repository: ${name}`);
@@ -51,22 +64,30 @@ function resolveChild(target, name) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
-  return resolved;
+  return real;
 }
 
 function walk(target, out) {
-  const st = fs.statSync(target);
+  if (typeof target !== "string" || !path.isAbsolute(target) || !isWithinBase(target)) {
+    throw new Error(`documentation path escapes repository: ${target}`);
+  }
+
+  const realTarget = fs.realpathSync(target);
+  if (!isWithinBase(realTarget)) {
+    throw new Error(`documentation path escapes repository: ${target}`);
+  }
+
+  const st = fs.statSync(realTarget);
   if (st.isDirectory()) {
-    const realTarget = fs.realpathSync(target);
     if (visitedDirectories.has(realTarget)) return;
     visitedDirectories.add(realTarget);
-    for (const name of fs.readdirSync(target)) {
+    for (const name of fs.readdirSync(realTarget)) {
       if (name === "." || name === "..") continue;
-      walk(resolveChild(target, name), out);
+      walk(resolveChild(realTarget, name), out);
     }
     return;
   }
-  if (st.isFile() && target.endsWith(".md")) out.push(target);
+  if (st.isFile() && realTarget.endsWith(".md")) out.push(realTarget);
 }
 
 function prose(text) {
