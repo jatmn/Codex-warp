@@ -192,7 +192,7 @@ fn warn_if_continue_guard_disabled(continue_guard: &ContinueGuardConfig) -> bool
         return false;
     }
     warn!(
-        "continue_guard is disabled in the loaded config; mid-task chat-completions stops will wait for a manual user prompt. Enable [continue_guard] enabled=true with mode=\"end_turn_false\" (the shipped default) or pass --continue-guard"
+        "continue_guard is disabled in the loaded config; mid-task chat-completions stops will wait for a manual user prompt. Enable [continue_guard] enabled=true with mode=\"end_turn_false\" (the shipped default) or pass --continue-guard (and --continue-guard-mode end_turn_false if mode is still observe)"
     );
     true
 }

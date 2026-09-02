@@ -3289,6 +3289,46 @@ fn continue_guard_then_wait_for_the_agent_triggers_followup() {
 }
 
 #[test]
+fn continue_guard_ill_wait_a_moment_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait a moment.",
+        "continue-guard-test-ill-wait-a-moment",
+    ));
+}
+
+#[test]
+fn continue_guard_then_wait_a_moment_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Then wait a moment.",
+        "continue-guard-test-then-wait-a-moment",
+    ));
+}
+
+#[test]
+fn continue_guard_then_get_back_to_you_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Then get back to you.",
+        "continue-guard-test-then-get-back-to-you",
+    ));
+}
+
+#[test]
+fn continue_guard_then_get_the_subagent_findings_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Then get the subagent findings.",
+        "continue-guard-test-then-get-subagent-findings",
+    ));
+}
+
+#[test]
+fn continue_guard_then_look_at_your_pr_still_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Then look at your PR.",
+        "continue-guard-test-then-look-at-your-pr",
+    ));
+}
+
+#[test]
 fn continue_guard_ill_wait_for_you_stays_end_turn() {
     assert!(continue_guard_end_turn(
         "I'll wait for you.",

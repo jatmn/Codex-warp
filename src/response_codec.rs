@@ -1994,6 +1994,7 @@ fn prefix_has_work_intent(
             let matched = if require_known_work_verb {
                 remainder_starts_with_work_verb(after_prefix)
                     && !remainder_starts_with_wrap_up_action(after_prefix)
+                    && !remainder_is_added_resume_stem_person_hand_off(after_prefix)
             } else {
                 remainder_is_work_action(after_prefix)
             };
@@ -2286,14 +2287,19 @@ fn complement_has_offer_clause(complement: &str) -> bool {
 }
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
-    // Bare "wait" / "I'll wait later" is a pause. "Let me wait for the agent"
-    // or "wait until the tests finish" is still speaker work and must continue.
+    // Bare "wait" / "I'll wait later" / "I'll wait a moment" is a pause.
+    // "Let me wait for the agent" or "wait until the tests finish" is still
+    // speaker work and must continue.
     if token_starts_with_stem(rest, "wait") {
         let complement = strip_complement_fillers(action_complement(rest));
         let complement = complement
             .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
             .trim();
-        return complement.is_empty() || complement_is_deferral_only(complement);
+        return complement.is_empty()
+            || complement_is_deferral_only(complement)
+            || complement_is_light_noun_without_object(normalize_unlisted_verb_complement(
+                complement,
+            ));
     }
     [
         "summarize",
@@ -2313,6 +2319,18 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
     ]
     .iter()
     .any(|stem| token_starts_with_stem(rest, stem))
+}
+
+/// Person-head hand-off for stems this branch added (`get`/`collect`/…).
+/// Sequencing does not run `remainder_is_work_action`, so without this
+/// veto `Then get back to you` would auto-continue. Pre-existing stems such
+/// as `look` stay on the verb-only sequencing path (`Then look at your PR`).
+fn remainder_is_added_resume_stem_person_hand_off(rest: &str) -> bool {
+    const STEMS: [&str; 5] = ["get", "collect", "gather", "retrieve", "obtain"];
+    if !STEMS.iter().any(|stem| token_starts_with_stem(rest, stem)) {
+        return false;
+    }
+    complement_is_person_hand_off(strip_complement_fillers(action_complement(rest)))
 }
 
 fn remainder_starts_with_work_verb(rest: &str) -> bool {
