@@ -1764,6 +1764,117 @@ async fn failed_provider_refresh_does_not_retain_globally_disabled_route() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `discover_routes_for_mutation` restores prior ownership for providers that
+/// were not refetched. A Web UI disable must drop that stale route there too,
+/// not only in `publish_model_routes` after a failed upstream refresh.
+///
+/// Replacing the retain-loop `&&` with `||` would re-insert a locally enabled
+/// globally disabled slug, and `publish_model_routes` would keep it because it
+/// uses `or_insert`.
+#[tokio::test]
+async fn seed_and_retain_refresh_does_not_restore_globally_disabled_route() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-seed-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("alpha", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".to_string(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            disabled_models: vec!["shared/model".to_string()],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".to_string(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".to_string(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "beta-other".to_string(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared/model".to_string(),
+            "beta".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("beta-other").map(String::as_str),
+        Some("beta"),
+        "unrelated catalog routes must still be seeded"
+    );
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "a globally disabled slug must not be restored from prior ownership during seed-and-retain"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn route_and_seed_publication_is_cancellation_safe() {
     use std::sync::atomic::Ordering;

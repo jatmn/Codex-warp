@@ -24,7 +24,6 @@ use tracing::warn;
 
 use crate::config::Backend;
 use crate::config::ContinueGuardMode;
-use crate::config::GloballyDisabledModels;
 use crate::config::load_config_layers;
 use crate::config::provider_entries;
 use crate::debug_log::DebugLog;
@@ -302,12 +301,7 @@ fn initialize_state_with_store(
     // A Web UI disable is operator intent for the slug, so startup seeding must
     // honor cross-provider disables too. Otherwise a disabled model returns to
     // the Codex CLI picker on the next restart.
-    let globally_disabled = match store.as_ref() {
-        Some(store) => GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
-            store.provider_is_managed(provider_id).unwrap_or(false)
-        }),
-        None => GloballyDisabledModels::from_config(&config),
-    };
+    let globally_disabled = crate::models::globally_disabled_models(&config, store.as_ref());
     let (model_routes, model_route_seeds) = match store.as_ref() {
         Some(store) => {
             match seed_model_routes_from_config_and_store_with_disabled(

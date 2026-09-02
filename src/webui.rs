@@ -33,7 +33,6 @@ use serde_json::json;
 
 use crate::config::AppConfig;
 use crate::config::DebugConfig;
-use crate::config::GloballyDisabledModels;
 use crate::config::ModelCatalogEntry;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
@@ -1031,12 +1030,7 @@ async fn sync_provider_routes_for_enabled(
 
 async fn synchronize_global_route_seed_snapshot(state: &AppState, provider_id: &str) {
     let config = state.read_config().clone();
-    let globally_disabled = match state.store.as_ref() {
-        Some(store) => GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
-            store.provider_is_managed(provider_id).unwrap_or(false)
-        }),
-        None => GloballyDisabledModels::from_config(&config),
-    };
+    let globally_disabled = models::globally_disabled_models(&config, state.store.as_ref());
     let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
         Some(store) => {
             match models::seed_model_routes_from_config_and_store_with_disabled(

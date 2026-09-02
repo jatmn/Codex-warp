@@ -163,6 +163,22 @@ async fn models_with_publish_lock(
     )
 }
 
+/// Web UI-managed disables for the current config and optional store.
+///
+/// Without a store, nothing is treated as Web UI-managed, so static TOML
+/// `disabled_models` stay provider-scoped.
+pub(crate) fn globally_disabled_models(
+    config: &AppConfig,
+    store: Option<&crate::store::Store>,
+) -> GloballyDisabledModels {
+    match store {
+        Some(store) => GloballyDisabledModels::from_config_with_managed(config, |provider_id| {
+            store.provider_is_managed(provider_id).unwrap_or(false)
+        }),
+        None => GloballyDisabledModels::default(),
+    }
+}
+
 async fn discover_routes_for_mutation(
     state: &AppState,
     headers: &HeaderMap,
@@ -176,12 +192,7 @@ async fn discover_routes_for_mutation(
     let prior_routes = state.model_routes.read().await.clone();
 
     let seed_config = state.read_config().clone();
-    let globally_disabled = match state.store.as_ref() {
-        Some(store) => GloballyDisabledModels::from_config_with_managed(&seed_config, |id| {
-            store.provider_is_managed(id).unwrap_or(false)
-        }),
-        None => GloballyDisabledModels::from_config(&seed_config),
-    };
+    let globally_disabled = globally_disabled_models(&seed_config, state.store.as_ref());
     let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
         Some(store) => {
             match seed_model_routes_from_config_and_store_with_disabled(
@@ -352,14 +363,7 @@ async fn models_for_revision(
     // A Web UI disable is operator intent for the slug itself. Compute it once
     // per revision so a sibling provider that still lists the slug as enabled
     // cannot republish it into the catalog Codex CLI reads.
-    let globally_disabled = match state.store.as_ref() {
-        Some(store) => {
-            GloballyDisabledModels::from_config_with_managed(&state.read_config(), |provider_id| {
-                store.provider_is_managed(provider_id).unwrap_or(false)
-            })
-        }
-        None => GloballyDisabledModels::from_config(&state.read_config()),
-    };
+    let globally_disabled = globally_disabled_models(&state.read_config(), state.store.as_ref());
 
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
@@ -614,15 +618,7 @@ async fn publish_model_routes(
     // A Web UI disable is operator intent for the slug. Compute it here so
     // retained stale ownership cannot resurrect a disabled slug when a
     // provider's refresh failed transiently.
-    let globally_disabled = match state.store.as_ref() {
-        Some(store) => {
-            let config = state.read_config();
-            GloballyDisabledModels::from_config_with_managed(&config, |provider_id| {
-                store.provider_is_managed(provider_id).unwrap_or(false)
-            })
-        }
-        None => GloballyDisabledModels::from_config(&state.read_config()),
-    };
+    let globally_disabled = globally_disabled_models(&state.read_config(), state.store.as_ref());
     let retain_failed_routes = |routes: &mut BTreeMap<String, String>,
                                 prior: &BTreeMap<String, String>| {
         let config = state.read_config();

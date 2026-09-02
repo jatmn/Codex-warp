@@ -74,13 +74,8 @@ impl GloballyDisabledModels {
         Self { exact, suffixes }
     }
 
-    /// Convenience wrapper for callers without a store. Nothing is treated as
-    /// Web UI managed, so behavior matches the provider-scoped baseline.
-    pub(crate) fn from_config(config: &AppConfig) -> Self {
-        Self::from_config_with_managed(config, |_| false)
-    }
-
-    /// True when some provider has this exact model id in `disabled_models`.
+    /// True when a Web UI-managed disable covers this model id, including the
+    /// prefix-aware overlap of `provider/foo` with bare `foo`.
     pub(crate) fn contains(&self, model_id: &str) -> bool {
         if self.exact.contains(model_id) {
             return true;
