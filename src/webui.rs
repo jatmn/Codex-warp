@@ -2987,6 +2987,16 @@ async fn set_model_enabled(
             }
             if body.enabled {
                 clear_catalog_enable_overlaps(provider, &model_id, upstream_id.as_deref());
+            } else {
+                // Match overlay restore: a catalog toggle-off is a Web UI
+                // disable, so colliding siblings must see it in
+                // `GloballyDisabledModels` before the next restart.
+                provider.disable_model(&model_id);
+                // `disable_model` already no-ops on empty ids, matching
+                // `remove_model_catalog_entry`.
+                if let Some(upstream_id) = upstream_id.as_deref() {
+                    provider.disable_model(upstream_id);
+                }
             }
         } else if body.enabled {
             if let Some(entry) = restored_catalog {

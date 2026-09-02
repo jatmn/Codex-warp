@@ -37,6 +37,10 @@ pub const PRIMARY_PROVIDER_ID: &str = "default";
 pub(crate) struct GloballyDisabledModels {
     exact: BTreeSet<String>,
     suffixes: Vec<String>,
+    /// Catalog `upstream_id` keys hidden because their catalog id was disabled.
+    /// Exact match only: treating them as overlap suffixes would hide an
+    /// unrelated gateway's own `other/foo` when the upstream alias is bare `foo`.
+    alias_exact: BTreeSet<String>,
 }
 
 impl GloballyDisabledModels {
@@ -52,15 +56,12 @@ impl GloballyDisabledModels {
     {
         let mut exact = BTreeSet::new();
         let mut suffixes = Vec::new();
+        let mut alias_exact = BTreeSet::new();
         for (provider_id, provider) in provider_entries(config) {
             if !is_managed(provider_id) {
                 continue;
             }
             for disabled in &provider.disabled_models {
-                if disabled.is_empty() {
-                    continue;
-                }
-                exact.insert(disabled.clone());
                 // Keep the full id so `contains()` can apply
                 // `model_ids_overlap` symmetrically: `provider/foo` hides a
                 // sibling's bare `foo`, and a bare `foo` hides a sibling's
@@ -68,16 +69,60 @@ impl GloballyDisabledModels {
                 // `other/foo`. Gating on `contains('/')` here would make the
                 // match one-directional and let a bare disable leak through a
                 // sibling's prefixed slug.
-                suffixes.push(disabled.clone());
+                Self::record(&mut exact, &mut suffixes, disabled);
+            }
+            // Web UI catalog toggles set `entry.enabled = false` without always
+            // writing `disabled_models` until overlay restore. Managed catalog
+            // off is still operator intent for the slug.
+            for entry in &provider.model_catalog {
+                if entry.enabled {
+                    continue;
+                }
+                Self::record(&mut exact, &mut suffixes, &entry.id);
             }
         }
-        Self { exact, suffixes }
+        // Catalog seed already skips a whole entry when its id is globally
+        // disabled, which hides `upstream_id`. Retain/live publication key the
+        // alias separately, so record an exact alias once the catalog id is
+        // covered — including sibling catalogs that still list the row.
+        for (_, provider) in provider_entries(config) {
+            for entry in &provider.model_catalog {
+                let covered = exact.contains(&entry.id)
+                    || suffixes
+                        .iter()
+                        .any(|disabled| model_ids_overlap(disabled, &entry.id));
+                if !covered {
+                    continue;
+                }
+                if let Some(upstream_id) = entry
+                    .upstream_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                {
+                    alias_exact.insert(upstream_id.to_string());
+                }
+            }
+        }
+        Self {
+            exact,
+            suffixes,
+            alias_exact,
+        }
+    }
+
+    fn record(exact: &mut BTreeSet<String>, suffixes: &mut Vec<String>, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        if exact.insert(id.to_string()) {
+            suffixes.push(id.to_string());
+        }
     }
 
     /// True when a Web UI-managed disable covers this model id, including the
     /// prefix-aware overlap of `provider/foo` with bare `foo`.
     pub(crate) fn contains(&self, model_id: &str) -> bool {
-        if self.exact.contains(model_id) {
+        if self.exact.contains(model_id) || self.alias_exact.contains(model_id) {
             return true;
         }
         // A disabled `provider/foo` also covers a sibling's bare `foo`, but it

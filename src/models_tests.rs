@@ -2895,3 +2895,236 @@ fn bare_disable_hides_prefixed_sibling_slug() {
         "the prefixed twin must not stay routable through a sibling"
     );
 }
+
+#[test]
+fn managed_catalog_toggle_off_hides_colliding_slug_without_disabled_models() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .model_catalog[0]
+        .enabled = false;
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared/model"),
+        "a managed catalog toggle-off is Web UI intent for the slug"
+    );
+    assert!(
+        disabled.contains("shared-model"),
+        "the catalog upstream alias must be covered too"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "an unmanaged TOML catalog row must stay provider-scoped"
+    );
+}
+
+/// A managed prefixed disable covers a sibling catalog's bare id by overlap,
+/// not exact equality. The sibling's `upstream_id` is a different prefix
+/// (`moonshot/foo` vs `opencode-go/foo`) so suffix matching must not hide it
+/// unless the collector records that alias. Replacing the coverage `||` with
+/// `&&` would require the catalog id to also sit in `exact`, and the alias
+/// would leak back onto retain/live keys.
+#[test]
+fn prefixed_disable_covers_sibling_catalog_upstream_alias() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "opencode-go".to_string(),
+        ProviderConfig {
+            base_url: "https://opencode.example/v1".to_string(),
+            model_catalog_only: true,
+            disabled_models: vec!["opencode-go/kimi-k2.7-code".to_string()],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "hicap".to_string(),
+        ProviderConfig {
+            base_url: "https://hicap.example/v1".to_string(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "kimi-k2.7-code".to_string(),
+                upstream_id: Some("moonshot/kimi-k2.7-code".to_string()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let disabled = disabled_from(&config, &["opencode-go"]);
+    assert!(
+        disabled.contains("kimi-k2.7-code"),
+        "a prefixed disable must cover the sibling's bare catalog id"
+    );
+    assert!(
+        disabled.contains("moonshot/kimi-k2.7-code"),
+        "the sibling catalog's upstream alias must be covered even though it uses another prefix"
+    );
+    assert!(
+        !disabled.contains("hicap/kimi-k2.7-code"),
+        "an unrelated gateway prefix must stay visible"
+    );
+}
+
+#[tokio::test]
+async fn seed_and_retain_does_not_restore_disabled_upstream_alias() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-alias-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("gateway-b", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared-model".to_string(),
+            "gateway-a".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared-model")
+            .map(String::as_str),
+        None,
+        "a disabled catalog id must not leave its upstream alias routable after retain"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn select_provider_does_not_fallback_to_sibling_for_globally_disabled_slug() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-select-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("gateway-b", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    assert!(
+        crate::provider::select_provider(&state, &json!({"model": "shared/model"}))
+            .await
+            .is_none(),
+        "config fallback must not route a globally disabled slug through a sibling"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

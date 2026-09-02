@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::config::AppConfig;
+use crate::config::GloballyDisabledModels;
 use crate::config::PRIMARY_PROVIDER_ID;
 use crate::config::ProviderConfig;
 use crate::config::matching_model_families;
@@ -97,6 +98,17 @@ pub(crate) async fn select_provider(state: &AppState, body: &Value) -> Option<Se
         let routes = state.model_routes.read().await;
         let route_id = routes.get(model).cloned();
         let config = state.read_config();
+        let globally_disabled = match state.store.as_ref() {
+            Some(store) => GloballyDisabledModels::from_config_with_managed(&config, |id| {
+                store.provider_is_managed(id).unwrap_or(false)
+            }),
+            None => GloballyDisabledModels::default(),
+        };
+        if globally_disabled.contains(model) {
+            drop(config);
+            drop(routes);
+            return None;
+        }
         let selected = if let Some(provider_id) = route_id.as_deref()
             && let Some(provider) = provider_by_id(&config, provider_id)
             && provider_accepts_requested_model(provider, Some(model))
