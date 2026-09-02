@@ -79,6 +79,16 @@ if [ "$logical_status" -ne 1 ] || ! grep -Fq 'docs/guide.md:1:' <<< "$logical_ou
   fail=1
 fi
 
+mkdir -p "$prose_fixture/targets/manual"
+printf "i'm lowercase\n" > "$prose_fixture/targets/manual/page.md"
+ln -s ../targets/manual "$prose_fixture/docs/reference"
+logical_status=0
+logical_output="$(cd "$prose_fixture" && node scripts/docs_prose_check.js docs/reference 2>&1)" || logical_status=$?
+if [ "$logical_status" -ne 1 ] || ! grep -Fq 'docs/reference/page.md:1:' <<< "$logical_output"; then
+  echo "docs-checks: prose checker lost a safe logical directory path" >&2
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "docs-checks: failed" >&2
   exit 1

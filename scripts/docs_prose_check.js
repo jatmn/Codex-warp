@@ -100,7 +100,7 @@ function walk(target, out) {
     visitedDirectories.add(realTarget);
     for (const name of fs.readdirSync(realTarget)) {
       if (name === "." || name === "..") continue;
-      walk(resolveChild(realTarget, name), out);
+      walk(resolveChild(target, name), out);
     }
     return;
   }
