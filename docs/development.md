@@ -141,7 +141,10 @@ Studio Build Tools, or run from a Developer PowerShell.
 Pull request titles use `type(optional-scope)!: concise description`. Accepted
 types are `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`,
 `chore`, and `revert`. Because the repository squash-merges pull requests, that
-title becomes the Conventional Commit Release Please evaluates on `main`.
+title becomes the commit subject Release Please evaluates on `main`. The pull
+request description becomes the commit body. Use the templates in
+[`AGENTS.md`](../AGENTS.md#commits) so the change lands in the
+correct changelog section.
 
 Release-policy validation uses the exact Node patch recorded in
 `tools/release-tooling.json`. Install Node 24.20.0 before running the complete

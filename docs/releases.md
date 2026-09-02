@@ -4,10 +4,17 @@ Codex Warp has two release channels. Official releases are stable, versioned
 builds such as `v0.1.0`. Nightlies are immutable prereleases named
 `nightly-YYYYMMDD-SHA12` and are intended for testing.
 
-The automation is intentionally disabled until the repository owner completes
-the protected GitHub App, environment, and ruleset activation in the
-[maintainer runbook](release-maintainer-runbook.md). A checked-in workflow is
-not evidence that publication is enabled.
+Official `v*` releases and `nightly-*` prereleases are published by the
+protected GitHub App. Maintainers use the
+[maintainer runbook](release-maintainer-runbook.md) for recovery and exceptional
+overrides. Do not create tags or publish drafts by hand. A checked-in workflow
+is not a reason to publish outside that path.
+
+Pull request titles supply the Conventional Commit type Release Please reads
+for changelog sections and version bumps. Put `BREAKING CHANGE:` and
+exceptional `Release-As:` footers in the pull request description, which
+becomes the squash-commit body. Use the title templates in
+[`AGENTS.md`](../AGENTS.md#commits).
 
 ## Official Releases
 
@@ -34,9 +41,9 @@ credentials, logs, databases, or build directories.
 
 ## Nightly Releases
 
-The nightly workflow runs at 03:17 in `America/Los_Angeles` when GitHub's
-scheduler and the repository publication gate are enabled. It can also be run
-manually in dry-run mode. A nightly identity is source-exact:
+The nightly workflow runs at 03:17 in `America/Los_Angeles`. Dispatch it from
+`main` with `dry_run=true` to build without publishing, or `dry_run=false` for
+a manual publication. A nightly identity is source-exact:
 
 ```text
 tag:     nightly-20260830-0123456789ab
@@ -89,7 +96,9 @@ visible.
 
 ## Version Effects
 
-With squash merges, the pull request title is the commit Release Please reads:
+With squash merges, the pull request title is the commit subject Release
+Please reads for changelog type. Use the templates in
+[`AGENTS.md`](../AGENTS.md#commits):
 
 - `fix:` and `perf:` request a patch release;
 - `feat:` requests a minor release;

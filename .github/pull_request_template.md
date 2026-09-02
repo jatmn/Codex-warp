@@ -6,6 +6,7 @@
 Use a Conventional Commit title because squash merge makes it the main-branch
 commit: type(optional-scope)!: concise description
 Accepted types: feat, fix, perf, refactor, docs, test, build, ci, chore, revert
+Templates and changelog mapping: ../AGENTS.md#commits
 -->
 
 ## Contribution checklist
@@ -14,7 +15,7 @@ Accepted types: feat, fix, perf, refactor, docs, test, build, ci, chore, revert
 - [ ] This PR does not introduce a new implementation language.
 - [ ] This PR does not add Python for any reason.
 - [ ] I can respond to review feedback within one week.
-- [ ] My PR title follows the repository's Conventional Commit title policy.
+- [ ] My PR title follows the Conventional Commit templates in AGENTS.md.
 
 ## Validation
 
