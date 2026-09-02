@@ -344,9 +344,11 @@ manual smoke-test flow.
 
 When asked to commit local work, use a Conventional Commit subject and a body
 that summarizes the functional changes and validation commands that were run.
-The repository squash-merges pull requests, so the **pull request title** is
-the commit Release Please reads for version bumps and `CHANGELOG.md`. Match
-the PR title to that subject.
+The repository squash-merges pull requests. The pull request title becomes the
+commit subject Release Please uses for changelog type and version bumps. The
+pull request description becomes the commit body, so put `BREAKING CHANGE:`
+and exceptional `Release-As:` footers there. Match the PR title to the
+Conventional Commit subject.
 
 Shape (enforced by `scripts/check-pr-title.sh`):
 

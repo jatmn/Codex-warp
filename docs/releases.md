@@ -10,8 +10,11 @@ protected GitHub App. Maintainers use the
 overrides. Do not create tags or publish drafts by hand. A checked-in workflow
 is not a reason to publish outside that path.
 
-Pull request titles are the Conventional Commits Release Please reads. Use
-the title templates in [`AGENTS.md`](../AGENTS.md#commits).
+Pull request titles supply the Conventional Commit type Release Please reads
+for changelog sections and version bumps. Put `BREAKING CHANGE:` and
+exceptional `Release-As:` footers in the pull request description, which
+becomes the squash-commit body. Use the title templates in
+[`AGENTS.md`](../AGENTS.md#commits).
 
 ## Official Releases
 
@@ -93,8 +96,9 @@ visible.
 
 ## Version Effects
 
-With squash merges, the pull request title is the commit Release Please reads.
-Use the templates in [`AGENTS.md`](../AGENTS.md#commits):
+With squash merges, the pull request title is the commit subject Release
+Please reads for changelog type. Use the templates in
+[`AGENTS.md`](../AGENTS.md#commits):
 
 - `fix:` and `perf:` request a patch release;
 - `feat:` requests a minor release;
