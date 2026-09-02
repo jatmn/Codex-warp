@@ -1993,6 +1993,7 @@ fn prefix_has_work_intent(
             let after_prefix = strip_intent_fillers(&normalized[start + idx + prefix.len()..]);
             let matched = if require_known_work_verb {
                 remainder_starts_with_work_verb(after_prefix)
+                    && !remainder_starts_with_wrap_up_action(after_prefix)
             } else {
                 remainder_is_work_action(after_prefix)
             };

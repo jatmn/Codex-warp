@@ -272,9 +272,10 @@ never exhibits the premature-stop shape.
 Existing installs that still ship a local `codex-warp.toml` from before the
 default-on change may keep `enabled = false` / `mode = "observe"`. That stale
 operator override fully disables auto-continue even though the binary defaults
-are on. Align the runtime file with the block above (or pass `--continue-guard`)
-and restart Warp; startup logs a warning when the loaded config leaves the
-guard disabled.
+are on. Align the runtime file with the block above, or pass `--continue-guard`
+(and `--continue-guard-mode end_turn_false` if the file still has
+`mode = "observe"`) and restart Warp; startup logs a warning when the loaded
+config leaves the guard disabled.
 
 The guard also treats unresolved sub-agent work as mid-task: when the request
 history still contains a `spawn_agent` (or collapsed `spawn`) without a later

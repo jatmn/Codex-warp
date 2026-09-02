@@ -3265,6 +3265,30 @@ fn continue_guard_ill_wait_later_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_then_wait_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Then wait.",
+        "continue-guard-test-then-wait",
+    ));
+}
+
+#[test]
+fn continue_guard_then_wait_later_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Then wait later.",
+        "continue-guard-test-then-wait-later",
+    ));
+}
+
+#[test]
+fn continue_guard_then_wait_for_the_agent_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "Then wait for the agent to finish.",
+        "continue-guard-test-then-wait-for-agent",
+    ));
+}
+
+#[test]
 fn continue_guard_ill_wait_for_you_stays_end_turn() {
     assert!(continue_guard_end_turn(
         "I'll wait for you.",
