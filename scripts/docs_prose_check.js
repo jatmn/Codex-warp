@@ -13,6 +13,14 @@ function isWithinBase(target) {
   return target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`);
 }
 
+function hasSafePathSegments(target) {
+  if (!isWithinBase(target) || target === BASE_DIR) return target === BASE_DIR;
+  return target
+    .slice(BASE_DIR.length + 1)
+    .split(path.sep)
+    .every((segment) => segment !== "." && segment !== ".." && SAFE_SEGMENT.test(segment));
+}
+
 function resolveWithinBase(input) {
   const normalizedInput = typeof input === "string" ? input.replace(/\\/g, "/") : "";
   const segments = normalizedInput.split("/").filter((segment) => segment !== "");
@@ -38,10 +46,26 @@ function resolveWithinBase(input) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${input}`);
   }
+  if (!hasSafePathSegments(real)) {
+    throw new Error(`unsafe documentation path: ${input}`);
+  }
   return resolved;
 }
 
 function resolveChild(target, name) {
+  if (
+    typeof target !== "string" ||
+    !path.isAbsolute(target) ||
+    !isWithinBase(target) ||
+    typeof name !== "string" ||
+    name === "." ||
+    name === ".." ||
+    path.isAbsolute(name) ||
+    !SAFE_SEGMENT.test(name)
+  ) {
+    throw new Error(`unsafe documentation path: ${name}`);
+  }
+
   const resolved = path.resolve(target, name);
   if (!isWithinBase(resolved)) {
     throw new Error(`documentation path escapes repository: ${name}`);
@@ -51,22 +75,38 @@ function resolveChild(target, name) {
   if (!isWithinBase(real)) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
+  if (!hasSafePathSegments(real)) {
+    throw new Error(`unsafe documentation path: ${name}`);
+  }
   return resolved;
 }
 
 function walk(target, out) {
-  const st = fs.statSync(target);
+  if (typeof target !== "string" || !path.isAbsolute(target) || !isWithinBase(target)) {
+    throw new Error(`documentation path escapes repository: ${target}`);
+  }
+
+  const realTarget = fs.realpathSync(target);
+  if (!isWithinBase(realTarget)) {
+    throw new Error(`documentation path escapes repository: ${target}`);
+  }
+  if (!hasSafePathSegments(realTarget)) {
+    throw new Error(`unsafe documentation path: ${target}`);
+  }
+
+  const st = fs.statSync(realTarget);
   if (st.isDirectory()) {
-    const realTarget = fs.realpathSync(target);
     if (visitedDirectories.has(realTarget)) return;
     visitedDirectories.add(realTarget);
-    for (const name of fs.readdirSync(target)) {
+    for (const name of fs.readdirSync(realTarget)) {
       if (name === "." || name === "..") continue;
       walk(resolveChild(target, name), out);
     }
     return;
   }
-  if (st.isFile() && target.endsWith(".md")) out.push(target);
+  if (st.isFile() && target.endsWith(".md")) {
+    out.push({ readPath: realTarget, displayPath: target });
+  }
 }
 
 function prose(text) {
@@ -87,11 +127,13 @@ try {
     const files = [];
     walk(resolveWithinBase(root), files);
     for (const file of files) {
-      const text = fs.readFileSync(file, "utf8");
+      const text = fs.readFileSync(file.readPath, "utf8");
       const lines = prose(text).split(/\r?\n/);
       lines.forEach((line, idx) => {
         if (CONTRACTION.test(line)) {
-          console.error(`${file}:${idx + 1}: capitalize first-person contractions in docs`);
+          console.error(
+            `${file.displayPath}:${idx + 1}: capitalize first-person contractions in docs`
+          );
           failed = true;
         }
       });
