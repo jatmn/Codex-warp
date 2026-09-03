@@ -24,6 +24,19 @@ function visit(value, callback) {
   }
 }
 
+for (const [name, pin] of Object.entries(tooling.actions)) {
+  assert.ok(
+    !/(token|secret|password|api[_-]?key)/i.test(name),
+    `${name} is a secret-shaped pin field; scanners treat the adjacent Action SHA as a Generic API Key`
+  );
+  assert.match(pin, /^[0-9a-f]{40}$/, `${name} must be an immutable 40-character Action pin`);
+}
+assert.equal(
+  Object.hasOwn(tooling.actions, 'createGitHubAppToken'),
+  false,
+  'createGitHubAppToken looks like a secret field; keep the Action pin under createGitHubAppAction'
+);
+
 const allowedActions = new Map([
   ['actions/checkout', tooling.actions.checkout],
   ['actions/setup-node', tooling.actions.setupNode],
@@ -31,7 +44,7 @@ const allowedActions = new Map([
   ['actions/download-artifact', tooling.actions.downloadArtifact],
   ['actions/attest', tooling.actions.attest],
   ['actions/attest-build-provenance', tooling.actions.attestBuildProvenance],
-  ['actions/create-github-app-token', tooling.actions.createGitHubAppToken],
+  ['actions/create-github-app-token', tooling.actions.createGitHubAppAction],
   ['googleapis/release-please-action', tooling.releasePleaseAction.commit],
   ['dtolnay/rust-toolchain', tooling.actions.rustToolchain],
   ['Swatinem/rust-cache', tooling.actions.rustCache],
