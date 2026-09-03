@@ -39,7 +39,7 @@ elif ! node scripts/docs_prose_check.js "${docs_files[@]}"; then
 fi
 
 prose_fixture="$(mktemp -d)"
-trap 'rm -rf "$prose_fixture"' EXIT
+trap 'rm -rf "$prose_fixture" "${prose_fixture}-evil"' EXIT
 mkdir -p "$prose_fixture/scripts" "$prose_fixture/docs" "$prose_fixture/targets"
 cp scripts/docs_prose_check.js "$prose_fixture/scripts/docs_prose_check.js"
 
@@ -88,6 +88,45 @@ if [ "$logical_status" -ne 1 ] || ! grep -Fq 'docs/reference/page.md:1:' <<< "$l
   echo "docs-checks: prose checker lost a safe logical directory path" >&2
   fail=1
 fi
+
+for probe in ".." "../docs" "/etc/passwd" "docs/../docs"; do
+  probe_status=0
+  if (cd "$prose_fixture" && node scripts/docs_prose_check.js "$probe") >/dev/null 2>&1; then
+    probe_status=0
+  else
+    probe_status=$?
+  fi
+  if [ "$probe_status" -ne 2 ]; then
+    echo "docs-checks: prose checker accepted a traversal probe: $probe" >&2
+    fail=1
+  fi
+done
+
+mkdir -p "${prose_fixture}-evil"
+printf "i'm lowercase\n" > "${prose_fixture}-evil/secret.md"
+ln -s "${prose_fixture}-evil/secret.md" "$prose_fixture/docs/alias.md"
+prefix_status=0
+if (cd "$prose_fixture" && node scripts/docs_prose_check.js docs) >/dev/null 2>&1; then
+  prefix_status=0
+else
+  prefix_status=$?
+fi
+if [ "$prefix_status" -ne 2 ]; then
+  echo "docs-checks: prose checker followed a prefix-sibling symlink" >&2
+  fail=1
+fi
+rm -f "$prose_fixture/docs/alias.md"
+rm -rf "${prose_fixture}-evil"
+
+mkdir -p "$prose_fixture/..cache"
+printf "i'm lowercase\n" > "$prose_fixture/..cache/page.md"
+dotdot_status=0
+dotdot_output="$(cd "$prose_fixture" && node scripts/docs_prose_check.js ..cache 2>&1)" || dotdot_status=$?
+if [ "$dotdot_status" -ne 1 ] || ! grep -Fq '..cache/page.md:1:' <<< "$dotdot_output"; then
+  echo "docs-checks: prose checker rejected a safe ..cache documentation path" >&2
+  fail=1
+fi
+rm -rf "$prose_fixture/..cache"
 
 if [ "$fail" -ne 0 ]; then
   echo "docs-checks: failed" >&2
