@@ -1845,11 +1845,12 @@ impl SubagentWork {
     }
 
     fn resolve_targets(&mut self, targets: &BTreeSet<String>) {
+        let count_fallback = self.named.is_empty();
         for target in targets {
             if self.named.remove(target) {
                 continue;
             }
-            if !self.pending_call_ids.is_empty() {
+            if count_fallback && !self.pending_call_ids.is_empty() {
                 self.pending_call_ids.remove(0);
             }
         }
@@ -1952,10 +1953,14 @@ fn child_id_from_value(value: &Value) -> Option<String> {
 }
 
 fn item_tool_arguments(item: &Value) -> ToolArguments {
-    let Some(raw) = item.get("arguments").or_else(|| {
-        item.get("function")
-            .and_then(|function| function.get("arguments"))
-    }) else {
+    let Some(raw) = item
+        .get("arguments")
+        .or_else(|| {
+            item.get("function")
+                .and_then(|function| function.get("arguments"))
+        })
+        .or_else(|| item.get("input"))
+    else {
         return ToolArguments::Missing;
     };
     match raw {

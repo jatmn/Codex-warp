@@ -3711,6 +3711,71 @@ fn continue_guard_named_spawn_output_wait_unknown_id_keeps_child() {
 }
 
 #[test]
+fn continue_guard_named_spawn_plus_pending_ignores_extra_unmatched_wait_id() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-named-plus-pending-extra-wait-id",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_a",
+                    "output": "{\"thread_id\":\"agent-a\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_mixed",
+                    "arguments": {"targets": ["agent-a", "agent-x"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_custom_tool_call_wait_input_partial_targets_forces_followup() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-custom-tool-wait-input",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "custom_tool_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_custom",
+                    "input": "{\"targets\":[\"agent-a\"]}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
 fn continue_guard_two_spawns_wait_unknown_ids_keeps_named_children() {
     assert!(!continue_guard_end_turn_for_request(
         "Reviewer A finished.",
