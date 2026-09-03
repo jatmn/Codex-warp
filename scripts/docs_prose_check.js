@@ -10,7 +10,11 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const visitedDirectories = new Set();
 
 function isWithinBase(target) {
-  return target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`);
+  return (
+    typeof target === "string" &&
+    target.startsWith(BASE_DIR) &&
+    (target === BASE_DIR || target.startsWith(`${BASE_DIR}${path.sep}`))
+  );
 }
 
 function hasSafePathSegments(target) {
@@ -38,24 +42,20 @@ function resolveWithinBase(input) {
   }
 
   const resolved = path.resolve(BASE_DIR, segments.join("/"));
-  if (!isWithinBase(resolved)) {
-    throw new Error(`documentation path escapes repository: ${input}`);
+  if (resolved.startsWith(BASE_DIR) && isWithinBase(resolved)) {
+    const real = fs.realpathSync(resolved);
+    if (real.startsWith(BASE_DIR) && isWithinBase(real) && hasSafePathSegments(real)) {
+      return resolved;
+    }
   }
-
-  const real = fs.realpathSync(resolved);
-  if (!isWithinBase(real)) {
-    throw new Error(`documentation path escapes repository: ${input}`);
-  }
-  if (!hasSafePathSegments(real)) {
-    throw new Error(`unsafe documentation path: ${input}`);
-  }
-  return resolved;
+  throw new Error(`documentation path escapes repository: ${input}`);
 }
 
 function resolveChild(target, name) {
   if (
     typeof target !== "string" ||
     !path.isAbsolute(target) ||
+    !target.startsWith(BASE_DIR) ||
     !isWithinBase(target) ||
     typeof name !== "string" ||
     name === "." ||
@@ -66,47 +66,57 @@ function resolveChild(target, name) {
     throw new Error(`unsafe documentation path: ${name}`);
   }
 
-  const resolved = path.resolve(target, name);
-  if (!isWithinBase(resolved)) {
+  const relativeParent = path.relative(BASE_DIR, target);
+  if (relativeParent.startsWith("..") || path.isAbsolute(relativeParent)) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
 
-  const real = fs.realpathSync(resolved);
-  if (!isWithinBase(real)) {
-    throw new Error(`documentation path escapes repository: ${name}`);
+  const resolved = path.resolve(BASE_DIR, relativeParent, name);
+  if (resolved.startsWith(BASE_DIR) && isWithinBase(resolved)) {
+    const real = fs.realpathSync(resolved);
+    if (real.startsWith(BASE_DIR) && isWithinBase(real) && hasSafePathSegments(real)) {
+      return resolved;
+    }
   }
-  if (!hasSafePathSegments(real)) {
-    throw new Error(`unsafe documentation path: ${name}`);
-  }
-  return resolved;
+  throw new Error(`documentation path escapes repository: ${name}`);
 }
 
 function walk(target, out) {
-  if (typeof target !== "string" || !path.isAbsolute(target) || !isWithinBase(target)) {
+  if (
+    typeof target !== "string" ||
+    !path.isAbsolute(target) ||
+    !target.startsWith(BASE_DIR) ||
+    !isWithinBase(target)
+  ) {
     throw new Error(`documentation path escapes repository: ${target}`);
   }
 
   const realTarget = fs.realpathSync(target);
-  if (!isWithinBase(realTarget)) {
+  if (!realTarget.startsWith(BASE_DIR) || !isWithinBase(realTarget)) {
     throw new Error(`documentation path escapes repository: ${target}`);
   }
   if (!hasSafePathSegments(realTarget)) {
     throw new Error(`unsafe documentation path: ${target}`);
   }
 
-  const st = fs.statSync(realTarget);
-  if (st.isDirectory()) {
-    if (visitedDirectories.has(realTarget)) return;
-    visitedDirectories.add(realTarget);
-    for (const name of fs.readdirSync(realTarget)) {
-      if (name === "." || name === "..") continue;
-      walk(resolveChild(target, name), out);
+  if (realTarget.startsWith(BASE_DIR)) {
+    const st = fs.statSync(realTarget);
+    if (st.isDirectory()) {
+      if (visitedDirectories.has(realTarget)) return;
+      visitedDirectories.add(realTarget);
+      for (const name of fs.readdirSync(realTarget)) {
+        if (name === "." || name === "..") continue;
+        walk(resolveChild(target, name), out);
+      }
+      return;
+    }
+    if (st.isFile() && target.endsWith(".md")) {
+      out.push({ readPath: realTarget, displayPath: target });
     }
     return;
   }
-  if (st.isFile() && target.endsWith(".md")) {
-    out.push({ readPath: realTarget, displayPath: target });
-  }
+
+  throw new Error(`documentation path escapes repository: ${target}`);
 }
 
 function prose(text) {
