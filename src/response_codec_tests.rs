@@ -3464,6 +3464,158 @@ fn continue_guard_spawn_then_wait_without_mid_task_text_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_two_spawns_partial_wait_object_arguments_forces_followup() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-partial-wait-object-args",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": {"message": "review A"}
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": {"message": "review B"}
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_a",
+                    "arguments": {"targets": ["agent-a"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_partial_wait_forces_followup_without_mid_task_text() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-partial-wait",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_a",
+                    "arguments": "{\"targets\":[\"agent-a\"]}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_wait_both_targets_without_mid_task_text_stays_end_turn() {
+    assert!(continue_guard_end_turn_for_request(
+        "Both reviewers finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-wait-both",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_both",
+                    "arguments": "{\"targets\":[\"agent-a\",\"agent-b\"]}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_wait_without_targets_clears_the_wave() {
+    assert!(continue_guard_end_turn_for_request(
+        "Both reviewers finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-wait-all",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_all",
+                    "arguments": "{\"timeout_ms\":30000}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_messages_two_spawns_partial_wait_forces_followup() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-messages-two-spawn-partial-wait",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_spawn_a",
+                            "function": {"name": "spawn_agent", "arguments": "{\"message\":\"review A\"}"}
+                        },
+                        {
+                            "id": "call_spawn_b",
+                            "function": {"name": "spawn_agent", "arguments": "{\"message\":\"review B\"}"}
+                        }
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_wait_a",
+                        "function": {"name": "wait_agent", "arguments": "{\"targets\":[\"agent-a\"]}"}
+                    }]
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
 fn continue_guard_namespaced_spawn_without_wait_forces_followup() {
     let mut accum = ChatAccum::default();
     accum.apply_chat_chunk(&json!({

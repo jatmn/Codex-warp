@@ -1790,11 +1790,15 @@ fn apply_subagent_lifecycle_items(items: &[Value], open_spawns: &mut i32) {
 fn apply_subagent_lifecycle_item(item: &Value, open_spawns: &mut i32) {
     match item_subagent_lifecycle(item) {
         SubagentLifecycle::Spawn => *open_spawns += 1,
-        // A wait acknowledges outstanding children for this parent turn.
-        // Codex may return on the first completed target; later text may
-        // still need follow-up, but that is handled by the mid-task text
-        // classifier. Clearing here avoids double-counting completed waves.
-        SubagentLifecycle::Wait => *open_spawns = 0,
+        // Codex may return from wait on the first completed target. A wait
+        // with explicit targets resolves only those children; a wait with
+        // no target list acknowledges the whole outstanding wave.
+        SubagentLifecycle::Wait => {
+            *open_spawns = match wait_resolved_spawn_count(item) {
+                Some(resolved) => open_spawns.saturating_sub(resolved),
+                None => 0,
+            };
+        }
         SubagentLifecycle::Neither => {}
     }
 }
@@ -1821,6 +1825,32 @@ fn item_subagent_lifecycle(item: &Value) -> SubagentLifecycle {
         "spawn_agent" | "spawn" => SubagentLifecycle::Spawn,
         "wait_agent" | "wait_threads" | "wait" => SubagentLifecycle::Wait,
         _ => SubagentLifecycle::Neither,
+    }
+}
+
+fn wait_resolved_spawn_count(item: &Value) -> Option<i32> {
+    let arguments = item_tool_arguments(item)?;
+    for key in ["targets", "thread_ids", "agent_ids"] {
+        let Some(targets) = arguments.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        if targets.is_empty() {
+            return None;
+        }
+        return Some(i32::try_from(targets.len()).unwrap_or(i32::MAX));
+    }
+    None
+}
+
+fn item_tool_arguments(item: &Value) -> Option<Value> {
+    let raw = item.get("arguments").or_else(|| {
+        item.get("function")
+            .and_then(|function| function.get("arguments"))
+    })?;
+    match raw {
+        Value::String(raw) => serde_json::from_str(raw).ok(),
+        Value::Object(_) => Some(raw.clone()),
+        _ => None,
     }
 }
 

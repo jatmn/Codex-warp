@@ -278,9 +278,11 @@ are on. Align the runtime file with the block above, or pass `--continue-guard`
 config leaves the guard disabled.
 
 The guard also treats unresolved sub-agent work as mid-task: when the request
-history still contains a `spawn_agent` (or collapsed `spawn`) without a later
-`wait_agent` / `wait_threads` / `wait`, a text-only `stop` forces a follow-up
-so the parent does not end the turn while a child is still running. Phrases
+history still contains more `spawn_agent` (or collapsed `spawn`) calls than
+later `wait_agent` / `wait_threads` / `wait` targets cover, a text-only `stop`
+forces a follow-up so the parent does not end the turn while a child is still
+running. A wait with an explicit `targets` list resolves only those children;
+a wait with no target list acknowledges the whole outstanding wave. Phrases
 like `Let me wait for the agent`, `Now let me get the subagent findings by
 resuming it`, and `Let me verify it end-to-end` continue; bare `I'll wait` and
 `I'll get back to you` still end the turn.
