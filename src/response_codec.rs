@@ -2269,6 +2269,11 @@ fn complement_opens_with_person_clause(complement: &str) -> bool {
         && complement_addresses_person(complement)
 }
 
+fn wait_complement_is_person_until_or_while(complement: &str) -> bool {
+    matches!(complement_head(complement), "until" | "while")
+        && complement_addresses_person(complement)
+}
+
 fn remainder_is_inform_conditional(rest: &str) -> bool {
     token_starts_with_stem(rest, "know")
         && matches!(
@@ -2436,8 +2441,9 @@ fn complement_has_offer_clause(complement: &str) -> bool {
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
     // Bare "wait" / "I'll wait later" / "I'll wait a moment" is a pause.
-    // "Let me wait for the agent" or "wait until the tests finish" is still
-    // speaker work and must continue.
+    // "I'll wait until you respond" / "I'll wait while you review" is a
+    // person-directed pause. "Let me wait for the agent" or "wait until the
+    // tests finish" is still speaker work and must continue.
     if token_starts_with_stem(rest, "wait") {
         let complement = strip_complement_fillers(action_complement(rest));
         let complement = complement
@@ -2447,7 +2453,8 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
             || complement_is_deferral_only(complement)
             || complement_is_light_noun_without_object(normalize_unlisted_verb_complement(
                 complement,
-            ));
+            ))
+            || wait_complement_is_person_until_or_while(complement);
     }
     [
         "summarize",

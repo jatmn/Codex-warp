@@ -3345,6 +3345,30 @@ fn continue_guard_ill_wait_for_you_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_ill_wait_until_you_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait until you respond.",
+        "continue-guard-test-ill-wait-until-you",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_wait_while_you_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "I'll wait while you review.",
+        "continue-guard-test-ill-wait-while-you",
+    ));
+}
+
+#[test]
+fn continue_guard_ill_wait_until_the_tests_finish_triggers_followup() {
+    assert!(!continue_guard_end_turn(
+        "I'll wait until the tests finish.",
+        "continue-guard-test-ill-wait-until-tests-finish",
+    ));
+}
+
+#[test]
 fn continue_guard_hy4_get_subagent_findings_by_resuming_triggers_followup() {
     // Observed pause after wait_agent returned Avicenna mid-work
     // (rollout-2026-09-02T12-56-25, task_complete at 20:33:15Z).

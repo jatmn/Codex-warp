@@ -290,7 +290,8 @@ acknowledges the whole outstanding wave. A wait whose arguments cannot be
 parsed, or whose target field is present but is not a list of IDs, does not
 acknowledge any children. Phrases
 like `Let me wait for the agent`, `Now let me get the subagent findings by
-resuming it`, and `Let me verify it end-to-end` continue; bare `I'll wait` and
+resuming it`, and `Let me verify it end-to-end` continue; bare `I'll wait`,
+`I'll wait until you respond`, `I'll wait while you review`, and
 `I'll get back to you` still end the turn.
 
 Modes:
@@ -305,7 +306,7 @@ Modes:
 The guard applies to chat-completions responses, both SSE streams and
 non-stream JSON, that finish with
 `finish_reason = "stop"` (text-only JSON completions that omit
-`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and end with continuation phrasing
+`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and either still have uncovered sub-agent spawn work or end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` when the next action is a known
 work verb — including sub-agent resume verbs such as `get` / `resume` /
 `collect` / `wait for <work>` — or an unlisted verb with a concrete object such
@@ -345,8 +346,10 @@ complements, leftover adverbs or state words, offer clauses on unlisted verbs
 (`I'll take a look later if you want`, `I'll take another look later`),
 generic pronouns (`I'll do it next`), and work verbs whose only complement is
 postponement (`I'll continue later`, `I'll run soon`, `I'll wait later`)
-also do not force a follow-up. Bare `I'll wait` stays a pause, but `Let me wait
-for the agent` continues. Bare work verbs and immediacy still continue
+also do not force a follow-up. Bare `I'll wait`, `I'll wait until you
+respond`, and `I'll wait while you review` stay a pause, but `Let me wait
+for the agent` and `I'll wait until the tests finish` continue. Bare work
+verbs and immediacy still continue
 (`I'll continue`, `I'll verify now`). Closings
 such as `let me know`, `I'll leave the rest`, and delivery colons such as
 `Here is the final report:` stay `end_turn = true`, but investigative
