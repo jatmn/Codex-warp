@@ -118,6 +118,16 @@ fi
 rm -f "$prose_fixture/docs/alias.md"
 rm -rf "${prose_fixture}-evil"
 
+mkdir -p "$prose_fixture/..cache"
+printf "i'm lowercase\n" > "$prose_fixture/..cache/page.md"
+dotdot_status=0
+dotdot_output="$(cd "$prose_fixture" && node scripts/docs_prose_check.js ..cache 2>&1)" || dotdot_status=$?
+if [ "$dotdot_status" -ne 1 ] || ! grep -Fq '..cache/page.md:1:' <<< "$dotdot_output"; then
+  echo "docs-checks: prose checker rejected a safe ..cache documentation path" >&2
+  fail=1
+fi
+rm -rf "$prose_fixture/..cache"
+
 if [ "$fail" -ne 0 ]; then
   echo "docs-checks: failed" >&2
   exit 1

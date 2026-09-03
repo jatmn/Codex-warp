@@ -67,7 +67,10 @@ function resolveChild(target, name) {
   }
 
   const relativeParent = path.relative(BASE_DIR, target);
-  if (relativeParent.startsWith("..") || path.isAbsolute(relativeParent)) {
+  if (
+    path.isAbsolute(relativeParent) ||
+    relativeParent.split(path.sep).some((segment) => segment === "..")
+  ) {
     throw new Error(`documentation path escapes repository: ${name}`);
   }
 
