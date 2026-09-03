@@ -2977,6 +2977,60 @@ fn managed_disable_survives_recording_provider_disable() {
     );
 }
 
+/// Disabling only the catalog `upstream_id` must still hide the catalog id on
+/// siblings. `model_ids_overlap` does not treat `shared-model` as `shared/model`,
+/// so the collector has to walk catalog rows in both directions using exact
+/// aliases rather than suffix overlap.
+#[test]
+fn managed_upstream_only_disable_hides_catalog_id() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared-model");
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared-model"),
+        "the disabled upstream alias must be covered"
+    );
+    assert!(
+        disabled.contains("shared/model"),
+        "the sibling catalog id must be covered when only the upstream alias was disabled"
+    );
+    assert!(
+        !disabled.contains("other/model"),
+        "linking catalog id to upstream must not hide an unrelated slash-form slug"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "an enabled sibling must not publish the catalog id after an upstream-only disable"
+    );
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        None,
+        "the upstream alias must stay hidden too"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "an unmanaged upstream-only disable must stay provider-scoped"
+    );
+}
+
 /// A managed prefixed disable covers a sibling catalog's bare id by overlap,
 /// not exact equality. The sibling's `upstream_id` is a different prefix
 /// (`moonshot/foo` vs `opencode-go/foo`) so suffix matching must not hide it

@@ -85,25 +85,34 @@ impl GloballyDisabledModels {
                 Self::record(&mut exact, &mut suffixes, &entry.id);
             }
         }
-        // Catalog seed already skips a whole entry when its id is globally
-        // disabled, which hides `upstream_id`. Retain/live publication key the
-        // alias separately, so record an exact alias once the catalog id is
-        // covered — including sibling catalogs that still list the row.
+        // Catalog rows advertise two identities. A disable that covers the
+        // catalog id records `upstream_id` as an exact alias (retain/live
+        // keys). A disable that names the upstream itself records the catalog
+        // id the same way. Do not reverse-link from prefix overlap: that would
+        // treat `hicap/foo` as hidden when the operator only disabled
+        // `other/foo` whose overlap already covers bare `foo`.
         for (_, provider) in configured_provider_entries(config) {
             for entry in &provider.model_catalog {
-                let covered = exact.contains(&entry.id)
+                let id_covered = exact.contains(&entry.id)
                     || suffixes
                         .iter()
                         .any(|disabled| model_ids_overlap(disabled, &entry.id));
-                if !covered {
-                    continue;
+                if id_covered
+                    && let Some(upstream_id) = entry
+                        .upstream_id
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                {
+                    alias_exact.insert(upstream_id.to_string());
                 }
                 if let Some(upstream_id) = entry
                     .upstream_id
                     .as_deref()
                     .filter(|value| !value.is_empty())
+                    && exact.contains(upstream_id)
+                    && !entry.id.is_empty()
                 {
-                    alias_exact.insert(upstream_id.to_string());
+                    alias_exact.insert(entry.id.clone());
                 }
             }
         }
