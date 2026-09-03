@@ -3622,6 +3622,135 @@ fn continue_guard_two_spawns_unparsable_wait_does_not_clear_open_spawns() {
 }
 
 #[test]
+fn continue_guard_two_spawns_non_array_targets_does_not_clear_open_spawns() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-non-array-targets",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_bad_targets",
+                    "arguments": {"targets": "agent-a"}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_duplicate_wait_targets_forces_followup() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-duplicate-wait-targets",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_dup",
+                    "arguments": {"targets": ["agent-a", "agent-a"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_named_spawn_output_wait_unknown_id_keeps_child() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-named-spawn-unknown-wait-id",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_a",
+                    "output": "{\"thread_id\":\"agent-a\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_unknown",
+                    "arguments": {"targets": ["agent-x"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_wait_unknown_ids_keeps_named_children() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-unknown-wait-ids",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_a",
+                    "output": "{\"thread_id\":\"agent-a\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_spawn_b",
+                    "output": "{\"thread_id\":\"agent-b\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_unknown",
+                    "arguments": {"targets": ["agent-x", "agent-y"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
 fn continue_guard_two_spawns_wait_without_targets_clears_the_wave() {
     assert!(continue_guard_end_turn_for_request(
         "Both reviewers finished.",

@@ -1765,43 +1765,99 @@ fn request_has_unresolved_subagent_work(request: &Value) -> bool {
 }
 
 fn input_has_unresolved_subagent_work(items: &[Value]) -> bool {
-    let mut open_spawns = 0i32;
-    apply_subagent_lifecycle_items(items, &mut open_spawns);
-    open_spawns > 0
+    let mut work = SubagentWork::default();
+    apply_subagent_lifecycle_items(items, &mut work);
+    work.has_unresolved()
 }
 
 fn chat_messages_have_unresolved_subagent_work(messages: &[Value]) -> bool {
-    let mut open_spawns = 0i32;
+    let mut work = SubagentWork::default();
     for message in messages {
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
-            apply_subagent_lifecycle_items(calls, &mut open_spawns);
+            apply_subagent_lifecycle_items(calls, &mut work);
         }
-        apply_subagent_lifecycle_item(message, &mut open_spawns);
+        apply_subagent_lifecycle_item(message, &mut work);
     }
-    open_spawns > 0
+    work.has_unresolved()
 }
 
-fn apply_subagent_lifecycle_items(items: &[Value], open_spawns: &mut i32) {
+fn apply_subagent_lifecycle_items(items: &[Value], work: &mut SubagentWork) {
     for item in items {
-        apply_subagent_lifecycle_item(item, open_spawns);
+        apply_subagent_lifecycle_item(item, work);
     }
 }
 
-fn apply_subagent_lifecycle_item(item: &Value, open_spawns: &mut i32) {
+fn apply_subagent_lifecycle_item(item: &Value, work: &mut SubagentWork) {
     match item_subagent_lifecycle(item) {
-        SubagentLifecycle::Spawn => *open_spawns += 1,
+        SubagentLifecycle::Spawn => work.spawn(call_item_id(item)),
         // Codex may return from wait on the first completed target. A wait
-        // with explicit targets resolves only those children; a wait with
-        // no target list acknowledges the whole outstanding wave. Garbled
-        // wait arguments leave the outstanding count unchanged.
+        // with explicit unique target IDs resolves matching named children,
+        // then pending spawns as a fallback when outputs have not named them
+        // yet. A wait with no target list acknowledges the whole outstanding
+        // wave. Garbled wait arguments leave children unchanged.
         SubagentLifecycle::Wait => match wait_resolution(item) {
-            WaitResolution::Resolve(resolved) => {
-                *open_spawns = open_spawns.saturating_sub(resolved);
-            }
-            WaitResolution::ClearAll => *open_spawns = 0,
+            WaitResolution::Resolve(targets) => work.resolve_targets(&targets),
+            WaitResolution::ClearAll => work.clear_all(),
             WaitResolution::Leave => {}
         },
-        SubagentLifecycle::Neither => {}
+        SubagentLifecycle::Neither => {
+            if let Some(call_id) = output_call_id(item) {
+                work.bind_spawn_output(call_id, spawn_output_child_id(item));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SubagentWork {
+    pending_call_ids: Vec<String>,
+    named: BTreeSet<String>,
+}
+
+impl SubagentWork {
+    fn has_unresolved(&self) -> bool {
+        !self.pending_call_ids.is_empty() || !self.named.is_empty()
+    }
+
+    fn spawn(&mut self, call_id: Option<&str>) {
+        self.pending_call_ids.push(
+            call_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or("")
+                .to_string(),
+        );
+    }
+
+    fn bind_spawn_output(&mut self, call_id: &str, child_id: Option<String>) {
+        let Some(id) = child_id.filter(|id| !id.is_empty()) else {
+            return;
+        };
+        let Some(idx) = self
+            .pending_call_ids
+            .iter()
+            .position(|pending| pending == call_id)
+        else {
+            return;
+        };
+        self.pending_call_ids.remove(idx);
+        self.named.insert(id);
+    }
+
+    fn resolve_targets(&mut self, targets: &BTreeSet<String>) {
+        for target in targets {
+            if self.named.remove(target) {
+                continue;
+            }
+            if !self.pending_call_ids.is_empty() {
+                self.pending_call_ids.remove(0);
+            }
+        }
+    }
+
+    fn clear_all(&mut self) {
+        self.pending_call_ids.clear();
+        self.named.clear();
     }
 }
 
@@ -1831,7 +1887,7 @@ fn item_subagent_lifecycle(item: &Value) -> SubagentLifecycle {
 }
 
 enum WaitResolution {
-    Resolve(i32),
+    Resolve(BTreeSet<String>),
     ClearAll,
     Leave,
 }
@@ -1852,15 +1908,47 @@ fn wait_resolution(item: &Value) -> WaitResolution {
 
 fn wait_resolution_from_arguments(arguments: &Value) -> WaitResolution {
     for key in ["targets", "thread_ids", "agent_ids"] {
-        let Some(targets) = arguments.get(key).and_then(Value::as_array) else {
+        let Some(value) = arguments.get(key) else {
             continue;
+        };
+        let Some(targets) = value.as_array() else {
+            return WaitResolution::Leave;
         };
         if targets.is_empty() {
             return WaitResolution::ClearAll;
         }
-        return WaitResolution::Resolve(i32::try_from(targets.len()).unwrap_or(i32::MAX));
+        let mut unique = BTreeSet::new();
+        for target in targets {
+            let Some(id) = target.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+                return WaitResolution::Leave;
+            };
+            unique.insert(id.to_string());
+        }
+        return WaitResolution::Resolve(unique);
     }
     WaitResolution::ClearAll
+}
+
+fn spawn_output_child_id(item: &Value) -> Option<String> {
+    let raw = item.get("output").or_else(|| item.get("content"))?;
+    match raw {
+        Value::String(raw) => child_id_from_value(&serde_json::from_str(raw).ok()?),
+        value => child_id_from_value(value),
+    }
+}
+
+fn child_id_from_value(value: &Value) -> Option<String> {
+    for key in ["thread_id", "agent_id", "id"] {
+        if let Some(id) = value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 fn item_tool_arguments(item: &Value) -> ToolArguments {
