@@ -1792,13 +1792,15 @@ fn apply_subagent_lifecycle_item(item: &Value, open_spawns: &mut i32) {
         SubagentLifecycle::Spawn => *open_spawns += 1,
         // Codex may return from wait on the first completed target. A wait
         // with explicit targets resolves only those children; a wait with
-        // no target list acknowledges the whole outstanding wave.
-        SubagentLifecycle::Wait => {
-            *open_spawns = match wait_resolved_spawn_count(item) {
-                Some(resolved) => open_spawns.saturating_sub(resolved),
-                None => 0,
-            };
-        }
+        // no target list acknowledges the whole outstanding wave. Garbled
+        // wait arguments leave the outstanding count unchanged.
+        SubagentLifecycle::Wait => match wait_resolution(item) {
+            WaitResolution::Resolve(resolved) => {
+                *open_spawns = open_spawns.saturating_sub(resolved);
+            }
+            WaitResolution::ClearAll => *open_spawns = 0,
+            WaitResolution::Leave => {}
+        },
         SubagentLifecycle::Neither => {}
     }
 }
@@ -1828,29 +1830,52 @@ fn item_subagent_lifecycle(item: &Value) -> SubagentLifecycle {
     }
 }
 
-fn wait_resolved_spawn_count(item: &Value) -> Option<i32> {
-    let arguments = item_tool_arguments(item)?;
+enum WaitResolution {
+    Resolve(i32),
+    ClearAll,
+    Leave,
+}
+
+enum ToolArguments {
+    Missing,
+    Parsed(Value),
+    Invalid,
+}
+
+fn wait_resolution(item: &Value) -> WaitResolution {
+    match item_tool_arguments(item) {
+        ToolArguments::Invalid => WaitResolution::Leave,
+        ToolArguments::Missing => WaitResolution::ClearAll,
+        ToolArguments::Parsed(arguments) => wait_resolution_from_arguments(&arguments),
+    }
+}
+
+fn wait_resolution_from_arguments(arguments: &Value) -> WaitResolution {
     for key in ["targets", "thread_ids", "agent_ids"] {
         let Some(targets) = arguments.get(key).and_then(Value::as_array) else {
             continue;
         };
         if targets.is_empty() {
-            return None;
+            return WaitResolution::ClearAll;
         }
-        return Some(i32::try_from(targets.len()).unwrap_or(i32::MAX));
+        return WaitResolution::Resolve(i32::try_from(targets.len()).unwrap_or(i32::MAX));
     }
-    None
+    WaitResolution::ClearAll
 }
 
-fn item_tool_arguments(item: &Value) -> Option<Value> {
-    let raw = item.get("arguments").or_else(|| {
+fn item_tool_arguments(item: &Value) -> ToolArguments {
+    let Some(raw) = item.get("arguments").or_else(|| {
         item.get("function")
             .and_then(|function| function.get("arguments"))
-    })?;
+    }) else {
+        return ToolArguments::Missing;
+    };
     match raw {
-        Value::String(raw) => serde_json::from_str(raw).ok(),
-        Value::Object(_) => Some(raw.clone()),
-        _ => None,
+        Value::String(raw) => serde_json::from_str(raw)
+            .map(ToolArguments::Parsed)
+            .unwrap_or(ToolArguments::Invalid),
+        Value::Object(_) => ToolArguments::Parsed(raw.clone()),
+        _ => ToolArguments::Invalid,
     }
 }
 
@@ -2351,12 +2376,13 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
     .any(|stem| token_starts_with_stem(rest, stem))
 }
 
-/// Person-head hand-off for stems this branch added (`get`/`collect`/…).
+/// Person-head hand-off for stems this branch added (`get`/`collect`/`wait`/…).
 /// Sequencing does not run `remainder_is_work_action`, so without this
-/// veto `Then get back to you` would auto-continue. Pre-existing stems such
-/// as `look` stay on the verb-only sequencing path (`Then look at your PR`).
+/// veto `Then get back to you` and `Then wait for you` would auto-continue.
+/// Pre-existing stems such as `look` stay on the verb-only sequencing path
+/// (`Then look at your PR`).
 fn remainder_is_added_resume_stem_person_hand_off(rest: &str) -> bool {
-    const STEMS: [&str; 5] = ["get", "collect", "gather", "retrieve", "obtain"];
+    const STEMS: [&str; 6] = ["get", "collect", "gather", "retrieve", "obtain", "wait"];
     if !STEMS.iter().any(|stem| token_starts_with_stem(rest, stem)) {
         return false;
     }

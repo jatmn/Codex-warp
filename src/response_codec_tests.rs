@@ -3281,6 +3281,14 @@ fn continue_guard_then_wait_later_stays_end_turn() {
 }
 
 #[test]
+fn continue_guard_then_wait_for_you_stays_end_turn() {
+    assert!(continue_guard_end_turn(
+        "Then wait for you.",
+        "continue-guard-test-then-wait-for-you",
+    ));
+}
+
+#[test]
 fn continue_guard_then_wait_for_the_agent_triggers_followup() {
     assert!(!continue_guard_end_turn(
         "Then wait for the agent to finish.",
@@ -3547,6 +3555,66 @@ fn continue_guard_two_spawns_wait_both_targets_without_mid_task_text_stays_end_t
                     "name": "wait_agent",
                     "call_id": "call_wait_both",
                     "arguments": "{\"targets\":[\"agent-a\",\"agent-b\"]}"
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_wait_both_object_arguments_stays_end_turn() {
+    assert!(continue_guard_end_turn_for_request(
+        "Both reviewers finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-wait-both-object-args",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_both",
+                    "arguments": {"targets": ["agent-a", "agent-b"]}
+                }
+            ]
+        }),
+    ));
+}
+
+#[test]
+fn continue_guard_two_spawns_unparsable_wait_does_not_clear_open_spawns() {
+    assert!(!continue_guard_end_turn_for_request(
+        "Reviewer A finished.",
+        json!({
+            "prompt_cache_key": "continue-guard-test-two-spawn-bad-wait-args",
+            "input": [
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_a",
+                    "arguments": "{\"message\":\"review A\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "spawn_agent",
+                    "call_id": "call_spawn_b",
+                    "arguments": "{\"message\":\"review B\"}"
+                },
+                {
+                    "type": "function_call",
+                    "name": "wait_agent",
+                    "call_id": "call_wait_bad",
+                    "arguments": "{not-json"
                 }
             ]
         }),
