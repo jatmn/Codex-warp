@@ -1030,23 +1030,41 @@ async fn sync_provider_routes_for_enabled(
 
 async fn synchronize_global_route_seed_snapshot(state: &AppState, provider_id: &str) {
     let config = state.read_config().clone();
+    let globally_disabled = models::globally_disabled_models(&config, state.store.as_ref());
     let (stable_routes, refreshed_seeds) = match state.store.as_ref() {
-        Some(store) => match models::seed_model_routes_from_config_and_store(&config, store) {
-            models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
-            models::ModelRouteSeedRead::Failed(err) => {
-                tracing::warn!(
-                    provider_id = %provider_id,
-                    error = %err,
-                    "failed to read globally ordered route seeds during provider sync; using cached seeds"
-                );
-                let (seeds, _) = state.model_route_seed_snapshot().await;
-                (
-                    models::route_seeds_from_config_and_rows(&config, &seeds),
-                    None,
-                )
+        Some(store) => {
+            match models::seed_model_routes_from_config_and_store_with_disabled(
+                &config,
+                store,
+                Some(&globally_disabled),
+            ) {
+                models::ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds)),
+                models::ModelRouteSeedRead::Failed(err) => {
+                    tracing::warn!(
+                        provider_id = %provider_id,
+                        error = %err,
+                        "failed to read globally ordered route seeds during provider sync; using cached seeds"
+                    );
+                    let (seeds, _) = state.model_route_seed_snapshot().await;
+                    (
+                        models::route_seeds_from_config_and_rows_with_disabled(
+                            &config,
+                            &seeds,
+                            Some(&globally_disabled),
+                        ),
+                        None,
+                    )
+                }
             }
-        },
-        None => (models::route_seeds_from_config_and_rows(&config, &[]), None),
+        }
+        None => (
+            models::route_seeds_from_config_and_rows_with_disabled(
+                &config,
+                &[],
+                Some(&globally_disabled),
+            ),
+            None,
+        ),
     };
 
     if let Some(seeds) = refreshed_seeds {
@@ -2969,6 +2987,16 @@ async fn set_model_enabled(
             }
             if body.enabled {
                 clear_catalog_enable_overlaps(provider, &model_id, upstream_id.as_deref());
+            } else {
+                // Match overlay restore: a catalog toggle-off is a Web UI
+                // disable, so colliding siblings must see it in
+                // `GloballyDisabledModels` before the next restart.
+                provider.disable_model(&model_id);
+                // `disable_model` already no-ops on empty ids, matching
+                // `remove_model_catalog_entry`.
+                if let Some(upstream_id) = upstream_id.as_deref() {
+                    provider.disable_model(upstream_id);
+                }
             }
         } else if body.enabled {
             if let Some(entry) = restored_catalog {

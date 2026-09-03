@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
@@ -18,6 +19,135 @@ pub use crate::config_loader::provider_id_for_config_model;
 
 pub const DEFAULT_CONFIG_PATH: &str = "codex-warp.toml";
 pub const PRIMARY_PROVIDER_ID: &str = "default";
+
+/// Model ids an operator turned off in the Web UI, across every provider.
+///
+/// Several configured gateways can advertise the same slug (for example
+/// `gateway/model` under two providers that proxy one upstream). Route
+/// ownership is first-writer-wins per slug, so a disable applied to only one
+/// provider still leaves the same slug routable through a sibling that kept it
+/// enabled. Codex CLI's `/model` picker then keeps showing a model the operator
+/// turned off. Treat a Web UI disable as operator intent for the slug itself
+/// so publication, routing, and the picker agree.
+///
+/// Only Web UI-managed disables participate. Static TOML `disabled_models`
+/// entries stay provider-scoped because an operator writing TOML is already
+/// addressing one provider explicitly.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GloballyDisabledModels {
+    exact: BTreeSet<String>,
+    suffixes: Vec<String>,
+    /// Catalog `upstream_id` keys hidden because their catalog id was disabled.
+    /// Exact match only: treating them as overlap suffixes would hide an
+    /// unrelated gateway's own `other/foo` when the upstream alias is bare `foo`.
+    alias_exact: BTreeSet<String>,
+}
+
+impl GloballyDisabledModels {
+    /// Collect Web UI-managed disables from every configured provider.
+    ///
+    /// `is_managed` decides whether a provider's `disabled_models` entries are
+    /// Web UI intent. Static TOML `disabled_models` stay provider-scoped: an
+    /// operator editing TOML is already addressing one provider, and a sibling
+    /// gateway that still lists the slug should keep serving it.
+    ///
+    /// Include providers with `enabled = false`. A later Web UI provider
+    /// disable must not drop persisted slug disables; `provider_entries`
+    /// skips those gateways, and an enabled sibling would republish the slug.
+    pub(crate) fn from_config_with_managed<F>(config: &AppConfig, mut is_managed: F) -> Self
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut exact = BTreeSet::new();
+        let mut suffixes = Vec::new();
+        let mut alias_exact = BTreeSet::new();
+        for (provider_id, provider) in configured_provider_entries(config) {
+            if !is_managed(provider_id) {
+                continue;
+            }
+            for disabled in &provider.disabled_models {
+                // Keep the full id so `contains()` can apply
+                // `model_ids_overlap` symmetrically: `provider/foo` hides a
+                // sibling's bare `foo`, and a bare `foo` hides a sibling's
+                // `provider/foo`, but neither hides another gateway's own
+                // `other/foo`. Gating on `contains('/')` here would make the
+                // match one-directional and let a bare disable leak through a
+                // sibling's prefixed slug.
+                Self::record(&mut exact, &mut suffixes, disabled);
+            }
+            // Web UI catalog toggles set `entry.enabled = false` without always
+            // writing `disabled_models` until overlay restore. Managed catalog
+            // off is still operator intent for the slug.
+            for entry in &provider.model_catalog {
+                if entry.enabled {
+                    continue;
+                }
+                Self::record(&mut exact, &mut suffixes, &entry.id);
+            }
+        }
+        // Catalog rows advertise two identities. A disable that covers the
+        // catalog id records `upstream_id` as an exact alias (retain/live
+        // keys). A disable that names the upstream itself records the catalog
+        // id the same way. Do not reverse-link from prefix overlap: that would
+        // treat `hicap/foo` as hidden when the operator only disabled
+        // `other/foo` whose overlap already covers bare `foo`.
+        for (_, provider) in configured_provider_entries(config) {
+            for entry in &provider.model_catalog {
+                let id_covered = exact.contains(&entry.id)
+                    || suffixes
+                        .iter()
+                        .any(|disabled| model_ids_overlap(disabled, &entry.id));
+                if id_covered
+                    && let Some(upstream_id) = entry
+                        .upstream_id
+                        .as_deref()
+                        .filter(|value| !value.is_empty())
+                {
+                    alias_exact.insert(upstream_id.to_string());
+                }
+                if let Some(upstream_id) = entry
+                    .upstream_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    && exact.contains(upstream_id)
+                    && !entry.id.is_empty()
+                {
+                    alias_exact.insert(entry.id.clone());
+                }
+            }
+        }
+        Self {
+            exact,
+            suffixes,
+            alias_exact,
+        }
+    }
+
+    fn record(exact: &mut BTreeSet<String>, suffixes: &mut Vec<String>, id: &str) {
+        if id.is_empty() {
+            return;
+        }
+        if exact.insert(id.to_string()) {
+            suffixes.push(id.to_string());
+        }
+    }
+
+    /// True when a Web UI-managed disable covers this model id, including the
+    /// prefix-aware overlap of `provider/foo` with bare `foo`.
+    pub(crate) fn contains(&self, model_id: &str) -> bool {
+        if self.exact.contains(model_id) || self.alias_exact.contains(model_id) {
+            return true;
+        }
+        // A disabled `provider/foo` also covers a sibling's bare `foo`, but it
+        // must NOT cover a different gateway's own `other/foo`. Matching is
+        // delegated to `model_ids_overlap`, which is symmetric and
+        // prefix-aware, so `provider/foo` overlaps bare `foo` yet stays
+        // distinct from `other/foo`.
+        self.suffixes
+            .iter()
+            .any(|suffix| model_ids_overlap(suffix, model_id))
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

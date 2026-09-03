@@ -865,13 +865,14 @@ fn provider_model_merge_keeps_upstream_and_adds_local_missing() {
     ]);
 
     assert_eq!(
-        add_models_for_provider(
+        add_models_for_provider_with_disabled(
             &mut merged_models,
             &mut routes,
             &config,
             "moonshot_kimicode",
             provider,
             provider_models,
+            None
         ),
         3
     );
@@ -1219,7 +1220,7 @@ fn register_catalog_routes_for_provider_adds_upstream_id_aliases() {
             ..crate::config::ModelCatalogEntry::default()
         });
 
-    register_catalog_routes_for_provider(&mut routes, "hicap", &provider);
+    register_catalog_routes_for_provider_with_disabled(&mut routes, "hicap", &provider, None);
 
     assert_eq!(
         routes.get("hicap/gpt-5.4").map(String::as_str),
@@ -1237,7 +1238,7 @@ fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
         upstream_id: Some("gpt-5.4".to_string()),
         ..crate::config::ModelCatalogEntry::default()
     });
-    register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+    register_catalog_routes_for_provider_with_disabled(&mut routes, "hicap", &hicap, None);
 
     let mut merged_models = Vec::new();
     let default_provider = ProviderConfig {
@@ -1251,13 +1252,14 @@ fn catalog_upstream_id_alias_wins_over_live_slug_collision() {
     })];
     let config = load_config_layers(&[]).expect("default config loads");
 
-    add_models_for_provider(
+    add_models_for_provider_with_disabled(
         &mut merged_models,
         &mut routes,
         &config,
         "provider",
         &default_provider,
         live_models,
+        None,
     );
 
     assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
@@ -1334,7 +1336,7 @@ fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
         display_name: Some("GPT-5.4".to_string()),
         ..crate::config::ModelCatalogEntry::default()
     });
-    register_catalog_routes_for_provider(&mut routes, "hicap", &hicap);
+    register_catalog_routes_for_provider_with_disabled(&mut routes, "hicap", &hicap, None);
 
     // The upstream id is still routeable even though it is not advertised.
     assert_eq!(routes.get("gpt-5.4").map(String::as_str), Some("hicap"));
@@ -1343,13 +1345,14 @@ fn catalog_upstream_id_alias_not_listed_in_merged_models_for_owner() {
     let config = load_config_layers(&[]).expect("default config loads");
     let catalog_models = manual_catalog_models(&hicap, &config, None);
 
-    let added = add_models_for_provider(
+    let added = add_models_for_provider_with_disabled(
         &mut merged_models,
         &mut routes,
         &config,
         "hicap",
         &hicap,
         catalog_models,
+        None,
     );
 
     assert_eq!(added, 1);
@@ -1392,7 +1395,7 @@ fn register_catalog_routes_skips_disabled_entries() {
         });
     provider.disabled_models.push("upstream-only".to_string());
 
-    register_catalog_routes_for_provider(&mut routes, "test", &provider);
+    register_catalog_routes_for_provider_with_disabled(&mut routes, "test", &provider, None);
 
     assert_eq!(
         routes.get("enabled-model").map(String::as_str),
@@ -1660,6 +1663,216 @@ async fn publish_model_routes_stores_discovered_models() {
             .is_some_and(|models| models.contains_key("live-model")),
         "successful discovery must populate the Web UI discovered-model cache"
     );
+}
+
+/// A Web UI disable must survive a failed provider refresh.
+///
+/// `publish_model_routes` retains stale route ownership for providers whose
+/// upstream fetch failed, so a transient failure must not resurrect a slug the
+/// operator turned off in the Web UI.
+#[tokio::test]
+async fn failed_provider_refresh_does_not_retain_globally_disabled_route() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    // Mark `alpha` Web UI-managed so its disable counts as operator intent
+    // for the slug, not just for one provider's catalog row.
+    store
+        .create_provider_with_catalog("alpha", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    // `beta` owns the route and its refresh FAILED. `alpha` is a sibling that
+    // still lists the same slug as enabled and carries the Web UI disable.
+    // The stale route must not be retained via beta's failed-provider
+    // ownership, because the operator turned the slug off.
+    for (id, disabled) in [("beta", None), ("alpha", Some("shared/model"))] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                disabled_models: disabled.map(|d| vec![d.to_string()]).unwrap_or_default(),
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared/model".to_string(),
+            "beta".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let failed = BTreeSet::from(["beta".to_string()]);
+    publish_model_routes(&state, BTreeMap::new(), BTreeMap::new(), &failed, None).await;
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared/model")
+            .map(String::as_str),
+        None,
+        "a globally disabled slug must not be retained via failed-provider ownership"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `discover_routes_for_mutation` restores prior ownership for providers that
+/// were not refetched. A Web UI disable must drop that stale route there too,
+/// not only in `publish_model_routes` after a failed upstream refresh.
+///
+/// Replacing the retain-loop `&&` with `||` would re-insert a locally enabled
+/// globally disabled slug, and `publish_model_routes` would keep it because it
+/// uses `or_insert`.
+#[tokio::test]
+async fn seed_and_retain_refresh_does_not_restore_globally_disabled_route() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-seed-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("alpha", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "alpha".to_string(),
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            disabled_models: vec!["shared/model".to_string()],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "beta".to_string(),
+        ProviderConfig {
+            base_url: "https://beta.example/v1".to_string(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "beta-other".to_string(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared/model".to_string(),
+            "beta".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    let routes = state.model_routes.read().await;
+    assert_eq!(
+        routes.get("beta-other").map(String::as_str),
+        Some("beta"),
+        "unrelated catalog routes must still be seeded"
+    );
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "a globally disabled slug must not be restored from prior ownership during seed-and-retain"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -2026,7 +2239,7 @@ async fn stale_model_discovery_does_not_publish_routes() {
 fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::models::seed_model_routes_from_config_and_store_with_disabled;
     use crate::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -2057,7 +2270,7 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
     config.providers.insert("beta".into(), beta);
 
     let ModelRouteSeedRead::Loaded { routes, .. } =
-        seed_model_routes_from_config_and_store(&config, &store)
+        seed_model_routes_from_config_and_store_with_disabled(&config, &store, None)
     else {
         panic!("seed read failed");
     };
@@ -2073,7 +2286,7 @@ fn seed_model_routes_claims_overlay_enabled_upstream_only_models() {
 fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::models::seed_model_routes_from_config_and_store_with_disabled;
     use crate::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -2112,7 +2325,7 @@ fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
     );
 
     let ModelRouteSeedRead::Loaded { routes, .. } =
-        seed_model_routes_from_config_and_store(&config, &store)
+        seed_model_routes_from_config_and_store_with_disabled(&config, &store, None)
     else {
         panic!("seed read failed");
     };
@@ -2125,7 +2338,7 @@ fn seed_model_routes_skips_overlay_seeds_for_disabled_providers() {
 fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::models::seed_model_routes_from_config_and_store;
+    use crate::models::seed_model_routes_from_config_and_store_with_disabled;
     use crate::store::Store;
 
     let dir = std::env::temp_dir().join(format!(
@@ -2157,7 +2370,7 @@ fn seed_model_routes_preserves_latest_explicit_claim_after_reopen() {
     }
 
     let ModelRouteSeedRead::Loaded { routes, .. } =
-        seed_model_routes_from_config_and_store(&config, &store)
+        seed_model_routes_from_config_and_store_with_disabled(&config, &store, None)
     else {
         panic!("seed read failed");
     };
@@ -2196,7 +2409,7 @@ fn cached_overlay_rows_recompute_current_catalog_and_overlay_precedence() {
         ),
     ];
 
-    let routes = route_seeds_from_config_and_rows(&config, &seeds);
+    let routes = route_seeds_from_config_and_rows_with_disabled(&config, &seeds, None);
     assert_eq!(routes.get("shared").map(String::as_str), Some("alpha"));
     assert_eq!(routes.get("overlay-only").map(String::as_str), Some("beta"));
     assert_eq!(
@@ -2205,7 +2418,7 @@ fn cached_overlay_rows_recompute_current_catalog_and_overlay_precedence() {
     );
 
     config.providers.get_mut("beta").unwrap().enabled = false;
-    let routes = route_seeds_from_config_and_rows(&config, &seeds);
+    let routes = route_seeds_from_config_and_rows_with_disabled(&config, &seeds, None);
     assert_eq!(
         routes.get("overlay-only").map(String::as_str),
         Some("alpha"),
@@ -2311,4 +2524,715 @@ async fn stale_fallback_seed_generation_cannot_overwrite_newer_live_routes() {
             .map(String::as_str),
         Some("new-owner")
     );
+}
+
+// --- Cross-provider Web UI disable regression coverage -----------------------
+//
+// Several gateways can advertise the same slug. Route ownership is
+// first-writer-wins per slug, so a Web UI disable applied to one provider used
+// to leave the identical slug routable through a sibling that kept it enabled,
+// and Codex CLI's `/model` picker kept showing the disabled model.
+
+fn collision_config() -> AppConfig {
+    let mut config = AppConfig::default();
+    for id in ["gateway-a", "gateway-b"] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "shared/model".to_string(),
+                    upstream_id: Some("shared-model".to_string()),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    config
+}
+
+fn disabled_from(config: &AppConfig, managed: &[&str]) -> crate::config::GloballyDisabledModels {
+    crate::config::GloballyDisabledModels::from_config_with_managed(config, |id| {
+        managed.contains(&id)
+    })
+}
+
+#[test]
+fn cross_provider_disable_hides_colliding_slug_from_catalog_routes() {
+    let mut config = collision_config();
+    // The operator turns the model off in gateway-b from the Web UI.
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "a slug disabled under one gateway must not stay routable through a sibling"
+    );
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        None,
+        "the upstream alias of a disabled slug must stay hidden too"
+    );
+}
+
+#[test]
+fn cross_provider_disable_hides_colliding_slug_from_v1_models_publication() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    let models = vec![
+        json!({"slug": "shared/model"}),
+        json!({"slug": "other/model"}),
+    ];
+
+    // Both providers advertise the same slug; only the disabled one may not publish it.
+    for provider_id in ["gateway-a", "gateway-b"] {
+        let provider = provider_by_id(&config, provider_id).expect("provider");
+        let mut merged = Vec::new();
+        let mut routes = BTreeMap::new();
+        let added = add_models_for_provider_with_disabled(
+            &mut merged,
+            &mut routes,
+            &config,
+            provider_id,
+            provider,
+            models.clone(),
+            Some(&disabled),
+        );
+        assert_eq!(
+            added, 1,
+            "{provider_id} must publish only the non-disabled model"
+        );
+        let slugs: Vec<&str> = merged
+            .iter()
+            .filter_map(|model| model.get("slug").and_then(|value| value.as_str()))
+            .collect();
+        assert!(
+            !slugs.contains(&"shared/model"),
+            "{provider_id} must not republish a slug disabled in another gateway"
+        );
+        assert!(slugs.contains(&"other/model"));
+    }
+}
+
+#[test]
+fn cross_provider_disable_does_not_hide_unrelated_slugs() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("unrelated/model");
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    let provider = provider_by_id(&config, "gateway-a").expect("gateway-a");
+    let mut merged = Vec::new();
+    let mut routes = BTreeMap::new();
+    let added = add_models_for_provider_with_disabled(
+        &mut merged,
+        &mut routes,
+        &config,
+        "gateway-a",
+        provider,
+        vec![json!({"slug": "shared/model"})],
+        Some(&disabled),
+    );
+    assert_eq!(added, 1, "an unrelated disable must not hide other slugs");
+}
+
+#[test]
+fn static_toml_disable_stays_provider_scoped() {
+    // TOML-authored `disabled_models` address one provider explicitly, so a
+    // sibling gateway that still lists the slug must keep serving it.
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-a")
+        .expect("gateway-a")
+        .disabled_models
+        .push("shared/model".to_string());
+
+    let disabled = disabled_from(&config, &[]);
+    assert!(
+        !disabled.contains("shared/model"),
+        "a non-managed TOML disable must not become global"
+    );
+
+    let provider = provider_by_id(&config, "gateway-b").expect("gateway-b");
+    let mut merged = Vec::new();
+    let mut routes = BTreeMap::new();
+    let added = add_models_for_provider_with_disabled(
+        &mut merged,
+        &mut routes,
+        &config,
+        "gateway-b",
+        provider,
+        vec![json!({"slug": "shared/model"})],
+        Some(&disabled),
+    );
+    assert_eq!(
+        added, 1,
+        "a sibling gateway must still publish a slug disabled by static TOML elsewhere"
+    );
+}
+
+#[test]
+fn cross_provider_disable_drops_retained_route_ownership() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+    let disabled = disabled_from(&config, &["gateway-b"]);
+
+    // Route seeding must drop a globally disabled slug even though the sibling
+    // gateway-a still lists it as enabled and would otherwise win the route.
+    let seeds = vec![];
+    let rebuilt = route_seeds_from_config_and_rows_with_disabled(&config, &seeds, Some(&disabled));
+    assert_eq!(
+        rebuilt.get("shared/model").map(String::as_str),
+        None,
+        "route seeding must drop a globally disabled slug"
+    );
+}
+
+/// Regression: a cross-provider disable must stay prefix-aware.
+///
+/// Disabling `opencode-go/model` hides the colliding bare `model` (the same
+/// upstream model reached unprefixed), but it must NOT hide an unrelated
+/// gateway's own `hicap/model`. Modeled on the repo's real bundled configs,
+/// where `moonshot-kimicode` publishes bare `kimi-k2.7-code` while `hicap`
+/// publishes `hicap/kimi-k2.7-code` and `opencode-go` publishes
+/// `opencode-go/kimi-k2.7-code`.
+#[test]
+fn prefixed_disable_does_not_hide_unrelated_prefixed_sibling() {
+    let mut config = AppConfig::default();
+    for (id, model_id, upstream) in [
+        ("moonshot", "kimi-k2.7-code", None),
+        (
+            "opencode-go",
+            "opencode-go/kimi-k2.7-code",
+            Some("kimi-k2.7-code"),
+        ),
+        ("hicap", "hicap/kimi-k2.7-code", Some("kimi-k2.7-code")),
+    ] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: model_id.to_string(),
+                    upstream_id: upstream.map(str::to_string),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    // Operator disables the model in opencode-go only, from the Web UI.
+    config
+        .providers
+        .get_mut("opencode-go")
+        .expect("opencode-go")
+        .disable_model("opencode-go/kimi-k2.7-code");
+    let disabled = disabled_from(&config, &["opencode-go"]);
+
+    assert!(
+        disabled.contains("opencode-go/kimi-k2.7-code"),
+        "the disabled slug itself must be suppressed"
+    );
+    assert!(
+        disabled.contains("kimi-k2.7-code"),
+        "a bare sibling slug must still be hidden"
+    );
+    assert!(
+        !disabled.contains("hicap/kimi-k2.7-code"),
+        "disabling under opencode-go must not hide hicap's own prefixed model"
+    );
+
+    // hicap keeps its route; the colliding slugs do not.
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("hicap/kimi-k2.7-code").map(String::as_str),
+        Some("hicap"),
+        "hicap must keep publishing its own model"
+    );
+    assert_eq!(
+        routes.get("opencode-go/kimi-k2.7-code").map(String::as_str),
+        None,
+        "the disabled slug is not routed"
+    );
+    assert_eq!(
+        routes.get("kimi-k2.7-code").map(String::as_str),
+        None,
+        "the bare slug of the same upstream model stays hidden across providers"
+    );
+}
+
+#[test]
+fn prefixed_disable_hides_bare_sibling_slug() {
+    // (existing test body preserved below)
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "gateway-a".to_string(),
+        ProviderConfig {
+            base_url: "https://a.example/v1".to_string(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "model".to_string(),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "gateway-b".to_string(),
+        ProviderConfig {
+            base_url: "https://b.example/v1".to_string(),
+            model_catalog_only: true,
+            disabled_models: vec!["gateway-b/model".to_string()],
+            model_catalog: vec![ModelCatalogEntry {
+                id: "gateway-b/model".to_string(),
+                enabled: false,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("model"),
+        "disabling `provider/foo` must also cover a sibling's bare `foo`"
+    );
+}
+
+/// The overlap match must be symmetric, not one-directional.
+///
+/// Disabling a BARE slug must also hide a sibling's prefixed `provider/foo`,
+/// not just the other way round. The Web UI can address either form, so a
+/// one-directional match would leave the prefixed twin routable and visible
+/// in the Codex CLI `/model` picker.
+#[test]
+fn bare_disable_hides_prefixed_sibling_slug() {
+    let mut config = AppConfig::default();
+    for id in ["gateway-a", "gateway-b"] {
+        config.providers.insert(
+            id.to_string(),
+            ProviderConfig {
+                base_url: format!("https://{id}.example/v1"),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "gateway-a/model".to_string(),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+    // The operator disables the BARE form from the Web UI.
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("model");
+    let disabled = disabled_from(&config, &["gateway-b"]);
+
+    assert!(
+        disabled.contains("gateway-a/model"),
+        "disabling bare `foo` must also cover a sibling's `provider/foo`"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("gateway-a/model").map(String::as_str),
+        None,
+        "the prefixed twin must not stay routable through a sibling"
+    );
+}
+
+#[test]
+fn managed_catalog_toggle_off_hides_colliding_slug_without_disabled_models() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .model_catalog[0]
+        .enabled = false;
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared/model"),
+        "a managed catalog toggle-off is Web UI intent for the slug"
+    );
+    assert!(
+        disabled.contains("shared-model"),
+        "the catalog upstream alias must be covered too"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "an unmanaged TOML catalog row must stay provider-scoped"
+    );
+}
+
+/// Turning off the gateway that recorded a Web UI disable must not revive the
+/// slug. `provider_entries` skips `enabled = false`, so collection has to use
+/// configured providers or an enabled sibling republishes after provider disable.
+#[test]
+fn managed_disable_survives_recording_provider_disable() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .enabled = false;
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared/model"),
+        "a managed slug disable must outlive disabling the recording gateway"
+    );
+    assert!(
+        disabled.contains("shared-model"),
+        "the catalog upstream alias must stay covered after the recording gateway is disabled"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "an enabled sibling must not republish a slug still disabled on a disabled managed gateway"
+    );
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        None,
+        "the upstream alias must not return through the sibling either"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "disabling an unmanaged TOML provider must not promote its disables to global"
+    );
+}
+
+/// Disabling only the catalog `upstream_id` must still hide the catalog id on
+/// siblings. `model_ids_overlap` does not treat `shared-model` as `shared/model`,
+/// so the collector has to walk catalog rows in both directions using exact
+/// aliases rather than suffix overlap.
+#[test]
+fn managed_upstream_only_disable_hides_catalog_id() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared-model");
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared-model"),
+        "the disabled upstream alias must be covered"
+    );
+    assert!(
+        disabled.contains("shared/model"),
+        "the sibling catalog id must be covered when only the upstream alias was disabled"
+    );
+    assert!(
+        !disabled.contains("other/model"),
+        "linking catalog id to upstream must not hide an unrelated slash-form slug"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "an enabled sibling must not publish the catalog id after an upstream-only disable"
+    );
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        None,
+        "the upstream alias must stay hidden too"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "an unmanaged upstream-only disable must stay provider-scoped"
+    );
+}
+
+/// A managed prefixed disable covers a sibling catalog's bare id by overlap,
+/// not exact equality. The sibling's `upstream_id` is a different prefix
+/// (`moonshot/foo` vs `opencode-go/foo`) so suffix matching must not hide it
+/// unless the collector records that alias. Replacing the coverage `||` with
+/// `&&` would require the catalog id to also sit in `exact`, and the alias
+/// would leak back onto retain/live keys.
+#[test]
+fn prefixed_disable_covers_sibling_catalog_upstream_alias() {
+    let mut config = AppConfig::default();
+    config.providers.insert(
+        "opencode-go".to_string(),
+        ProviderConfig {
+            base_url: "https://opencode.example/v1".to_string(),
+            model_catalog_only: true,
+            disabled_models: vec!["opencode-go/kimi-k2.7-code".to_string()],
+            ..ProviderConfig::default()
+        },
+    );
+    config.providers.insert(
+        "hicap".to_string(),
+        ProviderConfig {
+            base_url: "https://hicap.example/v1".to_string(),
+            model_catalog_only: true,
+            model_catalog: vec![ModelCatalogEntry {
+                id: "kimi-k2.7-code".to_string(),
+                upstream_id: Some("moonshot/kimi-k2.7-code".to_string()),
+                enabled: true,
+                ..ModelCatalogEntry::default()
+            }],
+            ..ProviderConfig::default()
+        },
+    );
+
+    let disabled = disabled_from(&config, &["opencode-go"]);
+    assert!(
+        disabled.contains("kimi-k2.7-code"),
+        "a prefixed disable must cover the sibling's bare catalog id"
+    );
+    assert!(
+        disabled.contains("moonshot/kimi-k2.7-code"),
+        "the sibling catalog's upstream alias must be covered even though it uses another prefix"
+    );
+    assert!(
+        !disabled.contains("hicap/kimi-k2.7-code"),
+        "an unrelated gateway prefix must stay visible"
+    );
+}
+
+#[tokio::test]
+async fn seed_and_retain_does_not_restore_disabled_upstream_alias() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::models::MutationRouteRefresh;
+    use crate::models::refresh_model_routes_while_mutation_locked;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-alias-retain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("gateway-b", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::from([(
+            "shared-model".to_string(),
+            "gateway-a".to_string(),
+        )]))),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    let _mutation = state.mutation_lock.lock().await;
+    refresh_model_routes_while_mutation_locked(&state, MutationRouteRefresh::SeedsAndRetain, None)
+        .await
+        .expect("seed refresh succeeds without upstream fetches");
+
+    assert_eq!(
+        state
+            .model_routes
+            .read()
+            .await
+            .get("shared-model")
+            .map(String::as_str),
+        None,
+        "a disabled catalog id must not leave its upstream alias routable after retain"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn select_provider_does_not_fallback_to_sibling_for_globally_disabled_slug() {
+    use std::sync::Arc;
+    use std::sync::RwLock;
+    use std::sync::atomic::AtomicU64;
+
+    use reqwest::Client;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::RwLock as AsyncRwLock;
+
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+
+    use crate::debug_log::DebugLog;
+    use crate::state::AppState;
+    use crate::store::Store;
+
+    fn alpha_overlay_provider() -> ProviderConfig {
+        ProviderConfig {
+            base_url: "https://alpha.example/v1".to_string(),
+            model_catalog_only: true,
+            ..ProviderConfig::default()
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "codex-warp-disabled-select-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = Store::open(&dir.join("seed.db")).unwrap();
+    store
+        .create_provider_with_catalog("gateway-b", &alpha_overlay_provider(), &[], false)
+        .unwrap();
+
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+
+    let state = AppState {
+        config: Arc::new(RwLock::new(config)),
+        client: Client::new(),
+        model_routes: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        discovered_models: Arc::new(AsyncRwLock::new(BTreeMap::new())),
+        model_route_seeds: Arc::new(AsyncRwLock::new(Vec::new())),
+        model_route_seed_revision: Arc::new(AtomicU64::new(0)),
+        session_models: Arc::new(AsyncRwLock::new(crate::state::SessionModelCache::default())),
+        config_revision: Arc::new(AtomicU64::new(1)),
+        mutation_lock: Arc::new(AsyncMutex::new(())),
+        debug_log: DebugLog::disabled(),
+        process_log: crate::process_log::ProcessLog::disabled(),
+        tracing_reload: None,
+        store: Some(store),
+        structured_output: Arc::new(crate::structured_output::StructuredOutputCache::default()),
+    };
+
+    assert!(
+        crate::provider::select_provider(&state, &json!({"model": "shared/model"}))
+            .await
+            .is_none(),
+        "config fallback must not route a globally disabled slug through a sibling"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

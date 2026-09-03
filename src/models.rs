@@ -16,6 +16,7 @@ use serde_json::json;
 
 use crate::config;
 use crate::config::AppConfig;
+use crate::config::GloballyDisabledModels;
 use crate::config::ModelCatalogEntry;
 use crate::config::ModelMetadataFields;
 use crate::config::ProviderConfig;
@@ -162,6 +163,22 @@ async fn models_with_publish_lock(
     )
 }
 
+/// Web UI-managed disables for the current config and optional store.
+///
+/// Without a store, nothing is treated as Web UI-managed, so static TOML
+/// `disabled_models` stay provider-scoped.
+pub(crate) fn globally_disabled_models(
+    config: &AppConfig,
+    store: Option<&crate::store::Store>,
+) -> GloballyDisabledModels {
+    match store {
+        Some(store) => GloballyDisabledModels::from_config_with_managed(config, |provider_id| {
+            store.provider_is_managed(provider_id).unwrap_or(false)
+        }),
+        None => GloballyDisabledModels::default(),
+    }
+}
+
 async fn discover_routes_for_mutation(
     state: &AppState,
     headers: &HeaderMap,
@@ -175,21 +192,32 @@ async fn discover_routes_for_mutation(
     let prior_routes = state.model_routes.read().await.clone();
 
     let seed_config = state.read_config().clone();
+    let globally_disabled = globally_disabled_models(&seed_config, state.store.as_ref());
     let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
-        Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
-            ModelRouteSeedRead::Failed(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to read enabled model route seeds; falling back to cached seeds"
-                );
-                let (seeds, revision) = state.model_route_seed_snapshot().await;
-                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
-                (routes, None, Some(revision))
+        Some(store) => {
+            match seed_model_routes_from_config_and_store_with_disabled(
+                &seed_config,
+                store,
+                Some(&globally_disabled),
+            ) {
+                ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
+                ModelRouteSeedRead::Failed(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to read enabled model route seeds; falling back to cached seeds"
+                    );
+                    let (seeds, revision) = state.model_route_seed_snapshot().await;
+                    let routes = route_seeds_from_config_and_rows_with_disabled(
+                        &seed_config,
+                        &seeds,
+                        Some(&globally_disabled),
+                    );
+                    (routes, None, Some(revision))
+                }
             }
-        },
+        }
         None => {
-            let seeded = catalog_route_seeds(&seed_config);
+            let seeded = catalog_route_seeds_with_disabled(&seed_config, Some(&globally_disabled));
             (seeded, Some(Vec::new()), None)
         }
     };
@@ -236,13 +264,14 @@ async fn discover_routes_for_mutation(
             );
         }
         let mut merged_models = Vec::new();
-        let _added = add_models_for_provider(
+        let _added = add_models_for_provider_with_disabled(
             &mut merged_models,
             &mut routes,
             &config,
             &provider_id,
             &current,
             provider_models,
+            Some(&globally_disabled),
         );
         if provider_failures.is_empty() {
             // Successful refetch (including empty catalogs) replaces retained
@@ -261,7 +290,9 @@ async fn discover_routes_for_mutation(
         else {
             continue;
         };
-        if provider.model_is_enabled(&slug) {
+        // Retained prior ownership must also respect a Web UI disable, otherwise
+        // the slug survives a mutation purely because it was routed before.
+        if provider.model_is_enabled(&slug) && !globally_disabled.contains(&slug) {
             routes.insert(slug, provider_id.clone());
         }
     }
@@ -329,6 +360,10 @@ async fn models_for_revision(
         .into_iter()
         .map(|(id, p)| (id.to_string(), p.clone()))
         .collect();
+    // A Web UI disable is operator intent for the slug itself. Compute it once
+    // per revision so a sibling provider that still lists the slug as enabled
+    // cannot republish it into the catalog Codex CLI reads.
+    let globally_disabled = globally_disabled_models(&state.read_config(), state.store.as_ref());
 
     // Fetch model catalogs from all providers concurrently to reduce cold-start
     // latency when multiple providers are configured.
@@ -361,20 +396,30 @@ async fn models_for_revision(
     let mut merged_models = Vec::new();
     let seed_config = state.read_config().clone();
     let (mut routes, refreshed_seeds, fallback_seed_revision) = match state.store.as_ref() {
-        Some(store) => match seed_model_routes_from_config_and_store(&seed_config, store) {
-            ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
-            ModelRouteSeedRead::Failed(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to read enabled model route seeds; falling back to cached seeds"
-                );
-                let (seeds, revision) = state.model_route_seed_snapshot().await;
-                let routes = route_seeds_from_config_and_rows(&seed_config, &seeds);
-                (routes, None, Some(revision))
+        Some(store) => {
+            match seed_model_routes_from_config_and_store_with_disabled(
+                &seed_config,
+                store,
+                Some(&globally_disabled),
+            ) {
+                ModelRouteSeedRead::Loaded { routes, seeds } => (routes, Some(seeds), None),
+                ModelRouteSeedRead::Failed(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to read enabled model route seeds; falling back to cached seeds"
+                    );
+                    let (seeds, revision) = state.model_route_seed_snapshot().await;
+                    let routes = route_seeds_from_config_and_rows_with_disabled(
+                        &seed_config,
+                        &seeds,
+                        Some(&globally_disabled),
+                    );
+                    (routes, None, Some(revision))
+                }
             }
-        },
+        }
         None => {
-            let seeded = catalog_route_seeds(&seed_config);
+            let seeded = catalog_route_seeds_with_disabled(&seed_config, Some(&globally_disabled));
             (seeded, Some(Vec::new()), None)
         }
     };
@@ -385,7 +430,12 @@ async fn models_for_revision(
     if state.store.is_none() {
         let config = state.read_config();
         for (provider_id, provider) in provider_entries(&config) {
-            register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+            register_catalog_routes_for_provider_with_disabled(
+                &mut routes,
+                provider_id,
+                provider,
+                Some(&globally_disabled),
+            );
         }
     }
 
@@ -402,13 +452,14 @@ async fn models_for_revision(
             // Provider was disabled/removed while upstream fetch was in flight.
             continue;
         };
-        let provider_added = add_models_for_provider(
+        let provider_added = add_models_for_provider_with_disabled(
             &mut merged_models,
             &mut routes,
             &config,
             &provider_id,
             &provider,
             provider_models,
+            Some(&globally_disabled),
         ) > 0;
 
         if !provider_added {
@@ -564,6 +615,10 @@ async fn publish_model_routes(
     failed_providers: &BTreeSet<String>,
     refreshed_seeds: Option<Vec<ModelRouteSeed>>,
 ) {
+    // A Web UI disable is operator intent for the slug. Compute it here so
+    // retained stale ownership cannot resurrect a disabled slug when a
+    // provider's refresh failed transiently.
+    let globally_disabled = globally_disabled_models(&state.read_config(), state.store.as_ref());
     let retain_failed_routes = |routes: &mut BTreeMap<String, String>,
                                 prior: &BTreeMap<String, String>| {
         let config = state.read_config();
@@ -575,6 +630,12 @@ async fn publish_model_routes(
                 continue;
             };
             if !provider.model_is_enabled(model_id) {
+                continue;
+            }
+            // Retained prior ownership must also respect a Web UI disable,
+            // otherwise a slug survives purely because its owner's refresh
+            // failed and it was routed before.
+            if globally_disabled.contains(model_id) {
                 continue;
             }
             // A fresh successful discovery owns the route for this refresh.
@@ -700,13 +761,22 @@ fn discovered_models_by_slug(models: &[Value]) -> BTreeMap<String, Value> {
         .collect()
 }
 
-pub(crate) fn register_catalog_routes_for_provider(
+/// Register catalog-owned routes for one provider.
+///
+/// `globally_disabled` carries Web UI disables from every provider so a slug
+/// turned off under one gateway is not routed for a sibling gateway that still
+/// lists it as enabled.
+pub(crate) fn register_catalog_routes_for_provider_with_disabled(
     routes: &mut BTreeMap<String, String>,
     provider_id: &str,
     provider: &ProviderConfig,
+    globally_disabled: Option<&GloballyDisabledModels>,
 ) {
     for entry in &provider.model_catalog {
         if !entry.enabled || !provider.model_is_enabled(&entry.id) {
+            continue;
+        }
+        if globally_disabled.is_some_and(|disabled| disabled.contains(&entry.id)) {
             continue;
         }
         if !routes.contains_key(&entry.id) {
@@ -715,6 +785,7 @@ pub(crate) fn register_catalog_routes_for_provider(
         if let Some(upstream_id) = entry.upstream_id.as_deref()
             && !upstream_id.is_empty()
             && provider.model_is_enabled(upstream_id)
+            && !globally_disabled.is_some_and(|disabled| disabled.contains(upstream_id))
             && !routes.contains_key(upstream_id)
         {
             routes.insert(upstream_id.to_string(), provider_id.to_string());
@@ -722,19 +793,28 @@ pub(crate) fn register_catalog_routes_for_provider(
     }
 }
 
-fn catalog_route_seeds(config: &AppConfig) -> BTreeMap<String, String> {
+fn catalog_route_seeds_with_disabled(
+    config: &AppConfig,
+    globally_disabled: Option<&GloballyDisabledModels>,
+) -> BTreeMap<String, String> {
     let mut routes = BTreeMap::new();
     for (provider_id, provider) in provider_entries(config) {
-        register_catalog_routes_for_provider(&mut routes, provider_id, provider);
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            globally_disabled,
+        );
     }
     routes
 }
 
-pub(crate) fn route_seeds_from_config_and_rows(
+pub(crate) fn route_seeds_from_config_and_rows_with_disabled(
     config: &AppConfig,
     seeds: &[ModelRouteSeed],
+    globally_disabled: Option<&GloballyDisabledModels>,
 ) -> BTreeMap<String, String> {
-    let mut routes = catalog_route_seeds(config);
+    let mut routes = catalog_route_seeds_with_disabled(config, globally_disabled);
     for (provider_id, model_id, upstream_id) in seeds {
         let Some(provider) = crate::config::provider_by_id(config, provider_id) else {
             continue;
@@ -742,9 +822,13 @@ pub(crate) fn route_seeds_from_config_and_rows(
         if !provider.enabled || !provider.model_is_enabled(model_id) {
             continue;
         }
+        if globally_disabled.is_some_and(|disabled| disabled.contains(model_id)) {
+            continue;
+        }
         routes.insert(model_id.clone(), provider_id.clone());
         if let Some(upstream_id) = upstream_id.as_deref().filter(|value| !value.is_empty())
             && provider.model_is_enabled(upstream_id)
+            && !globally_disabled.is_some_and(|disabled| disabled.contains(upstream_id))
         {
             routes.insert(upstream_id.to_string(), provider_id.clone());
         }
@@ -758,25 +842,30 @@ pub(crate) fn route_seeds_from_config_and_rows(
 /// ownership for models the operator explicitly enabled (including
 /// upstream-only toggles) so multi-provider headless clients do not need a
 /// prior `/v1/models` refresh after restart.
-pub(crate) fn seed_model_routes_from_config_and_store(
+pub(crate) fn seed_model_routes_from_config_and_store_with_disabled(
     config: &AppConfig,
     store: &crate::store::Store,
+    globally_disabled: Option<&GloballyDisabledModels>,
 ) -> ModelRouteSeedRead {
     let seeds = match store.enabled_model_route_seeds() {
         Ok(seeds) => seeds,
         Err(err) => return ModelRouteSeedRead::Failed(err),
     };
-    let routes = route_seeds_from_config_and_rows(config, &seeds);
+    let routes = route_seeds_from_config_and_rows_with_disabled(config, &seeds, globally_disabled);
     ModelRouteSeedRead::Loaded { routes, seeds }
 }
 
-pub(crate) fn add_models_for_provider(
+/// Publish one provider's models, honoring cross-provider Web UI disables so a
+/// sibling provider that still lists the slug as enabled cannot republish it
+/// into `/v1/models` after the operator turned it off.
+pub(crate) fn add_models_for_provider_with_disabled(
     merged_models: &mut Vec<Value>,
     routes: &mut BTreeMap<String, String>,
     config: &AppConfig,
     provider_id: &str,
     provider: &ProviderConfig,
     mut models: Vec<Value>,
+    globally_disabled: Option<&GloballyDisabledModels>,
 ) -> usize {
     let mut added = 0;
     let gateway_name = provider_display_name(provider_id, provider);
@@ -788,6 +877,12 @@ pub(crate) fn add_models_for_provider(
     for model in models {
         let mut model = model;
         if let Some(slug) = model.get("slug").and_then(Value::as_str) {
+            // A Web UI disable is operator intent for the slug, not just for one
+            // provider's catalog row. Publishing it here would keep a model the
+            // operator turned off visible in the Codex CLI `/model` picker.
+            if globally_disabled.is_some_and(|disabled| disabled.contains(slug)) {
+                continue;
+            }
             if !provider.model_is_enabled(slug) {
                 continue;
             }

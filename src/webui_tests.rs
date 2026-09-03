@@ -2400,6 +2400,51 @@ async fn model_disable_endpoint_rebuilds_colliding_sibling_route() {
 }
 
 #[tokio::test]
+async fn catalog_toggle_off_writes_upstream_alias_into_disabled_models() {
+    let (state, store_dir) = temporary_store_state("catalog-toggle-off-upstream-disable");
+    {
+        let mut config = state.config.write().expect("config lock");
+        config.providers.insert(
+            "alpha".into(),
+            ProviderConfig {
+                base_url: "https://alpha.example/v1".into(),
+                model_catalog_only: true,
+                model_catalog: vec![ModelCatalogEntry {
+                    id: "named-foo".into(),
+                    upstream_id: Some("foo".into()),
+                    enabled: true,
+                    ..ModelCatalogEntry::default()
+                }],
+                ..ProviderConfig::default()
+            },
+        );
+    }
+
+    let Json(_view) = set_model_enabled(
+        State(state.clone()),
+        Path(("alpha".to_string(), "named-foo".to_string())),
+        Json(EnabledBody { enabled: false }),
+    )
+    .await
+    .expect("disable catalog model through enablement endpoint");
+
+    let config = state.read_config();
+    let provider = config.providers.get("alpha").expect("alpha");
+    assert!(
+        provider.disabled_models.iter().any(|id| id == "named-foo"),
+        "catalog toggle-off must write the catalog id into disabled_models"
+    );
+    assert!(
+        provider.disabled_models.iter().any(|id| id == "foo"),
+        "catalog toggle-off must write the upstream alias into disabled_models"
+    );
+
+    drop(config);
+    drop(state);
+    std::fs::remove_dir_all(store_dir).expect("remove temporary store directory");
+}
+
+#[tokio::test]
 async fn insert_model_route_caches_disabled_provider_without_publishing_live_route() {
     let state = test_state();
     {
@@ -3569,8 +3614,11 @@ async fn named_template_create_allows_duplicate_instances_and_names() {
         .apply_overlays_with_tracing_fallback(&mut restored_config, None)
         .unwrap();
     let restored_seeds = reopened_store.enabled_model_route_seeds().unwrap();
-    let restored_routes =
-        crate::models::route_seeds_from_config_and_rows(&restored_config, &restored_seeds);
+    let restored_routes = crate::models::route_seeds_from_config_and_rows_with_disabled(
+        &restored_config,
+        &restored_seeds,
+        None,
+    );
     assert_eq!(
         restored_routes.get(&shared_model_id).map(String::as_str),
         Some("opencode_go"),
@@ -4008,9 +4056,10 @@ async fn route_refreshes_filter_cached_seeds_after_store_read_failure() {
     let seeds = {
         let config = state.read_config();
         let crate::models::ModelRouteSeedRead::Loaded { seeds, .. } =
-            crate::models::seed_model_routes_from_config_and_store(
+            crate::models::seed_model_routes_from_config_and_store_with_disabled(
                 &config,
                 state.store.as_ref().expect("store present"),
+                None,
             )
         else {
             panic!("seed cache read failed");
