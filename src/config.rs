@@ -50,6 +50,10 @@ impl GloballyDisabledModels {
     /// Web UI intent. Static TOML `disabled_models` stay provider-scoped: an
     /// operator editing TOML is already addressing one provider, and a sibling
     /// gateway that still lists the slug should keep serving it.
+    ///
+    /// Include providers with `enabled = false`. A later Web UI provider
+    /// disable must not drop persisted slug disables; `provider_entries`
+    /// skips those gateways, and an enabled sibling would republish the slug.
     pub(crate) fn from_config_with_managed<F>(config: &AppConfig, mut is_managed: F) -> Self
     where
         F: FnMut(&str) -> bool,
@@ -57,7 +61,7 @@ impl GloballyDisabledModels {
         let mut exact = BTreeSet::new();
         let mut suffixes = Vec::new();
         let mut alias_exact = BTreeSet::new();
-        for (provider_id, provider) in provider_entries(config) {
+        for (provider_id, provider) in configured_provider_entries(config) {
             if !is_managed(provider_id) {
                 continue;
             }
@@ -85,7 +89,7 @@ impl GloballyDisabledModels {
         // disabled, which hides `upstream_id`. Retain/live publication key the
         // alias separately, so record an exact alias once the catalog id is
         // covered — including sibling catalogs that still list the row.
-        for (_, provider) in provider_entries(config) {
+        for (_, provider) in configured_provider_entries(config) {
             for entry in &provider.model_catalog {
                 let covered = exact.contains(&entry.id)
                     || suffixes

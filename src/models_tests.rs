@@ -2923,6 +2923,60 @@ fn managed_catalog_toggle_off_hides_colliding_slug_without_disabled_models() {
     );
 }
 
+/// Turning off the gateway that recorded a Web UI disable must not revive the
+/// slug. `provider_entries` skips `enabled = false`, so collection has to use
+/// configured providers or an enabled sibling republishes after provider disable.
+#[test]
+fn managed_disable_survives_recording_provider_disable() {
+    let mut config = collision_config();
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .disable_model("shared/model");
+    config
+        .providers
+        .get_mut("gateway-b")
+        .expect("gateway-b")
+        .enabled = false;
+
+    let disabled = disabled_from(&config, &["gateway-b"]);
+    assert!(
+        disabled.contains("shared/model"),
+        "a managed slug disable must outlive disabling the recording gateway"
+    );
+    assert!(
+        disabled.contains("shared-model"),
+        "the catalog upstream alias must stay covered after the recording gateway is disabled"
+    );
+
+    let mut routes = BTreeMap::new();
+    for (provider_id, provider) in provider_entries(&config) {
+        register_catalog_routes_for_provider_with_disabled(
+            &mut routes,
+            provider_id,
+            provider,
+            Some(&disabled),
+        );
+    }
+    assert_eq!(
+        routes.get("shared/model").map(String::as_str),
+        None,
+        "an enabled sibling must not republish a slug still disabled on a disabled managed gateway"
+    );
+    assert_eq!(
+        routes.get("shared-model").map(String::as_str),
+        None,
+        "the upstream alias must not return through the sibling either"
+    );
+
+    let unmanaged = disabled_from(&config, &[]);
+    assert!(
+        !unmanaged.contains("shared/model"),
+        "disabling an unmanaged TOML provider must not promote its disables to global"
+    );
+}
+
 /// A managed prefixed disable covers a sibling catalog's bare id by overlap,
 /// not exact equality. The sibling's `upstream_id` is a different prefix
 /// (`moonshot/foo` vs `opencode-go/foo`) so suffix matching must not hide it
