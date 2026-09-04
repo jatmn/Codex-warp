@@ -206,7 +206,11 @@ fn stable_session_fingerprint(value: &str) -> String {
 
 fn session_header_value(body: &Value) -> HeaderValue {
     if let Some(session) = request_session_key(body) {
+        let bytes = session.as_bytes();
+        let has_edge_ows = matches!(bytes.first(), Some(b' ' | b'\t'))
+            || matches!(bytes.last(), Some(b' ' | b'\t'));
         if session.len() <= MAX_DIRECT_SESSION_HEADER_BYTES
+            && !has_edge_ows
             && let Ok(value) = HeaderValue::from_str(session)
         {
             return value;

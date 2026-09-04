@@ -549,6 +549,14 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
         .expect("safe session header");
     assert_eq!(unsafe_value, "codex-warp-a4df27dad7ea21dc");
 
+    for (identity, expected) in [
+        (" edge", "codex-warp-23df644001b9433a"),
+        ("edge ", "codex-warp-c70d2b6b85b69c54"),
+    ] {
+        let body = serde_json::json!({"prompt_cache_key": identity});
+        assert_eq!(session_header_value(&body), expected);
+    }
+
     let anonymous_body = serde_json::json!({"model": "glm-5.2"});
     let anonymous_session_header = opencode_session_header(
         "https://opencode.ai/zen/go/v1/chat/completions",
@@ -865,7 +873,7 @@ fn upstream_redirect_policy_stops_opencode_go_redirects_only() {
 
 #[tokio::test]
 async fn build_upstream_json_request_sends_single_content_type_on_wire() {
-    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let captured = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let capture = captured.clone();
     let app = Router::new().route(
         "/",
@@ -876,10 +884,15 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
                 .iter()
                 .filter_map(|value| value.to_str().ok().map(str::to_owned))
                 .collect::<Vec<_>>();
-            capture
-                .lock()
-                .expect("capture lock")
-                .push(values.join(", "));
+            capture.lock().expect("capture lock").push((
+                values.join(", "),
+                request
+                    .headers()
+                    .get("x-opencode-session")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string(),
+            ));
             async { "ok" }
         }),
     );
@@ -905,11 +918,18 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
         .insert("content-type".to_string(), "application/json".to_string());
 
     let client = Client::new();
+    let body = serde_json::json!({
+        "model": "deepseek-v4-flash",
+        "stream": true,
+        "prompt_cache_key": " edge"
+    });
+    let session = session_header_value(&body);
+    assert_eq!(session, "codex-warp-23df644001b9433a");
     let request = build_upstream_json_request(
         &client,
         format!("http://{addr}/"),
-        &serde_json::json!({"model": "deepseek-v4-flash", "stream": true}),
-        None,
+        &body,
+        Some(&session),
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -934,7 +954,13 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
         .expect("capture lock")
         .pop()
         .expect("wire capture");
-    assert_eq!(wire, "application/json");
+    assert_eq!(
+        wire,
+        (
+            "application/json".to_string(),
+            "codex-warp-23df644001b9433a".to_string()
+        )
+    );
 }
 
 #[tokio::test]
