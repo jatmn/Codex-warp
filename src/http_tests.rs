@@ -594,6 +594,33 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("codex-warp-session_"))
     );
+
+    for body in [
+        serde_json::json!({
+            "model": "glm-5.2",
+            "prompt_cache_key": " \t ",
+            "conversation_id": "conversation-session"
+        }),
+        serde_json::json!({
+            "model": "glm-5.2",
+            "conversation_id": " \t ",
+            "conversation": {"id": "conversation-session"}
+        }),
+    ] {
+        let session =
+            opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &body)
+                .expect("OpenCode Go request receives a session header");
+        assert_eq!(session.to_str().ok(), Some("conversation-session"));
+    }
+
+    for body in [
+        serde_json::json!({"prompt_cache_key": " \t "}),
+        serde_json::json!({"conversation_id": " \t "}),
+        serde_json::json!({"conversation": " \t "}),
+        serde_json::json!({"conversation": {"id": " \t "}}),
+    ] {
+        assert!(request_session_key(&body).is_none());
+    }
 }
 
 #[test]
@@ -661,6 +688,8 @@ fn resolved_session_header_survives_chat_transform_and_request_rebuild() {
 #[test]
 fn opencode_session_header_is_scoped_and_operator_overridable() {
     for base_url in [
+        "http://opencode.ai/zen/go/v1",
+        "https://opencode.ai:8443/zen/go/v1",
         "https://opencode.ai/zen/v1",
         "https://opencode.ai.example/zen/go/v1",
         "https://notopencode.ai/zen/go/v1",
@@ -716,6 +745,17 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             Some("split-session")
         );
     }
+
+    let explicit_default_port = serde_json::json!({"prompt_cache_key": "port-session"});
+    assert_eq!(
+        opencode_session_header(
+            "https://opencode.ai:443/zen/go/v1/responses",
+            &explicit_default_port,
+        )
+        .and_then(|value| value.to_str().ok().map(str::to_owned))
+        .as_deref(),
+        Some("port-session")
+    );
 
     let mut provider = ProviderConfig {
         base_url: "https://opencode.ai/zen/go/v1".to_string(),
@@ -799,6 +839,18 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             Some("session-123")
         );
     }
+}
+
+#[test]
+fn upstream_redirect_policy_stops_opencode_go_redirects_only() {
+    let opencode = reqwest::Url::parse("https://opencode.ai/zen/go/v1/chat/completions")
+        .expect("OpenCode Go URL parses");
+    let other = reqwest::Url::parse("https://provider.example/v1/chat/completions")
+        .expect("ordinary provider URL parses");
+
+    assert!(redirect_started_from_opencode_go(&[opencode]));
+    assert!(!redirect_started_from_opencode_go(&[other]));
+    assert!(!redirect_started_from_opencode_go(&[]));
 }
 
 #[tokio::test]

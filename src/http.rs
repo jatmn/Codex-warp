@@ -50,9 +50,17 @@ fn targets_opencode_go_generation(url: &str) -> bool {
         let host = url.host_str().unwrap_or_default();
         let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
         let path = url.path().trim_end_matches('/');
-        host == "opencode.ai"
+        url.scheme() == "https"
+            && url.port_or_known_default() == Some(443)
+            && host == "opencode.ai"
             && matches!(path, "/zen/go/v1/chat/completions" | "/zen/go/v1/responses")
     })
+}
+
+pub(crate) fn redirect_started_from_opencode_go(previous: &[reqwest::Url]) -> bool {
+    previous
+        .first()
+        .is_some_and(|url| targets_opencode_go_generation(url.as_str()))
 }
 
 fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
@@ -167,19 +175,19 @@ pub(crate) fn upstream_headers(
 fn request_session_key(body: &Value) -> Option<&str> {
     body.get("prompt_cache_key")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
         .or_else(|| {
             body.get("conversation_id")
                 .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
+                .filter(|value| !value.trim().is_empty())
         })
         .or_else(|| {
             body.get("conversation").and_then(|value| match value {
-                Value::String(id) => (!id.is_empty()).then_some(id.as_str()),
+                Value::String(id) => (!id.trim().is_empty()).then_some(id.as_str()),
                 Value::Object(map) => map
                     .get("id")
                     .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty()),
+                    .filter(|id| !id.trim().is_empty()),
                 _ => None,
             })
         })

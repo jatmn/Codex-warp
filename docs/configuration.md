@@ -127,7 +127,9 @@ Model-generation requests to the documented OpenCode Go API root automatically
 include `x-opencode-session`, resolved from `prompt_cache_key` and then the Responses
 conversation id. Requests without either identity receive a request-local
 fallback. Set `x-opencode-session` explicitly under the provider's `headers`
-table only when you need to override this automatic value.
+table only when you need to override this automatic value. Codex Warp does not
+follow redirects from these requests, keeping the session identity on the exact
+OpenCode Go HTTPS generation endpoint.
 
 ## Model Metadata
 

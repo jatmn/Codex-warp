@@ -16,6 +16,7 @@ use axum::routing::post;
 use clap::ArgAction;
 use clap::Parser;
 use reqwest::Client;
+use reqwest::redirect::Policy;
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock as AsyncRwLock;
@@ -29,6 +30,7 @@ use crate::config::load_config_layers;
 use crate::config::provider_entries;
 use crate::debug_log::DebugLog;
 use crate::http::no_provider_response;
+use crate::http::redirect_started_from_opencode_go;
 use crate::http::unknown_model_response;
 use crate::models::ModelRouteSeedRead;
 use crate::models::models;
@@ -359,9 +361,20 @@ fn initialize_state_with_store(
     // AppConfig so runtime readers cannot treat a boot copy as current.
     config.debug = crate::config::DebugConfig::default();
 
+    let default_redirect_policy = Policy::default();
+    let client = Client::builder()
+        .redirect(Policy::custom(move |attempt| {
+            if redirect_started_from_opencode_go(attempt.previous()) {
+                attempt.stop()
+            } else {
+                default_redirect_policy.redirect(attempt)
+            }
+        }))
+        .build()
+        .context("build upstream HTTP client")?;
     let state = AppState::from_parts(
         Arc::new(RwLock::new(config)),
-        Client::new(),
+        client,
         Arc::new(AsyncRwLock::new(model_routes)),
         Arc::new(AtomicU64::new(0)),
         Arc::new(AsyncMutex::new(())),
