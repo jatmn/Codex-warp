@@ -1497,6 +1497,7 @@ impl ChatAccum {
                 "finish_reason": self.finish_reason,
                 "tool_call_count": self.tool_calls.iter().filter(|call| !call.name.is_empty()).count(),
                 "active_plan": state.active_plan,
+                "unresolved_subagent": state.unresolved_subagent,
                 "text_chars": self.text.chars().count(),
                 "text_fingerprint": text_fingerprint(&self.text)
             }));
@@ -1511,6 +1512,7 @@ pub(crate) struct ContinueGuardState {
     guard_key: Option<String>,
     active_plan: Option<ActivePlanSummary>,
     progress: bool,
+    unresolved_subagent: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -1543,6 +1545,7 @@ impl ContinueGuardState {
             guard_key,
             active_plan: latest_active_plan(request),
             progress,
+            unresolved_subagent: request_has_unresolved_subagent_work(request),
             config,
         }
     }
@@ -1561,15 +1564,20 @@ impl ContinueGuardState {
         // stopped there. If the last request item is later tool work, the plan
         // snapshot is stale and must not hide a mid-task pause. Missing plans
         // never suppress: many providers never call `update_plan`.
-        if self
+        // Unresolved sub-agent work (spawn without a later wait) is itself a
+        // mid-task signal: parents must keep going to wait/resume rather than
+        // end the turn while a child is still running. This wins over a
+        // completed plan snapshot, which can lag behind an open spawn wave.
+        if self.unresolved_subagent {
+            // fall through to mode handling below
+        } else if self
             .active_plan
             .as_ref()
             .is_some_and(|plan| !plan.has_open_items())
             && !self.progress
         {
             return ContinueGuardDecision::none("plan_completed");
-        }
-        if !looks_like_mid_task_stop(&accum.text) {
+        } else if !looks_like_mid_task_stop(&accum.text) {
             return ContinueGuardDecision::none("assistant_text_not_continuation");
         }
 
@@ -1742,6 +1750,228 @@ fn request_shows_tool_progress(request: &Value) -> bool {
         .is_some_and(|messages| chat_messages_show_tool_progress(messages))
 }
 
+/// True when the request history still has sub-agent spawn work that was never
+/// followed by a wait. Parents that stop after spawning without waiting leave
+/// children running and force the user to prompt "continue"; treat that shape
+/// as a premature stop even when the assistant text is terse.
+fn request_has_unresolved_subagent_work(request: &Value) -> bool {
+    if let Some(input) = request.get("input").and_then(Value::as_array) {
+        return input_has_unresolved_subagent_work(input);
+    }
+    request
+        .get("messages")
+        .and_then(Value::as_array)
+        .is_some_and(|messages| chat_messages_have_unresolved_subagent_work(messages))
+}
+
+fn input_has_unresolved_subagent_work(items: &[Value]) -> bool {
+    let mut work = SubagentWork::default();
+    apply_subagent_lifecycle_items(items, &mut work);
+    work.has_unresolved()
+}
+
+fn chat_messages_have_unresolved_subagent_work(messages: &[Value]) -> bool {
+    let mut work = SubagentWork::default();
+    for message in messages {
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            apply_subagent_lifecycle_items(calls, &mut work);
+        }
+        apply_subagent_lifecycle_item(message, &mut work);
+    }
+    work.has_unresolved()
+}
+
+fn apply_subagent_lifecycle_items(items: &[Value], work: &mut SubagentWork) {
+    for item in items {
+        apply_subagent_lifecycle_item(item, work);
+    }
+}
+
+fn apply_subagent_lifecycle_item(item: &Value, work: &mut SubagentWork) {
+    match item_subagent_lifecycle(item) {
+        SubagentLifecycle::Spawn => work.spawn(call_item_id(item)),
+        // Codex may return from wait on the first completed target. A wait
+        // with explicit unique target IDs resolves matching named children,
+        // then pending spawns as a fallback when outputs have not named them
+        // yet. A wait with no target list acknowledges the whole outstanding
+        // wave. Garbled wait arguments leave children unchanged.
+        SubagentLifecycle::Wait => match wait_resolution(item) {
+            WaitResolution::Resolve(targets) => work.resolve_targets(&targets),
+            WaitResolution::ClearAll => work.clear_all(),
+            WaitResolution::Leave => {}
+        },
+        SubagentLifecycle::Neither => {
+            if let Some(call_id) = output_call_id(item) {
+                work.bind_spawn_output(call_id, spawn_output_child_id(item));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SubagentWork {
+    pending_call_ids: Vec<String>,
+    named: BTreeSet<String>,
+}
+
+impl SubagentWork {
+    fn has_unresolved(&self) -> bool {
+        !self.pending_call_ids.is_empty() || !self.named.is_empty()
+    }
+
+    fn spawn(&mut self, call_id: Option<&str>) {
+        self.pending_call_ids.push(
+            call_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or("")
+                .to_string(),
+        );
+    }
+
+    fn bind_spawn_output(&mut self, call_id: &str, child_id: Option<String>) {
+        let Some(id) = child_id.filter(|id| !id.is_empty()) else {
+            return;
+        };
+        let Some(idx) = self
+            .pending_call_ids
+            .iter()
+            .position(|pending| pending == call_id)
+        else {
+            return;
+        };
+        self.pending_call_ids.remove(idx);
+        self.named.insert(id);
+    }
+
+    fn resolve_targets(&mut self, targets: &BTreeSet<String>) {
+        let count_fallback = self.named.is_empty();
+        for target in targets {
+            if self.named.remove(target) {
+                continue;
+            }
+            if count_fallback && !self.pending_call_ids.is_empty() {
+                self.pending_call_ids.remove(0);
+            }
+        }
+    }
+
+    fn clear_all(&mut self) {
+        self.pending_call_ids.clear();
+        self.named.clear();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubagentLifecycle {
+    Spawn,
+    Wait,
+    Neither,
+}
+
+fn item_subagent_lifecycle(item: &Value) -> SubagentLifecycle {
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            item.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("");
+    let bare = name.rsplit('.').next().unwrap_or(name);
+    match bare {
+        "spawn_agent" | "spawn" => SubagentLifecycle::Spawn,
+        "wait_agent" | "wait_threads" | "wait" => SubagentLifecycle::Wait,
+        _ => SubagentLifecycle::Neither,
+    }
+}
+
+enum WaitResolution {
+    Resolve(BTreeSet<String>),
+    ClearAll,
+    Leave,
+}
+
+enum ToolArguments {
+    Missing,
+    Parsed(Value),
+    Invalid,
+}
+
+fn wait_resolution(item: &Value) -> WaitResolution {
+    match item_tool_arguments(item) {
+        ToolArguments::Invalid => WaitResolution::Leave,
+        ToolArguments::Missing => WaitResolution::ClearAll,
+        ToolArguments::Parsed(arguments) => wait_resolution_from_arguments(&arguments),
+    }
+}
+
+fn wait_resolution_from_arguments(arguments: &Value) -> WaitResolution {
+    for key in ["targets", "thread_ids", "agent_ids"] {
+        let Some(value) = arguments.get(key) else {
+            continue;
+        };
+        let Some(targets) = value.as_array() else {
+            return WaitResolution::Leave;
+        };
+        if targets.is_empty() {
+            return WaitResolution::ClearAll;
+        }
+        let mut unique = BTreeSet::new();
+        for target in targets {
+            let Some(id) = target.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+                return WaitResolution::Leave;
+            };
+            unique.insert(id.to_string());
+        }
+        return WaitResolution::Resolve(unique);
+    }
+    WaitResolution::ClearAll
+}
+
+fn spawn_output_child_id(item: &Value) -> Option<String> {
+    let raw = item.get("output").or_else(|| item.get("content"))?;
+    match raw {
+        Value::String(raw) => child_id_from_value(&serde_json::from_str(raw).ok()?),
+        value => child_id_from_value(value),
+    }
+}
+
+fn child_id_from_value(value: &Value) -> Option<String> {
+    for key in ["thread_id", "agent_id", "id"] {
+        if let Some(id) = value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+fn item_tool_arguments(item: &Value) -> ToolArguments {
+    let Some(raw) = item
+        .get("arguments")
+        .or_else(|| {
+            item.get("function")
+                .and_then(|function| function.get("arguments"))
+        })
+        .or_else(|| item.get("input"))
+    else {
+        return ToolArguments::Missing;
+    };
+    match raw {
+        Value::String(raw) => serde_json::from_str(raw)
+            .map(ToolArguments::Parsed)
+            .unwrap_or(ToolArguments::Invalid),
+        Value::Object(_) => ToolArguments::Parsed(raw.clone()),
+        _ => ToolArguments::Invalid,
+    }
+}
+
 fn item_shows_tool_progress(item: &Value, items: &[Value]) -> bool {
     match item.get("type").and_then(Value::as_str) {
         Some("function_call_output" | "custom_tool_call_output") => {
@@ -1841,7 +2071,9 @@ fn looks_like_mid_task_stop(text: &str) -> bool {
     //    deferral, and work verbs whose only complement is postponement do
     //    not count ("Now let me summarize", "I'll update you",
     //    "I'll do it next", "I'll sit tight", "I'll take another look later",
-    //    "look at your PR", "I'll continue later", "I'll run soon").
+    //    "look at your PR", "I'll continue later", "I'll run soon",
+    //    "I'll wait", "I'll wait later"). "Let me wait for the agent" and
+    //    sub-agent resume verbs ("get"/"resume"/"collect") still continue.
     //    Immediacy ("I'll verify now", "I'll continue") is still work.
     // 2. Wrap-up / hand-off phrasing. This loses to a prefix+work-action pair
     //    so "Thanks to the rebase. Now let me verify" still continues, and
@@ -1909,6 +2141,8 @@ fn prefix_has_work_intent(
             let after_prefix = strip_intent_fillers(&normalized[start + idx + prefix.len()..]);
             let matched = if require_known_work_verb {
                 remainder_starts_with_work_verb(after_prefix)
+                    && !remainder_starts_with_wrap_up_action(after_prefix)
+                    && !remainder_is_added_resume_stem_person_hand_off(after_prefix)
             } else {
                 remainder_is_work_action(after_prefix)
             };
@@ -2032,6 +2266,11 @@ fn complement_is_person_hand_off(complement: &str) -> bool {
 
 fn complement_opens_with_person_clause(complement: &str) -> bool {
     matches!(complement_head(complement), "if" | "whether" | "when")
+        && complement_addresses_person(complement)
+}
+
+fn wait_complement_is_person_until_or_while(complement: &str) -> bool {
+    matches!(complement_head(complement), "until" | "while")
         && complement_addresses_person(complement)
 }
 
@@ -2201,6 +2440,22 @@ fn complement_has_offer_clause(complement: &str) -> bool {
 }
 
 fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
+    // Bare "wait" / "I'll wait later" / "I'll wait a moment" is a pause.
+    // "I'll wait until you respond" / "I'll wait while you review" is a
+    // person-directed pause. "Let me wait for the agent" or "wait until the
+    // tests finish" is still speaker work and must continue.
+    if token_starts_with_stem(rest, "wait") {
+        let complement = strip_complement_fillers(action_complement(rest));
+        let complement = complement
+            .trim_end_matches(|c: char| !c.is_ascii_alphanumeric() && !c.is_ascii_whitespace())
+            .trim();
+        return complement.is_empty()
+            || complement_is_deferral_only(complement)
+            || complement_is_light_noun_without_object(normalize_unlisted_verb_complement(
+                complement,
+            ))
+            || wait_complement_is_person_until_or_while(complement);
+    }
     [
         "summarize",
         "stop",
@@ -2208,7 +2463,6 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
         "wrap",
         "explain",
         "tell",
-        "wait",
         "pause",
         "recap",
         "conclude",
@@ -2222,12 +2476,30 @@ fn remainder_starts_with_wrap_up_action(rest: &str) -> bool {
     .any(|stem| token_starts_with_stem(rest, stem))
 }
 
+/// Person-head hand-off for stems this branch added (`get`/`collect`/`wait`/…).
+/// Sequencing does not run `remainder_is_work_action`, so without this
+/// veto `Then get back to you` and `Then wait for you` would auto-continue.
+/// Pre-existing stems such as `look` stay on the verb-only sequencing path
+/// (`Then look at your PR`).
+fn remainder_is_added_resume_stem_person_hand_off(rest: &str) -> bool {
+    const STEMS: [&str; 6] = ["get", "collect", "gather", "retrieve", "obtain", "wait"];
+    if !STEMS.iter().any(|stem| token_starts_with_stem(rest, stem)) {
+        return false;
+    }
+    complement_is_person_hand_off(strip_complement_fillers(action_complement(rest)))
+}
+
 fn remainder_starts_with_work_verb(rest: &str) -> bool {
-    const STEMS: [&str; 34] = [
+    // Include sub-agent resume verbs observed in long multi-agent sessions
+    // ("let me get Avicenna's findings by resuming it", "I'll collect results").
+    // "get back to you" stays a hand-off via person-complement detection after
+    // particle stripping.
+    const STEMS: [&str; 41] = [
         "check", "inspect", "look", "read", "write", "run", "verify", "open", "search", "audit",
         "push", "apply", "test", "fix", "review", "examine", "fetch", "pull", "grep", "list",
         "continue", "start", "compare", "confirm", "dump", "patch", "edit", "find", "scan",
-        "rebase", "commit", "merge", "build", "checkout",
+        "rebase", "commit", "merge", "build", "checkout", "resume", "get", "collect", "gather",
+        "retrieve", "obtain", "wait",
     ];
     STEMS.iter().any(|stem| token_starts_with_stem(rest, stem))
 }

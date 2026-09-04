@@ -23,6 +23,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::config::Backend;
+use crate::config::ContinueGuardConfig;
 use crate::config::ContinueGuardMode;
 use crate::config::load_config_layers;
 use crate::config::provider_entries;
@@ -186,6 +187,16 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn warn_if_continue_guard_disabled(continue_guard: &ContinueGuardConfig) -> bool {
+    if continue_guard.enabled {
+        return false;
+    }
+    warn!(
+        "continue_guard is disabled in the loaded config; mid-task chat-completions stops will wait for a manual user prompt. Enable [continue_guard] enabled=true with mode=\"end_turn_false\" (the shipped default) or pass --continue-guard (and --continue-guard-mode end_turn_false if mode is still observe)"
+    );
+    true
+}
+
 fn apply_destination_override(config: &mut crate::config::AppConfig, destination: Option<String>) {
     if let Some(destination) = destination {
         config.provider.base_url = destination;
@@ -222,12 +233,14 @@ fn apply_cli_debug(config: &mut crate::config::AppConfig, cli: &CliDebugOverride
     }
 }
 
-fn apply_configured_tracing_filter(state: &AppState) -> anyhow::Result<()> {
+fn apply_configured_tracing_filter(state: &AppState) -> anyhow::Result<bool> {
+    let warned = warn_if_continue_guard_disabled(&state.read_config().continue_guard);
     let Some(reload) = state.tracing_reload.as_ref() else {
-        return Ok(());
+        return Ok(warned);
     };
     let filter = reload.wanted_filter(&state.debug_log.live_snapshot());
-    reload.reload(&filter).map_err(|err| anyhow::anyhow!(err))
+    reload.reload(&filter).map_err(|err| anyhow::anyhow!(err))?;
+    Ok(warned)
 }
 
 #[cfg_attr(not(test), allow(dead_code))] // tests use this shorter initialize entry

@@ -269,6 +269,31 @@ The guard is **enabled by default** with `mode = "end_turn_false"` and
 through Warp. You only need to set `enabled = false` if a particular gateway
 never exhibits the premature-stop shape.
 
+Existing installs that still ship a local `codex-warp.toml` from before the
+default-on change may keep `enabled = false` / `mode = "observe"`. That stale
+operator override fully disables auto-continue even though the binary defaults
+are on. Align the runtime file with the block above, or pass `--continue-guard`
+(and `--continue-guard-mode end_turn_false` if the file still has
+`mode = "observe"`) and restart Warp; startup logs a warning when the loaded
+config leaves the guard disabled.
+
+The guard also treats unresolved sub-agent work as mid-task: when the request
+history still contains `spawn_agent` (or collapsed `spawn`) calls that later
+`wait_agent` / `wait_threads` / `wait` targets have not covered, a text-only
+`stop` forces a follow-up so the parent does not end the turn while a child is
+still running. A wait with an explicit `targets` / `thread_ids` / `agent_ids`
+list resolves the unique matching children (duplicate IDs count once). While no
+spawn output has named a child, a wait still falls back to that unique target
+count. After a spawn output names a child, IDs that do not match a named spawn
+output do not clear other outstanding children. A wait with no target list
+acknowledges the whole outstanding wave. A wait whose arguments cannot be
+parsed, or whose target field is present but is not a list of IDs, does not
+acknowledge any children. Phrases
+like `Let me wait for the agent`, `Now let me get the subagent findings by
+resuming it`, and `Let me verify it end-to-end` continue; bare `I'll wait`,
+`I'll wait until you respond`, `I'll wait while you review`, and
+`I'll get back to you` still end the turn.
+
 Modes:
 
 - `observe`: log `continue_guard` debug events for suspected premature stops,
@@ -281,10 +306,12 @@ Modes:
 The guard applies to chat-completions responses, both SSE streams and
 non-stream JSON, that finish with
 `finish_reason = "stop"` (text-only JSON completions that omit
-`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and end with continuation phrasing
+`finish_reason`, or send an empty `finish_reason`, are treated the same), emit no tool call, and either still have uncovered sub-agent spawn work or end with continuation phrasing
 (`let me` / `I'll` / `I need to` / `I should` when the next action is a known
-work verb or an unlisted verb with a concrete object such as `I'll clone the
-repo` / `I'll add tests`, including hyphenated repeats such as `re-audit`;
+work verb — including sub-agent resume verbs such as `get` / `resume` /
+`collect` / `wait for <work>` — or an unlisted verb with a concrete object such
+as `I'll clone the repo` / `I'll add tests`, including hyphenated repeats such
+as `re-audit`;
 `then` / `next` only when the next action is a known work verb, so
 `Then run the tests` continues but `Next I need a decision from you` does not;
 or a dangling `:`/`...` whose last sentence still talks about unfinished
@@ -318,9 +345,12 @@ stripped before the object is classified, so `I'll check back with you` and
 complements, leftover adverbs or state words, offer clauses on unlisted verbs
 (`I'll take a look later if you want`, `I'll take another look later`),
 generic pronouns (`I'll do it next`), and work verbs whose only complement is
-postponement (`I'll continue later`, `I'll run soon`) also do not force a
-follow-up. Bare work verbs and immediacy still continue (`I'll continue`,
-`I'll verify now`). Closings
+postponement (`I'll continue later`, `I'll run soon`, `I'll wait later`)
+also do not force a follow-up. Bare `I'll wait`, `I'll wait until you
+respond`, and `I'll wait while you review` stay a pause, but `Let me wait
+for the agent` and `I'll wait until the tests finish` continue. Bare work
+verbs and immediacy still continue
+(`I'll continue`, `I'll verify now`). Closings
 such as `let me know`, `I'll leave the rest`, and delivery colons such as
 `Here is the final report:` stay `end_turn = true`, but investigative
 complements still continue (`Now let me know what failed in the test output`,
