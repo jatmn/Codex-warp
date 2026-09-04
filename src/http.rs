@@ -49,7 +49,7 @@ fn targets_opencode_go_generation(url: &str) -> bool {
     reqwest::Url::parse(url).ok().is_some_and(|url| {
         let host = url.host_str().unwrap_or_default();
         let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-        let path = url.path().trim_end_matches('/');
+        let path = url.path();
         url.scheme() == "https"
             && url.port_or_known_default() == Some(443)
             && host == "opencode.ai"

@@ -714,6 +714,14 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         assert!(request.headers().get("x-opencode-session").is_none());
     }
 
+    let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
+    for url in [
+        "https://opencode.ai/zen/go/v1/chat/completions/",
+        "https://opencode.ai/zen/go/v1/responses///",
+    ] {
+        assert!(opencode_session_header(url, &body).is_none());
+    }
+
     let split_provider = ProviderConfig {
         base_url: "https://opencode.ai".to_string(),
         chat_completions_path: "/zen/go/v1/chat/completions".to_string(),
@@ -765,7 +773,6 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         "X-OpenCode-Session".to_string(),
         "operator-session".to_string(),
     );
-    let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
     let session = opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &body);
     let request = build_upstream_json_request(
         &Client::new(),
@@ -847,9 +854,12 @@ fn upstream_redirect_policy_stops_opencode_go_redirects_only() {
         .expect("OpenCode Go URL parses");
     let other = reqwest::Url::parse("https://provider.example/v1/chat/completions")
         .expect("ordinary provider URL parses");
+    let trailing_slash = reqwest::Url::parse("https://opencode.ai/zen/go/v1/chat/completions///")
+        .expect("trailing-slash URL parses");
 
     assert!(redirect_started_from_opencode_go(&[opencode]));
     assert!(!redirect_started_from_opencode_go(&[other]));
+    assert!(!redirect_started_from_opencode_go(&[trailing_slash]));
     assert!(!redirect_started_from_opencode_go(&[]));
 }
 
