@@ -10,6 +10,7 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::config::ProviderConfig;
+use crate::ids::generated_id;
 use crate::version::user_agent;
 
 // OpenRouter app attribution (https://openrouter.ai/docs/app-attribution).
@@ -25,6 +26,7 @@ use crate::version::user_agent;
 const OPENROUTER_REFERER: &str = "https://github.com/jatmn/Codex-warp";
 const OPENROUTER_TITLE: &str = "Codex Warp";
 const OPENROUTER_CATEGORIES: &str = "cli-agent,programming-app";
+const MAX_DIRECT_SESSION_HEADER_BYTES: usize = 512;
 
 fn provider_defines_header(provider: &ProviderConfig, name: &str) -> bool {
     provider
@@ -40,6 +42,17 @@ fn provider_targets_openrouter(provider: &ProviderConfig) -> bool {
         .is_some_and(|host| {
             let host = host.strip_suffix('.').unwrap_or(&host).to_ascii_lowercase();
             host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+        })
+}
+
+fn provider_targets_opencode_go(provider: &ProviderConfig) -> bool {
+    reqwest::Url::parse(&provider.base_url)
+        .ok()
+        .is_some_and(|url| {
+            let host = url.host_str().unwrap_or_default();
+            let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+            let path = url.path().trim_end_matches('/');
+            host == "opencode.ai" && path == "/zen/go/v1"
         })
 }
 
@@ -152,6 +165,64 @@ pub(crate) fn upstream_headers(
     headers
 }
 
+fn request_session_key(body: &Value) -> Option<&str> {
+    body.get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            body.get("conversation_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            body.get("conversation").and_then(|value| match value {
+                Value::String(id) => (!id.is_empty()).then_some(id.as_str()),
+                Value::Object(map) => map
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty()),
+                _ => None,
+            })
+        })
+}
+
+fn stable_session_fingerprint(value: &str) -> String {
+    // FNV-1a keeps malformed or unusually long client identities stable without
+    // putting unsafe or unbounded values into an HTTP header.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("codex-warp-{hash:016x}")
+}
+
+fn session_header_value(body: &Value) -> HeaderValue {
+    if let Some(session) = request_session_key(body) {
+        if session.len() <= MAX_DIRECT_SESSION_HEADER_BYTES
+            && let Ok(value) = HeaderValue::from_str(session)
+        {
+            return value;
+        }
+        return HeaderValue::from_str(&stable_session_fingerprint(session))
+            .expect("session fingerprint is a valid header value");
+    }
+    HeaderValue::from_str(&generated_id("codex-warp-session"))
+        .expect("generated session id is a valid header value")
+}
+
+fn insert_opencode_session_header(
+    headers: &mut HeaderMap,
+    provider: &ProviderConfig,
+    body: &Value,
+) {
+    if provider_targets_opencode_go(provider)
+        && !provider_defines_header(provider, "x-opencode-session")
+    {
+        headers.insert("x-opencode-session", session_header_value(body));
+    }
+}
+
 pub(crate) fn build_upstream_json_request(
     client: &Client,
     url: String,
@@ -160,12 +231,13 @@ pub(crate) fn build_upstream_json_request(
     incoming: &HeaderMap,
     accept: &'static str,
 ) -> Result<reqwest::Request, String> {
-    let body = serde_json::to_vec(body).map_err(|err| err.to_string())?;
     let mut headers = upstream_headers(provider, incoming, accept);
+    insert_opencode_session_header(&mut headers, provider, body);
     headers.insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    let body = serde_json::to_vec(body).map_err(|err| err.to_string())?;
     client
         .post(url)
         .headers(headers)

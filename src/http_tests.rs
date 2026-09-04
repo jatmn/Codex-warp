@@ -459,6 +459,178 @@ fn build_upstream_json_request_sets_single_content_type() {
     assert_eq!(values, vec!["application/json"]);
 }
 
+#[test]
+fn dynamic_session_header_uses_responses_session_identity() {
+    let provider = ProviderConfig {
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+
+    let catalog_headers = upstream_headers(&provider, &HeaderMap::new(), "application/json");
+    assert!(catalog_headers.get("x-opencode-session").is_none());
+
+    for (body, expected) in [
+        (
+            serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "cache-session"}),
+            "cache-session",
+        ),
+        (
+            serde_json::json!({"model": "glm-5.2", "conversation_id": "conversation-session"}),
+            "conversation-session",
+        ),
+        (
+            serde_json::json!({"model": "glm-5.2", "conversation": "string-session"}),
+            "string-session",
+        ),
+        (
+            serde_json::json!({"model": "glm-5.2", "conversation": {"id": "object-session"}}),
+            "object-session",
+        ),
+    ] {
+        let request = build_upstream_json_request(
+            &Client::new(),
+            "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+            &body,
+            &provider,
+            &HeaderMap::new(),
+            "text/event-stream",
+        )
+        .expect("request builds");
+        let expected_user_agent = user_agent();
+
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected)
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(axum::http::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_user_agent.as_str())
+        );
+    }
+}
+
+#[test]
+fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
+    let provider = ProviderConfig {
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+
+    let unsafe_session = "session\nvalue";
+    let unsafe_request = build_upstream_json_request(
+        &Client::new(),
+        "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+        &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": unsafe_session}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request with unsafe session identity builds");
+    let unsafe_value = unsafe_request
+        .headers()
+        .get("x-opencode-session")
+        .and_then(|value| value.to_str().ok())
+        .expect("safe session header");
+    assert_eq!(unsafe_value, "codex-warp-a4df27dad7ea21dc");
+
+    let anonymous_request = build_upstream_json_request(
+        &Client::new(),
+        "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+        &serde_json::json!({"model": "glm-5.2"}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request without a session identity builds");
+    assert!(
+        anonymous_request
+            .headers()
+            .get("x-opencode-session")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("codex-warp-session_"))
+    );
+
+    let empty_conversation_request = build_upstream_json_request(
+        &Client::new(),
+        "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+        &serde_json::json!({"model": "glm-5.2", "conversation": ""}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request with empty conversation identity builds");
+    assert!(
+        empty_conversation_request
+            .headers()
+            .get("x-opencode-session")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("codex-warp-session_"))
+    );
+}
+
+#[test]
+fn opencode_session_header_is_scoped_and_operator_overridable() {
+    for base_url in [
+        "https://opencode.ai/zen/v1",
+        "https://opencode.ai.example/zen/go/v1",
+        "https://notopencode.ai/zen/go/v1",
+    ] {
+        let provider = ProviderConfig {
+            base_url: base_url.to_string(),
+            ..ProviderConfig::default()
+        };
+        let request = build_upstream_json_request(
+            &Client::new(),
+            format!("{base_url}/chat/completions"),
+            &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"}),
+            &provider,
+            &HeaderMap::new(),
+            "text/event-stream",
+        )
+        .expect("request builds");
+        assert!(request.headers().get("x-opencode-session").is_none());
+    }
+
+    let mut provider = ProviderConfig {
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+    provider.headers.insert(
+        "X-OpenCode-Session".to_string(),
+        "operator-session".to_string(),
+    );
+    let request = build_upstream_json_request(
+        &Client::new(),
+        "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+        &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"}),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request builds");
+    assert_eq!(
+        request
+            .headers()
+            .get("x-opencode-session")
+            .and_then(|value| value.to_str().ok()),
+        Some("operator-session")
+    );
+    assert_eq!(
+        request
+            .headers()
+            .get_all("x-opencode-session")
+            .iter()
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn build_upstream_json_request_sends_single_content_type_on_wire() {
     let captured = Arc::new(Mutex::new(Vec::<String>::new()));
