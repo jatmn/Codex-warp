@@ -45,15 +45,14 @@ fn provider_targets_openrouter(provider: &ProviderConfig) -> bool {
         })
 }
 
-fn provider_targets_opencode_go(provider: &ProviderConfig) -> bool {
-    reqwest::Url::parse(&provider.base_url)
-        .ok()
-        .is_some_and(|url| {
-            let host = url.host_str().unwrap_or_default();
-            let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
-            let path = url.path().trim_end_matches('/');
-            host == "opencode.ai" && path == "/zen/go/v1"
-        })
+fn targets_opencode_go_generation(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|url| {
+        let host = url.host_str().unwrap_or_default();
+        let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+        let path = url.path().trim_end_matches('/');
+        host == "opencode.ai"
+            && matches!(path, "/zen/go/v1/chat/completions" | "/zen/go/v1/responses")
+    })
 }
 
 fn insert_openrouter_attribution(headers: &mut HeaderMap, provider: &ProviderConfig) {
@@ -211,17 +210,16 @@ fn session_header_value(body: &Value) -> HeaderValue {
         .expect("generated session id is a valid header value")
 }
 
-pub(crate) fn opencode_session_header(
-    provider: &ProviderConfig,
-    original_body: &Value,
-) -> Option<HeaderValue> {
-    provider_targets_opencode_go(provider).then(|| session_header_value(original_body))
+pub(crate) fn opencode_session_header(url: &str, original_body: &Value) -> Option<HeaderValue> {
+    targets_opencode_go_generation(url).then(|| session_header_value(original_body))
 }
 
 fn insert_opencode_session_header(headers: &mut HeaderMap, session_header: Option<&HeaderValue>) {
-    if !headers.contains_key("x-opencode-session")
-        && let Some(value) = session_header
-    {
+    let has_usable_override = headers
+        .get("x-opencode-session")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| !value.trim().is_empty());
+    if !has_usable_override && let Some(value) = session_header {
         headers.insert("x-opencode-session", value.clone());
     }
 }

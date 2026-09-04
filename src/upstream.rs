@@ -90,7 +90,8 @@ pub(crate) async fn proxy_native_responses(
         &selected.provider,
         &mut body,
     );
-    let opencode_session = opencode_session_header(&selected.provider, &body);
+    let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
+    let opencode_session = opencode_session_header(&url, &body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
     let guardian_request = is_guardian_request(&body);
@@ -118,7 +119,6 @@ pub(crate) async fn proxy_native_responses(
     };
     let namespace_helpers = native.namespace_helpers;
     let body = native.body;
-    let url = endpoint_url(&selected.provider, &selected.provider.responses_path);
     let request_log_id = generated_id("dbg");
     if subagent_helpers_applied {
         state
@@ -171,7 +171,6 @@ pub(crate) async fn proxy_chat_responses(
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
-    let opencode_session = opencode_session_header(&selected.provider, &body);
     let chat_transform = responses_to_chat(body.clone(), &selected.transform);
     let guardian_request = is_guardian_request(&body);
     if !guardian_request
@@ -187,6 +186,7 @@ pub(crate) async fn proxy_chat_responses(
         );
     }
     let url = endpoint_url(&selected.provider, &selected.provider.chat_completions_path);
+    let opencode_session = opencode_session_header(&url, &body);
     let request_log_id = generated_id("dbg");
     let mut original_chat_body = chat_transform.body;
     let guardian_compat_applied =

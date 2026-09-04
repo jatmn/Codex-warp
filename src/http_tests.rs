@@ -488,7 +488,8 @@ fn dynamic_session_header_uses_responses_session_identity() {
             "object-session",
         ),
     ] {
-        let session = opencode_session_header(&provider, &body);
+        let session =
+            opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &body);
         let request = build_upstream_json_request(
             &Client::new(),
             "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -527,7 +528,10 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
 
     let unsafe_session = "session\nvalue";
     let unsafe_body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": unsafe_session});
-    let unsafe_session_header = opencode_session_header(&provider, &unsafe_body);
+    let unsafe_session_header = opencode_session_header(
+        "https://opencode.ai/zen/go/v1/chat/completions",
+        &unsafe_body,
+    );
     let unsafe_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -546,7 +550,10 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
     assert_eq!(unsafe_value, "codex-warp-a4df27dad7ea21dc");
 
     let anonymous_body = serde_json::json!({"model": "glm-5.2"});
-    let anonymous_session_header = opencode_session_header(&provider, &anonymous_body);
+    let anonymous_session_header = opencode_session_header(
+        "https://opencode.ai/zen/go/v1/chat/completions",
+        &anonymous_body,
+    );
     let anonymous_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -566,7 +573,10 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
     );
 
     let empty_conversation_body = serde_json::json!({"model": "glm-5.2", "conversation": ""});
-    let empty_session_header = opencode_session_header(&provider, &empty_conversation_body);
+    let empty_session_header = opencode_session_header(
+        "https://opencode.ai/zen/go/v1/chat/completions",
+        &empty_conversation_body,
+    );
     let empty_conversation_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -607,8 +617,9 @@ fn resolved_session_header_survives_chat_transform_and_request_rebuild() {
             None,
         ),
     ] {
-        let session = opencode_session_header(&provider, &original)
-            .expect("OpenCode Go requests receive a session header");
+        let session =
+            opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &original)
+                .expect("OpenCode Go requests receive a session header");
         let transformed = crate::transform::responses_to_chat(
             original,
             &crate::config::TransformConfig::default(),
@@ -659,10 +670,11 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             ..ProviderConfig::default()
         };
         let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
-        let session = opencode_session_header(&provider, &body);
+        let url = format!("{base_url}/chat/completions");
+        let session = opencode_session_header(&url, &body);
         let request = build_upstream_json_request(
             &Client::new(),
-            format!("{base_url}/chat/completions"),
+            url,
             &body,
             session.as_ref(),
             &provider,
@@ -671,6 +683,38 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         )
         .expect("request builds");
         assert!(request.headers().get("x-opencode-session").is_none());
+    }
+
+    let split_provider = ProviderConfig {
+        base_url: "https://opencode.ai".to_string(),
+        chat_completions_path: "/zen/go/v1/chat/completions".to_string(),
+        responses_path: "/zen/go/v1/responses".to_string(),
+        ..ProviderConfig::default()
+    };
+    for path in [
+        &split_provider.chat_completions_path,
+        &split_provider.responses_path,
+    ] {
+        let url = endpoint_url(&split_provider, path);
+        let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "split-session"});
+        let session = opencode_session_header(&url, &body);
+        let request = build_upstream_json_request(
+            &Client::new(),
+            url,
+            &body,
+            session.as_ref(),
+            &split_provider,
+            &HeaderMap::new(),
+            "text/event-stream",
+        )
+        .expect("split OpenCode Go destination builds");
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some("split-session")
+        );
     }
 
     let mut provider = ProviderConfig {
@@ -682,7 +726,7 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         "operator-session".to_string(),
     );
     let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
-    let session = opencode_session_header(&provider, &body);
+    let session = opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &body);
     let request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -713,7 +757,8 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         "X-OpenCode-Session".to_string(),
         "invalid\nvalue".to_string(),
     );
-    let automatic = opencode_session_header(&provider, &body);
+    let automatic =
+        opencode_session_header("https://opencode.ai/zen/go/v1/chat/completions", &body);
     let request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
@@ -731,6 +776,29 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             .and_then(|value| value.to_str().ok()),
         Some("session-123")
     );
+
+    for blank in ["", " \t "] {
+        provider
+            .headers
+            .insert("X-OpenCode-Session".to_string(), blank.to_string());
+        let request = build_upstream_json_request(
+            &Client::new(),
+            "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+            &body,
+            automatic.as_ref(),
+            &provider,
+            &HeaderMap::new(),
+            "text/event-stream",
+        )
+        .expect("blank configured session falls back automatically");
+        assert_eq!(
+            request
+                .headers()
+                .get("x-opencode-session")
+                .and_then(|value| value.to_str().ok()),
+            Some("session-123")
+        );
+    }
 }
 
 #[tokio::test]
