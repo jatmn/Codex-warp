@@ -444,6 +444,7 @@ fn build_upstream_json_request_sets_single_content_type() {
         &Client::new(),
         "https://provider.example/v1/chat/completions".to_string(),
         &serde_json::json!({"model": "deepseek-v4-flash"}),
+        None,
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -487,10 +488,12 @@ fn dynamic_session_header_uses_responses_session_identity() {
             "object-session",
         ),
     ] {
+        let session = opencode_session_header(&provider, &body);
         let request = build_upstream_json_request(
             &Client::new(),
             "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
             &body,
+            session.as_ref(),
             &provider,
             &HeaderMap::new(),
             "text/event-stream",
@@ -523,10 +526,13 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
     };
 
     let unsafe_session = "session\nvalue";
+    let unsafe_body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": unsafe_session});
+    let unsafe_session_header = opencode_session_header(&provider, &unsafe_body);
     let unsafe_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-        &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": unsafe_session}),
+        &unsafe_body,
+        unsafe_session_header.as_ref(),
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -539,10 +545,13 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
         .expect("safe session header");
     assert_eq!(unsafe_value, "codex-warp-a4df27dad7ea21dc");
 
+    let anonymous_body = serde_json::json!({"model": "glm-5.2"});
+    let anonymous_session_header = opencode_session_header(&provider, &anonymous_body);
     let anonymous_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-        &serde_json::json!({"model": "glm-5.2"}),
+        &anonymous_body,
+        anonymous_session_header.as_ref(),
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -556,10 +565,13 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
             .is_some_and(|value| value.starts_with("codex-warp-session_"))
     );
 
+    let empty_conversation_body = serde_json::json!({"model": "glm-5.2", "conversation": ""});
+    let empty_session_header = opencode_session_header(&provider, &empty_conversation_body);
     let empty_conversation_request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-        &serde_json::json!({"model": "glm-5.2", "conversation": ""}),
+        &empty_conversation_body,
+        empty_session_header.as_ref(),
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -575,6 +587,67 @@ fn dynamic_session_header_is_safe_and_present_without_a_cache_key() {
 }
 
 #[test]
+fn resolved_session_header_survives_chat_transform_and_request_rebuild() {
+    let provider = ProviderConfig {
+        base_url: "https://opencode.ai/zen/go/v1".to_string(),
+        ..ProviderConfig::default()
+    };
+
+    for (original, expected) in [
+        (
+            serde_json::json!({
+                "model": "glm-5.2",
+                "input": "hello",
+                "conversation_id": "conversation-session"
+            }),
+            Some("conversation-session"),
+        ),
+        (
+            serde_json::json!({"model": "glm-5.2", "input": "hello"}),
+            None,
+        ),
+    ] {
+        let session = opencode_session_header(&provider, &original)
+            .expect("OpenCode Go requests receive a session header");
+        let transformed = crate::transform::responses_to_chat(
+            original,
+            &crate::config::TransformConfig::default(),
+        )
+        .body;
+        assert!(transformed.get("conversation_id").is_none());
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let request = build_upstream_json_request(
+                &Client::new(),
+                "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+                &transformed,
+                Some(&session),
+                &provider,
+                &HeaderMap::new(),
+                "text/event-stream",
+            )
+            .expect("request builds");
+            seen.push(
+                request
+                    .headers()
+                    .get("x-opencode-session")
+                    .and_then(|value| value.to_str().ok())
+                    .expect("session header")
+                    .to_string(),
+            );
+        }
+
+        assert_eq!(seen[0], seen[1]);
+        if let Some(expected) = expected {
+            assert_eq!(seen[0], expected);
+        } else {
+            assert!(seen[0].starts_with("codex-warp-session_"));
+        }
+    }
+}
+
+#[test]
 fn opencode_session_header_is_scoped_and_operator_overridable() {
     for base_url in [
         "https://opencode.ai/zen/v1",
@@ -585,10 +658,13 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             base_url: base_url.to_string(),
             ..ProviderConfig::default()
         };
+        let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
+        let session = opencode_session_header(&provider, &body);
         let request = build_upstream_json_request(
             &Client::new(),
             format!("{base_url}/chat/completions"),
-            &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"}),
+            &body,
+            session.as_ref(),
             &provider,
             &HeaderMap::new(),
             "text/event-stream",
@@ -605,10 +681,13 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
         "X-OpenCode-Session".to_string(),
         "operator-session".to_string(),
     );
+    let body = serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"});
+    let session = opencode_session_header(&provider, &body);
     let request = build_upstream_json_request(
         &Client::new(),
         "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-        &serde_json::json!({"model": "glm-5.2", "prompt_cache_key": "session-123"}),
+        &body,
+        session.as_ref(),
         &provider,
         &HeaderMap::new(),
         "text/event-stream",
@@ -628,6 +707,29 @@ fn opencode_session_header_is_scoped_and_operator_overridable() {
             .iter()
             .count(),
         1
+    );
+
+    provider.headers.insert(
+        "X-OpenCode-Session".to_string(),
+        "invalid\nvalue".to_string(),
+    );
+    let automatic = opencode_session_header(&provider, &body);
+    let request = build_upstream_json_request(
+        &Client::new(),
+        "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+        &body,
+        automatic.as_ref(),
+        &provider,
+        &HeaderMap::new(),
+        "text/event-stream",
+    )
+    .expect("request falls back from invalid configured session header");
+    assert_eq!(
+        request
+            .headers()
+            .get("x-opencode-session")
+            .and_then(|value| value.to_str().ok()),
+        Some("session-123")
     );
 }
 
@@ -677,6 +779,7 @@ async fn build_upstream_json_request_sends_single_content_type_on_wire() {
         &client,
         format!("http://{addr}/"),
         &serde_json::json!({"model": "deepseek-v4-flash", "stream": true}),
+        None,
         &provider,
         &HeaderMap::new(),
         "text/event-stream",

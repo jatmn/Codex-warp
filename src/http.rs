@@ -211,15 +211,18 @@ fn session_header_value(body: &Value) -> HeaderValue {
         .expect("generated session id is a valid header value")
 }
 
-fn insert_opencode_session_header(
-    headers: &mut HeaderMap,
+pub(crate) fn opencode_session_header(
     provider: &ProviderConfig,
-    body: &Value,
-) {
-    if provider_targets_opencode_go(provider)
-        && !provider_defines_header(provider, "x-opencode-session")
+    original_body: &Value,
+) -> Option<HeaderValue> {
+    provider_targets_opencode_go(provider).then(|| session_header_value(original_body))
+}
+
+fn insert_opencode_session_header(headers: &mut HeaderMap, session_header: Option<&HeaderValue>) {
+    if !headers.contains_key("x-opencode-session")
+        && let Some(value) = session_header
     {
-        headers.insert("x-opencode-session", session_header_value(body));
+        headers.insert("x-opencode-session", value.clone());
     }
 }
 
@@ -227,12 +230,13 @@ pub(crate) fn build_upstream_json_request(
     client: &Client,
     url: String,
     body: &Value,
+    opencode_session: Option<&HeaderValue>,
     provider: &ProviderConfig,
     incoming: &HeaderMap,
     accept: &'static str,
 ) -> Result<reqwest::Request, String> {
     let mut headers = upstream_headers(provider, incoming, accept);
-    insert_opencode_session_header(&mut headers, provider, body);
+    insert_opencode_session_header(&mut headers, opencode_session);
     headers.insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),

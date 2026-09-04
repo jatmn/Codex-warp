@@ -23,6 +23,7 @@ use crate::http::build_upstream_json_request;
 use crate::http::copy_content_type;
 use crate::http::endpoint_url;
 use crate::http::error_response;
+use crate::http::opencode_session_header;
 use crate::ids::generated_id;
 use crate::namespace_helpers::apply_subagent_helper_shim;
 use crate::namespace_helpers::apply_subagent_helper_shim_to_responses;
@@ -89,6 +90,7 @@ pub(crate) async fn proxy_native_responses(
         &selected.provider,
         &mut body,
     );
+    let opencode_session = opencode_session_header(&selected.provider, &body);
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let custom_tool_names = native_custom_tool_names(&body, &selected.transform);
     let guardian_request = is_guardian_request(&body);
@@ -142,6 +144,7 @@ pub(crate) async fn proxy_native_responses(
         headers,
         url,
         body,
+        opencode_session,
         stream_requested,
         custom_tool_names,
         namespace_helpers,
@@ -168,6 +171,7 @@ pub(crate) async fn proxy_chat_responses(
     let stream_requested = body.get("stream").and_then(Value::as_bool).unwrap_or(true);
     let original_summary = request_debug_summary(&body);
     let continue_guard = ContinueGuardState::from_request(continue_guard_config, &body);
+    let opencode_session = opencode_session_header(&selected.provider, &body);
     let chat_transform = responses_to_chat(body.clone(), &selected.transform);
     let guardian_request = is_guardian_request(&body);
     if !guardian_request
@@ -259,6 +263,7 @@ pub(crate) async fn proxy_chat_responses(
         &state,
         url.clone(),
         &outbound_body,
+        opencode_session.as_ref(),
         &selected.provider,
         &headers,
         &request_log_id,
@@ -343,6 +348,7 @@ pub(crate) async fn proxy_chat_responses(
             &state,
             url,
             &outbound_body,
+            opencode_session.as_ref(),
             &selected.provider,
             &headers,
             &request_log_id,
@@ -543,6 +549,7 @@ async fn send_chat_completions(
     state: &AppState,
     url: String,
     body: &Value,
+    opencode_session: Option<&HeaderValue>,
     provider: &ProviderConfig,
     headers: &HeaderMap,
     request_log_id: &str,
@@ -551,6 +558,7 @@ async fn send_chat_completions(
         &state.client,
         url,
         body,
+        opencode_session,
         provider,
         headers,
         "text/event-stream",
@@ -667,6 +675,7 @@ async fn send_native_responses(
     headers: HeaderMap,
     url: String,
     body: Value,
+    opencode_session: Option<HeaderValue>,
     stream_response: bool,
     custom_tool_names: BTreeSet<String>,
     namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
@@ -679,6 +688,7 @@ async fn send_native_responses(
         headers,
         url,
         body,
+        opencode_session,
         stream_response,
         custom_tool_names,
         namespace_helpers,
@@ -696,6 +706,7 @@ async fn send_native_responses_with_session_model(
     headers: HeaderMap,
     url: String,
     body: Value,
+    opencode_session: Option<HeaderValue>,
     stream_response: bool,
     custom_tool_names: BTreeSet<String>,
     namespace_helpers: crate::namespace_helpers::NamespaceHelpers,
@@ -708,6 +719,7 @@ async fn send_native_responses_with_session_model(
         &state.client,
         url,
         &body,
+        opencode_session.as_ref(),
         provider,
         &headers,
         "text/event-stream",
