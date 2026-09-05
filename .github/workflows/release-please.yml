@@ -20,11 +20,16 @@ jobs:
       actions: read
       attestations: read
       contents: read
+      pull-requests: read
     outputs:
       ready: ${{ steps.gate.outputs.ready }}
+      releasable: ${{ steps.release-trigger.outputs.releasable }}
+      source_sha: ${{ steps.release-trigger.outputs.source_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: false
       - id: gate
         env:
@@ -41,6 +46,26 @@ jobs:
           fi
           OFFICIAL_ALLOW_MISSING_LATEST_TAG=1 bash scripts/check-prior-official-releases.sh
           echo 'ready=true' >>"$GITHUB_OUTPUT"
+      - name: Install pinned Node for release eligibility
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.20.0
+      - name: Install locked release policy dependencies
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: tools/release-please-policy
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - id: release-trigger
+        name: Check release eligibility without changing release notes
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          planned_main="$(git rev-parse HEAD)"
+          node tools/release-please-policy/harness.mjs --release-trigger
+          live_main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [ "$planned_main" = "$live_main" ] || { echo 'main changed during eligibility planning' >&2; exit 1; }
+          echo "source_sha=$planned_main" >>"$GITHUB_OUTPUT"
 
   release-please:
     needs: gate
@@ -60,8 +85,8 @@ jobs:
       sha: ${{ steps.release.outputs.sha }}
       html_url: ${{ steps.release.outputs.html_url }}
       upload_url: ${{ steps.release.outputs.upload_url }}
-      pr: ${{ steps.release.outputs.pr }}
-      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release-pr.outputs.pr }}
+      prs_created: ${{ steps.release-pr.outputs.prs_created }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,10 +96,12 @@ jobs:
       - name: Revalidate protected state before reading the App key
         env:
           GH_TOKEN: ${{ github.token }}
+          ELIGIBILITY_SOURCE_SHA: ${{ needs.gate.outputs.source_sha }}
         run: |
           [ "${{ github.ref }}" = refs/heads/main ]
           git fetch --no-tags origin main
           live_main="$(git rev-parse origin/main)"
+          [ "$live_main" = "$ELIGIBILITY_SOURCE_SHA" ] || { echo 'main changed after eligibility planning; rerun from main' >&2; exit 1; }
           git checkout --detach "$live_main"
           [ "$(git rev-parse HEAD)" = "$live_main" ]
           [ "${{ vars.OFFICIAL_RELEASES_ENABLED }}" = true ]
@@ -108,6 +135,16 @@ jobs:
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
+      - id: release-pr
+        if: steps.missing-draft.outputs.created != 'true' && steps.release.outputs.releases_created != 'true' && needs.gate.outputs.releasable == 'true'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          target-branch: main
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
       - name: Validate and summarize result
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -121,8 +158,8 @@ jobs:
           TAG: ${{ steps.release.outputs.tag_name }}
           SHA: ${{ steps.release.outputs.sha }}
           URL: ${{ steps.release.outputs.html_url }}
-          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
-          PR: ${{ steps.release.outputs.pr }}
+          PRS_CREATED: ${{ steps.release-pr.outputs.prs_created }}
+          PR: ${{ steps.release-pr.outputs.pr }}
         shell: bash
         run: |
           if [ "$MISSING_CREATED" = true ]; then

@@ -59,10 +59,6 @@ for (const file of workflowFiles) {
   assert.ok(!source.includes('pull_request_target:'), `${file} must not use pull_request_target`);
   assert.ok(!/curl[^\n]*\|\s*(?:bash|sh)/.test(source), `${file} must not execute a remote installer`);
   assert.ok(!source.includes('--jq --arg'), `${file} passes unsupported jq arguments to gh --jq`);
-  for (const match of source.matchAll(/\bnpm ci[^\n]*/g)) {
-    assert.ok(match[0].includes('--omit=dev'), `${file} installs dev-only release tooling`);
-    assert.ok(match[0].includes('--ignore-scripts'), `${file} enables dependency lifecycle scripts`);
-  }
   const workflow = parse(file);
   assert.deepEqual(workflow.permissions, {contents: 'read'}, `${file} must default to read-only contents`);
   for (const [jobName, job] of Object.entries(workflow.jobs)) {
@@ -73,6 +69,21 @@ for (const file of workflowFiles) {
     }
     for (const [index, step] of (job.steps || []).entries()) {
       if (typeof step.run !== 'string') continue;
+      for (const match of step.run.matchAll(/\bnpm ci[^\n]*/g)) {
+        const readOnlyPlanner = file === '.github/workflows/release-please.yml' &&
+          jobName === 'gate' && step.name === 'Install locked release policy dependencies';
+        if (readOnlyPlanner) {
+          assert.equal(job.environment, undefined, 'eligibility must not access the protected environment');
+          assert.deepEqual(job.permissions, {
+            actions: 'read', attestations: 'read', contents: 'read', 'pull-requests': 'read',
+          });
+          assert.ok(!jobText.includes('secrets.') && !jobText.includes('actions/create-github-app-token'),
+            'eligibility dependency installation must remain isolated from App credentials');
+        } else {
+          assert.ok(match[0].includes('--omit=dev'), `${file}:${jobName} installs dev-only release tooling`);
+        }
+        assert.ok(match[0].includes('--ignore-scripts'), `${file} enables dependency lifecycle scripts`);
+      }
       assert.ok(!step.run.includes('${{ inputs.'),
         `${file}:${jobName}:step-${index + 1} embeds workflow-dispatch input in shell source`);
       const bashStep = step.shell === 'bash' || (!step.shell && String(job['runs-on']).startsWith('ubuntu'));
@@ -135,6 +146,50 @@ assert.ok(rpTokenIdx < rpSteps.indexOf(rpPriorAfterToken) &&
   rpSteps.indexOf(rpMissingDraft) < rpActionIdx,
   'missing-draft create must run after the App-token prior-release recheck and before Release Please');
 const rpAction = releasePlease.jobs['release-please'].steps.find(step => step.id === 'release');
+const gateSteps = releasePlease.jobs.gate.steps;
+const rpTrigger = gateSteps.find(step => step.id === 'release-trigger');
+const rpNode = gateSteps.find(step => step.name === 'Install pinned Node for release eligibility');
+const rpInstall = gateSteps.find(step => step.name === 'Install locked release policy dependencies');
+const gateCheckout = gateSteps.find(step => step.uses?.startsWith('actions/checkout@'));
+assert.equal(gateCheckout.with.ref, 'main');
+assert.equal(gateCheckout.with['fetch-depth'], 0);
+assert.equal(rpNode.uses, `actions/setup-node@${tooling.actions.setupNode}`);
+assert.equal(rpNode.with['node-version'], tooling.node);
+assert.equal(rpInstall['working-directory'], 'tools/release-please-policy');
+assert.equal(rpInstall.run, 'npm ci --ignore-scripts --no-audit --no-fund');
+assert.equal(rpTrigger.env.GH_TOKEN, '${{ github.token }}');
+assert.ok(rpTrigger.run.includes('node tools/release-please-policy/harness.mjs --release-trigger'));
+assert.ok(rpTrigger.run.includes('[ "$planned_main" = "$live_main" ]'));
+assert.ok(rpTrigger.run.includes('echo "source_sha=$planned_main" >>"$GITHUB_OUTPUT"'));
+assert.ok(gateSteps.indexOf(rpNode) < gateSteps.indexOf(rpInstall) &&
+  gateSteps.indexOf(rpInstall) < gateSteps.indexOf(rpTrigger));
+for (const step of [rpNode, rpInstall, rpTrigger]) {
+  assert.equal(step.if, "steps.gate.outputs.ready == 'true'");
+}
+assert.equal(releasePlease.jobs.gate.outputs.source_sha, '${{ steps.release-trigger.outputs.source_sha }}');
+assert.equal(releasePlease.jobs.gate.outputs.releasable, '${{ steps.release-trigger.outputs.releasable }}');
+assert.equal(rpRevalidate.env.ELIGIBILITY_SOURCE_SHA, '${{ needs.gate.outputs.source_sha }}');
+assert.ok(rpRevalidate.run.includes('[ "$live_main" = "$ELIGIBILITY_SOURCE_SHA" ]'));
+assert.equal(rpAction.with['skip-github-pull-request'], true);
+assert.equal(rpAction.with['skip-github-release'], undefined,
+  'notes-only eligibility must not suppress tagging an already merged release');
+const rpPrAction = rpSteps.find(step => step.id === 'release-pr');
+assert.ok(rpSteps.indexOf(rpPrAction) > rpActionIdx);
+assert.equal(rpPrAction.if,
+  "steps.missing-draft.outputs.created != 'true' && steps.release.outputs.releases_created != 'true' && needs.gate.outputs.releasable == 'true'");
+assert.equal(rpPrAction.uses, `googleapis/release-please-action@${tooling.releasePleaseAction.commit}`);
+assert.deepEqual(rpPrAction.with, {
+  token: '${{ steps.app-token.outputs.token }}',
+  'target-branch': 'main',
+  'config-file': 'release-please-config.json',
+  'manifest-file': '.release-please-manifest.json',
+  'skip-github-release': true,
+});
+assert.equal(releasePlease.jobs['release-please'].outputs.pr, '${{ steps.release-pr.outputs.pr }}');
+assert.equal(releasePlease.jobs['release-please'].outputs.prs_created, '${{ steps.release-pr.outputs.prs_created }}');
+const rpSummary = rpSteps.find(step => step.name === 'Validate and summarize result');
+assert.equal(rpSummary.env.PRS_CREATED, '${{ steps.release-pr.outputs.prs_created }}');
+assert.equal(rpSummary.env.PR, '${{ steps.release-pr.outputs.pr }}');
 assert.equal(rpAction.if, "steps.missing-draft.outputs.created != 'true'",
   'Release Please must not open a newer version while it just created the missing draft');
 assert.equal(rpAction.uses, `googleapis/release-please-action@${tooling.releasePleaseAction.commit}`);

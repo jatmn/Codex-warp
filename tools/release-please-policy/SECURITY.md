@@ -17,12 +17,16 @@ Rollup-generated CommonJS bundle, not hidden source. Review on 2026-08-30 found:
 - the upstream release contains one entry-point compatibility fix; and
 - npm reports a registry signature for the published package.
 
-`release-please` is intentionally a dev dependency used only by the pinned
-policy harness. Release, nightly, and recovery workflows install with
+`release-please` is intentionally a dev dependency used by the pinned
+policy harness and the isolated read-only Release Please eligibility job.
+Credential-adjacent release, nightly, and recovery jobs install with
 `npm ci --omit=dev --ignore-scripts`, so neither Release Please nor yargs is
-installed in credential-adjacent jobs. The all-dependencies harness also uses
-`--ignore-scripts` and runs with read-only repository credentials and no
-protected environment secret.
+installed in credential-adjacent jobs. The all-dependencies harness and
+eligibility job use `--ignore-scripts` and run with read-only repository
+credentials and no protected environment secret. Eligibility passes only a
+boolean and its inspected source SHA to the protected job; it does not pass
+dependencies or executable artifacts. The protected job rejects a changed
+`main` before minting the App token.
 
 The exact yargs version and integrity are asserted by the offline policy tests.
 Changing either requires a new source and supply-chain review.
