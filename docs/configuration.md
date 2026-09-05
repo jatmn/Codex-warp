@@ -123,6 +123,14 @@ Codex Warp always sends its own `User-Agent` as `codex-warp/<version>` to
 upstream providers. Configured `User-Agent` values are ignored so provider logs
 can identify the proxy consistently.
 
+Model-generation requests to the documented OpenCode Go API root automatically
+include `x-opencode-session`, resolved from `prompt_cache_key` and then the Responses
+conversation id. Requests without either identity receive a request-local
+fallback. Set `x-opencode-session` explicitly under the provider's `headers`
+table only when you need to override this automatic value. Codex Warp does not
+follow redirects from these requests, keeping the session identity on the exact
+OpenCode Go HTTPS generation endpoint.
+
 ## Model Metadata
 
 Provider profiles can fill or override catalog metadata:
