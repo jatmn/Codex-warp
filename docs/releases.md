@@ -103,8 +103,14 @@ Please reads for changelog type. Use the templates in
 - `fix:` and `perf:` request a patch release;
 - `feat:` requests a minor release;
 - `type!:` or a `BREAKING CHANGE:` footer requests a breaking release; and
-- documentation, tests, build, CI, refactors, and chores are normally hidden
-  from release notes and do not independently request a release.
+- documentation, build, and CI changes appear in their own sections when an
+  eligible change requests a release, but do not independently request one;
+- tests, refactors, and chores are normally hidden from release notes and do
+  not independently request a release.
+
+Release eligibility is checked separately from note visibility. Once a release
+is eligible, Release Please refreshes its branch from `main` even when the
+notes have not changed.
 
 Before 1.0, this repository deliberately bumps minor for breaking changes.
 Maintainers can use the documented `Release-As: X.Y.Z` footer for an exceptional

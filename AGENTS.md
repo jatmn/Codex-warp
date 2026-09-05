@@ -373,10 +373,17 @@ release:
 Breaking changes use `type!:` or a body footer `BREAKING CHANGE: ...`. Before
 1.0 that still bumps minor.
 
-These types stay in git history. They do not write release notes and do not
-bump the official version by themselves:
+These types appear in release notes when an eligible change opens a release,
+but do not open a release or bump the official version by themselves:
 
-`refactor`, `docs`, `test`, `build`, `ci`, `chore`
+`docs` (Documentation), `build` (Build System), `ci` (Continuous Integration).
+The workflow checks release eligibility separately from note visibility using
+the pinned Release Please planner. Breaking changes still follow the policy
+above. Eligible pending release branches refresh from `main` even when their
+notes have not changed.
+
+`refactor`, `test`, and `chore` remain hidden from ordinary release notes and
+do not open a release by themselves.
 
 Pick the type from the user-visible behavior, not the files touched. A Web UI
 bug that also updates docs is still `fix(webui):`, not `docs:`. A catalog-only

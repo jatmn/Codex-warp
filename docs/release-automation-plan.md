@@ -219,9 +219,19 @@ feat!: change the provider selection contract
   changelog configuration, contributors must use `fix(revert): ...` and the
   accepted-type policy must be revised before automation is enabled.
 - `!` or `BREAKING CHANGE:` → breaking-version policy.
-- `docs`, `test`, `build`, `ci`, `chore`, and `refactor` appear only in the
-  configured changelog sections and do not independently force a release unless
-  explicitly configured.
+- Ordinary `docs`, `build`, and `ci` changes appear in the configured
+  changelog sections of an eligible release but do not independently force a
+  release. A read-only pinned Manifest planner hides those sections only while
+  deciding PR eligibility; the action retains them in the actual notes.
+- Ordinary `test`, `chore`, and `refactor` changes remain hidden and do not
+  independently force a release.
+- Enable `always-update` so an eligible release branch refreshes from `main`
+  even when the generated notes are unchanged.
+- Eligibility suppresses only release PR creation, never the action that tags
+  an already merged release. A pending merged release is completed before any
+  new PR is planned. Tag/draft creation and PR creation run in separate action
+  steps; creating a release skips the PR step even if eligibility was computed
+  before the release PR merged.
 - Dependabot titles such as `build(deps): ...` remain valid.
 - Release Please's own `chore(main): release X.Y.Z` title remains valid.
 - Treat these effects as policy assertions, not assumptions about Release

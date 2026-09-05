@@ -150,6 +150,19 @@ campaign is complete.
 
 ## 7. Normal Operations
 
+The release worker includes documentation, build, and CI entries in an
+eligible release, while a read-only pinned planner prevents those ordinary
+changes from opening a release on their own. It runs in the existing gate job
+with the read-only workflow token and no protected environment. The protected
+job verifies that `main` still matches the eligibility result before minting
+the App token. An eligibility error or source drift fails the run; rerun from
+`main` after investigating the failure.
+
+The `always-update` setting refreshes eligible release branches even when
+their notes are unchanged. Merge release-policy changes through an ordinary
+PR before merging the pending release PR, then verify the worker's regenerated
+notes and checks. The bot PR's four-file allowlist must remain intact.
+
 To cut an official release, review and merge the Release Please PR. Do not
 manually create its tag or publish its draft. Confirm the App-created tag starts
 one Release workflow, all four builds pass, the eleven assets verify, and the
