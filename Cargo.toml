@@ -1,6 +1,6 @@
 [package]
 name = "codex-warp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A local Responses API compatibility proxy for Codex clients"
 repository = "https://github.com/jatmn/Codex-warp"
