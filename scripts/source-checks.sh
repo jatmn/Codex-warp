@@ -123,6 +123,10 @@ if command -v node >/dev/null 2>&1; then
   if ! bash scripts/advance-nightly-branch-harness.sh; then
     fail=1
   fi
+
+  if ! bash scripts/create-nightly-tag-harness.sh; then
+    fail=1
+  fi
 else
   echo 'source-checks: Node is required for release policy validation' >&2
   fail=1
