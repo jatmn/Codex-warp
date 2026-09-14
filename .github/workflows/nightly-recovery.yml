@@ -184,30 +184,43 @@ jobs:
                 if [ "$expected" = success ]; then [ "$conclusion" = success ]; else [ "$conclusion" != success ]; fi
               }
               mkdir origin-evidence
+              receipt=''
               if [ "$(jq -r '.name' <<<"$run")" = Nightly ]; then
-                require_step 'Create immutable nightly tag and receipt' success
-                require_step 'Create draft prerelease for existing tag' not-success
-                require_step 'Upload complete candidate' not-success
-                require_step 'Verify and publish exact prerelease' not-success
+                class="$(NIGHTLY_ORPHAN_STEPS_JSON="$jobs" bash scripts/classify-nightly-orphan-origin.sh)"
                 gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-publication-intent --dir origin-evidence
-                gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
-                intent=nightly-intent.json; receipt=nightly-tag-receipt.json
+                intent=nightly-intent.json
+                if [ "$class" = receipt ]; then
+                  gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
+                  receipt=nightly-tag-receipt.json
+                elif [ "$class" = missing-receipt ]; then
+                  if gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence; then
+                    echo 'missing-receipt nightly origin retained a tag-creation receipt; use the receipt evidence class' >&2
+                    exit 1
+                  fi
+                  [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
+                else
+                  echo "recover-orphan-tag: unknown Nightly origin class: $class" >&2
+                  exit 1
+                fi
               else
                 require_step 'Delete only the attested never-published draft' success
                 require_step 'Reuse or recreate the draft for the existing immutable tag' not-success
                 require_step 'Upload missing assets, verify, publish, and advance branch' not-success
                 gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-orphan-recovery-intent --dir origin-evidence
                 gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-deletion-receipt --dir origin-evidence
-                intent=nightly-orphan-recovery-intent.json; receipt=nightly-deletion-receipt.json
+                intent=nightly-orphan-recovery-intent.json
+                receipt=nightly-deletion-receipt.json
               fi
               gh attestation verify "origin-evidence/$intent" --repo "${{ github.repository }}"
-              gh attestation verify "origin-evidence/$receipt" --repo "${{ github.repository }}"
               jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag == $tag and .sourceSha == $sha' "origin-evidence/$intent" >/dev/null
-              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and ((.peeledSha == $sha) or (.sourceSha == $sha)) and .runId == $run and .runAttempt == $attempt' "origin-evidence/$receipt" >/dev/null
-              if [ "$(jq -r '.name' <<<"$run")" = 'Nightly Recovery' ]; then
-                jq -e --slurpfile intent "origin-evidence/$intent" '.deletedReleaseId == $intent[0].releaseId and $intent[0].operation == "replace-unpublished-draft"' "origin-evidence/$receipt" >/dev/null
+              if [ -n "$receipt" ]; then
+                gh attestation verify "origin-evidence/$receipt" --repo "${{ github.repository }}"
+                jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and ((.peeledSha == $sha) or (.sourceSha == $sha)) and .runId == $run and .runAttempt == $attempt' "origin-evidence/$receipt" >/dev/null
+                if [ "$(jq -r '.name' <<<"$run")" = 'Nightly Recovery' ]; then
+                  jq -e --slurpfile intent "origin-evidence/$intent" '.deletedReleaseId == $intent[0].releaseId and $intent[0].operation == "replace-unpublished-draft"' "origin-evidence/$receipt" >/dev/null
+                fi
+                [ "$(jq -r '.intentSha256' "origin-evidence/$receipt")" = "$(bash scripts/sha256-file.sh "origin-evidence/$intent")" ]
               fi
-              [ "$(jq -r '.intentSha256' "origin-evidence/$receipt")" = "$(bash scripts/sha256-file.sh "origin-evidence/$intent")" ]
               origin_manifest="$(jq -r '.manifestSha256' "origin-evidence/$intent")"; [[ "$origin_manifest" =~ ^[0-9a-f]{64}$ ]]
               build=false; origin=true ;;
             repair-branch)

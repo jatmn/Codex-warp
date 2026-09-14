@@ -425,6 +425,12 @@ assert.ok(nightlyRecoverySource.includes('GH_TOKEN="${{ github.token }}" bash sc
   'nightly recovery remote archive verification must use the job token, not the mutation App token');
 assert.ok(nightlyRecoverySource.includes('scripts/verify-nightly-attestation.sh'),
   'nightly recovery must bind archive attestations to a trusted nightly workflow identity');
+assert.ok(nightlyRecoverySource.includes('scripts/classify-nightly-orphan-origin.sh'),
+  'nightly recover-orphan-tag must classify receipt vs missing-receipt Nightly origins');
+assert.ok(nightlyRecoverySource.includes("missing-receipt nightly origin retained a tag-creation receipt"),
+  'missing-receipt recover-orphan-tag must reject a retained tag-creation receipt');
+assert.ok(read('scripts/classify-nightly-orphan-origin.sh').includes('failure|cancelled'),
+  'missing-receipt orphan classification must accept failed or cancelled tag creation only');
 assert.ok(nightlyRecoverySource.includes('.workflow==$f.workflow and .workflowSha==$f.workflowSha'),
   'nightly recovery collect must require cross-target workflow provenance equality');
 for (const jobName of ['mutate-release', 'repair-branch']) {

@@ -233,7 +233,10 @@ Nightly Recovery accepts:
   never-published draft object, retain and attest the deletion receipt, then
   recreate for the existing immutable tag;
 - `recover-orphan-tag`: continue only an exact retained/attested normal or
-  replacement transaction and its retained candidate; and
+  replacement transaction and its retained candidate. A Nightly origin whose
+  tag-creation step failed or was cancelled may proceed without a
+  tag-creation receipt only when that attested pre-tag intent, retained
+  candidate, and live peeled tag still match and no receipt artifact exists; and
 - `repair-branch`: verify the published prerelease and only create or
   fast-forward `nightly`.
 
