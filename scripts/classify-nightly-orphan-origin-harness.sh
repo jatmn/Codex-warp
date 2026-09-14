@@ -38,6 +38,12 @@ got="$(classify "$(steps cancelled skipped)")"
   exit 1
 }
 
+got="$(classify "$(steps timed_out skipped)")"
+[ "$got" = missing-receipt ] || {
+  echo "classify-nightly-orphan-origin-harness: expected missing-receipt for timed_out, got $got" >&2
+  exit 1
+}
+
 if classify "$(steps skipped skipped)" >/dev/null 2>"$tmp/skipped.err"; then
   echo 'classify-nightly-orphan-origin-harness: skipped tag step was accepted' >&2
   exit 1

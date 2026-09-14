@@ -429,8 +429,12 @@ assert.ok(nightlyRecoverySource.includes('scripts/classify-nightly-orphan-origin
   'nightly recover-orphan-tag must classify receipt vs missing-receipt Nightly origins');
 assert.ok(nightlyRecoverySource.includes("missing-receipt nightly origin retained a tag-creation receipt"),
   'missing-receipt recover-orphan-tag must reject a retained tag-creation receipt');
-assert.ok(read('scripts/classify-nightly-orphan-origin.sh').includes('failure|cancelled'),
-  'missing-receipt orphan classification must accept failed or cancelled tag creation only');
+assert.ok(read('scripts/classify-nightly-orphan-origin.sh').includes('failure|cancelled|timed_out'),
+  'missing-receipt orphan classification must accept failed, cancelled, or timed-out tag creation only');
+assert.ok(nightlyRecoverySource.includes("'.tag == $tag and .sourceSha == $sha and .runId == $run and .runAttempt == $attempt'"),
+  'nightly recover-orphan-tag must bind attested intent to the origin run and attempt');
+assert.ok(nightlyRecoverySource.includes('actions/runs/$ORIGIN_RUN_ID/artifacts?per_page=100'),
+  'missing-receipt recover-orphan-tag must inventory origin artifacts instead of inferring absence from download failure');
 assert.ok(nightlyRecoverySource.includes('.workflow==$f.workflow and .workflowSha==$f.workflowSha'),
   'nightly recovery collect must require cross-target workflow provenance equality');
 for (const jobName of ['mutate-release', 'repair-branch']) {

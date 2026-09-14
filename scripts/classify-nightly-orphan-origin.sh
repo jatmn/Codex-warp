@@ -49,7 +49,7 @@ case "$tag_conclusion" in
   success)
     printf 'receipt\n'
     ;;
-  failure|cancelled)
+  failure|cancelled|timed_out)
     printf 'missing-receipt\n'
     ;;
   *)

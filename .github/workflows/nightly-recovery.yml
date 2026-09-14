@@ -193,10 +193,11 @@ jobs:
                   gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence
                   receipt=nightly-tag-receipt.json
                 elif [ "$class" = missing-receipt ]; then
-                  if gh run download "$ORIGIN_RUN_ID" --repo "${{ github.repository }}" --name nightly-tag-creation-receipt --dir origin-evidence; then
+                  receipt_artifacts="$(gh api --paginate "repos/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID/artifacts?per_page=100" | jq -sc --arg name nightly-tag-creation-receipt '[.[] | .artifacts[]? | select(.name==$name and .expired==false)]')"
+                  [ "$(jq 'length' <<<"$receipt_artifacts")" -eq 0 ] || {
                     echo 'missing-receipt nightly origin retained a tag-creation receipt; use the receipt evidence class' >&2
                     exit 1
-                  fi
+                  }
                   [ "$(git rev-parse "refs/tags/$TAG^{}")" = "$SOURCE_SHA" ]
                 else
                   echo "recover-orphan-tag: unknown Nightly origin class: $class" >&2
@@ -212,7 +213,7 @@ jobs:
                 receipt=nightly-deletion-receipt.json
               fi
               gh attestation verify "origin-evidence/$intent" --repo "${{ github.repository }}"
-              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag == $tag and .sourceSha == $sha' "origin-evidence/$intent" >/dev/null
+              jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and .sourceSha == $sha and .runId == $run and .runAttempt == $attempt' "origin-evidence/$intent" >/dev/null
               if [ -n "$receipt" ]; then
                 gh attestation verify "origin-evidence/$receipt" --repo "${{ github.repository }}"
                 jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and ((.peeledSha == $sha) or (.sourceSha == $sha)) and .runId == $run and .runAttempt == $attempt' "origin-evidence/$receipt" >/dev/null
