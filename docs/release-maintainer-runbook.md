@@ -216,7 +216,10 @@ or mutate a published release.
 For `recover-orphan-tag`, force-cancel the origin Nightly as soon as the
 immutable tag and `nightly-tag-creation-receipt` exist. Cooperative
 `gh run cancel` can still POST the draft and upload assets. The draft step
-must appear with a non-success conclusion and no release object.
+must appear with a non-success conclusion and no release object. If the
+tag exists but the tag-creation step failed, was cancelled, or timed out
+before that receipt artifact was retained, do not wait for a receipt;
+continue through the missing-receipt origin class instead.
 
 For `replace-unpublished-assets`, inject the attested mismatch only after a
 fresh GET shows `draft=true` and `published_at=null`, during
@@ -233,7 +236,11 @@ Nightly Recovery accepts:
   never-published draft object, retain and attest the deletion receipt, then
   recreate for the existing immutable tag;
 - `recover-orphan-tag`: continue only an exact retained/attested normal or
-  replacement transaction and its retained candidate; and
+  replacement transaction and its retained candidate. A Nightly origin whose
+  tag-creation step failed or was cancelled may proceed without a
+  tag-creation receipt only when that attested pre-tag intent, retained
+  candidate, and live peeled tag still match, the origin run/attempt bind, and
+  the origin artifact inventory shows no unexpired receipt; and
 - `repair-branch`: verify the published prerelease and only create or
   fast-forward `nightly`.
 

@@ -1243,9 +1243,15 @@ mutation gate.
    a retained tag-creation receipt bound to the intent digest, API result, tag,
    peeled SHA, run/attempt, and post-create reread. Give it the same maximum
    retention, record both evidence expiry times, and verify retrieval before
-   proceeding. If the tag exists but this receipt cannot be retained, stop for
-   documented human break-glass; no routine workflow may infer origin from tag
-   existence alone.
+   proceeding. If the tag exists but this receipt cannot be retained, do not
+   infer origin from tag existence alone. Continue only through Section 11.2's
+   `recover-orphan-tag` missing-receipt Nightly origin class when the originating
+   run's tag-creation step failed, was cancelled, or timed out, its attested
+   pre-tag intent and retained candidate remain, the live tag peels to that
+   intended SHA, and the origin run has no unexpired tag-creation receipt
+   artifact. A successful tag-creation step whose receipt artifact is later
+   missing remains human break-glass. Mixed, unverifiable, or expired origin
+   evidence never authorizes tag deletion, movement, or reuse.
 7. Reread release absence and create one draft GitHub prerelease for the already
    existing immutable tag. Do not rely on `target_commitish` to create or prove
    the tag. Record and verify the exact draft release ID and `tag_name`.
@@ -1281,7 +1287,10 @@ an unrelated commit.
 If fresh tag creation succeeds but draft creation fails, the immutable tag is an
 expected recoverable orphan only while the originating run plus its verified
 attested fresh-publication intent and tag-creation receipt are retained. Continue
-it through Section 11.2's evidence-bound `recover-orphan-tag` operation. Once a
+it through Section 11.2's evidence-bound `recover-orphan-tag` operation. If the
+tag-creation step failed, was cancelled, or timed out after a live matching tag
+exists and no unexpired tag-creation receipt artifact remains, continue only
+through that same operation's missing-receipt Nightly origin class. Once a
 draft exists, use `resume-draft` or `replace-unpublished-draft` according to its
 verified state. Missing or expired origin evidence remains human break-glass; it
 never authorizes tag deletion, movement, or reuse.
@@ -1541,20 +1550,29 @@ Operation contracts:
   fails, only that recorded failed transaction may be continued by
   `recover-orphan-tag` while its run and both attested records remain available.
 - `recover-orphan-tag` is not a generic orphan-republication path. It accepts
-  exactly two evidence classes. A failed normal fresh-publication transaction
-  must supply its retained, verified attested pre-tag intent and tag-creation
-  receipt. A failed replacement transaction must supply its retained, verified
-  attested orphan-recovery intent and deletion receipt. In both cases require the
+  three evidence classes. A failed normal fresh-publication transaction with a
+  successful tag-creation step must supply its retained, verified attested
+  pre-tag intent and tag-creation receipt. A failed normal fresh-publication
+  transaction whose tag-creation step failed, was cancelled, or timed out must
+  supply that
+  attested pre-tag intent, the retained candidate, a live tag that peels to the
+  intended SHA, proof that draft/upload/publish did not succeed, and proof from
+  the origin run artifact inventory that no unexpired tag-creation receipt
+  remains; it must not treat current
+  release absence, tag existence, or a failed receipt download as origin. A failed replacement
+  transaction must supply its retained, verified attested orphan-recovery intent
+  and deletion receipt. In all cases require the
   exact originating workflow run and attempt, prove that the later draft
   creation/recreation and publication did not succeed, verify the exact immutable
   tag and peeled SHA, and require no current release for that tag or SHA. The
   input tag, source SHA, inventory, contract/tool/recipe digests, and mutation-plan
-  digest must equal both records; the replacement evidence must additionally
-  agree on the deleted release ID.
+  digest must equal the bound records; receipt and replacement classes must
+  additionally agree on the receipt or deleted release ID.
   It may create a draft for that existing tag, upload the verified inventory,
   verify, publish, and perform the guarded branch transaction. It cannot create,
   move, delete, or recreate a tag. Missing, incomplete, expired, unverifiable,
-  unexplained, or wrong-class orphan evidence requires documented human break-glass
+  unexplained, mixed, or wrong-class orphan evidence requires documented human
+  break-glass
   investigation; absence of a current GitHub Release is never proof that no
   release was published previously.
 - `repair-branch` requires a fully verified published prerelease and performs no
@@ -1606,7 +1624,9 @@ generating a new date-based tag today.
 - Nightly build failure: no release and no branch movement.
 - Nightly tag creation followed by draft-creation failure: branch does not move;
   continue only through `recover-orphan-tag` while the originating normal run's
-  attested fresh intent and tag receipt remain valid.
+  attested fresh intent and tag receipt remain valid, or through that operation's
+  missing-receipt Nightly origin class when the tag step failed, was cancelled,
+  or timed out and no unexpired receipt artifact remains.
 - Later nightly publish failure: draft may remain; branch does not move.
 - Nightly replacement deletion followed by recreation failure: automated orphan
   continuation is allowed only while the originating run plus its attested intent
@@ -2095,11 +2115,13 @@ installable under the Section 9.1 rebuildability scope.
 - [ ] Test nightly branch repair for an already published nightly.
 - [ ] Test nightly `resume-draft`, `replace-unpublished-draft`, and
       evidence-bound `recover-orphan-tag` recovery without modifying the
-      immutable tag. Test both permitted orphan origins: failure after fresh tag
-      creation using the normal run's intent/tag receipt, and failure after draft
+      immutable tag. Test the permitted orphan origins: failure after fresh tag
+      creation using the normal run's intent/tag receipt; failure or cancellation
+      of the tag-creation step with a live matching tag, attested intent,
+      retained candidate, and no receipt artifact; and failure after draft
       deletion using the replacement run's intent/deletion receipt. Reject when
-      either required record is missing, expired, mismatched, or from the wrong
-      transaction class.
+      either required record is missing, expired, mismatched, mixed, or from the
+      wrong transaction class.
 - [ ] Test official and nightly tag-specific recovery recipes against the checked
       schema, including rejection of recipes that alter identity, source SHA, or
       publication history and successful repair of a deliberately defective
@@ -2260,8 +2282,9 @@ tag rewrite, or manual asset editing.
 - Successful nightly publishes prerelease then advances branch.
 - Nightly recovery can resume a correct partial draft, replace only a
   never-published draft release object while retaining its immutable tag, recover
-  an orphan tag only from one of the two evidence-bound origins (normal fresh
-  intent/tag receipt or replacement intent/deletion receipt), or repair the
+  an orphan tag only from one of the evidence-bound origins (normal fresh
+  intent/tag receipt, missing-receipt Nightly tag-step failure with matching live
+  tag and intent, or replacement intent/deletion receipt), or repair the
   branch. It cannot infer publication history from current release absence,
   accept the wrong evidence class, overwrite assets, or
   create/move/delete/reuse a tag.
@@ -2399,8 +2422,9 @@ The project is complete when all of the following are true:
       executes guards from a separate control checkout, freezes/builds the exact
       selected source's packaging contract from a source checkout, retains
       immutable tags, and implements the four explicit guarded operations in
-      Section 11.2. Orphan continuation requires both attested records from one
-      permitted evidence class—fresh intent/tag receipt or replacement
+      Section 11.2. Orphan continuation requires the attested records from one
+      permitted evidence class—fresh intent/tag receipt, missing-receipt Nightly
+      tag-step failure with matching live tag and intent, or replacement
       intent/deletion receipt—and fails closed for mismatched classes or after
       they expire.
 - [ ] Official and nightly recovery can use only schema-valid tag-specific
@@ -2495,12 +2519,17 @@ history.
    string and only for a never-published draft. It replaces the release object,
    not the immutable tag.
 4. Use `recover-orphan-tag` only as a continuation of one recorded failed
-   transaction. For a failed normal fresh publication, supply its run/attempt and
-   verify the retained attested pre-tag intent plus tag-creation receipt. For a
+   transaction. For a failed normal fresh publication with a successful tag
+   step, supply its run/attempt and verify the retained attested pre-tag intent
+   plus tag-creation receipt. For a failed, cancelled, or timed-out tag-creation
+   step with
+   a live matching tag and no receipt artifact, verify that same attested
+   intent, retained candidate, peeled SHA, and failed draft/upload/publish
+   path. For a
    failed replacement, verify its pre-delete intent plus deletion receipt, exact
-   deleted release ID, and failed recreate/publish path. In either class, the
+   deleted release ID, and failed recreate/publish path. In every class, the
    tag/SHA, plan/inventory/contract/tool/recipe digests, and run identity must
-   agree. Missing, cross-class, incomplete, or expired evidence requires human
+   agree. Missing, cross-class, mixed, incomplete, or expired evidence requires human
    break-glass; current release absence alone is never sufficient. Use
    `repair-branch` only after fully verifying the published release and a
    create/fast-forward-safe branch state.

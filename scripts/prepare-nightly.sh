@@ -67,13 +67,17 @@ while IFS= read -r immutable_tag; do
   [ -n "$immutable_tag" ] || continue
   release_count="$(jq --arg tag "$immutable_tag" '[.[] | select(.tag_name == $tag)] | length' <<<"$nightly_releases")"
   [ "$release_count" -eq 1 ] || {
-    echo "prepare-nightly: outstanding nightly transaction $immutable_tag does not have exactly one release object; use recovery" >&2
+    if [ "$release_count" -eq 0 ]; then
+      echo "prepare-nightly: outstanding nightly transaction $immutable_tag does not have exactly one release object; dispatch Nightly Recovery recover-orphan-tag" >&2
+    else
+      echo "prepare-nightly: outstanding nightly transaction $immutable_tag does not have exactly one release object; use recovery" >&2
+    fi
     exit 1
   }
   jq -e --arg tag "$immutable_tag" \
     '[.[] | select(.tag_name == $tag)] | length == 1 and .[0].draft == false and .[0].prerelease == true and .[0].published_at != null' \
     <<<"$nightly_releases" >/dev/null || {
-      echo "prepare-nightly: outstanding nightly transaction $immutable_tag is not completely published; use recovery" >&2
+      echo "prepare-nightly: outstanding nightly transaction $immutable_tag is not completely published; dispatch Nightly Recovery recover-orphan-tag or resume-draft" >&2
       exit 1
     }
 done < <(git tag --list 'nightly-*' | LC_ALL=C sort)
