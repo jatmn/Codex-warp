@@ -1239,8 +1239,12 @@ mutation gate.
    value, but fail closed without creating a draft even when it equals the
    selected SHA: this run's pre-tag intent does not prove which actor won the
    race. Never create an annotated or moving nightly tag.
-6. Resolve and peel the new tag to the selected full SHA, then upload and attest
-   a retained tag-creation receipt bound to the intent digest, API result, tag,
+6. Resolve and peel the new tag to the selected full SHA. Absence proof and tag
+   creation use the mutation App token. The post-create peel retries classified
+   404s with that token, then peels with the workflow job token, which is the
+   trusted reader for later nightly verification. Do not treat an App-token peel
+   404 after `201` as proof that the tag is absent. Then upload and attest a
+   retained tag-creation receipt bound to the intent digest, API result, tag,
    peeled SHA, run/attempt, and post-create reread. Give it the same maximum
    retention, record both evidence expiry times, and verify retrieval before
    proceeding. If the tag exists but this receipt cannot be retained, do not

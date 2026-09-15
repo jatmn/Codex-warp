@@ -264,11 +264,14 @@ assert.ok(nightly.jobs['repair-branch'].steps.some(step => step.run?.includes('s
   'nightly repair must use the exact API branch race protocol');
 assert.ok(nightly.jobs.publish.steps.some(step => step.name === 'Create immutable nightly tag and receipt' &&
   step.run === 'bash scripts/create-nightly-tag.sh' &&
-  step.env.WORKFLOW_SHA === '${{ github.workflow_sha }}'),
+  step.env.WORKFLOW_SHA === '${{ github.workflow_sha }}' &&
+  step.env.NIGHTLY_TAG_READ_TOKEN === '${{ github.token }}'),
   'nightly publication must create the immutable tag through the classified App-token helper');
 assert.ok(read('scripts/create-nightly-tag.sh').includes('unable to prove nightly tag absence with the mutation token'));
 assert.ok(read('scripts/create-nightly-tag.sh').includes('NIGHTLY_TAG_PEEL_ATTEMPTS'),
   'nightly tag creation must retry the post-create peel before writing the receipt');
+assert.ok(read('scripts/create-nightly-tag.sh').includes('NIGHTLY_TAG_READ_TOKEN'),
+  'nightly tag creation must peel with the job token after mutation-token 404s');
 
 const release = parse('.github/workflows/release.yml');
 const releaseSource = read('.github/workflows/release.yml');

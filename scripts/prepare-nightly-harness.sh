@@ -65,11 +65,13 @@ git -C "$repo" push --quiet origin main
 sha="$(git -C "$repo" rev-parse HEAD)"
 
 orphan_failure=0
-run_prepare >/dev/null 2>&1 || orphan_failure=$?
+run_prepare >/dev/null 2>"$tmp/orphan.err" || orphan_failure=$?
 if [ "$orphan_failure" -eq 0 ]; then
   echo 'prepare-nightly-harness: older orphan tag did not block a new candidate' >&2
   exit 1
 fi
+grep -F "outstanding nightly transaction $old_tag at $old_sha" "$tmp/orphan.err" >/dev/null
+grep -F 'release_id=absent' "$tmp/orphan.err" >/dev/null
 
 old_draft="[{\"id\":8,\"tag_name\":\"$old_tag\",\"draft\":true,\"prerelease\":true,\"published_at\":null}]"
 draft_failure=0

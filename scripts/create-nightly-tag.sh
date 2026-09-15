@@ -41,8 +41,46 @@ http_code() {
   return 1
 }
 
+lookup_tag() {
+  local token="${1-}"
+  if [ -n "$token" ]; then
+    GH_TOKEN="$token" gh api --include "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1
+  else
+    gh api --include "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1
+  fi
+}
+
+# Returns 0 and prints the peeled SHA, 1 for a classified 404, 2 for hard failure.
+try_peel() {
+  local token="${1-}"
+  local attempt=0
+  local peeled peeled_sha
+  while [ "$attempt" -lt "$peel_attempts" ]; do
+    attempt=$((attempt + 1))
+    if peeled="$(lookup_tag "$token")"; then
+      [ "$(http_code "$peeled" || true)" = 200 ] || {
+        echo 'create-nightly-tag: peel returned an unexpected success status' >&2
+        printf '%s\n' "$peeled" >&2
+        return 2
+      }
+      peeled_sha="$(api_body <<<"$peeled" | jq -er '.object.sha')"
+      [ "$peeled_sha" = "$SOURCE_SHA" ]
+      printf '%s\n' "$peeled_sha"
+      return 0
+    fi
+    [ "$(http_code "$peeled" || true)" = 404 ] || {
+      echo 'create-nightly-tag: unable to peel nightly tag after creation' >&2
+      printf '%s\n' "$peeled" >&2
+      return 2
+    }
+    [ "$attempt" -lt "$peel_attempts" ] || return 1
+    sleep "$peel_sleep"
+  done
+  return 1
+}
+
 lookup=''
-if lookup="$(gh api --include "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1)"; then
+if lookup="$(lookup_tag "${GH_TOKEN-}")"; then
   [ "$(http_code "$lookup" || true)" = 200 ] || {
     echo 'create-nightly-tag: tag lookup returned an unexpected success status' >&2
     printf '%s\n' "$lookup" >&2
@@ -76,34 +114,25 @@ else
   exit 1
 fi
 
-peeled=''
 peeled_sha=''
-attempt=0
-while [ "$attempt" -lt "$peel_attempts" ]; do
-  attempt=$((attempt + 1))
-  if peeled="$(gh api --include "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" 2>&1)"; then
-    [ "$(http_code "$peeled" || true)" = 200 ] || {
-      echo 'create-nightly-tag: peel returned an unexpected success status' >&2
-      printf '%s\n' "$peeled" >&2
-      exit 1
-    }
-    peeled_sha="$(api_body <<<"$peeled" | jq -er '.object.sha')"
-    [ "$peeled_sha" = "$SOURCE_SHA" ]
-    break
+peel_status=0
+peeled_sha="$(try_peel "${GH_TOKEN-}")" || peel_status=$?
+if [ "$peel_status" -eq 2 ]; then
+  exit 2
+fi
+if [ "$peel_status" -ne 0 ]; then
+  if [ -n "${NIGHTLY_TAG_READ_TOKEN:-}" ] && [ "$NIGHTLY_TAG_READ_TOKEN" != "${GH_TOKEN-}" ]; then
+    peel_status=0
+    peeled_sha="$(try_peel "$NIGHTLY_TAG_READ_TOKEN")" || peel_status=$?
+    if [ "$peel_status" -eq 2 ]; then
+      exit 2
+    fi
   fi
-  [ "$(http_code "$peeled" || true)" = 404 ] || {
-    echo 'create-nightly-tag: unable to peel nightly tag after creation' >&2
-    printf '%s\n' "$peeled" >&2
-    exit 1
-  }
-  [ "$attempt" -lt "$peel_attempts" ] || {
-    echo 'create-nightly-tag: peel kept returning 404 after tag create' >&2
-    printf '%s\n' "$peeled" >&2
-    exit 1
-  }
-  sleep "$peel_sleep"
-done
-[ -n "$peeled_sha" ]
+fi
+[ -n "$peeled_sha" ] || {
+  echo 'create-nightly-tag: peel kept returning 404 after tag create' >&2
+  exit 1
+}
 
 jq -n \
   --arg tag "$TAG" \
