@@ -229,8 +229,10 @@ from that SHA; do not merge another recovery-path pull request as a
 substitute for dispatching Nightly Recovery.
 
 Post-create tag peels use the workflow job token after App-token create.
-Do not treat an App-token `404` immediately after a `201` create as proof
-that the tag is absent.
+That job-token read is only for the post-create peel and receipt. Later
+publish-time tag rereads still use the mutation App token. Do not treat an
+App-token `404` immediately after a `201` create as proof that the tag is
+absent.
 
 For `replace-unpublished-assets`, inject the attested mismatch only after a
 fresh GET shows `draft=true` and `published_at=null`, during

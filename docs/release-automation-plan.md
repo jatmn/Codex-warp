@@ -1242,12 +1242,13 @@ mutation gate.
 6. Resolve and peel the new tag to the selected full SHA. Absence proof and tag
    creation use the mutation App token. The post-create peel retries classified
    404s with that token, then peels with the workflow job token, which is the
-   trusted reader for later nightly verification. Do not treat an App-token peel
-   404 after `201` as proof that the tag is absent. Then upload and attest a
-   retained tag-creation receipt bound to the intent digest, API result, tag,
-   peeled SHA, run/attempt, and post-create reread. Give it the same maximum
-   retention, record both evidence expiry times, and verify retrieval before
-   proceeding. If the tag exists but this receipt cannot be retained, do not
+   trusted reader for that post-create peel and receipt only. Later
+   publish-time tag rereads still use the mutation App token. Do not treat an
+   App-token peel 404 after `201` as proof that the tag is absent. Then upload
+   and attest a retained tag-creation receipt bound to the intent digest, API
+   result, tag, peeled SHA, run/attempt, and post-create reread. Give it the
+   same maximum retention, record both evidence expiry times, and verify retrieval
+   before proceeding. If the tag exists but this receipt cannot be retained, do not
    infer origin from tag existence alone. Continue only through Section 11.2's
    `recover-orphan-tag` missing-receipt Nightly origin class when the originating
    run's tag-creation step failed, was cancelled, or timed out, its attested
