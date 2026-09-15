@@ -221,6 +221,19 @@ tag exists but the tag-creation step failed, was cancelled, or timed out
 before that receipt artifact was retained, do not wait for a receipt;
 continue through the missing-receipt origin class instead.
 
+A later scheduled Nightly cannot mint a newer date tag while that orphan
+exists. It fails in `prepare` until this recovery actually runs. The
+prepare error names the tag, peeled SHA, `release_id=absent`, and
+confirmation string. Look up the originating failed Nightly run/attempt
+from that SHA; do not merge another recovery-path pull request as a
+substitute for dispatching Nightly Recovery.
+
+Post-create tag peels use the workflow job token after App-token create.
+That job-token read is only for the post-create peel and receipt. Later
+publish-time tag rereads still use the mutation App token. Do not treat an
+App-token `404` immediately after a `201` create as proof that the tag is
+absent.
+
 For `replace-unpublished-assets`, inject the attested mismatch only after a
 fresh GET shows `draft=true` and `published_at=null`, during
 `attest-official-metadata` after the eleven assets exist and before

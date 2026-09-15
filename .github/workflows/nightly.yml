@@ -293,6 +293,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NIGHTLY_TAG_READ_TOKEN: ${{ github.token }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: bash scripts/create-nightly-tag.sh
       - id: receipt

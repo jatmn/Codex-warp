@@ -38,13 +38,21 @@ gh() {
         fi
         return 1
       fi
+      if [ -n "${NIGHTLY_TAG_READ_TOKEN:-}" ] && [ "${GH_TOKEN:-}" = "$NIGHTLY_TAG_READ_TOKEN" ]; then
+        printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$(cat "$NIGHTLY_TAG_STATE")"
+        return 0
+      fi
       remaining="$(cat "$NIGHTLY_PEEL_REMAINING")"
       if [ "$remaining" -gt 0 ]; then
         printf '%s\n' "$((remaining - 1))" >"$NIGHTLY_PEEL_REMAINING"
         printf 'gh: Not Found (HTTP 404)\n' >&2
         return 1
       fi
-      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$(cat "$NIGHTLY_TAG_STATE")"
+      object_sha="$(cat "$NIGHTLY_TAG_STATE")"
+      if [ -n "${NIGHTLY_PEEL_OBJECT_SHA:-}" ]; then
+        object_sha="$NIGHTLY_PEEL_OBJECT_SHA"
+      fi
+      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$object_sha"
       ;;
     */git/refs)
       [ "$method" = POST ]
@@ -147,5 +155,98 @@ unclassified=0
 run_create >/dev/null 2>"$tmp/unclassified.err" || unclassified=$?
 [ "$unclassified" -ne 0 ]
 grep -F 'unable to prove nightly tag absence with the mutation token' "$tmp/unclassified.err" >/dev/null
+
+# Restore the classified fixture gh() after the unclassified override.
+gh() {
+  local endpoint='' method=GET
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --include) shift ;;
+      --method) method="$2"; shift 2 ;;
+      repos/*) endpoint="$1"; shift ;;
+      -f|-F) shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s %s\n' "$method" "$endpoint" >>"$NIGHTLY_GH_LOG"
+  case "$endpoint" in
+    */git/ref/tags/*)
+      if [ "$method" != GET ]; then
+        echo "create-nightly-tag-harness: unexpected tag method: $method" >&2
+        return 2
+      fi
+      if [ ! -s "$NIGHTLY_TAG_STATE" ]; then
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        return 1
+      fi
+      if [ -n "${NIGHTLY_TAG_READ_TOKEN:-}" ] && [ "${GH_TOKEN:-}" = "$NIGHTLY_TAG_READ_TOKEN" ]; then
+        printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$(cat "$NIGHTLY_TAG_STATE")"
+        return 0
+      fi
+      remaining="$(cat "$NIGHTLY_PEEL_REMAINING")"
+      if [ "$remaining" -gt 0 ]; then
+        printf '%s\n' "$((remaining - 1))" >"$NIGHTLY_PEEL_REMAINING"
+        printf 'gh: Not Found (HTTP 404)\n' >&2
+        return 1
+      fi
+      object_sha="$(cat "$NIGHTLY_TAG_STATE")"
+      if [ -n "${NIGHTLY_PEEL_OBJECT_SHA:-}" ]; then
+        object_sha="$NIGHTLY_PEEL_OBJECT_SHA"
+      fi
+      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$object_sha"
+      ;;
+    */git/refs)
+      [ "$method" = POST ]
+      printf '%s\n' "$SOURCE_SHA" >"$NIGHTLY_TAG_STATE"
+      printf 'HTTP/2.0 201 Created\n\n{"object":{"sha":"%s"}}\n' "$SOURCE_SHA"
+      ;;
+    *)
+      echo "create-nightly-tag-harness: unsupported gh endpoint: $endpoint" >&2
+      return 2
+      ;;
+  esac
+}
+export -f gh
+
+# Mutation-token peel 404s are retried with the job token before failing.
+: >"$NIGHTLY_TAG_STATE"
+: >"$log"
+printf '99\n' >"$peel_remaining_file"
+printf 'missing-headers\n' >"$lookup_mode_file"
+rm -f "$NIGHTLY_RECEIPT_FILE"
+export GH_TOKEN='mutation-token'
+export NIGHTLY_TAG_READ_TOKEN='read-token'
+run_create
+jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" '.tag==$tag and .peeledSha==$sha and .apiStatus==201' \
+  "$NIGHTLY_RECEIPT_FILE" >/dev/null
+grep -E '^GET .*/git/ref/tags/' "$log" >/dev/null
+grep -E '^POST .*/git/refs$' "$log" >/dev/null
+
+# Without a distinct job token, persistent mutation 404s still fail closed.
+: >"$NIGHTLY_TAG_STATE"
+: >"$log"
+printf '99\n' >"$peel_remaining_file"
+rm -f "$NIGHTLY_RECEIPT_FILE"
+unset NIGHTLY_TAG_READ_TOKEN
+export GH_TOKEN='mutation-token'
+stuck=0
+run_create >/dev/null 2>"$tmp/stuck.err" || stuck=$?
+[ "$stuck" -ne 0 ]
+[ ! -f "$NIGHTLY_RECEIPT_FILE" ]
+grep -F 'peel kept returning 404 after tag create' "$tmp/stuck.err" >/dev/null
+
+# A 200 peel with the wrong SHA must fail closed without a receipt.
+: >"$NIGHTLY_TAG_STATE"
+: >"$log"
+printf '0\n' >"$peel_remaining_file"
+rm -f "$NIGHTLY_RECEIPT_FILE"
+unset NIGHTLY_TAG_READ_TOKEN
+export GH_TOKEN='mutation-token'
+export NIGHTLY_PEEL_OBJECT_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+wrong_sha=0
+run_create >/dev/null 2>"$tmp/wrong-sha.err" || wrong_sha=$?
+[ "$wrong_sha" -ne 0 ]
+[ ! -f "$NIGHTLY_RECEIPT_FILE" ]
+unset NIGHTLY_PEEL_OBJECT_SHA
 
 echo 'create-nightly-tag-harness: ok'
