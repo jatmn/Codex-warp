@@ -64,7 +64,7 @@ try_peel() {
         return 2
       }
       peeled_sha="$(api_body <<<"$peeled" | jq -er '.object.sha')"
-      [ "$peeled_sha" = "$SOURCE_SHA" ]
+      [ "$peeled_sha" = "$SOURCE_SHA" ] || return 2
       printf '%s\n' "$peeled_sha"
       return 0
     fi
@@ -136,7 +136,7 @@ fi
 
 jq -n \
   --arg tag "$TAG" \
-  --arg sha "$SOURCE_SHA" \
+  --arg sha "$peeled_sha" \
   --arg intent "$(bash "$root/scripts/sha256-file.sh" "$intent")" \
   --arg workflow "$WORKFLOW_SHA" \
   --argjson run "$GITHUB_RUN_ID" \

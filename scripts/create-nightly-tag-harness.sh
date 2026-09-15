@@ -48,7 +48,11 @@ gh() {
         printf 'gh: Not Found (HTTP 404)\n' >&2
         return 1
       fi
-      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$(cat "$NIGHTLY_TAG_STATE")"
+      object_sha="$(cat "$NIGHTLY_TAG_STATE")"
+      if [ -n "${NIGHTLY_PEEL_OBJECT_SHA:-}" ]; then
+        object_sha="$NIGHTLY_PEEL_OBJECT_SHA"
+      fi
+      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$object_sha"
       ;;
     */git/refs)
       [ "$method" = POST ]
@@ -185,7 +189,11 @@ gh() {
         printf 'gh: Not Found (HTTP 404)\n' >&2
         return 1
       fi
-      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$(cat "$NIGHTLY_TAG_STATE")"
+      object_sha="$(cat "$NIGHTLY_TAG_STATE")"
+      if [ -n "${NIGHTLY_PEEL_OBJECT_SHA:-}" ]; then
+        object_sha="$NIGHTLY_PEEL_OBJECT_SHA"
+      fi
+      printf 'HTTP/2.0 200 OK\n\n{"object":{"sha":"%s"}}\n' "$object_sha"
       ;;
     */git/refs)
       [ "$method" = POST ]
@@ -226,5 +234,19 @@ run_create >/dev/null 2>"$tmp/stuck.err" || stuck=$?
 [ "$stuck" -ne 0 ]
 [ ! -f "$NIGHTLY_RECEIPT_FILE" ]
 grep -F 'peel kept returning 404 after tag create' "$tmp/stuck.err" >/dev/null
+
+# A 200 peel with the wrong SHA must fail closed without a receipt.
+: >"$NIGHTLY_TAG_STATE"
+: >"$log"
+printf '0\n' >"$peel_remaining_file"
+rm -f "$NIGHTLY_RECEIPT_FILE"
+unset NIGHTLY_TAG_READ_TOKEN
+export GH_TOKEN='mutation-token'
+export NIGHTLY_PEEL_OBJECT_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+wrong_sha=0
+run_create >/dev/null 2>"$tmp/wrong-sha.err" || wrong_sha=$?
+[ "$wrong_sha" -ne 0 ]
+[ ! -f "$NIGHTLY_RECEIPT_FILE" ]
+unset NIGHTLY_PEEL_OBJECT_SHA
 
 echo 'create-nightly-tag-harness: ok'
