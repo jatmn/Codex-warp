@@ -26,7 +26,7 @@
     "createGitHubAppAction": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
     "rustToolchain": "4be7066ada62dd38de10e7b70166bc74ed198c30",
     "rustCache": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
-    "installAction": "c3ec0de9ae7f1019cea21aa96aa0a895b9552063",
+    "installAction": "76c2e6406e52637deed7160d77bded76bd83e06e",
     "auditCheck": "69366f33c96575abad1ee0dba8212993eecbe998",
     "typos": "512fc24f32f44ab01972217aaaf3dc86ec234d53",
     "setupNasm": "72793074d3c8cdda771dba85f6deafe00623038b"
