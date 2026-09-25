@@ -53,6 +53,12 @@ if command -v node >/dev/null 2>&1; then
     fi
   done < <(git ls-files '*.js' '*.mjs')
 
+  if ! npm ci --ignore-scripts --no-audit --no-fund --prefix tools/eslint; then
+    fail=1
+  elif ! bash tools/eslint-web-selftest.sh; then
+    fail=1
+  fi
+
   if ! bash scripts/release-please-policy-harness.sh; then
     fail=1
   fi
