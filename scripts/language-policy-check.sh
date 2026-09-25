@@ -58,7 +58,7 @@ is_release_automation_file() {
 
 # Return 0 if this path is an approved TOML location.
 # Approved paths: Cargo.toml, _typos.toml, deny.toml, codex-warp.toml,
-# configs/<file>.toml, configs/model-families/<file>.toml, and
+# dylint.toml, configs/<file>.toml, configs/model-families/<file>.toml, and
 # configs/tool-policies/<file>.toml.
 # Bash `case` globs treat `*` as matching `/`, so strip known prefixes and
 # reject any remaining slash instead of using configs/*.toml.
@@ -66,7 +66,7 @@ is_tracked_toml() {
   local path="$1"
   local rest
   case "$path" in
-    Cargo.toml | _typos.toml | deny.toml | codex-warp.toml) return 0 ;;
+    Cargo.toml | _typos.toml | deny.toml | codex-warp.toml | dylint.toml) return 0 ;;
   esac
   rest="${path#configs/}"
   [ "$rest" != "$path" ] || return 1
@@ -209,6 +209,7 @@ self_test() {
   expect_allowed "scripts/source-checks.sh"
   expect_allowed "src/webui_static/app-main.js"
   expect_allowed "codex-warp.toml"
+  expect_allowed "dylint.toml"
   expect_allowed "configs/openrouter.toml"
   expect_allowed "configs/model-families/qwen.toml"
   expect_allowed "configs/tool-policies/github.toml"

@@ -73,6 +73,9 @@ typos . .github/pull_request_template.md
 echo 'ci-preflight: SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh'
 SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh
 
+echo 'ci-preflight: bash scripts/dylint.sh'
+bash scripts/dylint.sh
+
 echo 'ci-preflight: cargo test --locked'
 cargo test --locked
 

@@ -194,3 +194,54 @@ jobs:
       - name: CLI Smoke
         shell: cmd
         run: target\debug\codex-warp.exe --version && target\debug\codex-warp.exe --help
+
+  dylint:
+    name: Dylint
+    needs: source
+    if: ${{ !cancelled() && needs.source.result == 'success' && needs.source.outputs.full_ci == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Pinned Rust
+        run: |
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+
+      # The lint .so is keyed only on dylint.toml. A looser restore can
+      # reload a library built from a different pin; cargo-dylint does not
+      # always notice a changed git tag. Drivers and the cargo install live
+      # in the other cache and may restore from a toolchain prefix.
+      - name: Cache dylint drivers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo
+            ~/.dylint_drivers
+          key: dylint-drivers-${{ runner.os }}-${{ hashFiles('dylint.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            dylint-drivers-${{ runner.os }}-${{ hashFiles('dylint.toml', 'rust-toolchain.toml') }}
+            dylint-drivers-${{ runner.os }}-
+
+      - name: Cache dylint lint library
+        id: dylint-library
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          path: target/dylint
+          key: dylint-library-${{ runner.os }}-${{ hashFiles('dylint.toml') }}
+
+      - name: Drop a stale dylint library
+        if: steps.dylint-library.outputs.cache-hit != 'true'
+        run: rm -rf target/dylint
+
+      - name: Run dylint
+        run: bash scripts/dylint.sh
