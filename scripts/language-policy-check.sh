@@ -6,10 +6,11 @@
 #
 # Invariant: forbidden-ecosystem markers are denied by basename before any
 # suffix/path allowlist is consulted, except for the exact, reviewed Node lock
-# file used to validate release policy. Suffix classes that the tree only uses
-# in specific names or directories are not opened repo-wide (lockfiles are
-# Cargo.lock plus that one Node lock; YAML is under .github/; TOML is the
-# existing application/config set plus two exact release inputs).
+# files used to validate release policy and to lint the Web UI. Suffix classes
+# that the tree only uses in specific names or directories are not opened
+# repo-wide (lockfiles are Cargo.lock plus those two Node locks; YAML is under
+# .github/; TOML is the existing application/config set plus two exact release
+# inputs).
 set -euo pipefail
 
 is_release_automation_file() {
@@ -80,11 +81,21 @@ is_tracked_toml() {
   return 1
 }
 
+is_host_eslint_file() {
+  local path="$1"
+  case "$path" in
+    tools/eslint/package.json | tools/eslint/package-lock.json)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_forbidden() {
   local path="$1"
   local base="${path##*/}"
 
-  if is_release_automation_file "$path"; then
+  if is_release_automation_file "$path" || is_host_eslint_file "$path"; then
     return 1
   fi
 
@@ -184,6 +195,8 @@ self_test() {
   expect_forbidden "Gemfile.lock"
   expect_forbidden "package-lock.json"
   expect_forbidden "tools/package-lock.json"
+  expect_forbidden "tools/eslint/nested/package-lock.json"
+  expect_forbidden "tools/eslint/extra.json"
   expect_forbidden "tools/release-please-policy/nested/package-lock.json"
   expect_forbidden "tools/release-please-policy/extra.mjs"
   expect_forbidden "tools/release-please-policy/fixtures/extra.json"
@@ -222,6 +235,8 @@ self_test() {
   expect_allowed "tools/recovery-recipes/official-v1.2.3.json"
   expect_allowed "tools/recovery-recipes/nightly-nightly-20260830-abcdef123456.json"
   expect_allowed "tools/recovery-recipes/schemas/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+  expect_allowed "tools/eslint/package.json"
+  expect_allowed "tools/eslint/package-lock.json"
   expect_allowed "tools/release-please-policy/package-lock.json"
   expect_allowed "tools/release-please-policy/validate-workflows.mjs"
   expect_allowed "tools/release-tooling.json"

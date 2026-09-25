@@ -213,7 +213,8 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 order: `cargo update --workspace --locked`; `typos`;
 `SOURCE_CHECKS_SKIP_TYPOS=1 bash scripts/source-checks.sh` (rustfmt, docs
 whitespace/prose, CI change-scope regression coverage, language policy,
-tracked JavaScript, chart and analytics harnesses, and crate-wide Clippy);
+tracked JavaScript syntax, host ESLint for the Web UI pages, chart and
+analytics harnesses, and crate-wide Clippy);
 `bash scripts/dylint.sh`; `cargo test --locked`; `cargo build --locked`;
 `RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps`; CLI `--version` and
 `--help` smoke checks; `git diff --check`; conditional Rust-diff
@@ -304,7 +305,8 @@ Before you call implementation or a local review done:
 
 1. Run `bash scripts/source-checks.sh`. Fix every failure (`cargo fmt`, `typos`,
    trailing whitespace, lowercase docs contractions such as `i'll`, language
-   policy, JavaScript syntax, chart and analytics harnesses).
+   policy, JavaScript syntax, host ESLint for the Web UI pages, chart and
+   analytics harnesses).
 2. Read the Clippy output from that script. The script fails on any Clippy
    warning (`-D warnings`). Those are defects to fix or an explicit, justified
    `allow` with a comment. Do not leave them for the next review round. Do not

@@ -198,7 +198,8 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 
 The preflight runs every Linux CI check explicitly: `cargo update --workspace
 --locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
-language policy, tracked JavaScript syntax, chart and analytics harnesses, and crate-wide
+language policy, tracked JavaScript syntax, host ESLint for the Web UI pages,
+chart and analytics harnesses, and crate-wide
 Clippy); `bash scripts/dylint.sh`; `cargo test
 --locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
 --locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
@@ -243,7 +244,8 @@ For changes that require full CI, the Linux job performs:
   `Cargo.toml`
 - `typos` spell check (`_typos.toml`)
 - `scripts/source-checks.sh` (rustfmt, docs whitespace and contraction
-  capitalization, language policy, tracked JavaScript syntax, chart and analytics harnesses,
+  capitalization, language policy, tracked JavaScript syntax, host ESLint for
+  the Web UI pages, chart and analytics harnesses,
   crate-wide Clippy with `cargo clippy --locked --all-targets --all-features -- -D warnings`)
 - `cargo test --locked`
 - `cargo build --locked`
