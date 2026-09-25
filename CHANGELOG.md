@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.2](https://github.com/jatmn/Codex-warp/compare/v0.1.1...v0.1.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **release:** peel nightly tags with the job token after App create ([#131](https://github.com/jatmn/Codex-warp/issues/131)) ([db2e64d](https://github.com/jatmn/Codex-warp/commit/db2e64dabc516ba539b87592cca0f87baa3ead87))
+* **release:** recover nightly tags when the receipt is missing ([#129](https://github.com/jatmn/Codex-warp/issues/129)) ([7291966](https://github.com/jatmn/Codex-warp/commit/729196696ac847c95e5536a7cb03db4213da9efa))
+
+
+### Build System
+
+* **deps:** Bump clap from 4.6.6 to 4.6.7 ([#133](https://github.com/jatmn/Codex-warp/issues/133)) ([f54af55](https://github.com/jatmn/Codex-warp/commit/f54af552abea03bd010221c92a605cc1e64af34a))
+* **deps:** Bump crate-ci/typos from 1.50.1 to 1.50.2 ([#134](https://github.com/jatmn/Codex-warp/issues/134)) ([5ce2a04](https://github.com/jatmn/Codex-warp/commit/5ce2a04bdb2963382caef94764b8a5de1f9e5ae8))
+* **deps:** Bump taiki-e/install-action from 2.87.9 to 2.87.14 ([#135](https://github.com/jatmn/Codex-warp/issues/135)) ([a4b3a4c](https://github.com/jatmn/Codex-warp/commit/a4b3a4c0517d4be9dedb4cde31a63e4c8fb57df3))
+* **deps:** Bump toml from 1.1.5+spec-1.1.0 to 1.1.6+spec-1.1.0 ([#132](https://github.com/jatmn/Codex-warp/issues/132)) ([c50183f](https://github.com/jatmn/Codex-warp/commit/c50183f7f9c6dad6810b7545af34e7c1397f353a))
+* **deps:** update rustls to 0.23.45 ([#136](https://github.com/jatmn/Codex-warp/issues/136)) ([63f94e6](https://github.com/jatmn/Codex-warp/commit/63f94e627522db1329bc0c955d067f16d6382b83))
+
+
+### Continuous Integration
+
+* check browser JavaScript with host-only ESLint ([#137](https://github.com/jatmn/Codex-warp/issues/137)) ([7ecaf78](https://github.com/jatmn/Codex-warp/commit/7ecaf78ef4005430a36c571fe92458b55312963f))
+* run pinned Dylint general lints in GitHub Actions ([#138](https://github.com/jatmn/Codex-warp/issues/138)) ([dbfcb9e](https://github.com/jatmn/Codex-warp/commit/dbfcb9e36b58bba7629c734496888599fed2e654))
+
 ## [0.1.1](https://github.com/jatmn/Codex-warp/compare/v0.1.0...v0.1.1) (2026-09-13)
 
 
