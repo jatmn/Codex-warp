@@ -55,6 +55,7 @@ will usually be Rust, shell, existing Cargo tooling, or no new tool at all.
 languages; do not add an exception to land a file. The check allowlists the
 tracked tree: lockfiles other than `Cargo.lock`, YAML outside `.github/`, and
 TOML outside `Cargo.toml`, `_typos.toml`, `deny.toml`, `codex-warp.toml`,
+`dylint.toml`,
 `configs/*.toml`, `configs/model-families/*.toml`, and
 `configs/tool-policies/*.toml` are rejected. Python/conda/pixi project names
 and Python-tool configs such as `black.toml` are also denied by basename so

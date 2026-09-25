@@ -47,8 +47,13 @@ fi
 # The lint libraries typecheck with their own nightly, which is newer than
 # this repo's pinned toolchain, so allow `deprecated`: a rename that exists
 # only on that nightly is not a failure of the project compiler.
+# Append even when the caller already set RUSTFLAGS, so a preset value
+# cannot drop the project warning policy.
+dylint_rustflags='-D warnings -A deprecated'
 if [ -z "${RUSTFLAGS:-}" ]; then
-  export RUSTFLAGS='-D warnings -A deprecated'
+  export RUSTFLAGS="$dylint_rustflags"
+else
+  export RUSTFLAGS="${RUSTFLAGS} ${dylint_rustflags}"
 fi
 
 echo "dylint: cargo dylint --all -- --locked --all-targets --workspace"

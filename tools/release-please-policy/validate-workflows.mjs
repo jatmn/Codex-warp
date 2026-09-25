@@ -52,6 +52,7 @@ const allowedActions = new Map([
   ['rustsec/audit-check', tooling.actions.auditCheck],
   ['crate-ci/typos', tooling.actions.typos],
   ['ilammy/setup-nasm', tooling.actions.setupNasm],
+  ['actions/cache', tooling.actions.cache],
 ]);
 
 for (const file of workflowFiles) {

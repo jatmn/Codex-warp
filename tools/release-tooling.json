@@ -29,6 +29,7 @@
     "installAction": "76c2e6406e52637deed7160d77bded76bd83e06e",
     "auditCheck": "69366f33c96575abad1ee0dba8212993eecbe998",
     "typos": "512fc24f32f44ab01972217aaaf3dc86ec234d53",
-    "setupNasm": "72793074d3c8cdda771dba85f6deafe00623038b"
+    "setupNasm": "72793074d3c8cdda771dba85f6deafe00623038b",
+    "cache": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
   }
 }

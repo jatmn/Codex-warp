@@ -199,7 +199,7 @@ bash scripts/install-git-hooks.sh --base origin/<base-branch>
 The preflight runs every Linux CI check explicitly: `cargo update --workspace
 --locked`; `typos`; `scripts/source-checks.sh` (rustfmt, docs whitespace/prose,
 language policy, tracked JavaScript syntax, chart and analytics harnesses, and crate-wide
-Clippy); `cargo test
+Clippy); `bash scripts/dylint.sh`; `cargo test
 --locked`; `cargo build --locked`; `RUSTDOCFLAGS='-D warnings' cargo doc
 --locked --no-deps`; CLI `--version` and `--help` smoke checks; `git diff
 --check`; conditional Rust-diff `cargo mutants -o <temporary-dir> --no-shuffle
