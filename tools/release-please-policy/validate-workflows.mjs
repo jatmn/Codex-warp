@@ -53,6 +53,7 @@ const allowedActions = new Map([
   ['crate-ci/typos', tooling.actions.typos],
   ['ilammy/setup-nasm', tooling.actions.setupNasm],
   ['actions/cache', tooling.actions.cache],
+  ['pullfrog/pullfrog', tooling.actions.pullfrog],
 ]);
 
 for (const file of workflowFiles) {
