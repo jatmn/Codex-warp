@@ -30,6 +30,7 @@
     "auditCheck": "69366f33c96575abad1ee0dba8212993eecbe998",
     "typos": "00f422f3b19c57bc6338715ebfe3316d38768461",
     "setupNasm": "72793074d3c8cdda771dba85f6deafe00623038b",
-    "cache": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9"
+    "cache": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
+    "pullfrog": "5fe4547eb8efd88bdbf9dbc68a38cc3cd0ae7685"
   }
 }
