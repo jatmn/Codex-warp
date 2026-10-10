@@ -244,7 +244,7 @@ jobs:
           echo "origin=$origin" >>"$GITHUB_OUTPUT"
           echo "release_id=$release_id" >>"$GITHUB_OUTPUT"; echo "date=$date" >>"$GITHUB_OUTPUT"; echo "version=$version" >>"$GITHUB_OUTPUT"
           echo "origin_manifest_sha256=$origin_manifest" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: nightly-recovery-plan, path: nightly-recovery-plan.json, retention-days: 90}
 
   build:
@@ -290,7 +290,7 @@ jobs:
           bash scripts/package-nightly.sh
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: 'target/nightly/codex-warp-${{ inputs.tag }}-${{ matrix.target }}.*'}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: 'nightly-recovery-build-${{ matrix.target }}', path: target/nightly/, if-no-files-found: error}
 
   collect:
@@ -315,7 +315,7 @@ jobs:
           jq -r '.artifacts[]|[.archiveSha256,.archive]|@tsv' candidate/codex-warp-nightly-manifest.json | sed $'s/\t/  /' >candidate/sha256.sum
           rm "${evidence[@]}"
           bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: nightly-recovery-candidate, path: candidate/, if-no-files-found: error}
 
   load-origin:
@@ -362,7 +362,7 @@ jobs:
           NIGHTLY_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/nightly-manifest.schema.json" bash scripts/check-nightly-assets.sh candidate candidate/codex-warp-nightly-manifest.json "$PWD/release-source"
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --arg workflow "https://github.com/${{ github.repository }}/actions/runs/$ORIGIN_RUN_ID" '.tag==$tag and .sourceSha==$sha and .workflow==$workflow' candidate/codex-warp-nightly-manifest.json >/dev/null
           for archive in candidate/*.tar.xz candidate/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" candidate/codex-warp-nightly-manifest.json; done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: nightly-recovery-candidate, path: candidate/, if-no-files-found: error}
 
   mutate-release:
@@ -446,7 +446,7 @@ jobs:
           candidate_assets="$({ while IFS= read -r file; do jq -n --arg name "$(basename "$file")" --arg digest "$(bash scripts/sha256-file.sh "$file")" '{name:$name,sha256:$digest}'; done < <(find candidate -maxdepth 1 -type f -print | sort); } | jq -sc '.')"
           branch_sha="$(git ls-remote --heads origin refs/heads/nightly | awk '{print $1}')"
           jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$release_id" --argjson release_state "$release_state" --argjson remote_assets "$remote_assets" --argjson candidate_assets "$candidate_assets" --arg manifest "$(bash scripts/sha256-file.sh candidate/codex-warp-nightly-manifest.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/nightly-recovery-plan.json)" --arg tag_sha "$(git rev-parse "refs/tags/$TAG^{}")" --arg branch "$branch_sha" --arg workflow "${{ github.workflow_sha }}" --arg origin_run "$ORIGIN_RUN_ID" --arg origin_attempt "$ORIGIN_RUN_ATTEMPT" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,releaseState:$release_state,remoteAssets:$remote_assets,candidateAssets:$candidate_assets,manifestSha256:$manifest,planSha256:$plan,tagSha:$tag_sha,branchSha:(if ($branch|length)>0 then $branch else null end),controlWorkflowSha:$workflow,originRunId:(if ($origin_run|length)>0 then ($origin_run|tonumber) else null end),originRunAttempt:(if ($origin_attempt|length)>0 then ($origin_attempt|tonumber) else null end),runId:$run,runAttempt:$attempt}' >nightly-orphan-recovery-intent.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: nightly-orphan-recovery-intent, path: nightly-orphan-recovery-intent.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: nightly-orphan-recovery-intent.json}
@@ -499,7 +499,7 @@ jobs:
           live_releases="$(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" | jq -sc 'add // []')"
           [ "$(jq --arg tag "$TAG" --argjson id "$RELEASE_INPUT" '[.[] | select(.id==$id or .tag_name==$tag)] | length' <<<"$live_releases")" -eq 0 ]
           jq -n --arg tag "$TAG" --arg source "$SOURCE_SHA" --arg intent "$(bash scripts/sha256-file.sh nightly-orphan-recovery-intent.json)" --argjson release_id "$RELEASE_INPUT" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" '{schemaVersion:1,tag:$tag,sourceSha:$source,deletedReleaseId:$release_id,intentSha256:$intent,runId:$run,runAttempt:$attempt}' >nightly-deletion-receipt.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.operation == 'replace-unpublished-draft'
         with: {name: nightly-deletion-receipt, path: nightly-deletion-receipt.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
