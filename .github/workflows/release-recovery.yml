@@ -146,7 +146,7 @@ jobs:
           echo "resume=$resume" >>"$GITHUB_OUTPUT"
           echo "remote=$remote" >>"$GITHUB_OUTPUT"
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: official-recovery-plan
           path: official-recovery-plan.json
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: target/distrib/codex-warp-${{ matrix.target }}.*
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: official-recovery-build-${{ matrix.target }}
           path: target/distrib/
@@ -255,7 +255,7 @@ jobs:
           jq -n --argjson publishable true --arg repository "${{ github.repository }}" --arg source "$SOURCE_SHA" --arg version "${TAG#v}" --arg lock "$(bash scripts/sha256-file.sh release-source/Cargo.lock)" --arg toolchain "$(bash scripts/sha256-file.sh release-source/rust-toolchain.toml)" --arg channel "$(sed -n 's/^channel = "\([^"]*\)"/\1/p' release-source/rust-toolchain.toml)" --arg rustc "$(rustc -Vv)" --arg cargo "$(cargo -Vv)" --arg contract "$(bash scripts/sha256-file.sh release-source/tools/release-contract.json)" --arg workflow_sha "${{ github.workflow_sha }}" --arg tag "$TAG" --argjson release_id "$RELEASE_ID" --arg schema "$(bash scripts/sha256-file.sh release-source/tools/dist-manifest.schema.json)" --argjson runners "$runners" --argjson recipe "$recipe_sha" '{publishable:$publishable,repository:$repository,sourceSha:$source,cargoVersion:$version,cargoLockSha256:$lock,rustToolchain:{fileSha256:$toolchain,channel:$channel,rustcVv:$rustc,cargoVv:$cargo},releaseContractSha256:$contract,workflow:{name:"Release Recovery",runId:${{ github.run_id }},runAttempt:${{ github.run_attempt }},workflowSha:$workflow_sha},dist:{version:"0.32.0",manifestSchemaSha256:$schema},runners:$runners,tag:$tag,peeledTagSha:$source,releaseId:$release_id,pullRequest:null,recovery:{controlWorkflowSha:$workflow_sha,recipeSha256:$recipe}}' >identity.json
           RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" bash scripts/assemble-official-candidate.sh release-source/target/distrib identity.json dist-manifest.json candidate
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: candidate/codex-warp-release-metadata.json}
@@ -306,7 +306,7 @@ jobs:
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" --argjson run "$ORIGIN_RUN_ID" --argjson attempt "$ORIGIN_RUN_ATTEMPT" '.tag == $tag and .sourceSha == $sha and .releaseId == $id and .workflow.runId == $run and .workflow.runAttempt == $attempt' candidate/codex-warp-release-metadata.json >/dev/null
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" candidate/codex-warp-release-metadata.json; done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
 
   load-remote:
@@ -356,7 +356,7 @@ jobs:
           SOURCE_DIR="$PWD/release-source" RELEASE_CONTRACT_PATH="$PWD/release-source/tools/release-contract.json" DIST_MANIFEST_SCHEMA_PATH="$PWD/release-source/tools/dist-manifest.schema.json" RELEASE_METADATA_SCHEMA_PATH="$PWD/release-source/tools/release-metadata.schema.json" bash scripts/check-release-contract.sh official-publication candidate candidate/codex-warp-release-metadata.json candidate/dist-manifest.json
           jq -e --arg tag "$TAG" --arg sha "$SOURCE_SHA" --argjson id "$RELEASE_ID" '.tag == $tag and .sourceSha == $sha and .releaseId == $id' candidate/codex-warp-release-metadata.json >/dev/null
           for subject in candidate/*.tar.xz candidate/*.zip candidate/codex-warp-release-metadata.json; do bash scripts/verify-official-attestation.sh "$subject" candidate/codex-warp-release-metadata.json; done
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: official-recovery-candidate, path: candidate/, if-no-files-found: error}
 
   mutate:
@@ -443,7 +443,7 @@ jobs:
           jq -s '.' candidate-assets.jsonl >candidate-assets.json
           jq -n --arg operation "$OPERATION" --arg tag "$TAG" --arg source "$SOURCE_SHA" --argjson release_id "$RELEASE_ID" --arg workflow "${{ github.workflow_sha }}" --argjson run "${{ github.run_id }}" --argjson attempt "${{ github.run_attempt }}" --argjson existing "$(cat existing.json)" --argjson expected "$(cat candidate-assets.json)" --arg plan "$(bash scripts/sha256-file.sh retained-plan/official-recovery-plan.json)" --argjson recipe "$recipe_sha" '{schemaVersion:1,operation:$operation,tag:$tag,sourceSha:$source,releaseId:$release_id,controlWorkflowSha:$workflow,runId:$run,runAttempt:$attempt,planSha256:$plan,recipeSha256:$recipe,existingAssets:$existing,expectedAssets:$expected,expectedInventory:[$expected[].name],deleteAssetIds:[$existing[]|select(.matches|not)|.id]}' >official-recovery-intent.json
           echo "delete_count=$(jq '.deleteAssetIds|length' official-recovery-intent.json)" >>"$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: official-recovery-intent, path: official-recovery-intent.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: official-recovery-intent.json}
@@ -481,7 +481,7 @@ jobs:
           remaining="$(gh api --paginate "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" | jq -sc '[.[][] | .id]')"
           while IFS= read -r id; do jq -e --argjson id "$id" 'index($id)==null' <<<"$remaining" >/dev/null; done < <(jq -r '.deleteAssetIds[]' official-recovery-intent.json)
           jq -n --arg intent "$(bash scripts/sha256-file.sh official-recovery-intent.json)" --argjson ids "$(jq '.deleteAssetIds' official-recovery-intent.json)" --argjson run "${{ github.run_id }}" '{schemaVersion:1,intentSha256:$intent,deletedAssetIds:$ids,runId:$run}' >official-recovery-delete-receipt.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: inputs.operation == 'replace-unpublished-assets' && steps.preflight.outputs.delete_count != '0'
         with: {name: official-recovery-delete-receipt, path: official-recovery-delete-receipt.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
