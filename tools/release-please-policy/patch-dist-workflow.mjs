@@ -183,7 +183,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-build-*
           path: target/distrib/
@@ -243,7 +243,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: pr-upload-proof-candidate
           path: pr-upload-proof
@@ -280,12 +280,12 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -367,7 +367,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: official-release-candidate
           path: release-assets
@@ -402,7 +402,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           cache-dependency-path: tools/release-please-policy/package-lock.json
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: official-release-candidate
           path: release-assets
