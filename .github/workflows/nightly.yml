@@ -136,7 +136,7 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: target/nightly/codex-warp-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.*
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-${{ matrix.target }}
           path: target/nightly/
@@ -180,7 +180,7 @@ jobs:
           jq -r '.artifacts[] | [.archiveSha256,.archive] | @tsv' nightly-assets/codex-warp-nightly-manifest.json | sed $'s/\t/  /' >nightly-assets/sha256.sum
           rm "${evidence[@]}"
           SOURCE_DIR="$PWD" bash scripts/check-nightly-assets.sh nightly-assets nightly-assets/codex-warp-nightly-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-release-candidate
           path: nightly-assets/
@@ -224,7 +224,7 @@ jobs:
             --argjson inventory "$(find nightly-assets -maxdepth 1 -type f -printf '%f\n' | sort | jq -Rsc 'split("\n")[:-1]')" \
             '{schemaVersion:1,operation:"fresh-nightly",repository:$repository,tag:$tag,sourceSha:$source,priorBranchSha:(if ($branch|length)>0 then $branch else null end),tagAbsent:true,releaseAbsent:true,workflowSha:$workflow_sha,runId:$run_id,runAttempt:$attempt,manifestSha256:$manifest,inventory:$inventory}' >nightly-intent.json
       - id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-publication-intent
           path: nightly-intent.json
@@ -297,7 +297,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: bash scripts/create-nightly-tag.sh
       - id: receipt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: nightly-tag-creation-receipt, path: nightly-tag-receipt.json, retention-days: 90, if-no-files-found: error}
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with: {subject-path: nightly-tag-receipt.json}
