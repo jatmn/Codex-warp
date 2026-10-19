@@ -133,7 +133,7 @@ if (source.includes('uses: actions/attest@v4')) {
 }
 replaceOnce(
   `      - name: "Upload artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: artifacts-build-local-\${{ join(matrix.targets, '_') }}
           path: |
@@ -153,7 +153,7 @@ replaceOnce(
             --arg cargo "$(cargo -Vv)" \\
             '{target:$target,runnerLabel:$label,runnerImage:$image,nativeTools:{observed:$native},rustcVv:$rustc,cargoVv:$cargo}' >"$evidence"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: artifacts-build-local-\${{ join(matrix.targets, '_') }}
           path: |
@@ -219,7 +219,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
       - name: Assemble and validate exact proof asset set
         shell: bash
         run: bash scripts/assemble-pr-upload-proof.sh target/distrib identity.json pr-upload-proof
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-upload-proof-candidate
           path: pr-upload-proof/
@@ -342,7 +342,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
         run: |
           bash scripts/assemble-official-candidate.sh target/distrib identity.json dist-manifest.json release-assets
           SOURCE_DIR="$PWD" bash scripts/check-release-contract.sh official-publication release-assets release-assets/codex-warp-release-metadata.json release-assets/dist-manifest.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: official-release-candidate
           path: release-assets/
