@@ -82,7 +82,7 @@ jobs:
       - run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
         working-directory: tools/release-please-policy
       - id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -404,7 +404,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: nightly-recovery-plan, path: retained-plan}
       - id: app-token-read
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -456,7 +456,7 @@ jobs:
           cmp nightly-orphan-recovery-intent.json retained-intent/nightly-orphan-recovery-intent.json
           gh attestation verify retained-intent/nightly-orphan-recovery-intent.json --repo "${{ github.repository }}"
       - id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -592,7 +592,7 @@ jobs:
           for archive in "$temp"/*.tar.xz "$temp"/*.zip; do bash scripts/verify-nightly-attestation.sh "$archive" "$temp/codex-warp-nightly-manifest.json"; done
           branch="$(git ls-remote origin refs/heads/nightly|awk '{print $1}')"; if [ -n "$branch" ]; then git merge-base --is-ancestor "$branch" "$SOURCE_SHA"; fi
       - id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with: {client-id: '${{ vars.RELEASE_APP_CLIENT_ID }}', private-key: '${{ secrets.RELEASE_APP_PRIVATE_KEY }}', owner: '${{ github.repository_owner }}', repositories: Codex-warp, permission-contents: write, permission-workflows: write}
       - name: Create or fast-forward nightly branch only
         env: {GH_TOKEN: '${{ steps.app-token.outputs.token }}'}
