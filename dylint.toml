@@ -7,7 +7,7 @@
 #
 # These are individual Trail of Bits general lints. Each one typechecks
 # with the toolchain in examples/general/rust-toolchain.toml
-# (nightly-2026-08-20 at v6.1.0). Project builds stay on rust-toolchain.toml.
+# (nightly-2026-08-20 at v6.3.2). Project builds stay on rust-toolchain.toml.
 # scripts/dylint.sh denies warnings and allows `deprecated`, because that
 # nightly can rename an API the pinned project compiler still accepts.
 #
@@ -20,7 +20,7 @@
 # Run: bash scripts/dylint.sh
 [[workspace.metadata.dylint.libraries]]
 git = "https://github.com/trailofbits/dylint"
-tag = "v6.1.0"
+tag = "v6.3.2"
 pattern = [
     "examples/general/abs_home_path",
     "examples/general/await_holding_span_guard",

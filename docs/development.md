@@ -277,9 +277,9 @@ only on `main`. Keep Source Checks, Dylint, Windows, Incremental (PR diff), and
 cargo-deny as required status checks on `main`.
 
 The Dylint job runs only for full-CI changes, same as Windows. It installs
-`cargo-dylint` and `dylint-link` 6.1.0 from source (prebuilt binaries look for
+`cargo-dylint` and `dylint-link` 6.3.2 from source (prebuilt binaries look for
 the driver sources on the machine that built them) and loads the
-`examples/general` lints listed in `dylint.toml` at tag `v6.1.0`. Those libraries typecheck with their own
+`examples/general` lints listed in `dylint.toml` at tag `v6.3.2`. Those libraries typecheck with their own
 nightly, `nightly-2026-08-20` at that tag. The project toolchain in
 `rust-toolchain.toml` stays the compiler for build and test. Cache
 `~/.cargo` and `~/.dylint_drivers` separately from `target/dylint`, and
