@@ -11,7 +11,7 @@ if [ -z "$root" ]; then
 fi
 cd "$root"
 
-version="6.1.0"
+version="6.3.2"
 
 # `cargo-dylint -V` is not a version flag: Cargo only prints it for
 # `cargo dylint -V`. `dylint-link` is a linker wrapper and has no version
