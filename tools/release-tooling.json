@@ -23,7 +23,7 @@
     "downloadArtifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
     "attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
     "attestBuildProvenance": "4d101475d8b20a2381f78447822ac1eab6504dd8",
-    "createGitHubAppAction": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+    "createGitHubAppAction": "64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
     "rustToolchain": "4be7066ada62dd38de10e7b70166bc74ed198c30",
     "rustCache": "6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
     "installAction": "8cca0918f8471c33515202b73f56ab27f2bed283",
