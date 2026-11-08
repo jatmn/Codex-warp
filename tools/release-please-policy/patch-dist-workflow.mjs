@@ -96,7 +96,7 @@ replaceOnce(
 if (source.includes('uses: swatinem/rust-cache@v2')) {
   replaceOnce(
     'uses: swatinem/rust-cache@v2',
-    'uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2',
+    'uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3',
     'build cache pin'
   );
 } else if (source.includes('uses: swatinem/rust-cache@')) {

@@ -117,7 +117,7 @@ if [ "$current_mode" = upload ]; then
 else
   upload_workflow="$temp/.github/workflows/release.yml"
 fi
-grep -F 'uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6' \
+grep -F 'uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0' \
   "$upload_workflow" >/dev/null
 
 echo "check-dist-workflow: generated $current_mode overlay is current; $alternate_mode overlay is safe"
