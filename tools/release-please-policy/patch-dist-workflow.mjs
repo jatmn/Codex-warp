@@ -298,7 +298,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           node tools/release-please-policy/validate-json.mjs tools/dist-manifest.schema.json dist-manifest.json
       - id: app-token
         name: Mint bounded release App token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: \${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -408,7 +408,7 @@ source = source.slice(0, hostStart) + `  # Assemble the complete non-publishable
           path: release-assets
       - id: app-token
         name: Mint bounded release App token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: \${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: \${{ secrets.RELEASE_APP_PRIVATE_KEY }}
