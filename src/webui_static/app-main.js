@@ -45,12 +45,16 @@
   let analyticsInFlight = false;
   let analyticsSnapshot = null;
   let logsTimer = null;
-  let logsInFlight = false;
-  let logsPending = false;
+  let logsRequest = { phase: "idle" };
   let logsExpanded = new Set();
-  let loggingSettingsHydrated = false;
-  let loggingFormDirty = false;
-  let loggingHydrating = false;
+  let loggingFormPhase = "unhydrated";
+  let loggingSettingsEpoch = 0;
+  function loggingFormIsDirty() {
+    return loggingFormPhase === "dirty" || loggingFormPhase === "saving_dirty";
+  }
+  function editLoggingForm() {
+    loggingFormPhase = loggingFormPhase.startsWith("saving") ? "saving_dirty" : "dirty";
+  }
   let bootComplete = false;
   let bootFooterHold = false;
   let tabEpoch = 0;
@@ -609,14 +613,36 @@
   // loadedKind is the credential class at form open, not a snapshot of the
   // current string. Inline secrets cannot be edited in place (the operator
   // never has the raw value); env names stay editable because they are visible.
-  const credentialState = {
+  let credentialState = {
     draft: "",
     preview: "",
     loadedRaw: "",
     loadedKind: "none",
-    cleared: false,
+    phase: "loaded",
     reveal: false,
   };
+  // Replacing starts with an explicit clear. Typing and blurring must retain
+  // that intent even when the replacement is subsequently emptied.
+  function transitionCredential(event, value) {
+    switch (event) {
+      case "load":
+        credentialState = { ...value, phase: "loaded", reveal: false };
+        break;
+      case "clear":
+        credentialState = { ...credentialState, phase: "replacing", draft: "", preview: "", reveal: false };
+        break;
+      case "edit":
+        credentialState = { ...credentialState, draft: value, reveal: true,
+          phase: credentialState.phase === "replacing" ? "replacing" : "editing" };
+        break;
+      case "focus":
+        credentialState = { ...credentialState, reveal: true };
+        break;
+      case "blur":
+        credentialState = { ...credentialState, draft: credentialState.draft.trim(), reveal: false };
+        break;
+    }
+  }
   let credentialFieldTomlLocked = false;
   const credentialClassHint = $("#provider-credential-class");
   const streamUsageState = {
@@ -674,7 +700,7 @@
 
   function isInlineKeyLocked() {
     return credentialState.loadedKind === "inline"
-      && !credentialState.cleared
+      && credentialState.phase !== "replacing"
       && !!credentialState.preview
       && !String(credentialState.draft || "").trim();
   }
@@ -682,7 +708,7 @@
   function looksLikeEnvVarDraft(draft) {
     const trimmed = String(draft || "").trim();
     if (!trimmed) {
-      return credentialState.loadedKind === "env" && !credentialState.cleared;
+      return credentialState.loadedKind === "env" && credentialState.phase !== "replacing";
     }
     if (looksLikeEnvVarName(trimmed)) {
       return true;
@@ -730,7 +756,7 @@
     } else if (isInlineKeyLocked()) {
       text = "Saved API key (masked). Leave it unchanged to keep it, or use Clear saved credentials to remove or replace it.";
     } else if (!draft) {
-      if (credentialState.cleared || credentialState.loadedKind === "env") {
+      if (credentialState.phase === "replacing" || credentialState.loadedKind === "env") {
         text = "Empty field removes stored credentials on save.";
       } else if (credentialState.loadedKind === "inline") {
         text = "Leave empty to keep the saved API key.";
@@ -750,7 +776,7 @@
 
   function isUnchangedLoadedEnvName(draft) {
     return credentialState.loadedKind === "env"
-      && !credentialState.cleared
+      && credentialState.phase !== "replacing"
       && !!draft
       && draft === String(credentialState.loadedRaw || "").trim();
   }
@@ -784,7 +810,7 @@
       }
       return { kind: "set", value: draft };
     }
-    if (credentialState.cleared || credentialState.loadedKind === "env") {
+    if (credentialState.phase === "replacing" || credentialState.loadedKind === "env") {
       return { kind: "clear" };
     }
     if (credentialState.loadedKind === "inline" || credentialState.preview) {
@@ -815,23 +841,12 @@
 
   function setCredentialInput(raw, preview = "", saved = false, inlineSaved = false) {
     const trimmed = String(raw || "").trim();
-    credentialState.draft = trimmed;
-    credentialState.preview = preview || "";
-    credentialState.cleared = false;
-    credentialState.reveal = false;
-    if (!saved) {
-      credentialState.loadedRaw = "";
-      credentialState.loadedKind = "none";
-    } else if (looksLikeEnvVarName(trimmed)) {
-      credentialState.loadedRaw = trimmed;
-      credentialState.loadedKind = "env";
-    } else if (preview || inlineSaved) {
-      credentialState.loadedRaw = "";
-      credentialState.loadedKind = "inline";
-    } else {
-      credentialState.loadedRaw = "";
-      credentialState.loadedKind = "none";
-    }
+    const loadedKind = !saved ? "none" : looksLikeEnvVarName(trimmed) ? "env"
+      : preview || inlineSaved ? "inline" : "none";
+    transitionCredential("load", {
+      draft: trimmed, preview: preview || "", loadedKind,
+      loadedRaw: loadedKind === "env" ? trimmed : "",
+    });
     renderCredentialInput();
   }
 
@@ -843,10 +858,7 @@
 
   if (clearCredentialsBtn) {
     clearCredentialsBtn.addEventListener("click", () => {
-      credentialState.draft = "";
-      credentialState.preview = "";
-      credentialState.cleared = true;
-      credentialState.reveal = false;
+      transitionCredential("clear");
       renderCredentialInput();
       apiKeyInput.focus();
     });
@@ -855,15 +867,14 @@
     if (apiKeyInput.readOnly) return;
     const draft = credentialState.draft || "";
     if (draft) {
-      credentialState.reveal = true;
+      transitionCredential("focus");
       apiKeyInput.type = credentialInputType();
       apiKeyInput.value = draft;
     }
   });
   apiKeyInput.addEventListener("input", () => {
     if (apiKeyInput.readOnly) return;
-    credentialState.draft = apiKeyInput.value;
-    credentialState.reveal = true;
+    transitionCredential("edit", apiKeyInput.value);
     applyCredentialFieldAccess();
     updateCredentialClassHint();
   });
@@ -871,15 +882,12 @@
     if (apiKeyInput.readOnly) return;
     const visible = String(apiKeyInput.value || "");
     if (!visible || looksLikeMaskedApiKeyPreview(visible)) return;
-    credentialState.draft = visible;
+    transitionCredential("edit", visible);
   }
 
   apiKeyInput.addEventListener("blur", () => {
     syncEditableCredentialFromInput();
-    credentialState.reveal = false;
-    if (credentialState.draft) {
-      credentialState.draft = String(credentialState.draft).trim();
-    }
+    transitionCredential("blur");
     renderCredentialInput();
   });
 
@@ -3511,32 +3519,31 @@
   function applyLoggingFields(settings) {
     const form = $("#logging-settings");
     if (!form) return;
-    loggingHydrating = true;
-    try {
-      form.enabled.checked = !!settings.enabled;
-      form.log_path.value = settings.log_path || "";
-      form.include_bodies.checked = !!settings.include_bodies;
-      form.include_stream_bodies.checked = !!settings.include_stream_bodies;
-      form.max_log_mb.value = settings.max_log_mb ?? "";
-      form.max_log_age_days.value = settings.max_log_age_days ?? "";
-      form.tracing_filter.value = settings.tracing_filter || "";
-      loggingFormDirty = false;
-    } finally {
-      loggingHydrating = false;
-    }
+    // Assigning DOM values does not dispatch input/change events.
+    form.enabled.checked = !!settings.enabled;
+    form.log_path.value = settings.log_path || "";
+    form.include_bodies.checked = !!settings.include_bodies;
+    form.include_stream_bodies.checked = !!settings.include_stream_bodies;
+    form.max_log_mb.value = settings.max_log_mb ?? "";
+    form.max_log_age_days.value = settings.max_log_age_days ?? "";
+    form.tracing_filter.value = settings.tracing_filter || "";
   }
 
   async function loadLoggingSettings({ hydrateFields = true } = {}) {
+    const requestEpoch = ++loggingSettingsEpoch;
+    const viewEpoch = tabEpoch;
     const settings = await api("/logging");
+    if (requestEpoch !== loggingSettingsEpoch || viewEpoch !== tabEpoch
+        || loggingFormPhase.startsWith("saving")) return settings;
     applyLoggingChrome(settings);
-    if (hydrateFields && !loggingFormDirty) {
+    if (hydrateFields && (loggingFormPhase === "unhydrated" || loggingFormPhase === "clean")) {
       applyLoggingFields(settings);
     }
     return settings;
   }
 
   function setLoggingFormHydrated(hydrated) {
-    loggingSettingsHydrated = hydrated;
+    if (hydrated && loggingFormPhase === "unhydrated") loggingFormPhase = "clean";
     const fields = $("#logging-settings-fields");
     if (fields) fields.disabled = !hydrated;
   }
@@ -3573,21 +3580,30 @@
   }
 
   async function loadLogs() {
-    if (logsInFlight) {
-      logsPending = true;
+    if (logsRequest.phase === "loading") {
+      logsRequest.queued = true;
       return;
     }
-    logsInFlight = true;
+    const request = {
+      phase: "loading", queued: false, epoch: tabEpoch,
+      source: $("#log-source").value,
+      query: $("#log-query").value.trim(),
+      level: $("#log-level").value,
+    };
+    logsRequest = request;
+    const isCurrent = () => activeTab === "logs" && request.epoch === tabEpoch &&
+      request.source === $("#log-source").value &&
+      request.query === $("#log-query").value.trim() &&
+      (request.source !== "process" || request.level === $("#log-level").value);
     try {
-      const source = $("#log-source").value;
+      const { source, query, level } = request;
       const params = new URLSearchParams({ source, limit: "250" });
-      const query = $("#log-query").value.trim();
       if (query) params.set("q", query);
       if (source === "process") {
-        const level = $("#log-level").value;
         if (level) params.set("level", level);
       }
       const payload = await api(`/logging/events?${params.toString()}`);
+      if (!isCurrent()) return;
       const meta = [];
       if (payload.path) meta.push(payload.path);
       if (payload.file_bytes) meta.push(`${payload.file_bytes} bytes`);
@@ -3596,15 +3612,10 @@
       renderLogEvents(payload);
     } catch (e) {
       // Keep the footer for logging-settings state (including tracing lag).
-      $("#log-meta").textContent = `Error: ${formatErrorMessage(e)}`;
+      if (isCurrent()) $("#log-meta").textContent = `Error: ${formatErrorMessage(e)}`;
     } finally {
-      logsInFlight = false;
-      if (logsPending && activeTab === "logs") {
-        logsPending = false;
-        loadLogs();
-      } else {
-        logsPending = false;
-      }
+      logsRequest = { phase: "idle" };
+      if (request.queued && activeTab === "logs") void loadLogs();
     }
   }
 
@@ -3624,9 +3635,9 @@
     syncProcessLevelControl();
     // Disable only until the first successful hydrate so tab switches do not
     // interrupt in-progress edits.
-    if (!loggingSettingsHydrated) setLoggingFormHydrated(false);
+    if (loggingFormPhase === "unhydrated") setLoggingFormHydrated(false);
     try {
-      const settings = await loadLoggingSettings({ hydrateFields: !loggingFormDirty });
+      const settings = await loadLoggingSettings();
       if (epoch !== tabEpoch || activeTab !== "logs") return settings;
       setLoggingFormHydrated(true);
       pollStatus(loggingReadyStatus(settings));
@@ -3661,14 +3672,14 @@
   });
   $("#log-refresh")?.addEventListener("click", loadLogs);
   $("#logging-settings")?.addEventListener("input", () => {
-    if (!loggingHydrating) loggingFormDirty = true;
+    editLoggingForm();
   });
   $("#logging-settings")?.addEventListener("change", () => {
-    if (!loggingHydrating) loggingFormDirty = true;
+    editLoggingForm();
   });
   $("#logging-settings")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!loggingSettingsHydrated) {
+    if (loggingFormPhase === "unhydrated" || loggingFormPhase.startsWith("saving")) {
       return;
     }
     const form = event.currentTarget;
@@ -3679,7 +3690,8 @@
       status("Saving logging settings…");
       // Submitted values are the new baseline. Keystrokes during the PUT
       // re-dirty the form so success must not overwrite them from the response.
-      loggingFormDirty = false;
+      loggingFormPhase = "saving";
+      loggingSettingsEpoch++;
       const saved = await api("/logging", {
         method: "PUT",
         body: JSON.stringify({
@@ -3692,15 +3704,17 @@
           tracing_filter: tracingFilter ? tracingFilter : null,
         }),
       });
+      loggingSettingsEpoch++;
       applyLoggingChrome(saved);
-      if (!loggingFormDirty) {
+      loggingFormPhase = loggingFormPhase === "saving_dirty" ? "dirty" : "clean";
+      if (loggingFormPhase === "clean") {
         applyLoggingFields(saved);
       }
       setLoggingFormHydrated(true);
       await loadLogs();
-      status(loggingSaveStatus(saved, loggingFormDirty));
+      status(loggingSaveStatus(saved, loggingFormIsDirty()));
     } catch (e) {
-      loggingFormDirty = true;
+      loggingFormPhase = "dirty";
       try {
         await loadLoggingSettings({ hydrateFields: false });
         await loadLogs();

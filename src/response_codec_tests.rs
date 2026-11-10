@@ -1145,10 +1145,14 @@ fn native_usage_is_recorded_only_after_a_completed_event() {
     assert!(!native_sse_frame_completed(failed));
     assert!(!native_sse_frame_completed(completed_with_failed_status));
     assert!(!native_sse_frame_completed(completed_with_cancelled_status));
+    assert_eq!(
+        native_sse_terminal(completed_with_cancelled_status),
+        Some(ResponseOutcome::Cancelled)
+    );
 }
 
 #[tokio::test]
-async fn native_failed_stream_does_not_record_usage() {
+async fn native_failed_and_cancelled_streams_do_not_record_usage() {
     let dir = std::env::temp_dir().join(format!(
         "codex-warp-native-usage-{}",
         std::time::SystemTime::now()
@@ -1159,30 +1163,35 @@ async fn native_failed_stream_does_not_record_usage() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = Store::open(&dir.join("usage.db")).unwrap();
     let request = json!({"model": "test-model"});
-    let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
-    let failed = concat!(
-        "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",",
-        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
-    );
-    let events = native_stream_to_responses(
-        upstream_response_with_body(failed.as_bytes().to_vec()),
-        BTreeSet::new(),
-        NamespaceHelpers::default(),
-        crate::config::ToolPolicyConfig::default(),
-        DebugLog::disabled(),
-        "dbg_failed_usage".to_string(),
-        200,
-        recorder,
-    )
-    .collect::<Vec<_>>()
-    .await;
-
-    assert_eq!(
-        events.len(),
-        1,
-        "a terminal failure is forwarded exactly once"
-    );
-    assert!(String::from_utf8_lossy(events[0].as_ref().unwrap()).contains("response.failed"));
+    for status in ["failed", "cancelled"] {
+        let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+        let event_type = format!("response.{status}");
+        let body = format!(
+            "data: {}\n\n",
+            json!({
+                "type": event_type, "response": {"status": status,
+                    "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}}
+            })
+        );
+        let events = native_stream_to_responses(
+            upstream_response_with_body(body.into_bytes()),
+            BTreeSet::new(),
+            NamespaceHelpers::default(),
+            crate::config::ToolPolicyConfig::default(),
+            DebugLog::disabled(),
+            "dbg_failed_usage".to_string(),
+            200,
+            recorder,
+        )
+        .collect::<Vec<_>>()
+        .await;
+        assert_eq!(
+            events.len(),
+            1,
+            "a terminal {status} is forwarded exactly once"
+        );
+        assert!(String::from_utf8_lossy(events[0].as_ref().unwrap()).contains(&event_type));
+    }
 
     let summary = store
         .analytics(crate::store::AnalyticsRange::Last24Hours, None, None)
@@ -1712,15 +1721,28 @@ async fn native_incomplete_status_records_usage() {
     let store = Store::open(&dir.join("usage.db")).unwrap();
     let request = json!({"model": "test-model"});
     let recorder = UsageRecorder::from_request(Some(&store), "alpha", &request);
+    let state = session_test_state();
+    remember_session_model(
+        &state,
+        &json!({"model": "active-model", "prompt_cache_key": "session-1"}),
+    )
+    .await;
+    let update = begin_session_model_update(
+        &state,
+        &json!({"model": "test-model", "prompt_cache_key": "session-1"}),
+    )
+    .await
+    .expect("session update");
     // A response.completed whose status is "incomplete" (for example a
     // max_output_tokens truncation) still carries a usage block and must be
     // recorded, otherwise the Web UI shows 0 usage for a response that clearly
     // consumed tokens.
     let body = concat!(
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"incomplete\",",
-        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n"
+        "\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"total_tokens\":12}}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"usage\":{\"total_tokens\":99}}}\n\n"
     );
-    native_stream_to_responses(
+    native_stream_to_responses_with_session_model(
         upstream_response_with_body(body.as_bytes().to_vec()),
         BTreeSet::new(),
         NamespaceHelpers::default(),
@@ -1729,6 +1751,7 @@ async fn native_incomplete_status_records_usage() {
         "dbg_incomplete_status_usage".to_string(),
         200,
         recorder,
+        Some((state.clone(), update)),
     )
     .collect::<Vec<_>>()
     .await;
@@ -1740,6 +1763,13 @@ async fn native_incomplete_status_records_usage() {
     assert_eq!(
         summary.total_tokens, 12,
         "an incomplete response must still record its token usage"
+    );
+    let mut review =
+        json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
+    assert!(resolve_auto_review_model(&state, &mut review).await);
+    assert_eq!(
+        review["model"], "active-model",
+        "neither incomplete nor a duplicate terminal may commit the session"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -7606,6 +7636,73 @@ async fn failed_chat_stream_does_not_replace_the_active_session_model() {
         json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-1"});
     assert!(resolve_auto_review_model(&state, &mut review).await);
     assert_eq!(review["model"], "active-model");
+}
+
+#[tokio::test]
+async fn completed_chat_stream_releases_session_order_before_downstream_finishes() {
+    let state = session_test_state();
+    let update = begin_session_model_update(
+        &state,
+        &json!({
+            "model": "completed-model", "prompt_cache_key": "completed-session"
+        }),
+    )
+    .await
+    .expect("session update");
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let events = chat_stream_to_responses_with_session_model(
+        upstream_response_with_body(body.as_bytes().to_vec()),
+        "resp_order_lifetime".into(),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_order_lifetime".into(),
+        ContinueGuardState::default(),
+        None,
+        false,
+        false,
+        Some((state.clone(), update)),
+    );
+    futures_util::pin_mut!(events);
+    loop {
+        let event = events
+            .next()
+            .await
+            .expect("terminal output event")
+            .expect("valid stream");
+        if String::from_utf8_lossy(&event).contains("response.output_item.done") {
+            break;
+        }
+    }
+    // Keep the stream alive at a terminal yield, then evict its completed
+    // session. Its old order must not consume a pending-registry slot.
+    for index in 0..1024 {
+        remember_session_model(
+            &state,
+            &json!({
+                "model": "replacement", "prompt_cache_key": format!("completed-{index}")
+            }),
+        )
+        .await;
+    }
+    let mut pending = Vec::new();
+    for index in 0..1024 {
+        pending.push(
+            begin_session_model_update(
+                &state,
+                &json!({
+                    "model": "pending", "prompt_cache_key": format!("pending-{index}")
+                }),
+            )
+            .await
+            .expect("completed stream must not reduce pending capacity"),
+        );
+    }
+    assert_eq!(pending.len(), 1024);
 }
 
 #[tokio::test]

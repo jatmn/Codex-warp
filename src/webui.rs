@@ -503,6 +503,23 @@ struct LoggingEventsQuery {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LoggingPersistence {
+    NotRequested,
+    Unavailable,
+    Saved,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LoggingTracing {
+    Applied,
+    Pending,
+    Unavailable,
+}
+
+#[derive(Debug, Serialize)]
 struct LoggingSettingsView {
     enabled: bool,
     log_path: Option<String>,
@@ -523,6 +540,10 @@ struct LoggingSettingsView {
     tracing_applied: bool,
     persist_available: bool,
     persisted: bool,
+    /// Independent outcomes: a successful PUT always installed the live writer,
+    /// even when tracing is pending or the durable overlay could not be saved.
+    persistence: LoggingPersistence,
+    tracing: LoggingTracing,
     default_log_path: String,
 }
 
@@ -541,7 +562,7 @@ struct LoggingPersist {
     tracing_filter: OptionalPatch<String>,
 }
 
-fn logging_settings_view(state: &AppState, persisted: bool) -> LoggingSettingsView {
+fn logging_settings_view(state: &AppState, persistence: LoggingPersistence) -> LoggingSettingsView {
     let debug = state.debug_log.live_snapshot();
     let tracing_filter_wanted = wanted_tracing_filter(state, &debug);
     let tracing_filter_effective = installed_tracing_filter(state);
@@ -564,7 +585,15 @@ fn logging_settings_view(state: &AppState, persisted: bool) -> LoggingSettingsVi
         tracing_filter_effective,
         tracing_applied,
         persist_available: state.store.is_some(),
-        persisted,
+        persisted: matches!(persistence, LoggingPersistence::Saved),
+        persistence,
+        tracing: if tracing_applied {
+            LoggingTracing::Applied
+        } else if state.tracing_reload.is_some() {
+            LoggingTracing::Pending
+        } else {
+            LoggingTracing::Unavailable
+        },
         default_log_path: DEFAULT_DEBUG_LOG_PATH.to_string(),
     }
 }
@@ -1948,6 +1977,9 @@ impl Drop for ModelDiscoveryMutationCompletion {
 /// the request future. Axum can drop a handler when its client disconnects;
 /// the owned task keeps both reconciliation and `mutation_lock` alive until the
 /// route/provenance snapshot and completion generation have been published.
+/// Call synchronously after durable commit and immediate config/route publication:
+/// no await may separate that commit from this ownership transfer. This function
+/// owns both discovery revision boundaries, including unwind during reconciliation.
 fn finish_model_discovery_mutation<F>(
     state: AppState,
     mutation: tokio::sync::OwnedMutexGuard<()>,
@@ -1956,6 +1988,7 @@ fn finish_model_discovery_mutation<F>(
 where
     F: Future<Output = Result<(), ApiError>> + Send + 'static,
 {
+    invalidate_model_discovery(&state);
     tokio::spawn(async move {
         let completion = ModelDiscoveryMutationCompletion(state);
         let result = reconcile.await;
@@ -2007,7 +2040,7 @@ async fn refresh_provider_models(
     Path(id): Path<String>,
     Json(_request): Json<serde_json::Value>,
 ) -> Result<Json<ProviderView>, ApiError> {
-    let _mutation = state.mutation_lock.lock().await;
+    let mutation = state.mutation_lock.clone().lock_owned().await;
     validate_provider_id(&id)?;
     let provider = {
         let config = state.read_config();
@@ -2029,16 +2062,22 @@ async fn refresh_provider_models(
     }
     require_store(&state)?;
 
-    invalidate_model_discovery(&state);
-    let refresh_result = models::refresh_model_routes_while_mutation_locked(
-        &state,
-        models::MutationRouteRefresh::RefetchOneAtomic,
-        Some(&id),
-    )
-    .await;
-    invalidate_model_discovery(&state);
-    refresh_result
-        .map_err(|error| ApiError::bad_gateway(format!("model refresh failed: {error}")))?;
+    let reconcile_state = state.clone();
+    let reconcile_id = id.clone();
+    let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
+        state.clone(),
+        mutation,
+        async move {
+            models::refresh_model_routes_while_mutation_locked(
+                &reconcile_state,
+                models::MutationRouteRefresh::RefetchOneAtomic,
+                Some(&reconcile_id),
+            )
+            .await
+            .map_err(|error| ApiError::bad_gateway(format!("model refresh failed: {error}")))
+        },
+    ))
+    .await?;
 
     let routes = state.model_routes.read().await;
     let routed = routed_models_for_provider(&routes, &id);
@@ -2216,11 +2255,6 @@ async fn create_provider(
         .fetch_add(1, Ordering::AcqRel);
     drop(seeds);
     drop(routes);
-    // A deleted provider normally clears its discovery snapshot, but ensure a
-    // reused id never exposes any stale in-memory metadata before its first
-    // successful catalog refresh.
-    remove_provider_discovery(&state, &provider_id).await;
-    invalidate_model_discovery(&state);
     let reconcile_state = state.clone();
     let reconcile_provider_id = provider_id.clone();
     let provider_enabled = provider.enabled;
@@ -2228,6 +2262,9 @@ async fn create_provider(
         state.clone(),
         mutation,
         async move {
+            // Clear a reused ID's discovery inside the owned task: waiting for
+            // the discovery lock in the handler would leave a cancellation gap.
+            remove_provider_discovery(&reconcile_state, &reconcile_provider_id).await;
             // Creation establishes a new provider identity for this ID. Never allow
             // retained soft-delete provenance from an earlier identity to cross into it
             // if the replacement's seed read fails.
@@ -2327,10 +2364,6 @@ async fn update_provider(
     if let Some(routes) = identity_routes.as_mut() {
         remove_provider_live_routes_from(routes, &id);
     }
-    invalidate_model_discovery(&state);
-    if refresh_discovery {
-        remove_provider_discovery(&state, &id).await;
-    }
     drop(identity_routes);
     let reconcile_state = state.clone();
     let reconcile_id = id.clone();
@@ -2339,6 +2372,9 @@ async fn update_provider(
         state.clone(),
         mutation,
         async move {
+            if refresh_discovery {
+                remove_provider_discovery(&reconcile_state, &reconcile_id).await;
+            }
             if enabled != previous_enabled {
                 sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, enabled).await?;
             } else if enabled && refresh_discovery {
@@ -2401,6 +2437,7 @@ async fn delete_provider(
     }
 
     let managed = lookup_provider_managed(&state, &id)?;
+    let mut routes = state.model_routes.write().await;
     if managed {
         store
             .delete_provider_overlay(&id)
@@ -2414,14 +2451,15 @@ async fn delete_provider(
         let mut config = state.write_config();
         config.providers.remove(&id);
     }
-    invalidate_model_discovery(&state);
-    remove_provider_discovery(&state, &id).await;
+    remove_provider_live_routes_from(&mut routes, &id);
+    drop(routes);
     let reconcile_state = state.clone();
     let reconcile_id = id.clone();
     let _mutation = await_model_discovery_mutation(finish_model_discovery_mutation(
         state.clone(),
         mutation,
         async move {
+            remove_provider_discovery(&reconcile_state, &reconcile_id).await;
             remove_provider_model_routes(&reconcile_state, &reconcile_id).await;
             sync_provider_routes_for_enabled(&reconcile_state, &reconcile_id, false).await
         },
@@ -2490,7 +2528,6 @@ async fn set_provider_enabled(
     if let Some(routes) = disable_routes.as_mut() {
         remove_provider_live_routes_from(routes, &id);
     }
-    invalidate_model_discovery(&state);
     drop(disable_routes);
     let reconcile_state = state.clone();
     let reconcile_id = id.clone();
@@ -2609,7 +2646,6 @@ async fn add_model(
     state
         .model_route_seed_revision
         .fetch_add(1, Ordering::AcqRel);
-    invalidate_model_discovery(&state);
     drop(seeds);
     drop(routes);
     let reconcile_state = state.clone();
@@ -2745,7 +2781,6 @@ async fn update_model(
     state
         .model_route_seed_revision
         .fetch_add(1, Ordering::AcqRel);
-    invalidate_model_discovery(&state);
     drop(seeds);
     drop(routes);
     let reconcile_state = state.clone();
@@ -2907,7 +2942,6 @@ async fn delete_model(
     state
         .model_route_seed_revision
         .fetch_add(1, Ordering::AcqRel);
-    invalidate_model_discovery(&state);
     drop(seeds);
     drop(routes);
     let reconcile_state = state.clone();
@@ -3025,7 +3059,6 @@ async fn set_model_enabled(
     state
         .model_route_seed_revision
         .fetch_add(1, Ordering::AcqRel);
-    invalidate_model_discovery(&state);
     drop(seeds);
     drop(routes);
     let reconcile_state = state.clone();
@@ -3122,7 +3155,10 @@ async fn get_logging(State(state): State<AppState>) -> Json<LoggingSettingsView>
     // Read the live debug-log snapshot. Waiting on `mutation_lock` would hide
     // those settings until overlay persist finished, while debug events already
     // follow the writer.
-    Json(logging_settings_view(&state, false))
+    Json(logging_settings_view(
+        &state,
+        LoggingPersistence::NotRequested,
+    ))
 }
 
 async fn update_logging(
@@ -3133,12 +3169,13 @@ async fn update_logging(
     let mut debug = state.debug_log.live_snapshot();
     apply_logging_persist(&mut debug, fields, tracing_fallback(&state))?;
     set_live_logging(&state, &debug).map_err(ApiError::bad_request)?;
-    let mut persisted = false;
+    let mut persistence = LoggingPersistence::Unavailable;
     if let Some(store) = state.store.as_ref() {
         let committed = state.debug_log.live_snapshot();
         match store.upsert_debug_overlay(&committed) {
-            Ok(()) => persisted = true,
+            Ok(()) => persistence = LoggingPersistence::Saved,
             Err(err) => {
+                persistence = LoggingPersistence::Failed;
                 // Live install already succeeded. Reverting it because
                 // durability failed is what created a second install that
                 // could split the snapshot. Keep the live snapshot and
@@ -3150,7 +3187,7 @@ async fn update_logging(
             }
         }
     }
-    Ok(Json(logging_settings_view(&state, persisted)))
+    Ok(Json(logging_settings_view(&state, persistence)))
 }
 
 async fn get_logging_events(

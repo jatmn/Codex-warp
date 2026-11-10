@@ -29,9 +29,9 @@ use crate::namespace_helpers::apply_subagent_helper_shim;
 use crate::namespace_helpers::apply_subagent_helper_shim_to_responses;
 use crate::namespace_helpers::subagent_helper_debug_event;
 use crate::provider::begin_session_model_update;
-use crate::provider::complete_session_model_update;
 use crate::provider::provider_display_name;
 use crate::response_codec::ContinueGuardState;
+use crate::response_codec::ResponseOutcome;
 use crate::response_codec::chat_completion_payload;
 use crate::response_codec::chat_json_to_responses_with_tool_markup_suppression;
 use crate::response_codec::chat_stream_to_responses_with_session_model;
@@ -501,17 +501,13 @@ pub(crate) async fn proxy_chat_responses(
                     }),
                     Some(&value),
                 );
-                if let Some(recorder) = &usage_recorder {
-                    // Successful non-stream responses must count as completed
-                    // prompts/sessions even when the gateway omits usage metadata
-                    // (common when stream_options.include_usage stays opt-in).
-                    recorder.record_completed(
+                ResponseOutcome::Completed
+                    .account(
+                        usage_recorder,
                         (!normalized_usage.is_null()).then_some(&normalized_usage),
-                    );
-                }
-                if let Some(update) = session_model.as_ref() {
-                    complete_session_model_update(&state, update).await;
-                }
+                        session_model.as_ref().map(|update| (&state, update)),
+                    )
+                    .await;
                 Json(chat_json_to_responses_with_tool_markup_suppression(
                     value,
                     &chat_transform.custom_tool_names,
@@ -828,19 +824,15 @@ async fn send_native_responses_with_session_model(
         response_body.as_ref(),
     );
     let normalized_usage = chat_usage_to_responses_usage(Some(&usage));
-    if status.is_success()
-        && semantic_body.is_some_and(response_reports_completed_or_incomplete)
-        && let Some(recorder) = &usage_recorder
-    {
-        // Successful non-stream responses must count as completed prompts/sessions
-        // even when the upstream omits usage metadata.
-        recorder.record_completed((!normalized_usage.is_null()).then_some(&normalized_usage));
-    }
-    if status.is_success()
-        && semantic_body.is_some_and(response_reports_completed)
-        && let Some(update) = session_model.as_ref()
-    {
-        complete_session_model_update(&state, update).await;
+    if status.is_success() {
+        let outcome = semantic_body.map_or(ResponseOutcome::Failed, native_response_outcome);
+        outcome
+            .account(
+                usage_recorder,
+                (!normalized_usage.is_null()).then_some(&normalized_usage),
+                session_model.as_ref().map(|update| (&state, update)),
+            )
+            .await;
     }
 
     let body = if status.is_success()
@@ -911,12 +903,21 @@ fn native_response_is_well_formed(value: &Value) -> bool {
     crate::response_codec::native_response_is_well_formed_response(value)
 }
 
+fn native_response_outcome(value: &Value) -> ResponseOutcome {
+    if !native_response_is_well_formed(value) {
+        return ResponseOutcome::Failed;
+    }
+    match value.get("status").and_then(Value::as_str) {
+        None | Some("completed") => ResponseOutcome::Completed,
+        Some("incomplete") => ResponseOutcome::Incomplete,
+        Some("cancelled") => ResponseOutcome::Cancelled,
+        _ => ResponseOutcome::Failed,
+    }
+}
+
+#[cfg(test)]
 fn response_reports_completed(value: &Value) -> bool {
-    native_response_is_well_formed(value)
-        && value
-            .get("status")
-            .and_then(Value::as_str)
-            .is_none_or(|status| status == "completed")
+    native_response_outcome(value).commits_session()
 }
 
 /// Like [`response_reports_completed`], but also treats a `status` of
@@ -927,12 +928,9 @@ fn response_reports_completed(value: &Value) -> bool {
 /// payload is not counted. Session-model completion intentionally stays on
 /// [`response_reports_completed`] only, matching the streaming path's
 /// asymmetry.
+#[cfg(test)]
 fn response_reports_completed_or_incomplete(value: &Value) -> bool {
-    native_response_is_well_formed(value)
-        && value
-            .get("status")
-            .and_then(Value::as_str)
-            .is_none_or(|status| status == "completed" || status == "incomplete")
+    native_response_outcome(value).records_usage()
 }
 
 /// Stream only when both sides agreed on SSE. A gateway can accept a streaming
