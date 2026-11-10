@@ -385,12 +385,14 @@ pub(crate) fn chat_stream_to_responses_with_session_model(
             return;
         }
 
-        if let Some(recorder) = &usage_recorder {
-            recorder.record_completed(state.usage.as_ref());
-        }
-        if let Some((session_state, update)) = session_model {
-            complete_session_model_update(&session_state, &update).await;
-        }
+        ResponseOutcome::Completed.account(
+            usage_recorder,
+            state.usage.as_ref(),
+            session_model.as_ref().map(|(state, update)| (state, update)),
+        ).await;
+        // A slow downstream reader must not keep a completed session's order
+        // registration alive across the terminal-event yields below.
+        drop(session_model);
 
         for event in state.finish(
             &response_id,
@@ -482,7 +484,7 @@ pub(crate) fn native_stream_to_responses_with_session_model(
         let mut pending = Vec::new();
         let mut bytes = upstream.bytes_stream();
         let mut pending_usage: Option<Value> = None;
-        let mut terminal_received = false;
+        let mut outcome = None;
         let mut usage_recorder = usage_recorder;
         let mut response_id = None;
         let mut native_reasoning_buffer = NativeReasoningBuffer::default();
@@ -541,20 +543,13 @@ pub(crate) fn native_stream_to_responses_with_session_model(
                     &mut pending_usage,
                 );
                 let terminal = native_sse_terminal(&frame);
-                terminal_received |= terminal.is_some();
-                // A completed or incomplete response both consumed tokens and
-                // carry a `usage` block; record analytics for either so a
-                // truncated (incomplete) response is not reported as 0 usage.
-                if (terminal == Some(NativeSseTerminal::Completed)
-                    || terminal == Some(NativeSseTerminal::Incomplete))
-                    && let Some(recorder) = usage_recorder.take()
-                {
-                    recorder.record_completed(pending_usage.as_ref());
-                }
-                if terminal == Some(NativeSseTerminal::Completed)
-                    && let Some((session_state, update)) = &session_model
-                {
-                    complete_session_model_update(session_state, update).await;
+                if let Some(terminal) = terminal {
+                    outcome = Some(terminal);
+                    terminal.account(
+                        usage_recorder.take(),
+                        pending_usage.as_ref(),
+                        session_model.as_ref().map(|(state, update)| (state, update)),
+                    ).await;
                 }
                 debug_log.log_stream_frame(json!({
                     "event": "upstream_stream_frame",
@@ -598,7 +593,7 @@ pub(crate) fn native_stream_to_responses_with_session_model(
             }
         }
 
-        if !terminal_received {
+        if outcome.is_none() {
             if let Some(flushed) = native_reasoning_buffer.take_all() {
                 log_downstream_sse_frame(&debug_log, &request_log_id, "responses", &flushed);
                 yield Ok(Bytes::from(flushed));
@@ -638,10 +633,42 @@ fn native_sse_response_id(frame: &str) -> Option<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeSseTerminal {
+pub(crate) enum ResponseOutcome {
     Completed,
     Incomplete,
-    NonSuccess,
+    Failed,
+    Cancelled,
+}
+
+impl ResponseOutcome {
+    pub(crate) fn records_usage(self) -> bool {
+        matches!(self, Self::Completed | Self::Incomplete)
+    }
+
+    pub(crate) fn commits_session(self) -> bool {
+        self == Self::Completed
+    }
+
+    /// Consume the recorder at the first accepted terminal. Transport failure,
+    /// malformed payloads and EOF without a terminal never enter accounting.
+    /// Incomplete native responses count tokens but do not select a session model.
+    pub(crate) async fn account(
+        self,
+        recorder: Option<UsageRecorder>,
+        usage: Option<&Value>,
+        session: Option<(&AppState, &crate::state::SessionModelUpdate)>,
+    ) {
+        if self.records_usage()
+            && let Some(recorder) = recorder
+        {
+            recorder.record_completed(usage);
+        }
+        if self.commits_session()
+            && let Some((state, update)) = session
+        {
+            complete_session_model_update(state, update).await;
+        }
+    }
 }
 
 /// Classify response-level terminal events independently from success. Native
@@ -652,7 +679,7 @@ enum NativeSseTerminal {
 /// `response.incomplete` is a distinct terminal *event type* (not a
 /// `response.completed` whose `status` is `incomplete`, although that shape is
 /// also handled below). Both forms still carry a `usage` block — for example a
-/// max-output truncation — so treating either as `NonSuccess` and skipping
+/// max-output truncation — so treating either as `Failed` and skipping
 /// analytics would drop every token that led to the truncation, which is the
 /// same "used but shows 0" gap as a missing stream usage chunk.
 ///
@@ -666,7 +693,7 @@ enum NativeSseTerminal {
 /// the same `native_response_is_well_formed_response` predicate as the buffered
 /// path (`response_reports_completed_or_incomplete`) so malformed incomplete
 /// responses are rejected identically.
-fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
+fn native_sse_terminal(frame: &str) -> Option<ResponseOutcome> {
     let data = sse_data(frame)?;
     let value = serde_json::from_str::<Value>(&data).ok()?;
     match value.get("type").and_then(Value::as_str)? {
@@ -674,7 +701,7 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
             let response_value = value.get("response")?;
             let response = response_value.as_object()?;
             match response.get("status").and_then(Value::as_str) {
-                None | Some("completed") => Some(NativeSseTerminal::Completed),
+                None | Some("completed") => Some(ResponseOutcome::Completed),
                 Some("incomplete") => {
                     // A truncated response still carries a usage block and must
                     // record analytics, but only when the response payload is
@@ -682,15 +709,17 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
                     // mirrors the buffered-path guard so a malformed incomplete
                     // response is rejected identically on both paths.
                     if native_response_is_well_formed_response(response_value) {
-                        Some(NativeSseTerminal::Incomplete)
+                        Some(ResponseOutcome::Incomplete)
                     } else {
                         None
                     }
                 }
-                _ => Some(NativeSseTerminal::NonSuccess),
+                Some("cancelled") => Some(ResponseOutcome::Cancelled),
+                _ => Some(ResponseOutcome::Failed),
             }
         }
-        "response.failed" | "response.cancelled" => Some(NativeSseTerminal::NonSuccess),
+        "response.failed" => Some(ResponseOutcome::Failed),
+        "response.cancelled" => Some(ResponseOutcome::Cancelled),
         // `response.incomplete` is its own terminal event type (distinct from a
         // `response.completed` whose `status` is `incomplete`). Both still carry
         // a `usage` block and must record analytics rather than be treated as
@@ -706,7 +735,7 @@ fn native_sse_terminal(frame: &str) -> Option<NativeSseTerminal> {
             // same predicate as the buffered path.
             let response = value.get("response");
             if response.is_some_and(native_response_is_well_formed_response) {
-                Some(NativeSseTerminal::Incomplete)
+                Some(ResponseOutcome::Incomplete)
             } else {
                 None
             }
@@ -779,14 +808,14 @@ pub(crate) fn log_native_usage_from_sse_chunk(
             continue;
         };
         log_native_usage_from_sse_frame(&frame, debug_log, request_log_id, status, pending_usage);
-        completed |= native_sse_terminal(&frame) == Some(NativeSseTerminal::Completed);
+        completed |= native_sse_terminal(&frame) == Some(ResponseOutcome::Completed);
     }
     completed
 }
 
 #[cfg(test)]
 fn native_sse_frame_completed(frame: &str) -> bool {
-    native_sse_terminal(frame) == Some(NativeSseTerminal::Completed)
+    native_sse_terminal(frame) == Some(ResponseOutcome::Completed)
 }
 
 pub(crate) fn log_native_usage_from_sse_frame(
