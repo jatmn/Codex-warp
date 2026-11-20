@@ -287,10 +287,13 @@ assert.ok(
 assert.deepEqual(release.on.push.tags, ['v[0-9]+.[0-9]+.[0-9]+']);
 assert.equal(release.concurrency.queue, 'max');
 const proofPrepare = release.jobs['prepare-pr-upload-proof'];
-assert.ok(release.jobs['build-local-artifacts'].if.includes('github.event.pull_request.head.repo.full_name == github.repository'),
+const nativeBuild = release.jobs['build-local-artifacts'];
+assert.ok(nativeBuild.if.includes('github.event.pull_request.head.repo.full_name == github.repository'),
   'upload-mode release builds must be limited to same-repository pull requests');
-assert.equal(release.jobs['build-local-artifacts'].name, 'Build native archives',
+assert.equal(nativeBuild.name, 'Build native archives',
   'skipped matrix builds must use a static check name rather than an unevaluated join');
+assert.equal(nativeBuild.strategy.matrix, '${{ fromJson(needs.plan.outputs.native_matrix) }}',
+  'running archive check names must use the target-only matrix');
 assert.equal(proofPrepare.environment, undefined);
 assert.deepEqual(proofPrepare.permissions, {contents: 'read'});
 assert.ok(proofPrepare.if.includes("github.event_name == 'pull_request'"));

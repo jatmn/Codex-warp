@@ -54,6 +54,8 @@ jobs:
     runs-on: "ubuntu-24.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
+      native_matrix: ${{ steps.plan.outputs.native_matrix }}
+      native_builds: ${{ steps.plan.outputs.native_builds }}
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
       tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
       publishing: ${{ !github.event.pull_request }}
@@ -89,6 +91,17 @@ jobs:
           echo "dist ran successfully"
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+          # GitHub appends matrix values to the static job name.
+          jq -r '
+            .ci.github.artifacts_matrix.include // []
+            | if any(.[]; (.targets | length) != 1) then
+                error("expected one target per native archive build")
+              else
+                INDEX(.targets[0])
+              end
+            | "native_matrix=\({target: keys_unsorted} | tojson)",
+              "native_builds=\(tojson)"
+          ' plan-dist-manifest.json >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -104,22 +117,13 @@ jobs:
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload')) }}
     strategy:
       fail-fast: false
-      # Target platforms/runners are computed by dist in create-release.
-      # Each member of the matrix has the following arguments:
-      #
-      # - runner: the github runner
-      # - dist-args: cli flags to pass to dist
-      # - install-dist: expression to run to install dist on the runner
-      #
-      # Typically there will be:
-      # - 1 "global" task that builds universal installers
-      # - N "local" tasks that build each platform's binaries and platform-specific installers
-      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
-    runs-on: ${{ matrix.runner }}
-    container: ${{ matrix.container && matrix.container.image || null }}
+      # Keep runner and build settings out of the check name.
+      matrix: ${{ fromJson(needs.plan.outputs.native_matrix) }}
+    runs-on: ${{ fromJson(needs.plan.outputs.native_builds)[matrix.target].runner }}
+    container: ${{ fromJson(needs.plan.outputs.native_builds)[matrix.target].container && fromJson(needs.plan.outputs.native_builds)[matrix.target].container.image || null }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+      BUILD_MANIFEST_NAME: target/distrib/${{ matrix.target }}-dist-manifest.json
     permissions:
       "attestations": "write"
       "contents": "read"
@@ -150,16 +154,16 @@ jobs:
           merge-multiple: true
       - name: Install dependencies
         run: |
-          ${{ matrix.packages_install }}
+          ${{ fromJson(needs.plan.outputs.native_builds)[matrix.target].packages_install }}
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot
-          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          dist build ${{ needs.plan.outputs.tag-flag }} --print=linkage --output-format=json ${{ fromJson(needs.plan.outputs.native_builds)[matrix.target].dist_args }} > dist-manifest.json
           echo "dist ran successfully"
       - name: Validate and smoke-test archive
         shell: bash
         run: |
-          target="${{ join(matrix.targets, '') }}"
+          target="${{ matrix.target }}"
           archive="$(jq -r --arg target "$target" '.targets[] | select(.triple == $target) | .archive' tools/release-contract.json)"
           version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "codex-warp") | .version')"
           [ -n "$archive" ] && [ "$archive" != null ]
@@ -168,7 +172,7 @@ jobs:
       - name: Attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
         with:
-          subject-path: "target/distrib/*${{ join(matrix.targets, ', ') }}*"
+          subject-path: "target/distrib/*${{ matrix.target }}*"
       - id: cargo-dist
         name: Post-build
         # We force bash here just because github makes it really hard to get values up
@@ -185,11 +189,11 @@ jobs:
       - name: Record runner evidence
         shell: bash
         run: |
-          evidence="target/distrib/${{ join(matrix.targets, '-') }}-runner.json"
+          evidence="target/distrib/${{ matrix.target }}-runner.json"
           native_tools="$({ cmake --version 2>/dev/null | head -1; xcodebuild -version 2>/dev/null | paste -sd ' ' -; nasm -v 2>/dev/null; cc --version 2>/dev/null | head -1; } || true)"
           jq -n \
-            --arg target "${{ join(matrix.targets, '') }}" \
-            --arg label "${{ matrix.runner }}" \
+            --arg target "${{ matrix.target }}" \
+            --arg label "${{ fromJson(needs.plan.outputs.native_builds)[matrix.target].runner }}" \
             --arg image "${ImageOS:-unknown}/${ImageVersion:-unknown}" \
             --arg native "$native_tools" \
             --arg rustc "$(rustc -Vv)" \
@@ -198,11 +202,11 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          name: artifacts-build-local-${{ matrix.target }}
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
-            target/distrib/${{ join(matrix.targets, '-') }}-runner.json
+            target/distrib/${{ matrix.target }}-runner.json
 
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
