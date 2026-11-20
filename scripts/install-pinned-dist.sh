@@ -27,7 +27,7 @@ expected="$(awk -v archive="$archive" '$2 == archive {print $1}' "$root/tools/di
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 url="https://github.com/axodotdev/cargo-dist/releases/download/v$version/$archive"
-curl --proto '=https' --tlsv1.2 --fail --location --retry 3 --output "$temp/$archive" "$url"
+curl --proto '=https' --tlsv1.2 --fail --location --output "$temp/$archive" "$url"
 actual="$(bash "$root/scripts/sha256-file.sh" "$temp/$archive")"
 [ "$actual" = "$expected" ] || { echo "install-pinned-dist: digest mismatch for $archive" >&2; exit 1; }
 
