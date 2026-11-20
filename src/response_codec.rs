@@ -486,6 +486,7 @@ pub(crate) fn native_stream_to_responses_with_session_model(
         let mut pending_usage: Option<Value> = None;
         let mut outcome = None;
         let mut usage_recorder = usage_recorder;
+        let mut session_model = session_model;
         let mut response_id = None;
         let mut native_reasoning_buffer = NativeReasoningBuffer::default();
 
@@ -545,6 +546,9 @@ pub(crate) fn native_stream_to_responses_with_session_model(
                 let terminal = native_sse_terminal(&frame);
                 if let Some(terminal) = terminal {
                     outcome = Some(terminal);
+                    // Release the registration after accounting, before a
+                    // downstream yield can suspend the stream.
+                    let session_model = session_model.take();
                     terminal.account(
                         usage_recorder.take(),
                         pending_usage.as_ref(),

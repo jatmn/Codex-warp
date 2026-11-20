@@ -89,21 +89,32 @@ async function loggingEditor() {
   }
   const fields = { disabled: true };
   const requests = [];
+  let footer = "";
+  const timers = new Set();
+  const writeStatus = (message) => { footer = message; };
   const context = vm.createContext({
     $: (id) => id === "#logging-settings" ? form : id === "#logging-settings-fields" ? fields : null,
     api: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })),
-    status() {}, loggingHint: () => "", loggingSaveStatus: () => "",
+    status: writeStatus, pollStatus: writeStatus,
+    setInterval: (callback) => {
+      const timer = { callback };
+      timers.add(timer);
+      return timer;
+    },
+    clearInterval: (timer) => timers.delete(timer),
     formatErrorMessage: (error) => error.message,
     optionalPositiveInt: (value) => value ? Number(value) : null,
     loadLogs: async () => {},
   });
   vm.runInContext(`
-    let tabEpoch = 0;
+    let activeTab = "logs", tabEpoch = 0, logsTimer = null;
     ${between('let loggingFormPhase = "unhydrated"', "let bootComplete")}
-    ${between("function applyLoggingChrome(settings)", "function tracingLagNote(settings)")}
+    ${between("function applyLoggingChrome(settings)", "async function loadLogs()")}
+    ${between("function syncProcessLevelControl()", '$("#log-source")?.addEventListener')}
     ${between('$("#logging-settings")?.addEventListener("input"', "async function boot()")}
   `, context);
   const submit = () => handlers.submit({ preventDefault() {}, currentTarget: form });
+  const startPoll = () => vm.runInContext("startLogsPoll()", context);
   await submit();
   assert.equal(requests.length, 0, "unhydrated values cannot be submitted");
   vm.runInContext('applyLoggingFields({log_path: "loaded"}); setLoggingFormHydrated(true)', context);
@@ -126,13 +137,31 @@ async function loggingEditor() {
   requests[3].resolve({ log_path: "server-value" });
   await failed;
   assert.equal(form.log_path.value, "new-draft", "failure recovery must preserve the draft");
+  const staleFailure = startPoll();
   const retry = submit();
-  const delayedRefresh = vm.runInContext("loadLoggingSettings()", context);
-  requests[4].resolve({ log_path: "normalized-saved-value" });
+  requests[5].resolve({ log_path: "normalized-saved-value", tracing_applied: true, persisted: true });
   await retry;
-  requests[5].resolve({ log_path: "older-than-save" });
-  await delayedRefresh;
   assert.equal(form.log_path.value, "normalized-saved-value", "untouched successful save hydrates its response");
+  requests[4].reject(new Error("superseded settings request failed"));
+  const [staleResult] = await Promise.allSettled([staleFailure]);
+  assert.equal(footer, "Logging settings applied", "stale settings failure must not replace the save status");
+  assert.equal(staleResult.status, "fulfilled", "stale settings failure must not reach tab activation");
+  assert.equal(timers.size, 1, "a superseded settings error must not stop event polling");
+
+  const delayedRefresh = startPoll();
+  const nextSave = submit();
+  requests[7].resolve({ log_path: "new-saved-value", tracing_applied: true, persisted: true });
+  await nextSave;
+  requests[6].resolve({ log_path: "older-than-save" });
+  await delayedRefresh;
+  assert.equal(form.log_path.value, "new-saved-value", "stale settings success must not rehydrate the form");
+  assert.equal(footer, "Logging settings applied", "stale settings success must not replace the save status");
+  assert.equal(timers.size, 1, "the current tab must still start event polling");
+
+  const currentFailure = startPoll();
+  requests[8].reject(new Error("current settings request failed"));
+  await assert.rejects(currentFailure, /current settings request failed/);
+  assert.equal(footer, "Error: current settings request failed");
 }
 
 Promise.resolve().then(credentials).then(logRequests).then(loggingEditor).then(() => console.log("webui-state-harness: ok")).catch((error) => {

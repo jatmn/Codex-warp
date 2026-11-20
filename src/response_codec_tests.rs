@@ -7678,11 +7678,56 @@ async fn completed_chat_stream_releases_session_order_before_downstream_finishes
             break;
         }
     }
+    assert_completed_stream_releases_session_order(&state).await;
+}
+
+#[tokio::test]
+async fn completed_native_stream_releases_session_order_before_downstream_finishes() {
+    let state = session_test_state();
+    let update = begin_session_model_update(
+        &state,
+        &json!({
+            "model": "completed-model", "prompt_cache_key": "completed-session"
+        }),
+    )
+    .await
+    .expect("session update");
+    let events = native_stream_to_responses_with_session_model(
+        upstream_response_with_body(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+                .to_vec(),
+        ),
+        BTreeSet::new(),
+        NamespaceHelpers::default(),
+        crate::config::ToolPolicyConfig::default(),
+        DebugLog::disabled(),
+        "dbg_order_lifetime".into(),
+        200,
+        None,
+        Some((state.clone(), update)),
+    );
+    futures_util::pin_mut!(events);
+    let terminal = events
+        .next()
+        .await
+        .expect("terminal output event")
+        .expect("valid stream");
+    assert!(String::from_utf8_lossy(&terminal).contains("response.completed"));
+    assert_completed_stream_releases_session_order(&state).await;
+}
+
+async fn assert_completed_stream_releases_session_order(state: &AppState) {
+    let mut review = json!({
+        "model": "codex-auto-review", "prompt_cache_key": "guardian:completed-session"
+    });
+    assert!(resolve_auto_review_model(state, &mut review).await);
+    assert_eq!(review["model"], "completed-model");
+
     // Keep the stream alive at a terminal yield, then evict its completed
     // session. Its old order must not consume a pending-registry slot.
     for index in 0..1024 {
         remember_session_model(
-            &state,
+            state,
             &json!({
                 "model": "replacement", "prompt_cache_key": format!("completed-{index}")
             }),
@@ -7693,7 +7738,7 @@ async fn completed_chat_stream_releases_session_order_before_downstream_finishes
     for index in 0..1024 {
         pending.push(
             begin_session_model_update(
-                &state,
+                state,
                 &json!({
                     "model": "pending", "prompt_cache_key": format!("pending-{index}")
                 }),

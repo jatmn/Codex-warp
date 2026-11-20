@@ -3529,12 +3529,15 @@
     form.tracing_filter.value = settings.tracing_filter || "";
   }
 
-  async function loadLoggingSettings({ hydrateFields = true } = {}) {
+  function beginLoggingSettingsRead(viewEpoch = tabEpoch) {
     const requestEpoch = ++loggingSettingsEpoch;
-    const viewEpoch = tabEpoch;
+    return () => requestEpoch === loggingSettingsEpoch && viewEpoch === tabEpoch
+      && !loggingFormPhase.startsWith("saving");
+  }
+
+  async function loadLoggingSettings({ hydrateFields = true, isCurrent = beginLoggingSettingsRead() } = {}) {
     const settings = await api("/logging");
-    if (requestEpoch !== loggingSettingsEpoch || viewEpoch !== tabEpoch
-        || loggingFormPhase.startsWith("saving")) return settings;
+    if (!isCurrent()) return;
     applyLoggingChrome(settings);
     if (hydrateFields && (loggingFormPhase === "unhydrated" || loggingFormPhase === "clean")) {
       applyLoggingFields(settings);
@@ -3636,20 +3639,23 @@
     // Disable only until the first successful hydrate so tab switches do not
     // interrupt in-progress edits.
     if (loggingFormPhase === "unhydrated") setLoggingFormHydrated(false);
+    const isCurrent = beginLoggingSettingsRead(epoch);
+    let settings;
     try {
-      const settings = await loadLoggingSettings();
-      if (epoch !== tabEpoch || activeTab !== "logs") return settings;
+      settings = await loadLoggingSettings({ isCurrent });
+    } catch (e) {
+      if (isCurrent() && activeTab === "logs") {
+        pollStatus(`Error: ${formatErrorMessage(e)}`);
+        throw e;
+      }
+    }
+    if (epoch !== tabEpoch || activeTab !== "logs") return;
+    if (isCurrent()) {
       setLoggingFormHydrated(true);
       pollStatus(loggingReadyStatus(settings));
-      loadLogs();
-      logsTimer = setInterval(loadLogs, 2500);
-      return settings;
-    } catch (e) {
-      if (epoch === tabEpoch && activeTab === "logs") {
-        pollStatus(`Error: ${formatErrorMessage(e)}`);
-      }
-      throw e;
     }
+    loadLogs();
+    logsTimer = setInterval(loadLogs, 2500);
   }
 
   function stopLogsPoll() {
