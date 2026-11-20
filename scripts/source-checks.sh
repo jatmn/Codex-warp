@@ -111,6 +111,10 @@ if command -v node >/dev/null 2>&1; then
     fail=1
   fi
 
+  if ! node scripts/install-pinned-dist-harness.js; then
+    fail=1
+  fi
+
   if ! (
     rg() {
       echo 'source-checks: workflow checks must not require undeclared ripgrep' >&2
