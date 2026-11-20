@@ -1,5 +1,71 @@
 # Changelog
 
+## [0.1.2](https://github.com/jatmn/Codex-warp/compare/v0.1.1...v0.1.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* preserve runtime state across cancellation and stale responses ([#173](https://github.com/jatmn/Codex-warp/issues/173)) ([c6af5d3](https://github.com/jatmn/Codex-warp/commit/c6af5d3cfcdcb00d1df1e0285a52cc4ea07c7c47))
+* **release:** peel nightly tags with the job token after App create ([#131](https://github.com/jatmn/Codex-warp/issues/131)) ([db2e64d](https://github.com/jatmn/Codex-warp/commit/db2e64dabc516ba539b87592cca0f87baa3ead87))
+* **release:** recover nightly tags when the receipt is missing ([#129](https://github.com/jatmn/Codex-warp/issues/129)) ([7291966](https://github.com/jatmn/Codex-warp/commit/729196696ac847c95e5536a7cb03db4213da9efa))
+
+
+### Documentation
+
+* remove unnecessary Pullfrog setup guide ([#144](https://github.com/jatmn/Codex-warp/issues/144)) ([9a90556](https://github.com/jatmn/Codex-warp/commit/9a90556948bc9009b968eae1a248241c7b8de408))
+
+
+### Build System
+
+* **deps:** Bump actions/create-github-app-token from 3.2.0 to 3.3.0 ([#161](https://github.com/jatmn/Codex-warp/issues/161)) ([1008795](https://github.com/jatmn/Codex-warp/commit/10087953eb493c96a23169992281bb0c9b7b7c3a))
+* **deps:** Bump actions/download-artifact from 8.0.1 to 8.0.2 ([#147](https://github.com/jatmn/Codex-warp/issues/147)) ([8702f03](https://github.com/jatmn/Codex-warp/commit/8702f03784c12fb7be8708e49b263e60efa103e6))
+* **deps:** Bump actions/setup-node from 7.0.0 to 7.1.0 ([#148](https://github.com/jatmn/Codex-warp/issues/148)) ([209c7fe](https://github.com/jatmn/Codex-warp/commit/209c7fea6add235f8fa00cf4f32452dde1450919))
+* **deps:** Bump actions/upload-artifact from 7.0.1 to 7.0.2 ([#150](https://github.com/jatmn/Codex-warp/issues/150)) ([f3d816b](https://github.com/jatmn/Codex-warp/commit/f3d816b64443faf8463c3fdc22f302353725d750))
+* **deps:** Bump clap from 4.6.6 to 4.6.7 ([#133](https://github.com/jatmn/Codex-warp/issues/133)) ([f54af55](https://github.com/jatmn/Codex-warp/commit/f54af552abea03bd010221c92a605cc1e64af34a))
+* **deps:** Bump crate-ci/typos from 1.50.1 to 1.50.2 ([#134](https://github.com/jatmn/Codex-warp/issues/134)) ([5ce2a04](https://github.com/jatmn/Codex-warp/commit/5ce2a04bdb2963382caef94764b8a5de1f9e5ae8))
+* **deps:** Bump crate-ci/typos from 1.50.2 to 1.50.3 ([#142](https://github.com/jatmn/Codex-warp/issues/142)) ([c25156a](https://github.com/jatmn/Codex-warp/commit/c25156ae96e3e07060514097c711a60c3ce797bb))
+* **deps:** Bump crate-ci/typos from 1.50.3 to 1.51.1 ([#149](https://github.com/jatmn/Codex-warp/issues/149)) ([f159fd1](https://github.com/jatmn/Codex-warp/commit/f159fd14fef87541ce36df8a0595b001d2358625))
+* **deps:** Bump crate-ci/typos from 1.51.1 to 1.52.2 ([#175](https://github.com/jatmn/Codex-warp/issues/175)) ([3d97c16](https://github.com/jatmn/Codex-warp/commit/3d97c16ea03dbd130fcb2f40d8ddc6d79967a2ef))
+* **deps:** bump ESLint to 10.15.0 ([#180](https://github.com/jatmn/Codex-warp/issues/180)) ([64adbad](https://github.com/jatmn/Codex-warp/commit/64adbad54008e831513ca7b9914b4de650e5cbfe))
+* **deps:** Bump fast-uri from 3.1.6 to 3.1.8 in /tools/release-please-policy ([#140](https://github.com/jatmn/Codex-warp/issues/140)) ([54f6175](https://github.com/jatmn/Codex-warp/commit/54f61752e5a250b09a819b21d3d5e63093ebaaba))
+* **deps:** Bump fast-uri from 3.1.8 to 3.1.9 in /tools/release-please-policy ([#162](https://github.com/jatmn/Codex-warp/issues/162)) ([90efe94](https://github.com/jatmn/Codex-warp/commit/90efe94cc1610252ba7575f7fd00d2efc69dd802))
+* **deps:** Bump libc from 0.2.189 to 0.2.190 ([#146](https://github.com/jatmn/Codex-warp/issues/146)) ([ca21fef](https://github.com/jatmn/Codex-warp/commit/ca21fef71d4de2bd7e2c7b1b53c74f24b89a3b6c))
+* **deps:** Bump libc from 0.2.190 to 0.2.191 ([#157](https://github.com/jatmn/Codex-warp/issues/157)) ([fcf8abc](https://github.com/jatmn/Codex-warp/commit/fcf8abc87573ff908bf3e17489cee29777de5b3b))
+* **deps:** Bump pullfrog/pullfrog from 0.1.122 to 0.1.126 ([#174](https://github.com/jatmn/Codex-warp/issues/174)) ([31934b7](https://github.com/jatmn/Codex-warp/commit/31934b7058bdc9a4943037a1a15c2cda2c2fa359))
+* **deps:** Bump rusqlite from 0.40.2 to 0.41.1 ([#170](https://github.com/jatmn/Codex-warp/issues/170)) ([c179d52](https://github.com/jatmn/Codex-warp/commit/c179d52ada05acf6326222c4b1b0c34c2369603a))
+* **deps:** Bump rusqlite from 0.41.1 to 0.43.0 ([#178](https://github.com/jatmn/Codex-warp/issues/178)) ([c595b3e](https://github.com/jatmn/Codex-warp/commit/c595b3e0f64275eff11693952e66f98251f727c8))
+* **deps:** Bump serde_json from 1.0.151 to 1.0.154 ([#154](https://github.com/jatmn/Codex-warp/issues/154)) ([aee3899](https://github.com/jatmn/Codex-warp/commit/aee389952ce5b8cade9ea2dab20f66266b23fabb))
+* **deps:** Bump Swatinem/rust-cache from 2.9.2 to 2.9.3 ([#160](https://github.com/jatmn/Codex-warp/issues/160)) ([736504c](https://github.com/jatmn/Codex-warp/commit/736504cbfdc2d5c58d23e6f50ebc641f3d119baf))
+* **deps:** Bump taiki-e/install-action from 2.87.14 to 2.87.22 ([#141](https://github.com/jatmn/Codex-warp/issues/141)) ([2716058](https://github.com/jatmn/Codex-warp/commit/2716058a51a903aeafc5012cb5d5f889d7b55bec))
+* **deps:** Bump taiki-e/install-action from 2.87.22 to 2.87.29 ([#151](https://github.com/jatmn/Codex-warp/issues/151)) ([96587fe](https://github.com/jatmn/Codex-warp/commit/96587fef4294f764762aba0da5be03578ff2a108))
+* **deps:** Bump taiki-e/install-action from 2.87.29 to 2.90.1 ([#169](https://github.com/jatmn/Codex-warp/issues/169)) ([69926be](https://github.com/jatmn/Codex-warp/commit/69926be3ab419528edd327953976784fee04c699))
+* **deps:** Bump taiki-e/install-action from 2.87.9 to 2.87.14 ([#135](https://github.com/jatmn/Codex-warp/issues/135)) ([a4b3a4c](https://github.com/jatmn/Codex-warp/commit/a4b3a4c0517d4be9dedb4cde31a63e4c8fb57df3))
+* **deps:** Bump taiki-e/install-action from 2.90.1 to 2.90.5 ([#176](https://github.com/jatmn/Codex-warp/issues/176)) ([29a8f0e](https://github.com/jatmn/Codex-warp/commit/29a8f0e43e36fbb5801def7d970934d29ff3afd7))
+* **deps:** Bump tokio from 1.53.1 to 1.53.2 ([#145](https://github.com/jatmn/Codex-warp/issues/145)) ([1656c56](https://github.com/jatmn/Codex-warp/commit/1656c5654bb04568924e7812027de2dd827a4cd3))
+* **deps:** Bump tokio from 1.53.2 to 1.53.3 ([#153](https://github.com/jatmn/Codex-warp/issues/153)) ([cfc81b7](https://github.com/jatmn/Codex-warp/commit/cfc81b7fbb2774817dd91bf671afd0d9e66822d4))
+* **deps:** Bump tokio from 1.53.3 to 1.54.1 ([#165](https://github.com/jatmn/Codex-warp/issues/165)) ([30d8abb](https://github.com/jatmn/Codex-warp/commit/30d8abb60a3bedc4104fb0516b70eb7bb54bd656))
+* **deps:** Bump toml from 1.1.5+spec-1.1.0 to 1.1.6+spec-1.1.0 ([#132](https://github.com/jatmn/Codex-warp/issues/132)) ([c50183f](https://github.com/jatmn/Codex-warp/commit/c50183f7f9c6dad6810b7545af34e7c1397f353a))
+* **deps:** Bump toml from 1.1.6+spec-1.1.0 to 1.1.8+spec-1.1.0 ([#155](https://github.com/jatmn/Codex-warp/issues/155)) ([b72fad1](https://github.com/jatmn/Codex-warp/commit/b72fad1a4caf841cec838b4f0a845626079bad76))
+* **deps:** Bump toml from 1.1.8+spec-1.1.0 to 1.2.0+spec-1.1.0 ([#168](https://github.com/jatmn/Codex-warp/issues/168)) ([f13e777](https://github.com/jatmn/Codex-warp/commit/f13e777fb3de4efcbe9d2ddbfce0fc2e92ae3e04))
+* **deps:** Bump toml from 1.2.0+spec-1.1.0 to 1.2.1+spec-1.1.0 ([#177](https://github.com/jatmn/Codex-warp/issues/177)) ([a1996bf](https://github.com/jatmn/Codex-warp/commit/a1996bf8d5c536c195829a93bdbf7a06f0fe0dc9))
+* **deps:** fix quinn-proto and rustls security advisories ([#156](https://github.com/jatmn/Codex-warp/issues/156)) ([c6e829b](https://github.com/jatmn/Codex-warp/commit/c6e829b0bf83d257aba96164b54783ab9c414758))
+* **deps:** update Quinn crates to fix RustSec advisories ([#179](https://github.com/jatmn/Codex-warp/issues/179)) ([8b7ecc7](https://github.com/jatmn/Codex-warp/commit/8b7ecc75aab27fd6e754ab89ed0a924a534d78b0))
+* **deps:** update release policy handlebars to 4.7.10 ([#152](https://github.com/jatmn/Codex-warp/issues/152)) ([f95485f](https://github.com/jatmn/Codex-warp/commit/f95485fcb6e3c5808084a51a95ef442deeea204e))
+* **deps:** update rustls to 0.23.45 ([#136](https://github.com/jatmn/Codex-warp/issues/136)) ([63f94e6](https://github.com/jatmn/Codex-warp/commit/63f94e627522db1329bc0c955d067f16d6382b83))
+
+
+### Continuous Integration
+
+* check browser JavaScript with host-only ESLint ([#137](https://github.com/jatmn/Codex-warp/issues/137)) ([7ecaf78](https://github.com/jatmn/Codex-warp/commit/7ecaf78ef4005430a36c571fe92458b55312963f))
+* configure owner-only Pullfrog with GPT Sol ([#143](https://github.com/jatmn/Codex-warp/issues/143)) ([d1e93e2](https://github.com/jatmn/Codex-warp/commit/d1e93e2ab2a52038896c12f2e7ae47c2d20b03dc))
+* fail when nightly fixture collection fails ([#183](https://github.com/jatmn/Codex-warp/issues/183)) ([0a35e81](https://github.com/jatmn/Codex-warp/commit/0a35e81f8dda578b5ad9b48edcdd01d98978cb51))
+* report the first pinned dist download failure ([#184](https://github.com/jatmn/Codex-warp/issues/184)) ([a2df124](https://github.com/jatmn/Codex-warp/commit/a2df124122f908312ee30944328f68b5acb6cad6))
+* run pinned Dylint general lints in GitHub Actions ([#138](https://github.com/jatmn/Codex-warp/issues/138)) ([dbfcb9e](https://github.com/jatmn/Codex-warp/commit/dbfcb9e36b58bba7629c734496888599fed2e654))
+* run platform checks in parallel ([#181](https://github.com/jatmn/Codex-warp/issues/181)) ([88e80bd](https://github.com/jatmn/Codex-warp/commit/88e80bd212f15705cf2b3d7935e8ddaad21d5fb5))
+* scope mutations to the checked-out merge diff ([#185](https://github.com/jatmn/Codex-warp/issues/185)) ([d7a105f](https://github.com/jatmn/Codex-warp/commit/d7a105f18cc21feb2c0dfd4884f1eb95ae271200))
+* update Pullfrog to v0.1.122 ([#171](https://github.com/jatmn/Codex-warp/issues/171)) ([c4d16fa](https://github.com/jatmn/Codex-warp/commit/c4d16faebdfa9821644ac232bb61110225278571))
+* use faster compression in release test fixtures ([#182](https://github.com/jatmn/Codex-warp/issues/182)) ([4489931](https://github.com/jatmn/Codex-warp/commit/448993189c959f89c0831b3df09c9ec6abc5acbc))
+
 ## [0.1.1](https://github.com/jatmn/Codex-warp/compare/v0.1.0...v0.1.1) (2026-09-13)
 
 
