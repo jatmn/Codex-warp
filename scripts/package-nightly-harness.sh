@@ -10,9 +10,11 @@ version="$base_version-nightly.$date+${sha:0:12}"
 temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT
 CODEX_WARP_BUILD_VERSION="$version" cargo build --release --locked >/dev/null
+outputs=()
 for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
   output="$temp/$target"
   mkdir -p "$output"
+  outputs+=("$output")
   NIGHTLY_DATE="$date" \
   NIGHTLY_SOURCE_SHA="$sha" \
   NIGHTLY_VERSION="$version" \
@@ -36,10 +38,35 @@ windows_archive="codex-warp-nightly-$date-${sha:0:12}-x86_64-pc-windows-msvc.zip
 (cd "$temp/x86_64-pc-windows-msvc" && sha256sum -c "$windows_archive.sha256" >/dev/null)
 unzip -Z1 "$temp/x86_64-pc-windows-msvc/$windows_archive" | grep -Fx codex-warp.exe >/dev/null
 
+collect_assets() {
+  local destination="$1"
+  find "${outputs[@]}" -maxdepth 1 -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.sha256' \) \
+    -exec cp -t "$destination/" -- {} +
+}
+
 assets="$temp/assets"
 mkdir "$assets"
-find "$temp" -mindepth 2 -maxdepth 2 -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.sha256' \) -exec cp {} "$assets/" \;
-mapfile -t evidence < <(find "$temp" -mindepth 2 -maxdepth 2 -name '*-nightly-evidence.json' -print | sort)
+collect_assets "$assets"
+
+# A copy can deliver every file and still report an error.
+copy_failure_bin="$temp/copy-failure-bin"
+copy_failure_assets="$temp/copy-failure-assets"
+mkdir "$copy_failure_bin" "$copy_failure_assets"
+real_cp="$(type -P cp)"
+cat >"$copy_failure_bin/cp" <<'EOF'
+#!/usr/bin/env bash
+set -e
+"$PACKAGE_NIGHTLY_REAL_CP" "$@"
+exit 1
+EOF
+chmod +x "$copy_failure_bin/cp"
+if PATH="$copy_failure_bin:$PATH" PACKAGE_NIGHTLY_REAL_CP="$real_cp" collect_assets "$copy_failure_assets"; then
+  echo 'package-nightly-harness: collection accepted a copy failure' >&2
+  exit 1
+fi
+diff -qr "$assets" "$copy_failure_assets"
+
+mapfile -t evidence < <(find "${outputs[@]}" -maxdepth 1 -name '*-nightly-evidence.json' -print | sort)
 jq -s '.[0] as $f | {"$schema":"./nightly-manifest.schema.json",schemaVersion:1,fileName:"codex-warp-nightly-manifest.json",repository:$f.repository,tag:$f.tag,date:$f.date,sourceSha:$f.sourceSha,baseVersion:$f.baseVersion,version:$f.version,workflow:$f.workflow,workflowSha:$f.workflowSha,cargoLockSha256:$f.cargoLockSha256,rustToolchainSha256:$f.rustToolchainSha256,packagingContractSha256:$f.packagingContractSha256,packagingScriptSha256:$f.packagingScriptSha256,artifacts:(map(.artifact)|sort_by(.target))}' "${evidence[@]}" >"$assets/codex-warp-nightly-manifest.json"
 jq -r '.artifacts[] | [.archiveSha256,.archive] | @tsv' "$assets/codex-warp-nightly-manifest.json" | sed $'s/\t/  /' >"$assets/sha256.sum"
 bash scripts/check-nightly-assets.sh "$assets" "$assets/codex-warp-nightly-manifest.json" "$root" >/dev/null
