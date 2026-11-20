@@ -272,9 +272,10 @@ ignore entries in `deny.toml` to hide a real license or git-source policy break.
 
 A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
 CLI smoke checks for full-CI changes so Windows-only build breaks (AWS-LC /
-linker) show up before a release. Documentation-only changes report Windows as
-skipped-success without allocating a Windows runner. Cargo caches are written
-only on `main`. Keep Source Checks, Dylint, Windows, Incremental (PR diff), and
+linker) show up before a release. Windows and Dylint classify changes independently
+and can start as soon as runners are available. For documentation-only changes,
+both jobs finish after checkout and classification. Cargo caches are written only
+on `main`. Keep Source Checks, Dylint, Windows, Incremental (PR diff), and
 cargo-deny as required status checks on `main`.
 
 The Dylint job runs only for full-CI changes, same as Windows. It installs
