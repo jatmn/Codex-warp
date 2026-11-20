@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -294,6 +295,44 @@ assert.equal(nativeBuild.name, 'Build native archives',
   'skipped matrix builds must use a static check name rather than an unevaluated join');
 assert.equal(nativeBuild.strategy.matrix, '${{ fromJson(needs.plan.outputs.native_matrix) }}',
   'running archive check names must use the target-only matrix');
+
+const targetTriples = contract.targets.map(({triple}) => triple);
+const nativeRows = targetTriples.map(target => ({
+  targets: [target],
+  runner: `runner-for-${target}`,
+  install_dist: {shell: 'bash', run: `install-dist-for-${target}`},
+  dist_args: `--artifacts=local --target=${target}`,
+}));
+const releasePlan = release.jobs.plan;
+const planStep = releasePlan.steps.find(step => step.id === 'plan');
+const planDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-warp-native-plan-'));
+try {
+  const outputFile = path.join(planDir, 'github-output');
+  // Supply the dist manifest on stdin and execute the generated planner step.
+  const run = spawnSync('bash', ['-e', '-o', 'pipefail', '-c',
+    'dist() { cat; }\n' + planStep.run.replace(/\$\{\{.*?\}\}/gs, 'plan'),
+  ], {
+    cwd: planDir,
+    env: {...process.env, GITHUB_OUTPUT: outputFile},
+    input: JSON.stringify({ci: {github: {artifacts_matrix: {include: nativeRows}}}}),
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const output = fs.readFileSync(outputFile, 'utf8').trimEnd().split('\n');
+  const expectedOutputs = {
+    native_matrix: {target: targetTriples},
+    native_builds: Object.fromEntries(nativeRows.map(row => [row.targets[0], row])),
+  };
+  for (const [name, expected] of Object.entries(expectedOutputs)) {
+    assert.equal(releasePlan.outputs[name], `\${{ steps.plan.outputs.${name} }}`);
+    const line = output.find(entry => entry.startsWith(`${name}=`));
+    assert.ok(line, `release plan must emit ${name}`);
+    assert.deepEqual(JSON.parse(line.slice(name.length + 1)), expected, `release plan ${name}`);
+  }
+} finally {
+  fs.rmSync(planDir, {recursive: true, force: true});
+}
+
 assert.equal(proofPrepare.environment, undefined);
 assert.deepEqual(proofPrepare.permissions, {contents: 'read'});
 assert.ok(proofPrepare.if.includes("github.event_name == 'pull_request'"));
