@@ -25,6 +25,10 @@ if ! bash scripts/ci-change-scope-harness.sh; then
   fail=1
 fi
 
+if ! bash scripts/mutants-diff-harness.sh; then
+  fail=1
+fi
+
 if ! bash scripts/git-hooks-harness.sh; then
   fail=1
 fi

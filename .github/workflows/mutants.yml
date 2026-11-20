@@ -25,13 +25,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Diff against base
+      - name: Diff the pull request merge
         id: rust-diff
+        shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git fetch --no-tags origin "$BASE_SHA"
-          git diff "$BASE_SHA...HEAD" -- "*.rs" | tee git.diff
+          actual_head="$(git rev-parse --verify 'HEAD^2')"
+          if [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "The checked-out merge commit does not contain the expected pull request head" >&2
+            exit 1
+          fi
+          # The base may have advanced between the event and the checkout.
+          git diff HEAD^1 HEAD -- "*.rs" | tee git.diff
           if [ -s git.diff ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
