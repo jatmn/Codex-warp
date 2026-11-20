@@ -257,9 +257,11 @@ For changes that require full CI, the Linux job performs:
 Every pull request reports an incremental mutants status. When the PR has a
 Rust diff it runs
 `cargo mutants --no-shuffle -vV --in-diff git.diff -- --locked`
-against the PR base SHA; otherwise the job succeeds without installing the
-mutants toolchain. Surviving mutants on changed lines are a test-quality
-finding, not a request to add extra unrelated tests.
+against the first parent of the tested merge commit. This uses the base that
+GitHub actually merged the PR into. When there is no Rust diff, the job
+succeeds without installing the mutants toolchain. Surviving mutants on
+changed lines are a test-quality finding, not a request to add extra unrelated
+tests.
 
 A separate supply-chain workflow always reports its required cargo-deny status
 on pull requests, but installs its toolchain and runs `cargo-deny` plus
