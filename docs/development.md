@@ -270,18 +270,22 @@ non-blocking on pull requests so a new CVE does not freeze unrelated work;
 scheduled and manual advisory runs fail closed. Do not add `_typos.toml`-style
 ignore entries in `deny.toml` to hide a real license or git-source policy break.
 
-A Windows job runs `cargo test --locked`, `cargo build --locked`, and the same
-CLI smoke checks for full-CI changes so Windows-only build breaks (AWS-LC /
-linker) show up before a release. Documentation-only changes report Windows as
-skipped-success without allocating a Windows runner. Cargo caches are written
-only on `main`. Keep Source Checks, Dylint, Windows, Incremental (PR diff), and
-cargo-deny as required status checks on `main`.
+Windows and Dylint can start as soon as runners are available. Each job checks
+out the repository and classifies the changes independently. Both jobs finish
+after classification for documentation-only changes and run verification for
+full-CI changes.
 
-The Dylint job runs only for full-CI changes, same as Windows. It installs
-`cargo-dylint` and `dylint-link` 6.3.2 from source (prebuilt binaries look for
-the driver sources on the machine that built them) and loads the
-`examples/general` lints listed in `dylint.toml` at tag `v6.3.2`. Those libraries typecheck with their own
-nightly, `nightly-2026-08-20` at that tag. The project toolchain in
+Windows runs `cargo test --locked`, `cargo build --locked`, and the same CLI
+smoke checks so Windows-only build breaks (AWS-LC / linker) show up before a
+release. Cargo caches are written only on `main`. Keep Source Checks, Dylint,
+Windows, Incremental (PR diff), and cargo-deny as required status checks on
+`main`.
+
+Dylint installs `cargo-dylint` and `dylint-link` 6.3.2 from source (prebuilt
+binaries look for the driver sources on the machine that built them) and loads
+the `examples/general` lints listed in `dylint.toml` at tag `v6.3.2`. Those
+libraries typecheck with their own nightly, `nightly-2026-08-20` at that tag.
+The project toolchain in
 `rust-toolchain.toml` stays the compiler for build and test. Cache
 `~/.cargo` and `~/.dylint_drivers` separately from `target/dylint`, and
 restore `target/dylint` only on an exact `dylint.toml` cache hit so a pin
