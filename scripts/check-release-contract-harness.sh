@@ -17,7 +17,9 @@ mkdir -p "$tmp/$archive_name/configs"
 cp target/debug/codex-warp "$tmp/$archive_name/codex-warp"
 cp codex-warp.toml README.md LICENSE NOTICE CHANGELOG.md "$tmp/$archive_name/"
 cp -R configs/. "$tmp/$archive_name/configs/"
-tar -cJf "$tmp/$archive_name.tar.xz" -C "$tmp" "$archive_name"
+# These archives exercise extraction and validation. Use fast compression for
+# the fixture data, which includes an executable with debug information.
+XZ_OPT=-0 tar -cJf "$tmp/$archive_name.tar.xz" -C "$tmp" "$archive_name"
 bash scripts/check-release-contract.sh archive "$tmp/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null
 
 crlf_source="$tmp/crlf-source"
@@ -38,7 +40,7 @@ prefix_name='codex-warp-nightly-20260830-111111111111-x86_64-unknown-linux-gnu'
 cp -R "$tmp/$archive_name" "$tmp/$prefix_name"
 printf '%s\n' '#!/usr/bin/env bash' "case \"\${1:-}\" in --version) echo \"codex-warp $prefix_collision\" ;; --help) exit 0 ;; *) exit 1 ;; esac" >"$tmp/$prefix_name/codex-warp"
 chmod +x "$tmp/$prefix_name/codex-warp"
-tar -cJf "$tmp/$prefix_name.tar.xz" -C "$tmp" "$prefix_name"
+XZ_OPT=-0 tar -cJf "$tmp/$prefix_name.tar.xz" -C "$tmp" "$prefix_name"
 if bash scripts/check-release-contract.sh archive "$tmp/$prefix_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null 2>&1; then
   echo 'check-release-contract-harness: accepted a prefix-colliding version' >&2
   exit 1
@@ -62,7 +64,7 @@ JQ_REAL="$(command -v jq)" UNZIP_REAL="$(command -v unzip)" \
 
 cp README.md "$tmp/$archive_name/unexpected.txt"
 mkdir "$tmp/invalid"
-tar -cJf "$tmp/invalid/$archive_name.tar.xz" -C "$tmp" "$archive_name"
+XZ_OPT=-0 tar -cJf "$tmp/invalid/$archive_name.tar.xz" -C "$tmp" "$archive_name"
 if bash scripts/check-release-contract.sh archive "$tmp/invalid/$archive_name.tar.xz" x86_64-unknown-linux-gnu "$root" "$version" >/dev/null 2>&1; then
   echo 'check-release-contract-harness: accepted an unexpected archive file' >&2
   exit 1
