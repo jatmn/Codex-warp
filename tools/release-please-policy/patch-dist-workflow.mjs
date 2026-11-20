@@ -54,6 +54,50 @@ replaceOnce(
   '    name: Build native archives',
   'skipped matrix check name'
 );
+replaceOnce(
+  '      val: ${{ steps.plan.outputs.manifest }}',
+  `      val: \${{ steps.plan.outputs.manifest }}
+      native_matrix: \${{ steps.plan.outputs.native_matrix }}
+      native_builds: \${{ steps.plan.outputs.native_builds }}`,
+  'native build outputs'
+);
+replaceOnce(
+  '          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"',
+  `          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+          # GitHub appends matrix values to the static job name.
+          jq -r '
+            .ci.github.artifacts_matrix.include // []
+            | if any(.[]; (.targets | length) != 1) then
+                error("expected one target per native archive build")
+              else
+                INDEX(.targets[0])
+              end
+            | "native_matrix=\\({target: keys_unsorted} | tojson)",
+              "native_builds=\\(tojson)"
+          ' plan-dist-manifest.json >> "$GITHUB_OUTPUT"`,
+  'target-only native build matrix'
+);
+const nativeBuild = 'fromJson(needs.plan.outputs.native_builds)[matrix.target]';
+replaceOnce(
+  `      # Target platforms/runners are computed by dist in create-release.
+      # Each member of the matrix has the following arguments:
+      #
+      # - runner: the github runner
+      # - dist-args: cli flags to pass to dist
+      # - install-dist: expression to run to install dist on the runner
+      #
+      # Typically there will be:
+      # - 1 "global" task that builds universal installers
+      # - N "local" tasks that build each platform's binaries and platform-specific installers
+      matrix: \${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    runs-on: \${{ matrix.runner }}
+    container: \${{ matrix.container && matrix.container.image || null }}`,
+  `      # Keep runner and build settings out of the check name.
+      matrix: \${{ fromJson(needs.plan.outputs.native_matrix) }}
+    runs-on: \${{ ${nativeBuild}.runner }}
+    container: \${{ ${nativeBuild}.container && ${nativeBuild}.container.image || null }}`,
+  'native build matrix and runner'
+);
 replaceOnce("      - '**[0-9]+.[0-9]+.[0-9]+*'", "      - 'v[0-9]+.[0-9]+.[0-9]+'", 'tag glob');
 replaceOnce(
   "      - 'v[0-9]+.[0-9]+.[0-9]+'\n\njobs:",
@@ -162,6 +206,10 @@ replaceOnce(
             target/distrib/\${{ join(matrix.targets, '-') }}-runner.json`,
   'runner evidence'
 );
+
+// The native archive contract builds one target per matrix job.
+source = source.replaceAll(/join\(matrix\.targets, '(?:, |-|_|)'\)/g, 'matrix.target');
+source = source.replaceAll(/\bmatrix\.(runner|packages_install|dist_args)\b/g, `${nativeBuild}.$1`);
 
 const hostStart = source.indexOf('  # Determines if we should publish/announce\n  host:');
 if (hostStart < 0) throw new Error('host tail anchor drifted');
