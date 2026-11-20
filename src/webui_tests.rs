@@ -4347,6 +4347,102 @@ async fn enabling_provider_route_snapshot_is_cancellation_safe() {
 }
 
 #[tokio::test]
+async fn committed_provider_mutations_finish_after_request_cancellation() {
+    for operation in ["create", "update", "delete"] {
+        let (state, dir) = temporary_store_state(operation);
+        let provider = serde_json::json!({
+            "id": "dynamic", "base_url": "https://dynamic.example/v1",
+            "enabled": true, "model_catalog_only": true,
+            "model_catalog": [{"id": "owned-model", "enabled": true}]
+        });
+        if operation != "create" {
+            let _ = create_provider(
+                State(state.clone()),
+                Json(serde_json::from_value(provider.clone()).unwrap()),
+            )
+            .await
+            .expect("create initial provider");
+        }
+        let initial_revision = state.config_revision.load(Ordering::Acquire);
+        // Each handler used to await this lock after committing but before
+        // handing reconciliation to its owned task.
+        let discovery = state.discovered_models.write().await;
+        let task_state = state.clone();
+        let task = tokio::spawn(async move {
+            match operation {
+                "create" => create_provider(
+                    State(task_state),
+                    Json(serde_json::from_value(provider).unwrap()),
+                )
+                .await
+                .map(|_| ()),
+                "update" => update_provider(
+                    State(task_state),
+                    Path("dynamic".into()),
+                    Json(
+                        serde_json::from_value(serde_json::json!({
+                            "base_url": "https://replacement.example/v1"
+                        }))
+                        .unwrap(),
+                    ),
+                )
+                .await
+                .map(|_| ()),
+                _ => delete_provider(State(task_state), Path("dynamic".into()))
+                    .await
+                    .map(|_| ()),
+            }
+        });
+        assert!(
+            wait_until(|| {
+                let config = state.read_config();
+                match operation {
+                    "create" => config.providers.contains_key("dynamic"),
+                    "update" => {
+                        config.providers["dynamic"].base_url == "https://replacement.example/v1"
+                    }
+                    _ => !config.providers.contains_key("dynamic"),
+                }
+            })
+            .await,
+            "{operation} must commit before cancellation"
+        );
+        task.abort();
+        assert!(task.await.expect_err("cancel handler").is_cancelled());
+        assert!(
+            state.mutation_lock.try_lock().is_err(),
+            "{operation} must retain reconciliation ownership"
+        );
+        assert!(
+            state
+                .model_routes
+                .read()
+                .await
+                .values()
+                .all(|owner| owner != "dynamic"),
+            "{operation} must evict the old route identity before reconciliation"
+        );
+        drop(discovery);
+        assert!(
+            wait_until(|| state.config_revision.load(Ordering::Acquire) == initial_revision + 2)
+                .await,
+            "{operation} must publish its completion revision"
+        );
+        let _mutation = state.mutation_lock.lock().await;
+        let routes = state.model_routes.read().await;
+        assert_eq!(
+            routes.get("owned-model").map(String::as_str),
+            (operation != "delete").then_some("dynamic"),
+            "{operation} must reconcile live routes"
+        );
+        drop(routes);
+        drop(_mutation);
+        drop(state);
+        std::fs::remove_dir_all(dir).expect("remove test store");
+    }
+}
+
+#[tokio::test]
 async fn model_update_waits_for_route_epoch_before_durable_publication() {
     let (state, store_dir) = temporary_store_state("model-update-route-epoch");
     let model_id = "dynamic/friendly";
@@ -6094,6 +6190,10 @@ async fn logging_update_applies_without_store() {
     let Json(before) = get_logging(State(state.clone())).await;
     assert!(!before.persist_available);
     assert!(!before.persisted);
+    assert!(matches!(
+        before.persistence,
+        LoggingPersistence::NotRequested
+    ));
 
     let Json(updated) = update_logging(
         State(state.clone()),
@@ -6112,6 +6212,10 @@ async fn logging_update_applies_without_store() {
     assert!(updated.enabled);
     assert!(!updated.persist_available);
     assert!(!updated.persisted);
+    assert!(matches!(
+        updated.persistence,
+        LoggingPersistence::Unavailable
+    ));
     assert!(updated.tracing_applied);
     assert_eq!(
         state.debug_log.current_path().as_deref(),
@@ -6255,6 +6359,7 @@ async fn logging_settings_apply_live_and_persist() {
     assert_eq!(updated.max_log_mb_effective, 32);
     assert_eq!(updated.max_log_age_days_effective, 7);
     assert!(updated.persisted);
+    assert!(matches!(updated.persistence, LoggingPersistence::Saved));
     assert_eq!(updated.tracing_filter.as_deref(), Some("codex_warp=debug"));
     assert_eq!(updated.tracing_filter_wanted, "codex_warp=debug");
     assert_eq!(updated.tracing_filter_effective, "codex_warp=debug");
@@ -6427,6 +6532,7 @@ async fn logging_update_keeps_applied_live_settings_when_overlay_persist_fails()
     .expect("live apply succeeds when overlay persist fails");
     assert!(live.persist_available);
     assert!(!live.persisted);
+    assert!(matches!(live.persistence, LoggingPersistence::Failed));
     assert!(live.include_bodies);
     assert!(state.debug_log.include_bodies());
     assert_eq!(
@@ -6623,11 +6729,12 @@ fn set_live_logging_keeps_snapshot_when_tracing_reload_fails() {
             .as_str(),
         "codex_warp=debug"
     );
-    let view = logging_settings_view(&state, false);
+    let view = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert_eq!(view.tracing_filter.as_deref(), Some("codex_warp=trace"));
     assert_eq!(view.tracing_filter_wanted, "codex_warp=trace");
     assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
     assert!(!view.tracing_applied);
+    assert!(matches!(view.tracing, LoggingTracing::Pending));
     assert!(view.include_bodies);
 
     let _ = std::fs::remove_dir_all(dir);
@@ -6662,7 +6769,7 @@ fn logging_settings_report_tracing_lag_when_requested_filter_is_cleared() {
 
     set_live_logging(&state, &next).expect("cleared filter still publishes");
     let wanted = state.tracing_reload.as_ref().unwrap().wanted_filter(&next);
-    let view = logging_settings_view(&state, false);
+    let view = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert!(view.tracing_filter.is_none());
     assert_eq!(view.tracing_filter_wanted, wanted);
     assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
@@ -6757,7 +6864,7 @@ fn set_live_logging_does_not_publish_when_writer_apply_fails() {
             .as_str(),
         "codex_warp=debug"
     );
-    let view = logging_settings_view(&state, false);
+    let view = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert_eq!(view.tracing_filter.as_deref(), Some("codex_warp=debug"));
     assert_eq!(view.tracing_filter_wanted, "codex_warp=debug");
     assert_eq!(view.tracing_filter_effective, "codex_warp=debug");
@@ -6888,7 +6995,7 @@ async fn logging_update_keeps_applied_tracing_filter_when_overlay_persist_fails(
 fn logging_settings_report_tracing_unapplied_without_reload_handle() {
     let mut state = test_state();
     state.tracing_reload = None;
-    let view = logging_settings_view(&state, false);
+    let view = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert_eq!(view.tracing_filter_wanted, "info");
     assert_eq!(view.tracing_filter_effective, "");
     assert!(!view.tracing_applied);
@@ -6902,14 +7009,14 @@ fn logging_settings_use_pinned_fallback_when_snapshot_filter_is_unset() {
     );
     let mut state = test_state();
     state.tracing_reload = Some(tracing_reload);
-    let view = logging_settings_view(&state, false);
+    let view = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert!(view.tracing_filter.is_none());
     assert_eq!(view.tracing_filter_wanted, "codex_warp=warn");
     assert_eq!(view.tracing_filter_effective, "codex_warp=warn");
     assert!(view.tracing_applied);
 
     set_live_logging(&state, &crate::config::DebugConfig::default()).expect("apply unset filter");
-    let after = logging_settings_view(&state, false);
+    let after = logging_settings_view(&state, LoggingPersistence::NotRequested);
     assert!(after.tracing_filter.is_none());
     assert_eq!(after.tracing_filter_wanted, "codex_warp=warn");
     assert_eq!(after.tracing_filter_effective, "codex_warp=warn");

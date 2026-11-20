@@ -16,6 +16,7 @@ builds AWS-LC from source, so source builds need CMake.
 - [Continuous Integration](#continuous-integration)
 - [Source Layout](#source-layout)
 - [Testing Layout](#testing-layout)
+- [Runtime State Contracts](#runtime-state-contracts)
 - [Running From Source](#running-from-source)
 - [Useful Environment Variables](#useful-environment-variables)
 - [Release Artifacts](#release-artifacts)
@@ -323,6 +324,34 @@ Most unit tests live in sibling files named `src/<module>_tests.rs`, included
 from the production module with `#[cfg(test)]` and `#[path = "..."]`. Keep new
 tests near the module they exercise instead of adding a new root-level test
 bundle. Test-quality rules live in [`AGENTS.md`](../AGENTS.md).
+
+## Runtime State Contracts
+
+These transitions are owned by the existing domain modules; they do not require
+a separate state-machine framework.
+
+| Owner | Transitions and invariants |
+| --- | --- |
+| Provider/model handlers in `src/webui.rs` | Validate and acquire publication locks before committing SQLite. Publish config and immediate route changes synchronously, then call `finish_model_discovery_mutation` without an intervening await. The helper invalidates discovery and transfers the mutation lock to an owned reconciliation task. Completion advances the revision again, including on unwind. A disconnected request cannot cancel committed reconciliation. |
+| Response accounting in `src/response_codec.rs` | `ResponseOutcome` owns usage and session completion policy. Completed responses count usage and commit the session model; native incomplete responses count usage only. Failed, cancelled, malformed, or truncated responses do neither. Accounting consumes the recorder, and native streaming stops at the first terminal. Chat retains its existing `[DONE]` or recognized semantic EOF rules; native streaming requires a terminal event. Buffered native responses retain their stricter shape validation. |
+| Logs in `src/webui_static/app-main.js` | An idle request becomes loading with a captured tab epoch and filters. Changes while loading queue one follow-up. Only a current result or error can render. Logging settings reads also carry an epoch so an older GET cannot overwrite a save. |
+| Logging API in `src/webui.rs` | A successful PUT means the live writer was installed. `tracing` independently reports `applied`, `pending`, or `unavailable`; `persistence` reports `saved`, `failed`, or `unavailable`. GET uses `not_requested` for persistence, since it does not attempt a save. Existing boolean fields remain compatible. A failed save never rolls back a successful live install. |
+| Credential editor | Loaded credentials become editing or explicitly replacing. Clearing a saved key enters replacing; typing and blurring retain that intent. Loaded source identity remains separate from the draft and its masked display. |
+| Logging editor | Unhydrated becomes clean after loading; edits become dirty. Submission becomes saving, and subsequent edits become saving-dirty. Success hydrates only an untouched submission; failure retains the draft. Duplicate submissions are ignored while saving. |
+
+The session-model cache remains unchanged. Dispatch order, rather than response
+arrival order, decides which successful request can replace the remembered
+model. Pending requests temporarily participate in auto-review selection; their
+RAII registrations disappear on cancellation. A failed later request does not
+prevent an earlier successful request from completing. Capacity and identifier
+limits remain enforced. `src/provider_tests.rs` covers out-of-order completion,
+pending-request drop, failed later requests, and cache eviction; codec tests
+cover failed and incomplete streams and duplicate terminals.
+
+The browser transition regression harness is `scripts/webui_state_harness.js`,
+run by `scripts/source-checks.sh`. It executes production callbacks with
+controlled API promises. Rust tests use actual handlers and a temporary SQLite
+store, including cancellation while the discovery lock is held.
 
 ## Running From Source
 

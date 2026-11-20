@@ -99,6 +99,10 @@ fn streaming_requires_successful_sse_upstream_response() {
 
 #[test]
 fn semantic_completion_rejects_error_envelopes_and_failed_responses() {
+    assert_eq!(
+        native_response_outcome(&json!({"id": "resp_123", "status": "cancelled"})),
+        ResponseOutcome::Cancelled
+    );
     assert!(!response_reports_completed(&json!({
         "error": {"message": "quota exceeded"}
     })));
@@ -669,6 +673,55 @@ async fn json_schema_capable_upstream_is_not_retried() {
         "Evaluate the planned action under the Guardian policy."
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn buffered_proxies_record_usage_tokens_and_session_completion() {
+    for native in [false, true] {
+        let dir = std::env::temp_dir().join(format!(
+            "codex-warp-buffered-usage-{}-{native}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("usage.db")).unwrap();
+        let mut state = test_state();
+        state.store = Some(store.clone());
+        let mut payload = if native {
+            json!({"id": "resp_usage", "status": "completed", "output": []})
+        } else {
+            successful_chat_completion()
+        };
+        payload["usage"] = json!({"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12});
+        let (base_url, _, server) = spawn_chat_script(vec![(200, payload)]).await;
+        let mut selected = selected_provider_at(&base_url);
+        // Both wire formats use the existing scripted endpoint; the configured
+        // Responses path is independent of response semantics.
+        selected.provider.responses_path = "/chat/completions".into();
+        let request = json!({"model": "test-model", "stream": false, "input": "hello", "prompt_cache_key": "session-usage"});
+        let response = if native {
+            proxy_native_responses(state.clone(), selected, HeaderMap::new(), request).await
+        } else {
+            proxy_chat_responses(state.clone(), selected, HeaderMap::new(), request).await
+        };
+        assert_eq!(response.status(), StatusCode::OK);
+        let summary = store
+            .analytics(AnalyticsRange::Last24Hours, None, None)
+            .unwrap();
+        assert_eq!(summary.prompts, 1);
+        assert_eq!(
+            summary.total_tokens, 12,
+            "native={native} must retain reported usage"
+        );
+        let mut review =
+            json!({"model": "codex-auto-review", "prompt_cache_key": "guardian:session-usage"});
+        assert!(crate::provider::resolve_auto_review_model(&state, &mut review).await);
+        assert_eq!(review["model"], "test-model");
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tokio::test]
